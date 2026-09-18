@@ -476,6 +476,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         !args.seed_profile || profile_plan.as_ref().is_some_and(|p| p.seed.is_some()),
         "automatic seed requires a host.seed profile contract"
     );
+    anyhow::ensure!(
+        !args.assert_guest_display || (args.board == "qemu_virt_aarch64"
+            && !args.no_build && profile_plan.as_ref().is_some_and(|p|
+                p.devices.iter().any(|d| d == "gpu")
+                && p.test.iter().any(|s| s.action == "assert-frame-pixels"))),
+        "guest display qualification requires a fresh AArch64 graphics profile with pixel assertions"
+    );
     if let Some(profile) = &profile_plan {
         println!(
             "[xtask:test] resolved alias {:?} to {} ({}, architecture={}, control_type={}, guest_id={}, provision_steps={}, test_steps={})",
@@ -615,6 +622,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
         }
+        if args.assert_display || args.assert_guest_display {
+            make_args.push(String::from("DISPLAY_RAMFB=1"));
+        }
+        make_args.extend(profile_device_build_args(
+            profile_plan.as_ref(),
+            scenario_plan.as_ref(),
+        ));
         if let Some(mode) = args.framebuffer_isolation_probe {
             make_args.push(format!("FRAMEBUFFER_ISOLATION_PROBE={mode}"));
         }
@@ -818,6 +832,27 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )?;
         }
     }
+    let input_helper = if args.assert_live
+        && profile_plan
+            .as_ref()
+            .is_some_and(|p| p.devices.iter().any(|d| d == "input"))
+    {
+        anyhow::ensure!(
+            args.board == "qemu_virt_aarch64",
+            "input probe requires AArch64 Linux"
+        );
+        run_make(&["guest-input-probe"], &repo_root)?;
+        run_make(&["-C", "tools/agentctl"], &repo_root)?;
+        let path = repo_root.join("build/tmp/guest-input-probe-aarch64");
+        let bytes = std::fs::read(&path)?;
+        anyhow::ensure!(
+            bytes.len() >= 20 && &bytes[..6] == b"\x7fELF\x02\x01" && bytes[18..20] == [183, 0],
+            "input probe is not little-endian AArch64 ELF64"
+        );
+        Some(path)
+    } else {
+        None
+    };
     let tmp_dir = qemu_tmp_dir(&repo_root);
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
@@ -899,6 +934,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         false,
         args.x86_block_image.as_deref(),
         args.x86_block_write,
+        args.assert_display || args.assert_guest_display,
     )?);
     if needs_host_net_stimulus
         && !args.assert_live
@@ -960,6 +996,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         ];
         if args.framebuffer_isolation_probe.is_some() {
             markers.push("[rt] framebuffer isolation: expected client data fault verified");
+        }
+        if args.assert_display {
+            markers.push("[display] private DMA and scanout banks ready");
+            markers.push("[display] first frame configured");
         }
         wait_for_all_markers(
             &log_path,
@@ -1082,6 +1122,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 Some(profile),
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
+                args.assert_guest_display.then_some(log_path.as_path()),
             )
         } else if args.assert_vmx_exit {
             if args.assert_firmware_reset {
@@ -1149,6 +1190,19 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )
         }
     };
+
+    if result.is_ok() && args.assert_framebuffer {
+        result = verify_native_frame_observer(
+            &cc_sock,
+            &log_path,
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        );
+    }
+
+    if result.is_ok() && args.assert_display {
+        result = verify_native_display(&log_path);
+    }
 
     if result.is_ok() && args.assert_console_backpressure {
         result = verify_console_backpressure(
@@ -1245,6 +1299,19 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         // VirtIO proof below requires actual queue delivery in both directions.
         let mut cc = connect_cc_client(&cc_sock, Duration::from_secs(30), &mut qemu)?;
         cc_send_raw_byte(&mut cc, 0, b'\r')?;
+    }
+    if result.is_ok() {
+        if let Some(helper) = &input_helper {
+            result = prove_profile_input(
+                &repo_root,
+                &cc_sock,
+                &log_path,
+                helper,
+                profile_plan.as_ref().context("input profile missing")?,
+                ssh_key.as_ref().context("input SSH key missing")?,
+                &mut qemu,
+            );
+        }
     }
 
     // Live-profile provisioning above establishes the guest's network and
@@ -1482,6 +1549,26 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 }
 
+fn profile_device_build_args(
+    profile: Option<&HostProfilePlan>,
+    scenario: Option<&HostScenarioPlan>,
+) -> Vec<String> {
+    let needs = |device: &str| {
+        profile.is_some_and(|p| p.devices.iter().any(|d| d == device))
+            || scenario.is_some_and(|s| {
+                s.guests
+                    .iter()
+                    .any(|g| g.profile.devices.iter().any(|d| d == device))
+            })
+    };
+    // Explicit empty values prevent inherited environment settings from silently
+    // adding devices to a profile which does not request them.
+    vec![
+        format!("GUEST_GRAPHICS={}", if needs("gpu") { "1" } else { "" }),
+        format!("GUEST_INPUT={}", if needs("input") { "1" } else { "" }),
+    ]
+}
+
 pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     let repo_root = repo_root()?;
     let profile_root = repo_root.join("guest-profiles");
@@ -1526,6 +1613,10 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     } else if let Some(alias) = &args.scenario {
         make_args.push(format!("GUEST_SCENARIO={alias}"));
     }
+    make_args.extend(profile_device_build_args(
+        profile_plan.as_ref(),
+        scenario_plan.as_ref(),
+    ));
     let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
     run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
 
@@ -1574,6 +1665,7 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         true,
         args.fast,
         None,
+        false,
         false,
     )?;
     let status = qemu.wait().context("failed to wait for QEMU")?;
@@ -1969,7 +2061,12 @@ pub(crate) fn spawn_qemu_with_guest(
     fast: bool,
     x86_block_image: Option<&Path>,
     x86_block_write: bool,
+    display: bool,
 ) -> anyhow::Result<std::process::Child> {
+    anyhow::ensure!(
+        !display || board == "qemu_virt_aarch64",
+        "ramfb requires AArch64"
+    );
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port, profile, scenario)?;
 
@@ -2015,19 +2112,24 @@ pub(crate) fn spawn_qemu_with_guest(
                 "1"
             };
             let use_kvm = interactive_serial && host_kvm_available(board);
-            let cpu = if use_kvm {
-                "host"
-            } else if fast {
-                "max"
-            } else {
-                "cortex-a57"
-            };
+            // Keep the SDK-qualified CPU model even in fast mode. QEMU's
+            // evolving "max" feature set can leave this seL4 image in idle
+            // before the root task starts. Fast mode changes TCG threading.
+            let cpu = if use_kvm { "host" } else { "cortex-a57" };
             let serial = if interactive_serial {
-                String::from("stdio")
+                // Multiplex the monitor so the advertised Ctrl-A X exit works.
+                String::from("mon:stdio")
             } else {
                 format!("file:{}", log_path.display())
             };
             let mut c = std::process::Command::new("qemu-system-aarch64");
+            if display {
+                c.arg("-device").arg("ramfb,id=display0");
+                c.arg("-qmp").arg(format!(
+                    "unix:{},server=on,wait=off",
+                    log_path.with_extension("display.qmp.sock").display()
+                ));
+            }
             c.arg("-machine")
                 .arg(machine)
                 .arg("-cpu")
@@ -2246,7 +2348,8 @@ pub(crate) fn spawn_qemu_with_guest(
         cmd.stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .process_group(0)
+            // Keep the controlling terminal's foreground process group.
+            // A new group receives SIGTTIN when QEMU reads inherited stdin.
             .spawn()
             .context("failed to spawn interactive QEMU")?
     } else if board == "qemu_virt_aarch64" {
@@ -2648,12 +2751,66 @@ fn x86_console_roundtrip(socket: &Path, timeout: Duration) -> anyhow::Result<()>
 }
 
 fn host_kvm_available(board: &str) -> bool {
-    (cfg!(all(target_os = "linux", target_arch = "aarch64"))
-        && board == "qemu_virt_aarch64"
-        && Path::new("/dev/kvm").exists())
-        || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
-            && board == "x86_64_generic_vtx"
-            && Path::new("/dev/kvm").exists())
+    if !Path::new("/dev/kvm").exists() {
+        return false;
+    }
+    if cfg!(all(target_os = "linux", target_arch = "aarch64")) && board == "qemu_virt_aarch64" {
+        // A device node alone does not prove KVM can expose EL2 to seL4.
+        // Probe the actual QEMU machine/CPU combination once, without booting
+        // any image or attaching storage/network devices.
+        static ARM_KVM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        return *ARM_KVM.get_or_init(probe_arm_kvm);
+    }
+    cfg!(all(target_os = "linux", target_arch = "x86_64")) && board == "x86_64_generic_vtx"
+}
+
+fn probe_arm_kvm() -> bool {
+    let Ok(mut child) = std::process::Command::new("qemu-system-aarch64")
+        .args([
+            "-machine",
+            "virt,virtualization=on",
+            "-cpu",
+            "host",
+            "-accel",
+            "kvm",
+            "-m",
+            "128M",
+            "-S",
+            "-nodefaults",
+            "-display",
+            "none",
+            "-monitor",
+            "none",
+            "-serial",
+            "none",
+            "-qmp",
+            "stdio",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let sent = child.stdin.take().is_some_and(|mut input| {
+        input
+            .write_all(b"{\"execute\":\"qmp_capabilities\"}\n{\"execute\":\"quit\"}\n")
+            .is_ok()
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    if sent {
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
 }
 
 fn qemu_netdev_arg(
@@ -3305,6 +3462,7 @@ fn wait_for_guest_console_login_via_cc(
     profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
+    display_log: Option<&Path>,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
     wait_for_guest_console_login_on_cc(
@@ -3315,6 +3473,7 @@ fn wait_for_guest_console_login_via_cc(
         profile,
         timeout,
         qemu,
+        display_log,
     )
 }
 
@@ -3326,6 +3485,7 @@ fn wait_for_guest_console_login_on_cc(
     profile: Option<&HostProfilePlan>,
     timeout: Duration,
     qemu: &mut Child,
+    display_log: Option<&Path>,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut transcript = String::new();
@@ -3451,9 +3611,325 @@ fn wait_for_guest_console_login_on_cc(
             )),
         qemu,
     )?;
+    if profile.is_some_and(|plan| plan.devices.iter().any(|device| device == "gpu")) {
+        if display_log.is_some() {
+            suspend_guest_via_cc(cc, guest_handle)?;
+            println!("[xtask:test] guest suspended for coherent framebuffer/scanout comparison");
+        }
+        let capture = (|| {
+            let capture = capture_guest_frame(cc, guest_handle, cc_sock, profile)?;
+            if let Some(log) = display_log {
+                let expected = std::fs::read(cc_sock.with_extension("frame.ppm"))?;
+                let receipt: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(cc_sock.with_extension("frame.json"))?)?;
+                let displayed = verify_display(
+                    log,
+                    &expected,
+                    receipt["width"].as_u64().context("missing frame width")?,
+                    receipt["height"].as_u64().context("missing frame height")?,
+                )?;
+                println!("[xtask:test] {displayed}");
+            }
+            Ok::<_, anyhow::Error>(capture)
+        })();
+        // Always attempt resume, including after a failed capture or comparison.
+        let resumed = if display_log.is_some() {
+            resume_guest_via_cc(cc, guest_handle).map(|_| ())
+        } else {
+            Ok(())
+        };
+        let capture = capture?;
+        resumed?;
+        println!("[xtask:test] {capture}");
+    }
     Ok(format!(
         "CC console API saw {guest_os} handle {guest_handle} prompt {:?} and {proof}",
         prompt
+    ))
+}
+
+fn verify_native_display(log: &Path) -> anyhow::Result<String> {
+    let mut expected = b"P6\n40 40\n255\n".to_vec();
+    for offset in (0..40u32 * 40 * 4).step_by(4) {
+        for channel in [2, 1, 0] {
+            expected.push(((offset + channel) * 37) as u8);
+        }
+    }
+    verify_display(log, &expected, 40, 40)
+}
+
+fn verify_display(log: &Path, expected: &[u8], width: u64, height: u64) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        width > 0 && width <= 1024 && height > 0 && height <= 768,
+        "invalid display expectation dimensions"
+    );
+    let mut socket = UnixStream::connect(log.with_extension("display.qmp.sock"))?;
+    socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+    socket.set_write_timeout(Some(Duration::from_secs(10)))?;
+    // Bound both message size and asynchronous events; a broken QMP peer must
+    // not turn a display assertion into an unbounded qualification wait.
+    fn receive(socket: &mut UnixStream) -> anyhow::Result<serde_json::Value> {
+        let mut bytes = Vec::new();
+        loop {
+            anyhow::ensure!(bytes.len() < 65536, "oversized QMP response");
+            let mut byte = [0u8];
+            socket.read_exact(&mut byte)?;
+            if byte[0] == b'\n' {
+                return Ok(serde_json::from_slice(&bytes)?);
+            }
+            bytes.push(byte[0]);
+        }
+    }
+    anyhow::ensure!(
+        receive(&mut socket)?.get("QMP").is_some(),
+        "missing QMP greeting"
+    );
+    let ppm = log.with_extension("display.ppm");
+    for (id, command) in [
+        serde_json::json!({"execute":"qmp_capabilities"}),
+        serde_json::json!({"execute":"screendump","arguments":{
+            "filename":ppm,"device":"display0"}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut command = command;
+        command["id"] = serde_json::json!(id);
+        socket.write_all(serde_json::to_string(&command)?.as_bytes())?;
+        socket.write_all(b"\n")?;
+        let mut completed = false;
+        for _ in 0..32 {
+            let reply = receive(&mut socket)?;
+            if reply.get("event").is_some() {
+                continue;
+            }
+            anyhow::ensure!(
+                reply["id"] == id && reply.get("return").is_some(),
+                "QMP command failed: {reply}"
+            );
+            completed = true;
+            break;
+        }
+        anyhow::ensure!(completed, "QMP event limit exceeded");
+    }
+    let actual = std::fs::read(&ppm)?;
+    anyhow::ensure!(
+        actual == expected,
+        "QEMU display pixels differ from primary client framebuffer"
+    );
+    std::fs::write(
+        log.with_extension("display.json"),
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"width":width,"height":height,"client":0,
+            "asserted_pixels":width*height,"sha256":sha256_bytes(&actual),
+            "capture":"QMP screendump","path":ppm}),
+        )?,
+    )?;
+    Ok(format!(
+        "display: all {} QEMU scanout pixels match primary client",
+        width * height
+    ))
+}
+
+fn verify_native_frame_observer(
+    socket: &Path,
+    log: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    wait_for_all_markers(log, &["[cc_pd] VirtIO serial ready"], timeout, qemu)?;
+    let mut cc = connect_cc_client(socket, timeout, qemu)?;
+    let mut request = [0u8; 32];
+    wr32(&mut request, 0, 1);
+    wr32(&mut request, 4, 1);
+    let denied = cc.call(0x261d, 0, 0, 0, &request)?;
+    anyhow::ensure!(
+        denied.mr[0] == CC_ERR_BAD_HANDLE,
+        "native observer accepted an unknown handle"
+    );
+    wr32(&mut request, 12, 1); // callers cannot select a private raw client slot
+    let invalid = cc.call(0x261d, 0xfb000000, 0, 0, &request)?;
+    anyhow::ensure!(
+        invalid.mr[0] == 9,
+        "native observer accepted a raw client slot"
+    );
+    for client in 0..2u32 {
+        let artifact = socket.with_extension(format!("native-{client}.sock"));
+        capture_guest_frame(&mut cc, 0xfb000000 + client, &artifact, None)?;
+        let actual = std::fs::read(artifact.with_extension("frame.ppm"))?;
+        let mut expected = b"P6\n40 40\n255\n".to_vec();
+        for offset in (0..40u32 * 40 * 4).step_by(4) {
+            for channel in [2, 1, 0] {
+                expected.push(((offset + channel) * 37 + client * 83) as u8);
+            }
+        }
+        anyhow::ensure!(
+            actual == expected,
+            "native observer client {client} pixel mismatch"
+        );
+    }
+    Ok(
+        "native observer: exact isolated client frames exported through CC in multiple chunks"
+            .into(),
+    )
+}
+
+fn verify_frame_pixels(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    steps: &[cmd_guest_profile::RecipeStep],
+) -> anyhow::Result<usize> {
+    anyhow::ensure!(
+        width > 0
+            && width <= 1024
+            && height > 0
+            && height <= 768
+            && pixels.len() == width as usize * height as usize * 4,
+        "invalid captured frame buffer"
+    );
+    let mut checked = 0;
+    for step in steps.iter().filter(|s| s.action == "assert-frame-pixels") {
+        let (x, y, expected) = cmd_guest_profile::frame_pixel_expectation(step)?;
+        anyhow::ensure!(
+            y < height as usize && x + expected.len() <= width as usize,
+            "expected pixel span lies outside captured frame"
+        );
+        for (i, rgb) in expected.iter().enumerate() {
+            let offset = (y * width as usize + x + i) * 4;
+            let actual = [pixels[offset + 2], pixels[offset + 1], pixels[offset]];
+            anyhow::ensure!(
+                actual == *rgb,
+                "guest frame pixel ({}, {}) expected {:?}, got {:?}",
+                x + i,
+                y,
+                rgb,
+                actual
+            );
+            checked += 1;
+        }
+    }
+    Ok(checked)
+}
+
+fn capture_guest_frame(
+    cc: &mut CcClient,
+    handle: u32,
+    socket: &Path,
+    profile: Option<&HostProfilePlan>,
+) -> anyhow::Result<String> {
+    const OPCODE: u32 = 0x261d;
+    const HEADER: usize = 40;
+    let started = Instant::now();
+    println!("[xtask:test] requesting guest framebuffer snapshot for handle {handle}");
+    let mut request = [0u8; 32];
+    wr32(&mut request, 0, 1);
+    wr32(&mut request, 4, 1); // CAPTURE
+    let snapshot = cc.call(OPCODE, handle, 0, 0, &request)?;
+    let (cookie, sequence, width, height) = decode_frame_reply(&snapshot, 0)?;
+    anyhow::ensure!(
+        cookie != 0 && sequence != 0,
+        "frame has no committed snapshot"
+    );
+    request[16..24].copy_from_slice(&cookie.to_le_bytes());
+    let captured = (|| -> anyhow::Result<Vec<u8>> {
+        let bytes = width as usize * height as usize * 4;
+        println!("[xtask:test] reading immutable framebuffer: {width}x{height}, sequence={sequence}, bytes={bytes}");
+        let mut pixels = Vec::with_capacity(bytes);
+        let mut next_report = 0x40000;
+        wr32(&mut request, 4, 2); // READ
+        while pixels.len() < bytes {
+            let length = (bytes - pixels.len()).min(CC_WIRE_SHMEM_SIZE - HEADER);
+            wr32(&mut request, 24, pixels.len() as u32);
+            wr32(&mut request, 28, length as u32);
+            let reply = cc.call(OPCODE, 0, 0, 0, &request)?;
+            anyhow::ensure!(
+                decode_frame_reply(&reply, length)? == (cookie, sequence, width, height),
+                "frame snapshot changed during chunked read"
+            );
+            pixels.extend_from_slice(&reply.shmem[HEADER..HEADER + length]);
+            if pixels.len() >= next_report || pixels.len() == bytes {
+                println!(
+                    "[xtask:test] framebuffer capture: {}/{bytes} bytes in {}s",
+                    pixels.len(),
+                    started.elapsed().as_secs()
+                );
+                next_report = pixels.len() + 0x40000;
+            }
+        }
+        anyhow::ensure!(
+            pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel[..3].iter().any(|byte| *byte != 0)),
+            "guest frame has no nonblack RGB pixels"
+        );
+        Ok(pixels)
+    })();
+    wr32(&mut request, 4, 3); // RELEASE, including after a failed read
+    wr32(&mut request, 24, 0);
+    wr32(&mut request, 28, 0);
+    let released = cc.call(OPCODE, 0, 0, 0, &request);
+    let pixels = captured?;
+    anyhow::ensure!(
+        decode_frame_reply(&released?, 0)?.0 == 0,
+        "snapshot release failed"
+    );
+    let checked_pixels = verify_frame_pixels(
+        &pixels,
+        width,
+        height,
+        profile.map_or(&[], |p| p.test.as_slice()),
+    )?;
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    for pixel in pixels.chunks_exact(4) {
+        ppm.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+    }
+    let path = socket.with_extension("frame.ppm");
+    std::fs::write(&path, &ppm)?;
+    let digest = format!("{:x}", Sha256::digest(&ppm));
+    std::fs::write(
+        socket.with_extension("frame.json"),
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"version":1,"guest_handle":handle,"width":width,
+            "height":height,"sequence":sequence,"format":"P6 RGB888",
+            "bytes":ppm.len(),"sha256":digest,"asserted_pixels":checked_pixels}),
+        )?,
+    )?;
+    Ok(format!(
+        "guest framebuffer captured: {}x{}, sequence={}, sha256={}, path={}",
+        width,
+        height,
+        sequence,
+        digest,
+        path.display()
+    ))
+}
+
+fn decode_frame_reply(reply: &CcReply, length: usize) -> anyhow::Result<(u64, u64, u32, u32)> {
+    anyhow::ensure!(
+        length <= CC_WIRE_SHMEM_SIZE - 40 && reply.shmem.len() >= 40 + length,
+        "invalid framebuffer response length"
+    );
+    anyhow::ensure!(
+        reply.mr == [CC_OK, (40 + length) as u32, 0, 1]
+            && rd32(&reply.shmem, 0) == 1
+            && rd32(&reply.shmem, 4) == 0
+            && rd32(&reply.shmem, 8) == 0
+            && rd32(&reply.shmem, 12) == length as u32,
+        "framebuffer service rejected capture or returned a malformed response: {:?}",
+        reply.mr
+    );
+    let width = rd32(&reply.shmem, 32);
+    let height = rd32(&reply.shmem, 36);
+    anyhow::ensure!(
+        width > 0 && width <= 1024 && height > 0 && height <= 768,
+        "invalid framebuffer dimensions"
+    );
+    Ok((
+        u64::from_le_bytes(reply.shmem[16..24].try_into()?),
+        u64::from_le_bytes(reply.shmem[24..32].try_into()?),
+        width,
+        height,
     ))
 }
 
@@ -3643,6 +4119,7 @@ fn verify_guest_console_input(
         .map(|(probe, marker)| (probe.as_str(), marker.as_str(), true))
         .unwrap_or(("~", "~", false));
     if line_mode {
+        println!("[xtask:test] sending console probe ({} bytes)", probe.len());
         cc_send_console_line(cc, guest_handle, probe.as_bytes())?;
     } else {
         cc_send_raw_bytes(cc, guest_handle, probe.as_bytes())?;
@@ -3650,6 +4127,8 @@ fn verify_guest_console_input(
 
     let mut echo = String::new();
     let start = Instant::now();
+    let mut last_report = start;
+    println!("[xtask:test] console probe sent; waiting for marker {marker:?}");
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for guest console input echo via CC-PD API")?;
         let chunk = match cc_log_stream_for_handle(cc, guest_handle, profile) {
@@ -3670,6 +4149,15 @@ fn verify_guest_console_input(
                 }
                 return Ok(format!("guest completed console probe {marker:?}"));
             }
+        }
+        if last_report.elapsed() >= Duration::from_secs(30) {
+            println!(
+                "[xtask:test] console probe waiting {}s; received {} bytes; tail:\n{}",
+                start.elapsed().as_secs(),
+                echo.len(),
+                tail_chars(&echo, 800)
+            );
+            last_report = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -4009,6 +4497,177 @@ fn prove_profile_ssh(
     )
 }
 
+fn wait_input_child(child: &mut Child, qemu: &mut Child, seconds: u64) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    loop {
+        anyhow::ensure!(qemu.try_wait()?.is_none(), "QEMU exited during input proof");
+        if let Some(status) = child.try_wait()? {
+            anyhow::ensure!(status.success(), "input proof process failed: {status}");
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "input proof process deadline expired"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// Bound both the number and length of guest-controlled output lines.
+fn input_probe_line(reader: &mut impl Read) -> anyhow::Result<String> {
+    let mut line = Vec::new();
+    for _ in 0..128 {
+        let mut byte = [0];
+        reader
+            .read_exact(&mut byte)
+            .context("input probe output ended early")?;
+        if byte[0] == b'\n' {
+            return String::from_utf8(line).context("input probe output is not UTF-8");
+        }
+        line.push(byte[0]);
+    }
+    anyhow::bail!("input probe output line exceeds 128 bytes")
+}
+
+fn prove_profile_input(
+    repo: &Path,
+    socket: &Path,
+    log: &Path,
+    helper: &Path,
+    profile: &HostProfilePlan,
+    key: &SshTestKey,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, false)?;
+    prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, true)?;
+    Ok("exact guest input batches and server-generated held-key/button releases passed".into())
+}
+
+fn prove_profile_input_pass(
+    repo: &Path,
+    socket: &Path,
+    log: &Path,
+    helper: &Path,
+    profile: &HostProfilePlan,
+    key: &SshTestKey,
+    qemu: &mut Child,
+    release: bool,
+) -> anyhow::Result<String> {
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|q| q.ssh.as_ref())
+        .context("input proof needs SSH")?;
+    anyhow::ensure!(
+        ssh.account == "root",
+        "input proof currently requires the root test account"
+    );
+    let stderr_path = log.with_extension(if release {
+        "input-release.stderr"
+    } else {
+        "input.stderr"
+    });
+    let stderr = std::fs::File::create(&stderr_path)?;
+    let command = |remote: &str| -> anyhow::Result<std::process::Command> {
+        let mut cmd = std::process::Command::new("ssh");
+        cmd.arg("-i")
+            .arg(&key.private_key)
+            .args(["-p", &ssh.host_port.to_string()])
+            .args(SSH_AUTH_OPTIONS)
+            .args(SSH_PROBE_LIVENESS_OPTIONS)
+            .arg(format!("{}@127.0.0.1", ssh.account))
+            .arg(remote)
+            .stderr(Stdio::from(stderr.try_clone()?));
+        Ok(cmd)
+    };
+    // The disposable qualification guest owns this fixed path. Remove it before
+    // creation so an existing symlink cannot redirect the upload.
+    let mut upload = ChildGuard::new(command(
+        "timeout 120 sh -c 'umask 077; rm -f /tmp/agentos-input-probe && cat > /tmp/agentos-input-probe && chmod 700 /tmp/agentos-input-probe'"
+    )?.stdin(Stdio::from(std::fs::File::open(helper)?)).stdout(Stdio::null()).spawn()?);
+    wait_input_child(&mut upload, qemu, 150)?;
+    let mut probe = ChildGuard::new(
+        command("exec timeout 130 /tmp/agentos-input-probe")?
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()?,
+    );
+    let mut output = probe.stdout.take().context("input probe stdout missing")?;
+    let (send, receive) = std::sync::mpsc::sync_channel(2);
+    std::thread::spawn(move || {
+        for _ in 0..2 {
+            let line = input_probe_line(&mut output);
+            let failed = line.is_err();
+            if send.send(line).is_err() || failed {
+                return;
+            }
+        }
+    });
+    anyhow::ensure!(
+        receive.recv_timeout(Duration::from_secs(60))?? == "AGENTOS_INPUT_READY",
+        "input probe did not become ready"
+    );
+    let batches: &[&[&str]] = &[
+        &["keyboard", "1", "183", "1"],
+        &["keyboard", "1", "183", "0"],
+        &[
+            "pointer", "2", "0", "17", "2", "1", "-9", "2", "8", "1", "1", "272", "1",
+        ],
+        &["pointer", "1", "272", "0"],
+    ];
+    for (index, batch) in batches.iter().enumerate() {
+        // The same guest checker requires identical evdev output. In the
+        // release pass only the server knows which key/button must be released.
+        let releasing = release && (index == 1 || index == 3);
+        let args = if releasing { &batch[..1] } else { *batch };
+        let mut submit = ChildGuard::new(
+            std::process::Command::new(repo.join("tools/agentctl/agentctl"))
+                .env("CC_PD_SOCK", socket)
+                .args([
+                    "--batch",
+                    if releasing {
+                        "input-release"
+                    } else {
+                        "input-batch"
+                    },
+                    "0",
+                ])
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(stderr.try_clone()?))
+                .spawn()?,
+        );
+        // agentctl validates the exact response and never retries input batches.
+        wait_input_child(&mut submit, qemu, 30)?;
+    }
+    anyhow::ensure!(
+        receive.recv_timeout(Duration::from_secs(120))??
+            == "AGENTOS_INPUT_PASS keyboard=4 pointer=7",
+        "guest input event mismatch"
+    );
+    wait_input_child(&mut probe, qemu, 15)?;
+    let receipt = serde_json::json!({
+        "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
+        "agentos_revision": agentos_revision(repo)?, "source_tree_clean": agentos_worktree_clean(repo)?,
+        "helper_sha256": sha256_bytes(&std::fs::read(helper)?),
+        "keyboard_events": 4, "pointer_events": 7, "batches": 4,
+        "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+        "release_mode": if release { "server-held-state" } else { "explicit-events" },
+        "excludes": ["physical input devices", "peer guest isolation", "guest recreation"],
+        "stderr": stderr_path,
+    });
+    std::fs::write(
+        log.with_extension(if release {
+            "input-release.json"
+        } else {
+            "input.json"
+        }),
+        serde_json::to_vec_pretty(&receipt)?,
+    )?;
+    Ok("exact guest keyboard, pointer, button and packet-boundary delivery passed".into())
+}
+
 fn desktop_tunnel_forward_spec(desktop: &DesktopPlan) -> String {
     if let Some(socket) = &desktop.guest_socket {
         format!("127.0.0.1:{}:{socket}", desktop.local_port)
@@ -4313,6 +4972,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         Some(&lead.profile),
         timeout.saturating_sub(start.elapsed()),
         qemu,
+        None,
     )?;
     let lead_provision = profile_provision_commands(&lead.profile, &ssh_key.public_key)?;
     run_guest_console_commands(
@@ -4366,6 +5026,7 @@ fn wait_for_dual_guest_consoles_via_cc(
         Some(&deferred.profile),
         timeout.saturating_sub(start.elapsed()),
         qemu,
+        None,
     )?;
     let deferred_provision = profile_provision_commands(&deferred.profile, &ssh_key.public_key)?;
     run_guest_console_commands(
@@ -4848,6 +5509,81 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn frame_pixel_proof_rejects_wrong_colors_bounds_and_malformed_expectations() {
+        let mut step = cmd_guest_profile::RecipeStep {
+            action: "assert-frame-pixels".into(),
+            args: [("x", "0"), ("y", "1"), ("rgb", "332211665544")]
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        };
+        let mut pixels = vec![0; 16];
+        pixels[8..].copy_from_slice(&[17, 34, 51, 0, 68, 85, 102, 255]);
+        assert_eq!(
+            verify_frame_pixels(&pixels, 2, 2, &[step.clone()]).unwrap(),
+            2
+        );
+        pixels[8] = 18;
+        assert!(verify_frame_pixels(&pixels, 2, 2, &[step.clone()]).is_err());
+        pixels[8] = 17;
+        assert!(verify_frame_pixels(&pixels[..15], 2, 2, &[step.clone()]).is_err());
+        step.args.insert("x".into(), "1".into());
+        assert!(verify_frame_pixels(&pixels, 2, 2, &[step.clone()]).is_err());
+        step.args.insert("x".into(), "-1".into());
+        assert!(cmd_guest_profile::frame_pixel_expectation(&step).is_err());
+        step.args.insert("x".into(), "0".into());
+        step.args.insert("rgb".into(), "zz2211".into());
+        assert!(cmd_guest_profile::frame_pixel_expectation(&step).is_err());
+    }
+
+    #[test]
+    fn profile_build_enables_selected_devices_for_single_and_secondary_guests() {
+        let root = repo_root().unwrap();
+        let profiles = root.join("guest-profiles");
+        let load =
+            |name: &str| cmd_guest_profile::host_profile_plan(&profiles, Path::new(name)).unwrap();
+        let input = load("debian-input.toml");
+        let gpu = load("debian-gpu.toml");
+        let headless = load("debian.toml");
+        assert_eq!(
+            profile_device_build_args(None, None),
+            ["GUEST_GRAPHICS=", "GUEST_INPUT="]
+        );
+        assert_eq!(
+            profile_device_build_args(Some(&headless), None),
+            ["GUEST_GRAPHICS=", "GUEST_INPUT="]
+        );
+        assert_eq!(
+            profile_device_build_args(Some(&input), None),
+            ["GUEST_GRAPHICS=", "GUEST_INPUT=1"]
+        );
+        assert_eq!(
+            profile_device_build_args(Some(&gpu), None),
+            ["GUEST_GRAPHICS=1", "GUEST_INPUT="]
+        );
+        let mut scenario =
+            guest_scenario::resolve_alias(&root.join("guest-scenarios"), &profiles, "both")
+                .unwrap();
+        scenario.guests[0].profile = gpu;
+        scenario.guests[1].profile = input;
+        assert_eq!(
+            profile_device_build_args(None, Some(&scenario)),
+            ["GUEST_GRAPHICS=1", "GUEST_INPUT=1"]
+        );
+    }
+
+    #[test]
+    fn input_probe_output_is_bounded_and_requires_complete_utf8_lines() {
+        assert_eq!(
+            input_probe_line(&mut &b"AGENTOS_INPUT_READY\n"[..]).unwrap(),
+            "AGENTOS_INPUT_READY"
+        );
+        assert!(input_probe_line(&mut &b"AGENTOS_INPUT_READY"[..]).is_err());
+        assert!(input_probe_line(&mut &[b'x'; 129][..]).is_err());
+        assert!(input_probe_line(&mut &b"\xff\n"[..]).is_err());
+    }
     use std::os::unix::net::UnixListener;
 
     fn console_stress_fixture(newline: &[u8]) -> Vec<u8> {
@@ -4925,6 +5661,30 @@ mod tests {
             netdev,
             format!("user,id=net0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.16:22")
         );
+    }
+
+    #[test]
+    fn frame_reply_requires_exact_payload_and_bounded_geometry() {
+        let mut reply = CcReply {
+            mr: [CC_OK, 48, 0, 1],
+            shmem: vec![0; 4096],
+        };
+        wr32(&mut reply.shmem, 0, 1);
+        wr32(&mut reply.shmem, 12, 8);
+        reply.shmem[16..24].copy_from_slice(&5u64.to_le_bytes());
+        reply.shmem[24..32].copy_from_slice(&17u64.to_le_bytes());
+        wr32(&mut reply.shmem, 32, 1024);
+        wr32(&mut reply.shmem, 36, 768);
+        assert_eq!(decode_frame_reply(&reply, 8).unwrap(), (5, 17, 1024, 768));
+        assert!(decode_frame_reply(&reply, 4).is_err());
+        wr32(&mut reply.shmem, 32, u32::MAX);
+        assert!(decode_frame_reply(&reply, 8).is_err());
+        wr32(&mut reply.shmem, 32, 1024);
+        reply.shmem.truncate(47);
+        assert!(decode_frame_reply(&reply, 8).is_err());
+        reply.shmem.resize(4096, 0);
+        reply.mr[2] = 3;
+        assert!(decode_frame_reply(&reply, 8).is_err());
     }
 
     #[test]

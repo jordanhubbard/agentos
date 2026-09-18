@@ -70,8 +70,18 @@ pub struct TestArgs {
     /// Qualify framebuffer queue transactions from two isolated native clients.
     #[arg(long, conflicts_with_all = ["assert_native_rust", "assert_native_guest", "assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "assert_vmx_exit"])]
     pub assert_framebuffer: bool,
-    /// Verify either framebuffer client's denied queue/arena reads and writes.
-    #[arg(long, requires = "assert_framebuffer", value_parser = clap::value_parser!(u8).range(1..=8))]
+    /// Configure QEMU ramfb through the dedicated display driver.
+    #[arg(
+        long,
+        requires = "assert_framebuffer",
+        conflicts_with = "framebuffer_isolation_probe"
+    )]
+    pub assert_display: bool,
+    /// Compare a graphics guest's exported frame against QEMU RAMFB scanout.
+    #[arg(long, requires = "assert_live", conflicts_with = "assert_display")]
+    pub assert_guest_display: bool,
+    /// Verify framebuffer clients cannot access peer queues or private/observer storage.
+    #[arg(long, requires = "assert_framebuffer", value_parser = clap::value_parser!(u8).range(1..=16))]
     pub framebuffer_isolation_probe: Option<u8>,
     /// Qualify fresh native NIC traffic interleaved with a live Ubuntu guest.
     #[arg(long, conflicts_with_all = ["assert_native_rust", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"])]

@@ -1,0 +1,87 @@
+{
+  "schema": "agentos.cc_irq_receive.v1",
+  "host": "sparky Linux aarch64",
+  "runtime_commit": "1da79302be8be021785100f74b65794dd22fb659",
+  "native_image_sha256": "9ea8f452a0b8bcfda321ea5d37db093ed1031ab35adac062361d346651bdbdd7",
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12250",
+    "result": "pass",
+    "log_sha256": "228493d4aa696e461caf5e9782549f610f6c3ae8e02e3cfd01bfd3496fb3486e"
+  },
+  "native_command": "make run GUEST_OS=none FRAMEBUFFER_TEST=1",
+  "client_command": "make benchmark-frame CC_PD_SOCK=/tmp/agentos-v04-cc-irq/build/cc_pd.sock BENCH_GUEST_HANDLE=0xfb000000 BENCH_READS=128",
+  "reconnects": "Two separate client processes, with idle time between them, each completing connect, 16 status queries, capture, 128 stable reads, release and disconnect",
+  "runs": [
+    {
+      "capture_ms": 21.11129,
+      "frame": {
+        "bytes": 6400,
+        "height": 40,
+        "sequence": "1",
+        "token": "1",
+        "width": 40
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 1987.1856189999999,
+      "reads": {
+        "count": 128,
+        "max_ms": 21.195643999999998,
+        "mean_ms": 15.517442296874993,
+        "median_ms": 19.993644,
+        "min_ms": 9.102521000000001,
+        "p95_ms": 20.493682999999997
+      },
+      "recorded_wire_ms": 1945,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 20.531859,
+        "mean_ms": 20.272862375000006,
+        "median_ms": 20.294607,
+        "min_ms": 19.911994,
+        "p95_ms": 20.531859
+      }
+    },
+    {
+      "capture_ms": 20.306221999999998,
+      "frame": {
+        "bytes": 6400,
+        "height": 40,
+        "sequence": "1",
+        "token": "1",
+        "width": 40
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 1394.8502999999998,
+      "reads": {
+        "count": 128,
+        "max_ms": 20.839125,
+        "mean_ms": 10.890454617187496,
+        "median_ms": 10.074854,
+        "min_ms": 0.47099799999999997,
+        "p95_ms": 20.254686
+      },
+      "recorded_wire_ms": 1348,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 21.914307,
+        "mean_ms": 20.336722812499996,
+        "median_ms": 20.200317,
+        "min_ms": 19.67255,
+        "p95_ms": 21.914307
+      }
+    }
+  ],
+  "limitations": [
+    "Native producer repeated-region test, not whole guest-frame or GUI performance qualification",
+    "TX and partial RX remain bounded polling paths",
+    "Gate provides canonical guest network/block/console proofs, not graphical input qualification"
+  ]
+}

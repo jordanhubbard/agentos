@@ -9,6 +9,15 @@ This page describes two things and keeps them apart: what **boots today**
 shape**. A claim that belongs to the target column is not an OS claim until the
 manifest and the gate agree with it.
 
+The optional `GUEST_INPUT` AArch64 variant adds `input_virt`, a bounded input
+queue virtualizer. It owns no hardware frame, IRQ, or guest execution cap.
+Root maps one event page per VMM and a separate CC frontend page; only the
+virtualizer maps all three. CC resolves public guest handles before submitting
+input batches. VMMs consume only their own keyboard/pointer queues and emulate
+two faulting virtio-input devices. Input notifications confer send-only wakeup
+authority, never access to another client's queues. Target enumeration,
+delivery and mapping-isolation qualification remain pending.
+
 ## Privilege
 
 | Level | What runs | Notes |
@@ -30,7 +39,7 @@ seL4
   └── root task            untyped, CSpace, VSpace, spawn PDs, hand out caps,
       (~6 kLOC)            then parks in seL4_Wait; no post-spawn policy
         ├── serial_pd      owns the PL011 UART frame + IRQ
-        ├── cc_pd          owns QEMU virtio-serial (bus.2): the console the
+        ├── cc_pd          owns QEMU virtio-serial (bus.2, IRQ 50): the console the
         │                  test harness and agentctl drive; guest console TX/RX
         │                  relays through it; prints `agentOS boot complete`
         │                  as the lowest-priority PD in the image
@@ -419,6 +428,17 @@ DMA against those QEMU devices is an architecture regression.
 
 ## Proof
 
+The optional AArch64 `DISPLAY_RAMFB=1` composition adds `display_ramfb` as
+a display driver. It alone receives QEMU fw_cfg MMIO, its private uncached
+DMA allocation, and two private contiguous scanout banks. Its only client is
+`framebuffer_queue`, through a separate queue and dedicated notifications.
+No guest VMM receives these frames or caps. The framebuffer service forwards
+only client zero's committed rectangle. `make test-display` verifies every
+pixel of its native test frame in a QEMU display capture. `make test-guest-display`
+also checks every pixel of a 1024x768 Linux guest frame while the guest is
+suspended, then verifies resumed SSH and input delivery. This supplies no
+bare-metal Spark GPU support or peer guest display-isolation proof.
+
 ### Framebuffer queue qualification image
 
 `make test-framebuffer` adds `framebuffer_queue` and two native test clients
@@ -442,12 +462,52 @@ stale-handle rejection and recovery after invalid bounds or ring occupancy.
 This is a new queue service, not an extension of the retired framebuffer PD.
 Its focused target test asserts real create/write/flip/status/read/destroy
 transactions from both native clients. `make test-framebuffer-isolation`
-boots eight images covering each client's read/write access to the other
-queue page and the private arena. Each client first completes its authorized
+boots sixteen images covering each client's read/write access to the other
+queue page, private surface arena, observer page and private snapshot arena.
+Each client first completes its authorized
 pixel transactions; only root emits the isolation marker after matching the
-fault badge, address and access direction. Both focused tests passed locally
-on Spark. They do not establish hardware scanout, guest DRM/input or an
-external export client. Those remain required for the v0.4 graphics outcome.
+fault badge, address and access direction. All sixteen cases passed on Spark
+at `3b00d93`, including exact observer exports from both native clients in
+each image. [The qualification record](evidence/2026-09-16-spark/framebuffer-observer.json)
+identifies all sixteen retained images. Hardware scanout and guest DRM/input
+remain required for v0.4.
+
+The in-progress libvmm GPU backend (`libvmm/src/virtio/gpu*.c`) implements
+bounded 2D resource commands and direct control/cursor virtqueues, with
+`platform/gpu-virt/framebuffer_adapter.c` translating backend operations to
+the framebuffer queue contract. The AArch64 `GUEST_GRAPHICS=1` variant adds
+`framebuffer_queue` and grants each VMM only its own client page and dedicated
+read/send notification capabilities. These notifications are separate from the
+VMM's bound network/block/console notification. Only the framebuffer service
+maps private surface storage and both client pages. The guest profile's GPU
+flag selects VMM initialization and the faulting DTB window at `0x0a040000`,
+virtual INTID 54. No physical GPU frame or IRQ is granted to either VMM or the
+framebuffer service. The `debian-gpu` profile exercises this variant.
+Host tests verify exact pixels through the real framebuffer queue implementation;
+the framebuffer service receives a 1 ms budget per 10 ms period and a 1 KiB
+scheduling context with additional refill records. Short queue exchanges must
+not discard most of the available budget through refill coalescing. The kernel
+retains a 10% CPU ceiling. CC retains its existing 1% ceiling with a 100 us
+budget per 10 ms period and a 1 KiB scheduling context with extra refill
+records. Its host VirtIO polling yields must not defer each request or reply
+for the old one-second period. Other PD and guest scheduling parameters are
+unchanged. The shorter period needs target latency and integration qualification;
+it does not grant CC any additional device or guest-memory authority.
+Combined guest graphics/input qualification at this scheduling revision is
+pending. A physical display driver and target peer-input isolation also remain
+required; native observer exports do not establish either property.
+
+The graphics and focused framebuffer variants also grant CC a separate observer queue.
+Only CC and `framebuffer_queue` map that page; neither VMM receives it.
+The framebuffer service alone maps the additional private snapshot arena.
+CC resolves public guest handles before requesting a capture. The observer
+can capture, read and release immutable copies of selected committed frames;
+it cannot modify surfaces. Snapshot cookies are scoped to the existing
+privileged, serialized CC transport, not a new public authentication boundary.
+The focused target image exported exact 40 by 40 frames from both native
+clients through CC in multiple chunks on Spark. Guest capture remains pending.
+The focused framebuffer image uses two explicit test-only public handles for
+the native pixel producers; those handles are absent from production images.
 
 The retired `services/legacy-pds/framebuffer_pd.c` rejects `HW_DIRECT`
 creation with `FB_ERR_BAD_BACKEND`. Its former MMIO probe and successful

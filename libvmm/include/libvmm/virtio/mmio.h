@@ -39,6 +39,11 @@
 #define REG_VIRTIO_MMIO_QUEUE_AVAIL_HIGH    0x094
 #define REG_VIRTIO_MMIO_QUEUE_USED_LOW      0x0a0
 #define REG_VIRTIO_MMIO_QUEUE_USED_HIGH     0x0a4
+#define REG_VIRTIO_MMIO_SHM_SEL             0x0ac
+#define REG_VIRTIO_MMIO_SHM_LEN_LOW         0x0b0
+#define REG_VIRTIO_MMIO_SHM_LEN_HIGH        0x0b4
+#define REG_VIRTIO_MMIO_SHM_BASE_LOW        0x0b8
+#define REG_VIRTIO_MMIO_SHM_BASE_HIGH       0x0bc
 #define REG_VIRTIO_MMIO_CONFIG_GENERATION   0x0fc
 #define REG_VIRTIO_MMIO_CONFIG              0x100
 
@@ -81,6 +86,11 @@ typedef struct virtio_emul_funs {
     bool (*set_driver_features)(struct virtio_device *dev, uint32_t features);
 
     // REG_VIRTIO_MMIO_CONFIG related operations
+    /* Config offsets are device-relative byte offsets. Values start at the
+     * requested byte, right-aligned; the transport handles MMIO byte lanes.
+     * Device backends validate supported fields and access alignment. */
+    /* MMIO reads supply a word-aligned byte offset. Return the containing
+     * little-endian word; the transport extracts the requested access lane. */
     bool (*get_device_config)(struct virtio_device *dev, uint32_t offset, uint32_t *ret_val);
     bool (*set_device_config)(struct virtio_device *dev, uint32_t offset, uint32_t val);
     bool (*queue_notify)(struct virtio_device *dev);

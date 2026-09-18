@@ -5,6 +5,7 @@
 #include <contracts/blk_virt_contract.h>
 #include <contracts/net_virt_contract.h>
 #include <contracts/serial_virt_contract.h>
+#include <platform/input.h>
 
 bool aos_guest_vmm_loop_is_rpc(seL4_Word label)
 {
@@ -31,7 +32,8 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
     for (;;) {
         seL4_Word label = seL4_MessageInfo_get_label(info);
         if (serial_virt_vmm_notification(badge) ||
-            (badge & (BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE))) {
+            (badge & (BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE |
+                      AOS_INPUT_VMM_WAKE_BADGE))) {
             ops->notified(badge);
 #ifdef CONFIG_KERNEL_MCS
             info = seL4_Recv(endpoint, &badge, reply_cap);

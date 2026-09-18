@@ -19,14 +19,17 @@ bool virtio_mmio_fault_handle(size_t vcpu_id, size_t offset, size_t fsr,
         fault_emulate_write(regs, offset, fsr, value & mask);
         return true;
     }
-    return virtio_mmio_reg_write(dev, offset, fault_get_data(regs, fsr) & mask);
+    return virtio_mmio_reg_write(dev, offset,
+        fault_get_data(regs, fsr) & (mask >> ((offset & 3u) * 8u)));
 }
 
 static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie)
 {
-    (void)vcpu_id;
-    (void)irq;
-    (void)cookie;
+    virtio_device_t *dev = cookie;
+    /* Preserve the level when a new completion arrives between ACK and EOI. */
+    if (dev->regs.InterruptStatus && !virq_inject_vcpu(vcpu_id, irq)) {
+        LOG_VMM_ERR("could not reassert virtio MMIO IRQ %d\n", irq);
+    }
 }
 
 bool virtio_mmio_register_device(virtio_device_t *dev, uintptr_t region_base,

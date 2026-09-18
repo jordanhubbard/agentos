@@ -175,6 +175,13 @@ make run GUEST_SCENARIO=both
 make run-fast GUEST_SCENARIO=both
 ```
 
+Launch and qualification builds derive `GUEST_GRAPHICS` and `GUEST_INPUT`
+from the selected profiles' device lists, including every guest in a scenario.
+For example, `make run GUEST_PROFILE=debian-input.toml` builds the input
+virtualizer and guest backends automatically. Absent capabilities are passed
+as empty values so inherited environment settings cannot add an unrequested backend.
+Direct `make build` still requires the corresponding optional build flags.
+
 The canonical Make selector is `GUEST_PROFILE` for one profile,
 `GUEST_SCENARIO` for a data-defined composition, or
 `GUEST_PRIMARY_PROFILE` plus `GUEST_SECONDARY_PROFILE` for explicit slot

@@ -1,4 +1,5 @@
 #include <platform/guest_vmm_loop.h>
+#include <platform/input.h>
 #include <contracts/serial_virt_contract.h>
 #include <contracts/blk_virt_contract.h>
 #include <contracts/net_virt_contract.h>
@@ -42,6 +43,12 @@ static void dispatch(seL4_Word badge, seL4_Word label)
 }
 int main(void)
 {
+    const uint64_t wake_bits[] = { AOS_INPUT_VMM_WAKE_BADGE, NET_VIRT_VMM_WAKE_BADGE,
+        BLK_VIRT_VMM_WAKE_BADGE, SERIAL_VIRT_VMM_WAKE_BADGE };
+    for (unsigned i = 0; i < 4; i++)
+        for (unsigned j = i + 1; j < 4; j++)
+            check((wake_bits[i] & wake_bits[j]) == 0,
+                  "independent device notifications have disjoint badge bits");
     dispatch(SERIAL_VIRT_VMM_WAKE_BADGE, 0x3ffffdf);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == SERIAL_VIRT_VMM_WAKE_BADGE,
@@ -52,6 +59,14 @@ int main(void)
     dispatch(0, MSG_GUEST_CREATE);
     check(rpcs == 1 && sends == 1 && !notifications && !faults,
           "real lifecycle IPC retains its normal reply path");
+    dispatch(AOS_INPUT_VMM_WAKE_BADGE, MSG_GUEST_DESTROY);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == AOS_INPUT_VMM_WAKE_BADGE,
+          "input wake cannot execute a stale lifecycle RPC");
+    dispatch(AOS_INPUT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE, 7);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == (AOS_INPUT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE),
+          "coalesced input and serial notifications retain both bits");
     dispatch(BLK_VIRT_VMM_WAKE_BADGE, MSG_GUEST_DESTROY);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == BLK_VIRT_VMM_WAKE_BADGE,
@@ -60,11 +75,11 @@ int main(void)
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == NET_VIRT_VMM_WAKE_BADGE,
           "network wake reaches notification handler despite a stale IPC tag");
-    const uint64_t combined = NET_VIRT_VMM_WAKE_BADGE |
+    const uint64_t combined = AOS_INPUT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE |
         BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE;
     dispatch(combined, 7);
     check(notifications == 1 && !rpcs && !faults && !sends && observed_badge == combined,
-          "coalesced network, block and serial wake bits are retained");
+          "coalesced input, network, block and serial wake bits are retained");
     dispatch(BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE, 7);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == (BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE),

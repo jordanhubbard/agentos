@@ -28,7 +28,7 @@ _Static_assert(AOS_FB_ARENA_BYTES % AOS_FB_CLIENT_STRIDE == 0, "private arena al
 
 enum aos_fb_operation {
     AOS_FB_CREATE = 1, AOS_FB_WRITE, AOS_FB_FLIP,
-    AOS_FB_STATUS, AOS_FB_READ, AOS_FB_DESTROY
+    AOS_FB_STATUS, AOS_FB_READ, AOS_FB_DESTROY, AOS_FB_SELECT
 };
 enum aos_fb_status {
     AOS_FB_OK = 0, AOS_FB_BAD_VERSION, AOS_FB_BAD_OPERATION,
@@ -73,6 +73,8 @@ typedef struct aos_fb_surface {
 typedef struct aos_fb_client {
     aos_fb_region_t *region;
     uint64_t next_handle;
+    uint64_t selected_handle;
+    uint32_t selected_x, selected_y, selected_width, selected_height;
     aos_fb_surface_t surfaces[AOS_FB_MAX_SURFACES];
 } aos_fb_client_t;
 

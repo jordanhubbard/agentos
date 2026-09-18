@@ -54,13 +54,38 @@
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
 #include <platform/serial_uart.h>
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_GUEST_INPUT
+#include <platform/input.h>
+#define INPUT_PEERS (AOS_INPUT_CLIENTS + 1u)
+static seL4_CPtr g_input_frames[INPUT_PEERS];
+/* CC and service wait independently; VMM input wakes use their bound objects. */
+static seL4_CPtr g_input_notify[2];
+_Static_assert(PD_CNODE_SLOT_INPUT_WAIT > PD_CNODE_SLOT_FB_PEER_NOTIFY + 2u &&
+               PD_CNODE_SLOT_INPUT_PEER_NOTIFY + INPUT_PEERS <= PD_IRQHANDLER_SLOT_BASE,
+               "input caps must not overlap framebuffer or IRQ slots");
+#endif
+#if defined(AGENTOS_FRAMEBUFFER_TEST) || defined(AGENTOS_GUEST_GRAPHICS)
+#define AGENTOS_FRAMEBUFFER_ENABLED 1
 #include <platform/framebuffer.h>
+#include <platform/framebuffer_observer.h>
 #include <platform/framebuffer_isolation_probe.h>
-static seL4_CPtr g_framebuffer_frames[AOS_FB_CLIENTS];
-static seL4_CPtr g_framebuffer_arena[AOS_FB_ARENA_FRAMES];
+#define FB_PEERS (AOS_FB_CLIENTS + 1u)
+#define FB_ARENA_FRAMES (AOS_FB_ARENA_FRAMES + AOS_FB_SNAPSHOT_FRAMES)
+static seL4_CPtr g_framebuffer_frames[FB_PEERS];
+static seL4_CPtr g_framebuffer_arena[FB_ARENA_FRAMES];
+/* Dedicated objects: a framebuffer wait must not consume a VMM's bound
+ * network/block/console wakeups while servicing a synchronous GPU command. */
+static seL4_CPtr g_framebuffer_notify[FB_PEERS + 1u];
 #endif
 #include <contracts/serial_virt_contract.h>
+#ifdef AGENTOS_DISPLAY_RAMFB
+#include <platform/display_layout.h>
+static seL4_CPtr g_display_banks[4],g_display_dma,g_display_queue,g_display_mmio;
+static seL4_CPtr g_display_notify[2];
+_Static_assert(PD_CNODE_SLOT_DISPLAY_WAIT>PD_CNODE_SLOT_INPUT_PEER_NOTIFY+2u &&
+               PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY<PD_IRQHANDLER_SLOT_BASE,
+               "display notification slots overlap existing capabilities");
+#endif
 #include <contracts/blk_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
 #include <platform/native_net_isolation_probe.h>
@@ -68,10 +93,10 @@ static seL4_CPtr g_framebuffer_arena[AOS_FB_ARENA_FRAMES];
 #include <platform/log_isolation_probe.h>
 #ifdef AGENTOS_LOG_RINGS
 #include <platform/log_ring.h>
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
 _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
                PD_CNODE_SLOT_FB_PEER_NOTIFY > AOS_LOG_NOTIFY_CAP &&
-               PD_CNODE_SLOT_FB_PEER_NOTIFY + AOS_FB_CLIENTS <= PD_IRQHANDLER_SLOT_BASE,
+               PD_CNODE_SLOT_FB_PEER_NOTIFY + FB_PEERS <= PD_IRQHANDLER_SLOT_BASE,
                "framebuffer caps must not overlap logs or IRQ handlers");
 #endif
 #endif
@@ -214,6 +239,19 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  */
 #define PD_DEFAULT_SC_BUDGET_US   10000u
 #define PD_DEFAULT_SC_PERIOD_US   1000000u
+/* Frame transfers repeatedly wake/preempt a service. A one-second period
+ * and minimum refill storage turn those short exchanges into long sleeps.
+ * Keep a finite 10% CPU ceiling with a short replenishment period. */
+#define FRAMEBUFFER_SC_BUDGET_US  1000u
+#define FRAMEBUFFER_SC_PERIOD_US  10000u
+/* CC relays bulk framebuffer data as well as control traffic. At 100 us per
+ * 10 ms, repeated 4 KiB request/reply copies exhaust its budget and stall
+ * transfers across replenishments. Give it the same finite 10% ceiling as
+ * framebuffer services; it remains the lowest-priority active PD. */
+#define CC_SC_BUDGET_US           1000u
+#define CC_SC_PERIOD_US           10000u
+_Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
+               "CC scheduling must retain a finite 10 percent CPU ceiling");
 /*
  * Each VMM gets one sched context for the VMM PD and one for the guest vCPU.
  * A 90% budget works for a single guest but overcommits the single-core QEMU
@@ -1046,6 +1084,73 @@ static seL4_Error map_guest_ram_reservation(
         vmm_vspace, hva_base,
         &g_guest_large_frame_aliases[reservation->first_frame],
         reservation->frame_count, writable);
+}
+#endif
+
+#ifdef AGENTOS_DISPLAY_RAMFB
+static seL4_Error display_allocate(void)
+{
+    seL4_CPtr pool;
+    seL4_Error err=ut_alloc_cap(seL4_UntypedObject,23u,&pool);
+    if (err!=seL4_NoError) return err;
+    for (unsigned i=0;i<4;++i) {
+        g_display_banks[i]=ut_alloc_slot();
+        if (!g_display_banks[i] || (i && g_display_banks[i]!=g_display_banks[0]+i))
+            return seL4_NotEnoughMemory;
+    }
+    err=seL4_Untyped_Retype(pool,seL4_ARM_LargePageObject,0,
+        seL4_CapInitThreadCNode,0,0,g_display_banks[0],4);
+    if (err!=seL4_NoError) return err;
+    uint64_t bank_pa=0;
+    for (unsigned i=0;i<4;++i) {
+        seL4_ARCH_Page_GetAddress_t address=seL4_ARCH_Page_GetAddress(g_display_banks[i]);
+        if (address.error) return address.error;
+        if (!i) bank_pa=address.paddr;
+        if (address.paddr!=bank_pa+(uint64_t)i*0x200000u) return seL4_InvalidArgument;
+    }
+    err=ut_alloc_cap(seL4_ARM_LargePageObject,0,&g_display_dma);
+    if (err==seL4_NoError) err=ut_alloc_cap(seL4_ARM_LargePageObject,0,&g_display_queue);
+    if (err==seL4_NoError) err=ut_alloc_device_cap(AOS_DISPLAY_FWCFG_PA,&g_display_mmio);
+    for (unsigned i=0;i<2 && err==seL4_NoError;++i)
+        err=ut_alloc_cap(seL4_NotificationObject,seL4_NotificationBits,&g_display_notify[i]);
+    if (err!=seL4_NoError) return err;
+    seL4_ARCH_Page_GetAddress_t address=seL4_ARCH_Page_GetAddress(g_display_dma);
+    if (address.error) return address.error;
+    err=pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,g_display_dma,RT_BLK_SCRATCH_VA);
+    if (err!=seL4_NoError) return err;
+    *(aos_display_meta_t *)RT_BLK_SCRATCH_VA=(aos_display_meta_t){
+        .magic=AOS_DISPLAY_META_MAGIC,.version=1,.dma_physical=address.paddr,
+        .bank_physical={bank_pa,bank_pa+AOS_DISPLAY_BANK_STRIDE},
+        .bank_bytes=AOS_DISPLAY_BANK_STRIDE};
+    __asm__ volatile("dsb sy" ::: "memory");
+    return seL4_ARCH_Page_Unmap(g_display_dma);
+}
+static seL4_Error display_map(seL4_CPtr vspace,seL4_CPtr frame,seL4_Word va)
+{
+    seL4_Word copy=ut_alloc_slot();
+    if (!copy) return seL4_NotEnoughMemory;
+    seL4_Error err=seL4_CNode_Copy(seL4_CapInitThreadCNode,copy,64,
+        seL4_CapInitThreadCNode,frame,64,seL4_AllRights);
+    return err==seL4_NoError ? pd_vspace_map_device_frame(vspace,copy,va) : err;
+}
+static seL4_Error display_grant(const pd_desc_t *pd,seL4_CPtr cnode,seL4_CPtr vspace)
+{
+    const unsigned driver=pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
+    const unsigned own=driver ? 0 : 1;
+    seL4_Error err=display_map(vspace,g_display_queue,AOS_DISPLAY_QUEUE_VA);
+    if (err==seL4_NoError) err=seL4_CNode_Copy(cnode,PD_CNODE_SLOT_DISPLAY_WAIT,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,g_display_notify[own],64,
+        seL4_CapRights_new(0,0,1,0));
+    if (err==seL4_NoError) err=seL4_CNode_Copy(cnode,PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,g_display_notify[1-own],64,
+        seL4_CapRights_new(0,0,0,1));
+    if (driver) {
+        if (err==seL4_NoError) err=display_map(vspace,g_display_dma,AOS_DISPLAY_DMA_VA);
+        if (err==seL4_NoError) err=display_map(vspace,g_display_mmio,AOS_DISPLAY_MMIO_VA);
+        for (unsigned i=0;i<4 && err==seL4_NoError;++i)
+            err=display_map(vspace,g_display_banks[i],AOS_DISPLAY_BANK_VA+i*0x200000u);
+    }
+    return err;
 }
 #endif
 
@@ -1999,9 +2104,15 @@ void root_task_main(const seL4_BootInfo *bi)
     uint32_t net_virt_index = SYSTEM_MAX_PDS;
     uint32_t native_net_index = SYSTEM_MAX_PDS;
     uint32_t log_drain_index = SYSTEM_MAX_PDS;
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_GUEST_INPUT
+    uint32_t input_service=SYSTEM_MAX_PDS;
+    uint32_t input_clients[INPUT_PEERS];
+    for (uint32_t f=0;f<INPUT_PEERS;++f) input_clients[f]=SYSTEM_MAX_PDS;
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
     uint32_t fb_service = SYSTEM_MAX_PDS;
-    uint32_t fb_clients[AOS_FB_CLIENTS] = { SYSTEM_MAX_PDS, SYSTEM_MAX_PDS };
+    uint32_t fb_clients[FB_PEERS];
+    for (uint32_t f = 0; f < FB_PEERS; ++f) fb_clients[f] = SYSTEM_MAX_PDS;
 #endif
     for (uint32_t i = 0; i < sys->pd_count; i++) {
         const pd_desc_t *pd = &sys->pds[i];
@@ -2010,17 +2121,22 @@ void root_task_main(const seL4_BootInfo *bi)
         if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
         if (pd->self_svc_id == SVC_ID_LOG_DRAIN) log_drain_index = i;
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_GUEST_INPUT
+        if (pd->self_svc_id == SVC_ID_INPUT_VIRT) input_service=i;
+        if (pd_is_guest_vmm(pd)) input_clients[pd_is_secondary_guest_vmm(pd) ? 1u : 0u]=i;
+        if (pd->self_svc_id == SVC_ID_CC_PD) input_clients[AOS_INPUT_CLIENTS]=i;
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE) fb_service = i;
+#ifdef AGENTOS_FRAMEBUFFER_TEST
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST0) fb_clients[0] = i;
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST1) fb_clients[1] = i;
+#else
+        if (pd_is_guest_vmm(pd)) fb_clients[pd_is_secondary_guest_vmm(pd) ? 1u : 0u] = i;
+#endif
+        if (pd->self_svc_id == SVC_ID_CC_PD) fb_clients[AOS_FB_OBSERVER_CLIENT] = i;
 #endif
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
-#ifdef AGENTOS_FRAMEBUFFER_TEST
-            pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE ||
-            pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST0 ||
-            pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST1 ||
-#endif
             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
             pd->self_svc_id == SVC_ID_LOG_DRAIN ||
             pd->self_svc_id == SVC_ID_NET_VIRT ||
@@ -2037,17 +2153,45 @@ void root_task_main(const seL4_BootInfo *bi)
             g_pd_notifications[i] = (seL4_CPtr)PD_SLOT_NTFN(i);
         }
     }
-#ifdef AGENTOS_FRAMEBUFFER_TEST
-    if (fb_service == SYSTEM_MAX_PDS || fb_clients[0] == SYSTEM_MAX_PDS ||
-        fb_clients[1] == SYSTEM_MAX_PDS) return;
-    for (uint32_t f = 0; f < AOS_FB_ARENA_FRAMES; ++f) {
+#ifdef AGENTOS_GUEST_INPUT
+    if (input_service==SYSTEM_MAX_PDS || input_clients[AOS_INPUT_CLIENTS]==SYSTEM_MAX_PDS ||
+        (input_clients[0]==SYSTEM_MAX_PDS && input_clients[1]==SYSTEM_MAX_PDS)) return;
+    for (uint32_t f=0;f<2;++f)
+        if (ut_alloc_cap(seL4_NotificationObject,seL4_NotificationBits,
+                         &g_input_notify[f])!=seL4_NoError) {
+            dbg_puts("[rt] input notification allocation failed; refusing boot\n");
+            return;
+        }
+    for (uint32_t f=0;f<INPUT_PEERS;++f)
+        if (ut_alloc_cap(seL4_ARM_LargePageObject,0u,&g_input_frames[f])!=seL4_NoError) {
+            dbg_puts("[rt] input queue allocation failed; refusing boot\n");
+            return;
+        }
+#endif
+#ifdef AGENTOS_DISPLAY_RAMFB
+    if (display_allocate()!=seL4_NoError) {
+        dbg_puts("[rt] display allocation failed; refusing boot\n");
+        return;
+    }
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
+    if (fb_service == SYSTEM_MAX_PDS ||
+        (fb_clients[0] == SYSTEM_MAX_PDS && fb_clients[1] == SYSTEM_MAX_PDS)) return;
+    for (uint32_t f = 0; f <= FB_PEERS; ++f) {
+        if (ut_alloc_cap(seL4_NotificationObject, seL4_NotificationBits,
+                         &g_framebuffer_notify[f]) != seL4_NoError) {
+            dbg_puts("[rt] framebuffer notification allocation failed; refusing boot\n");
+            return;
+        }
+    }
+    for (uint32_t f = 0; f < FB_ARENA_FRAMES; ++f) {
         if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
                          &g_framebuffer_arena[f]) != seL4_NoError) {
             dbg_puts("[rt] framebuffer arena allocation failed; refusing boot\n");
             return;
         }
     }
-    for (uint32_t f = 0; f < AOS_FB_CLIENTS; ++f) {
+    for (uint32_t f = 0; f < FB_PEERS; ++f) {
         if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
                          &g_framebuffer_frames[f]) != seL4_NoError) {
             dbg_puts("[rt] framebuffer queue allocation failed; refusing boot\n");
@@ -2286,8 +2430,13 @@ void root_task_main(const seL4_BootInfo *bi)
          */
 #ifdef CONFIG_KERNEL_MCS
         {
+            const bool frame_service=pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE ||
+                                     pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
+            const bool cc_service=pd->self_svc_id==SVC_ID_CC_PD;
+            const bool frequent_refills=frame_service || cc_service;
+            const seL4_Word sc_bits=seL4_MinSchedContextBits+(frequent_refills ? 3u : 0u);
             seL4_Error sc_err = ut_alloc(seL4_SchedContextObject,
-                                          seL4_MinSchedContextBits,
+                                          sc_bits,
                                           seL4_CapInitThreadCNode,
                                           PD_SLOT_SC(i),
                                           64u);
@@ -2303,6 +2452,12 @@ void root_task_main(const seL4_BootInfo *bi)
             if (pd_is_guest_vmm(pd)) {
                 sc_budget = VMM_SC_BUDGET_US;
                 sc_period = VMM_SC_PERIOD_US;
+            } else if (frame_service) {
+                sc_budget = FRAMEBUFFER_SC_BUDGET_US;
+                sc_period = FRAMEBUFFER_SC_PERIOD_US;
+            } else if (cc_service) {
+                sc_budget = CC_SC_BUDGET_US;
+                sc_period = CC_SC_PERIOD_US;
             }
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
             /* Polling device drivers must not wait the default one-second
@@ -2318,7 +2473,7 @@ void root_task_main(const seL4_BootInfo *bi)
                          (seL4_SchedContext)PD_SLOT_SC(i),
                          sc_budget,
                          sc_period,
-                         0u,           /* extra_refills */
+                         frequent_refills ? seL4_MaxExtraRefills(sc_bits) : 0u,
                          0u,           /* badge */
                          0u);          /* flags */
             if (sc_err != seL4_NoError) {
@@ -2383,6 +2538,15 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 #endif
         seL4_CPtr pd_ntfn_cap = g_pd_notifications[i];
+        if (pd->self_svc_id == SVC_ID_CC_PD && pd->irq_count > 0u) {
+            if (pd_ntfn_cap == seL4_CapNull ||
+                seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_CC_IRQ_WAIT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, pd_ntfn_cap,
+                    64u, seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError) {
+                dbg_puts("[rt] CC IRQ wait grant failed; refusing PD start\n");
+                continue;
+            }
+        }
         if (pd_ntfn_cap != seL4_CapNull) {
             seL4_Error ntfn_err = seL4_TCB_BindNotification(tr.tcb_cap, pd_ntfn_cap);
             if (ntfn_err != seL4_NoError) {
@@ -2391,18 +2555,69 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
-#ifdef AGENTOS_FRAMEBUFFER_TEST
-        if (i == fb_service || i == fb_clients[0] || i == fb_clients[1]) {
+#ifdef AGENTOS_GUEST_INPUT
+        uint32_t input_own=INPUT_PEERS+1u;
+        if (i==input_service) input_own=INPUT_PEERS;
+        for (uint32_t f=0;f<INPUT_PEERS;++f)
+            if (i==input_clients[f]) input_own=f;
+        if (input_own<=INPUT_PEERS) {
+            seL4_Error err=seL4_NoError;
+            if (input_own>=AOS_INPUT_CLIENTS)
+                err=seL4_CNode_Copy(pd_cnode,PD_CNODE_SLOT_INPUT_WAIT,pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode,g_input_notify[input_own==INPUT_PEERS ? 0 : 1],
+                    64u,seL4_CapRights_new(0,0,1,0));
+            for (uint32_t f=0;f<INPUT_PEERS && err==seL4_NoError;++f) {
+                if (i!=input_service && i!=input_clients[f]) continue;
+                seL4_CPtr notify=g_input_notify[0];
+                seL4_Word badge=(seL4_Word)1u<<f;
+                seL4_Word slot=PD_CNODE_SLOT_INPUT_PEER_NOTIFY;
+                if (i==input_service) {
+                    slot+=f;
+                    notify=f==AOS_INPUT_CLIENTS ? g_input_notify[1] :
+                        (input_clients[f]==SYSTEM_MAX_PDS ? seL4_CapNull : g_pd_notifications[input_clients[f]]);
+                    badge=f==AOS_INPUT_CLIENTS ? 1u : AOS_INPUT_VMM_WAKE_BADGE;
+                }
+                if (notify!=seL4_CapNull)
+                    err=seL4_CNode_Mint(pd_cnode,slot,pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode,notify,64u,seL4_CapRights_new(0,0,0,1),badge);
+                if (err!=seL4_NoError) break;
+                seL4_Word copy=ut_alloc_slot();
+                if (copy==seL4_CapNull) { err=seL4_NotEnoughMemory; break; }
+                err=seL4_CNode_Copy(seL4_CapInitThreadCNode,copy,64u,
+                    seL4_CapInitThreadCNode,g_input_frames[f],64u,seL4_AllRights);
+                if (err==seL4_NoError)
+                    err=pd_vspace_map_device_frame(vspace,copy,AOS_INPUT_SHMEM_VA+f*AOS_INPUT_FRAME_SIZE);
+            }
+            if (err!=seL4_NoError) {
+                dbg_puts("[rt] input queue/capability grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+#endif
+#ifdef AGENTOS_DISPLAY_RAMFB
+        if ((pd->self_svc_id==SVC_ID_DISPLAY_RAMFB || pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE) &&
+            display_grant(pd,pd_cnode,vspace)!=seL4_NoError) {
+            dbg_puts("[rt] display mapping failed; refusing boot\n");
+            return;
+        }
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
+        uint32_t fb_own = FB_PEERS + 1u;
+        if (i == fb_service) fb_own = FB_PEERS;
+        for (uint32_t f = 0; f < FB_PEERS; ++f)
+            if (i == fb_clients[f]) fb_own = f;
+        if (fb_own <= FB_PEERS) {
             seL4_Error err = seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_FB_WAIT,
-                pd->cnode_size_bits, seL4_CapInitThreadCNode, g_pd_notifications[i],
+                pd->cnode_size_bits, seL4_CapInitThreadCNode, g_framebuffer_notify[fb_own],
                 64u, seL4_CapRights_new(0, 0, 1, 0));
-            for (uint32_t f = 0; f < AOS_FB_CLIENTS && err == seL4_NoError; ++f) {
+            for (uint32_t f = 0; f < FB_PEERS && err == seL4_NoError; ++f) {
                 if (i != fb_service && i != fb_clients[f]) continue;
-                uint32_t peer = i == fb_service ? fb_clients[f] : fb_service;
+                uint32_t peer = i == fb_service ? f : FB_PEERS;
                 seL4_Word slot = PD_CNODE_SLOT_FB_PEER_NOTIFY + (i == fb_service ? f : 0);
-                err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
-                    seL4_CapInitThreadCNode, g_pd_notifications[peer], 64u,
-                    seL4_CapRights_new(0, 0, 0, 1), (seL4_Word)1u << f);
+                if (i != fb_service || fb_clients[f] != SYSTEM_MAX_PDS)
+                    err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode, g_framebuffer_notify[peer], 64u,
+                        seL4_CapRights_new(0, 0, 0, 1), (seL4_Word)1u << f);
                 if (err != seL4_NoError) break;
                 seL4_Word copy = ut_alloc_slot();
                 if (copy == seL4_CapNull) { err = seL4_NotEnoughMemory; break; }
@@ -2413,7 +2628,7 @@ void root_task_main(const seL4_BootInfo *bi)
                         AOS_FB_SHMEM_VA + f * AOS_FB_CLIENT_STRIDE);
             }
             if (i == fb_service) {
-                for (uint32_t f = 0; f < AOS_FB_ARENA_FRAMES && err == seL4_NoError; ++f)
+                for (uint32_t f = 0; f < FB_ARENA_FRAMES && err == seL4_NoError; ++f)
                     err = pd_vspace_map_device_frame(vspace, g_framebuffer_arena[f],
                         AOS_FB_ARENA_VA + f * AOS_FB_CLIENT_STRIDE);
             }
@@ -2683,6 +2898,8 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "native_rust_client") ||
              name_eq(pd->name, "framebuffer_client0") ||
              name_eq(pd->name, "framebuffer_client1") ||
+             name_eq(pd->name, "display_ramfb") ||
+             name_eq(pd->name, "framebuffer_queue") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
             seL4_Error serial_err = seL4_NotEnoughMemory;

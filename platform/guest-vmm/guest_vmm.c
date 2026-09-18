@@ -422,6 +422,13 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <platform/net_layout.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
+#ifdef AGENTOS_GUEST_GRAPHICS
+#include <platform/vmm_virtio_gpu.h>
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+#include <platform/vmm_virtio_input.h>
+#include <platform/input.h>
+#endif
 
 #ifndef AGENTOS_GUEST_INITRD_TOTAL_BYTES
 #define AGENTOS_GUEST_INITRD_TOTAL_BYTES UINT64_C(0)
@@ -1151,6 +1158,9 @@ static void guest_vmm_wait_blk_event(void)
     /* Bound notifications do not carry a fresh IPC tag. In particular a
      * block completion may arrive before this receive begins. */
     if (badge & (BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE)) return;
+#ifdef AGENTOS_GUEST_INPUT
+    if (badge & AOS_INPUT_VMM_WAKE_BADGE) return;
+#endif
     seL4_Word label = seL4_MessageInfo_get_label(info);
 
     if (aos_guest_vmm_loop_is_rpc(label)) {
@@ -1415,6 +1425,12 @@ void init(void)
         .net_init = aos_vmm_virtio_net_init,
         .block_init = aos_vmm_virtio_blk_init,
         .console_init = aos_vmm_virtio_console_init,
+#ifdef AGENTOS_GUEST_GRAPHICS
+        .gpu_init = aos_vmm_virtio_gpu_init,
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+        .input_init = aos_vmm_virtio_input_init,
+#endif
     };
     if (aos_guest_devices_init(g_guest_profile, &device_ops) !=
             AOS_GUEST_BOOT_OK) {
@@ -1499,6 +1515,13 @@ static void guest_vmm_notified(seL4_Word badge)
         badge &= ~NET_VIRT_VMM_WAKE_BADGE;
         if (!badge) return;
     }
+#ifdef AGENTOS_GUEST_INPUT
+    if (badge & AOS_INPUT_VMM_WAKE_BADGE) {
+        if (g_guest_state == GUEST_STATE_RUNNING) aos_vmm_virtio_input_drain();
+        badge &= ~AOS_INPUT_VMM_WAKE_BADGE;
+        if (!badge) return;
+    }
+#endif
     if (badge & BLK_VIRT_VMM_WAKE_BADGE) {
         if (g_guest_state == GUEST_STATE_RUNNING) aos_vmm_virtio_blk_resp_ready();
         badge &= ~BLK_VIRT_VMM_WAKE_BADGE;
@@ -1656,6 +1679,9 @@ static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
     aos_vmm_virtio_net_after_fault();
     aos_vmm_virtio_blk_after_fault();
     aos_vmm_virtio_console_after_fault();
+#ifdef AGENTOS_GUEST_INPUT
+    aos_vmm_virtio_input_drain();
+#endif
     guest_serial_service();
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);

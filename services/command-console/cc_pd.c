@@ -18,8 +18,8 @@
  * guest handles to vm_manager slots, validates wire requests and replies, and
  * propagates lifecycle failures. It owns no guest device allocation policy.
  *
- * Priority: 160
- * Mode: VirtIO polled loop; seL4_Yield while used ring empty to avoid starving PDs
+ * Priority: 164
+ * Mode: IRQ wait for idle AArch64 RX; bounded polling for TX/partial RX.
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -38,12 +38,15 @@
 #include "cc_vm_client.h"
 #include "contracts/vm_manager_contract.h"
 #include "sel4_ipc.h"
+#include "sel4_boot.h"
 #include "serial_log.h"
 #include "serial_virt_client.h"
 #include <platform/serial_virt_layout.h>
 #include <platform/console_input.h>
+#include <platform/input.h>
 #include <platform/inspect.h>
 #include <platform/operator_session.h>
+#include <platform/framebuffer_observer.h>
 #include "system_desc.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -61,12 +64,12 @@
  *   [1] TX data buffer
  *   [2] RX data buffer
  *
- * We use a single descriptor per queue (VQ_DEPTH=4 slots, one in flight at a
- * time) and poll the used ring with seL4_Yield so other PDs can run.
+ * We use one descriptor chain per queue (VQ_DEPTH=4 slots, one in flight at a
+ * time). Idle AArch64 RX waits for the owned device IRQ; TX and partial RX
+ * poll with bounded seL4_Yield retries.
  *
- * Wire frame sizes (4112 bytes) exceed the 4096-byte buffer page, so TX and RX
- * loop in ≤4096-byte chunks.  The protocol is strictly sequential (one reply
- * per request), so no RX overflow can occur across frame boundaries.
+ * Each 4112-byte wire frame uses a 4096-byte descriptor plus a 16-byte tail.
+ * The protocol is strictly sequential (one reply per request).
  */
 
 #define VMMIO_SLOT_OFF    (2u * 0x200u)  /* bus.2 → offset +0x400 within the page */
@@ -106,6 +109,8 @@ static void cc_dbg_hex(uint64_t v)
 #define VMMIO_QUEUE_NUM       0x038u
 #define VMMIO_QUEUE_READY     0x044u
 #define VMMIO_QUEUE_NOTIFY    0x050u
+#define VMMIO_INTERRUPT_STATUS 0x060u
+#define VMMIO_INTERRUPT_ACK    0x064u
 #define VMMIO_STATUS          0x070u
 #define VMMIO_Q_DESC_LO       0x080u
 #define VMMIO_Q_DESC_HI       0x084u
@@ -233,18 +238,19 @@ static bool virtio_serial_init(void)
     vio_wr(VMMIO_STATUS, 0u);
     vio_wr(VMMIO_STATUS, VSTATUS_ACK);
     vio_wr(VMMIO_STATUS, VSTATUS_ACK | VSTATUS_DRIVER);
-    /* Negotiate features: read both 32-bit words, accept them with MULTIPORT
-     * cleared (bit 1 of word 0) and VIRTIO_F_VERSION_1 set (bit 0 of word 1).
-     * Without VIRTIO_F_VERSION_1 the device falls back to legacy mode where
-     * QueueDescLow/High and QueueReady do not exist. */
-    vio_wr(VMMIO_DEV_FEAT_SEL, 0u);
-    uint32_t feat0 = vio_rd(VMMIO_DEV_FEAT);
+    /* Only VERSION_1 is implemented. In particular, EVENT_IDX requires
+     * publishing used_event thresholds; accepting it with a fixed zero
+     * threshold suppresses completion interrupts after the first event. */
     vio_wr(VMMIO_DEV_FEAT_SEL, 1u);
     uint32_t feat1 = vio_rd(VMMIO_DEV_FEAT);
+    if (!(feat1 & 1u)) {
+        vio_wr(VMMIO_STATUS, VSTATUS_FAILED);
+        return false;
+    }
     vio_wr(VMMIO_DRV_FEAT_SEL, 0u);
-    vio_wr(VMMIO_DRV_FEAT, feat0 & ~(1u << 1u));  /* clear MULTIPORT */
+    vio_wr(VMMIO_DRV_FEAT, 0u);
     vio_wr(VMMIO_DRV_FEAT_SEL, 1u);
-    vio_wr(VMMIO_DRV_FEAT, feat1);                /* accepts VIRTIO_F_VERSION_1 */
+    vio_wr(VMMIO_DRV_FEAT, 1u); /* VIRTIO_F_VERSION_1 */
     vio_wr(VMMIO_STATUS, VSTATUS_ACK | VSTATUS_DRIVER | VSTATUS_FEAT_OK);
     uint32_t s_after = vio_rd(VMMIO_STATUS);
     cc_dbg_puts("[cc_pd] STATUS after FEAT_OK write="); cc_dbg_hex(s_after); cc_dbg_puts("\n");
@@ -388,6 +394,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
 static bool vio_serial_read(void *buf, uint32_t n)
 {
     uint8_t *p = (uint8_t *)buf;
+    const uint32_t total = n;
     while (n > 0u) {
         uint16_t cur;
         uint32_t wait = 0u;
@@ -395,6 +402,28 @@ static bool vio_serial_read(void *buf, uint32_t n)
             VQ_MB();
             cur = RX_USED->idx;
             if (cur != g_rx_used_last) { break; }
+#if defined(__aarch64__)
+            if (n == total) {
+                /* No request has begun: sleep on the driver's persistent IRQ
+                 * notification instead of forfeiting the MCS budget. Clear
+                 * the device cause, unmask the IRQ, then recheck the ring;
+                 * an arrival after that check leaves a pending notification.
+                 * Partial frames retain the bounded polling recovery below. */
+                uint32_t irq = vio_rd(VMMIO_INTERRUPT_STATUS);
+                if (irq) vio_wr(VMMIO_INTERRUPT_ACK, irq);
+                VQ_MB();
+                if (seL4_IRQHandler_Ack(PD_IRQHANDLER_SLOT_BASE) == seL4_NoError) {
+                    VQ_MB();
+                    if (RX_USED->idx == g_rx_used_last) {
+                        seL4_Word badge;
+                        seL4_Wait(PD_CNODE_SLOT_CC_IRQ_WAIT, &badge);
+                    }
+                    continue;
+                }
+            }
+#else
+            (void)total;
+#endif
             seL4_Yield();
             wait++;
             if (wait >= CC_VIRTIO_RX_WAIT_LIMIT) {
@@ -1629,6 +1658,145 @@ static void handle_operator(const cc_req_wire_t *req, cc_reply_wire_t *rep, bool
     if (count) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
 }
 
+static void handle_input_submit(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    aos_input_request_t query;
+    __builtin_memcpy(&query,req->shmem,sizeof(query));
+    bool release=query.version==AOS_INPUT_RELEASE_VERSION && query.count==0;
+    if (req->mr[1] || req->mr[2] || (!release && query.version!=AOS_INPUT_VERSION) ||
+        query.id || query.client || query.reserved[0] || query.reserved[1] || query.reserved[2] ||
+        query.device>=AOS_INPUT_DEVICES || (!release && !query.count) || query.count>AOS_INPUT_BATCH_EVENTS) {
+        rep->mr[0]=CC_ERR_INVALID_ARG;
+        return;
+    }
+#ifdef AGENTOS_GUEST_INPUT
+    uint32_t handle=req->mr[0];
+    if (handle==CC_BOOT_GUEST_HANDLE) {
+        if (!g_boot_guest_present || g_boot_guest_state==GUEST_STATE_DEAD) {
+            rep->mr[0]=CC_ERR_BAD_HANDLE;
+            return;
+        }
+        query.client=cc_boot_guest_os_type()==VIBEOS_PROFILE_SECONDARY ? 1u : 0u;
+    } else {
+        const cc_vm_entry_t *entry=NULL;
+        for (uint32_t i=0;i<CC_VM_CLIENT_SLOTS;++i)
+            if (g_vm_client.entries[i].active && g_vm_client.entries[i].handle==handle)
+                entry=&g_vm_client.entries[i];
+        cc_guest_status_t status;
+        if (!entry || entry->slot>=AOS_INPUT_CLIENTS ||
+            cc_vm_status(&g_vm_client,handle,&status)!=CC_OK || status.state==GUEST_STATE_DEAD) {
+            rep->mr[0]=CC_ERR_BAD_HANDLE;
+            return;
+        }
+        query.client=entry->slot;
+    }
+    static uint32_t next_id;
+    query.id=++next_id;
+    aos_input_frontend_t *frontend=(void *)AOS_INPUT_FRONTEND_VA;
+    if (aos_input_submit(frontend,&query)!=0) { rep->mr[0]=CC_ERR_RELAY_FAULT; return; }
+    seL4_Signal(PD_CNODE_SLOT_INPUT_PEER_NOTIFY);
+    aos_input_response_t response;
+    while (aos_input_receive(frontend,&response)!=0) {
+        seL4_Word badge; seL4_Wait(PD_CNODE_SLOT_INPUT_WAIT,&badge);
+    }
+    if (response.version!=query.version || response.id!=query.id ||
+        response.status>AOS_INPUT_WOULD_BLOCK ||
+        response.accepted!=(response.status==AOS_INPUT_OK ? query.count : 0u)) {
+        rep->mr[0]=CC_ERR_RELAY_FAULT;
+    } else {
+        response.id=0;
+        __builtin_memcpy(rep->shmem,&response,sizeof(response));
+        rep->mr[0]=CC_OK; rep->mr[1]=sizeof(response);
+        rep->mr[2]=response.status; rep->mr[3]=response.version;
+    }
+    seL4_Signal(PD_CNODE_SLOT_INPUT_PEER_NOTIFY);
+#else
+    rep->mr[0]=CC_ERR_RELAY_FAULT;
+#endif
+}
+
+static void handle_frame_capture(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    aos_fb_observer_request_t query;
+    __builtin_memcpy(&query, req->shmem, sizeof(query));
+    if (req->mr[1] || req->mr[2] || query.version != AOS_FB_OBSERVER_VERSION ||
+        query.id || query.client || query.operation < AOS_FB_CAPTURE ||
+        query.operation > AOS_FB_CAPTURE_RELEASE ||
+        (query.operation == AOS_FB_CAPTURE && (query.cookie || query.offset || query.length)) ||
+        (query.operation != AOS_FB_CAPTURE && (req->mr[0] || !query.cookie)) ||
+        (query.operation == AOS_FB_CAPTURE_READ && (!query.length ||
+            query.length > CC_WIRE_SHMEM_SIZE - sizeof(aos_fb_observer_response_t))) ||
+        (query.operation == AOS_FB_CAPTURE_RELEASE && (query.offset || query.length))) {
+        rep->mr[0] = CC_ERR_INVALID_ARG;
+        return;
+    }
+#if defined(AGENTOS_GUEST_GRAPHICS) || defined(AGENTOS_FRAMEBUFFER_TEST)
+    if (query.operation == AOS_FB_CAPTURE) {
+        uint32_t handle = req->mr[0];
+#ifdef AGENTOS_FRAMEBUFFER_TEST
+        /* Native producers in the focused test image only. Never interpreted
+         * as guest handles, and compiled out of every production variant. */
+        if (handle < 0xfb000000u || handle >= 0xfb000000u + AOS_FB_CLIENTS) {
+            rep->mr[0] = CC_ERR_BAD_HANDLE;
+            return;
+        }
+        query.client = handle - 0xfb000000u;
+#else
+        if (handle == CC_BOOT_GUEST_HANDLE) {
+            if (!g_boot_guest_present || g_boot_guest_state == GUEST_STATE_DEAD) {
+                rep->mr[0] = CC_ERR_BAD_HANDLE;
+                return;
+            }
+            query.client = cc_boot_guest_os_type() == VIBEOS_PROFILE_SECONDARY ? 1u : 0u;
+        } else {
+            const cc_vm_entry_t *entry = NULL;
+            for (uint32_t i = 0; i < CC_VM_CLIENT_SLOTS; ++i)
+                if (g_vm_client.entries[i].active && g_vm_client.entries[i].handle == handle)
+                    entry = &g_vm_client.entries[i];
+            cc_guest_status_t status;
+            if (!entry || entry->slot >= AOS_FB_CLIENTS ||
+                cc_vm_status(&g_vm_client, handle, &status) != CC_OK ||
+                status.state == GUEST_STATE_DEAD) {
+                rep->mr[0] = CC_ERR_BAD_HANDLE;
+                return;
+            }
+            query.client = entry->slot;
+        }
+#endif
+    }
+    static uint32_t next_id;
+    query.id = ++next_id;
+    aos_fb_observer_region_t *region = (void *)AOS_FB_OBSERVER_VA;
+    if (aos_fb_observer_submit(region, &query) != 0) {
+        rep->mr[0] = CC_ERR_RELAY_FAULT;
+        return;
+    }
+    seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY);
+    aos_fb_observer_response_t response;
+    while (aos_fb_observer_receive(region, &response) != 0) {
+        seL4_Word badge;
+        seL4_Wait(PD_CNODE_SLOT_FB_WAIT, &badge);
+    }
+    bool valid = response.version == AOS_FB_OBSERVER_VERSION && response.id == query.id &&
+        response.status <= AOS_FB_OBSERVER_EXHAUSTED &&
+        response.length <= CC_WIRE_SHMEM_SIZE - sizeof(response) &&
+        (response.length == 0 || (response.status == AOS_FB_OBSERVER_OK &&
+            query.operation == AOS_FB_CAPTURE_READ && response.length == query.length));
+    if (valid) {
+        response.id = 0;
+        __builtin_memcpy(rep->shmem, &response, sizeof(response));
+        __builtin_memcpy(rep->shmem + sizeof(response), region->data, response.length);
+        rep->mr[0] = CC_OK;
+        rep->mr[1] = sizeof(response) + response.length;
+        rep->mr[2] = response.status;
+        rep->mr[3] = response.version;
+    } else rep->mr[0] = CC_ERR_RELAY_FAULT;
+    seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY);
+#else
+    rep->mr[0] = CC_ERR_RELAY_FAULT;
+#endif
+}
+
 static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     /* Age active sessions before dispatch.  Handlers that touch a specific
@@ -1639,6 +1807,8 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     cc_age_sessions();
 
     switch (req->opcode) {
+    case MSG_CC_FRAME_CAPTURE: handle_frame_capture(req, rep); break;
+    case MSG_CC_INPUT_SUBMIT: handle_input_submit(req, rep); break;
 #ifdef AGENTOS_NATIVE_RUST_TEST
     case NATIVE_RUST_CC_NETWORK: handle_native_network(req, rep); break;
 #endif

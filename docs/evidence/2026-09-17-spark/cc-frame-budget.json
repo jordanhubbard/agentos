@@ -1,0 +1,207 @@
+{
+  "schema": "agentos.cc_frame_budget.v1",
+  "host": "sparky Linux aarch64",
+  "baseline_os_commit": "ee31681423e018d1fd8467c4aa3c467f2526dc0c",
+  "qualified_runtime_commit": "f8490c6bd3568027e9406242be8ec9c6661882e7",
+  "gui_commit": "47bb1624f723befee1107a35e73540e4348ad72b",
+  "image_sha256": "9858dea9ef474ce35eedd5fbeab94b449a39d39968ebf08ef2fa5e99c5b22915",
+  "producer_command": "make run GUEST_OS=none FRAMEBUFFER_TEST=1",
+  "benchmark_command": "make benchmark-frame CC_PD_SOCK=/tmp/agentos-v04-cc-latency/build/cc_pd.sock BENCH_GUEST_HANDLE=0xfb000000 BENCH_READS=128",
+  "scope": "128 repeated 4056-byte reads of one immutable native 40x40 surface; no guest or GUI polling",
+  "baseline": [
+    {
+      "capture_ms": 231.536732,
+      "frame": {
+        "bytes": 6400,
+        "height": 40,
+        "sequence": "1",
+        "token": "1",
+        "width": 40
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 8693.974694,
+      "reads": {
+        "count": 128,
+        "max_ms": 332.52918,
+        "mean_ms": 67.91399849218749,
+        "median_ms": 51.062743,
+        "min_ms": 19.745992,
+        "p95_ms": 140.98106099999998
+      },
+      "recorded_wire_ms": 8633,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 219.95037200000002,
+        "mean_ms": 52.849671937500005,
+        "median_ms": 30.644231,
+        "min_ms": 20.020619,
+        "p95_ms": 219.95037200000002
+      }
+    },
+    {
+      "capture_ms": 30.474309,
+      "frame": {
+        "bytes": 6400,
+        "height": 40,
+        "sequence": "1",
+        "token": "1",
+        "width": 40
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 9282.691439,
+      "reads": {
+        "count": 128,
+        "max_ms": 450.833142,
+        "mean_ms": 72.51416764843754,
+        "median_ms": 60.987723,
+        "min_ms": 20.06942,
+        "p95_ms": 160.622619
+      },
+      "recorded_wire_ms": 9212,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 91.11454099999999,
+        "mean_ms": 36.768952125,
+        "median_ms": 31.096444,
+        "min_ms": 20.102124,
+        "p95_ms": 91.11454099999999
+      }
+    }
+  ],
+  "tuned": [
+    {
+      "capture_ms": 20.594093,
+      "frame": {
+        "bytes": 6400,
+        "height": 40,
+        "sequence": "1",
+        "token": "1",
+        "width": 40
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 2197.1151940000004,
+      "reads": {
+        "count": 128,
+        "max_ms": 20.857457,
+        "mean_ms": 17.157239664062505,
+        "median_ms": 20.225781,
+        "min_ms": 9.804685000000001,
+        "p95_ms": 20.679102
+      },
+      "recorded_wire_ms": 2150,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 20.864898,
+        "mean_ms": 20.38121,
+        "median_ms": 20.353913000000002,
+        "min_ms": 20.191829000000002,
+        "p95_ms": 20.864898
+      }
+    },
+    {
+      "capture_ms": 21.162185,
+      "frame": {
+        "bytes": 6400,
+        "height": 40,
+        "sequence": "1",
+        "token": "1",
+        "width": 40
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 2401.249232,
+      "reads": {
+        "count": 128,
+        "max_ms": 21.895382,
+        "mean_ms": 18.7523410625,
+        "median_ms": 20.302234,
+        "min_ms": 9.708957,
+        "p95_ms": 20.679216
+      },
+      "recorded_wire_ms": 2350,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 20.821219,
+        "mean_ms": 19.626187625,
+        "median_ms": 20.243192,
+        "min_ms": 9.890928,
+        "p95_ms": 20.821219
+      }
+    }
+  ],
+  "limitations": [
+    "Microbenchmark reads one region only; separate GUI capture result below transfers a full guest frame",
+    "Not interactive desktop qualification",
+    "CPU allocation increases from 1 to 10 percent at unchanged lowest active-PD priority"
+  ],
+  "discarded_experiments": [
+    "64 polls before Yield: 9.07 seconds, no material gain",
+    "IRQ idle receive at 1 percent: 8.08 seconds",
+    "IRQ idle receive at 10 percent: connect timeout; prototype removed"
+  ],
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12249",
+    "result": "pass",
+    "log_sha256": "5ca3d3bffa952c0bf55b35befe471a97acbc08641fde1892758dc3bd0b359c4d",
+    "scope": [
+      "host suite",
+      "AArch64 boot",
+      "x86_64 reduced boot",
+      "guest virtio-net",
+      "guest virtio-blk",
+      "guest virtio-console"
+    ]
+  },
+  "gui_capture": {
+    "result": "pass",
+    "os_profile": "debian-graphics-input",
+    "os_image_sha256": "3282c789236e2af7ff2822e4fba747424d0af01e288d90a05977dc3eed2fdb3f",
+    "gui_runtime_commit": "fc7a4f38d37aefa3ea15ef721fd781dd8c0dcddd",
+    "gui_binary_sha256": "d4aacbfc7d685896d6efbead3a4e82c44af0217bb519eb94c31858c40cf3190b",
+    "width": 1024,
+    "height": 768,
+    "bytes": 3145728,
+    "sequence": 51,
+    "elapsed_seconds": 18.9,
+    "pattern": "blue tty1 background with agentOS GUI budget proof text",
+    "guest_first_pixel_bytes": "aa 00 00 00",
+    "native_window_sample_rgb": [
+      0,
+      0,
+      170
+    ],
+    "screenshot_sha256": "12e62832551ff31edaaa0aad3470a044d998619db2bd59730bae87d17db3f2f3",
+    "guest_readback_screenshot_sha256": "3a3695803012889c3ed0909c8a9836a1763fd78d1fe89c0dd154403fb1037fe0",
+    "limits": [
+      "Still-frame capture with normal GUI polling",
+      "Pattern plus pixel sample, not whole-frame pixel comparison",
+      "Not graphical focus/input or continuous refresh"
+    ],
+    "repeat": {
+      "sequence": 429,
+      "elapsed_seconds": 21.3,
+      "screenshot_sha256": "5e9c05f5316a0c2e7f715e12891d7049e33375b9ffa8d164942f0e12aa0ec17c"
+    },
+    "later_process_exit": {
+      "code": 137,
+      "cause": "unresolved SIGKILL after captures and guest-console diagnosis",
+      "kernel_and_user_oom_log_entries": false,
+      "followup_task": "task_3bea4cc3256d495da091d83eda0d004a"
+    }
+  }
+}

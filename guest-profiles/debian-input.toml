@@ -1,0 +1,24 @@
+schema = 2
+id = "debian-input-aarch64"
+status = "runtime"
+extends = "debian.toml"
+aliases = ["debian-input"]
+
+[target]
+devices = ["net", "block", "console", "input"]
+
+[artifacts.dtb]
+source = "generated:linux.dts+profile-selected-virtio-input"
+cache = "build/qemu_virt_aarch64/debian-input-vm.dtb"
+sha256 = "fcbf15b6717e6b53ba243e6eab4f046f2496b64f4bb4e5916c0bb82e693023ec"
+
+[placements.dual-primary]
+dtb_sha256 = "fcbf15b6717e6b53ba243e6eab4f046f2496b64f4bb4e5916c0bb82e693023ec"
+
+[host.qemu.ssh]
+host_port = 12228
+
+[host.console]
+probe_line = "modprobe virtio_input && grep -q 'agentOS keyboard' /sys/class/input/event*/device/name && grep -q 'agentOS pointer' /sys/class/input/event*/device/name && printf 'agentos-debian-input-%s\\n' ready"
+probe_marker = "agentos-debian-input-ready"
+probe_timeout_secs = 180

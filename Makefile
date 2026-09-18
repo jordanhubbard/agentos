@@ -105,6 +105,8 @@ QEMU_TEST_TIMEOUT ?= 300
 # Console and live-media proofs may run beside a retained guest instance.
 # Zero keeps the profile's normal forwarding port.
 QEMU_TEST_SSH_PORT ?= 0
+QEMU_TEST_GPU_SSH_PORT ?= 12224
+GUEST_LINUX_CC ?= aarch64-linux-gnu-gcc
 # Correct suspend accounting freezes each guest's architectural time while it
 # is stopped.  A full vendor-live-media dual proof can therefore take longer
 # than the old 90-minute bound that accidentally included a clock jump.
@@ -627,7 +629,7 @@ run:
 
 # run-fast: same as run, with TCG-mode performance knobs enabled.
 # On Apple Silicon (TCG-only because HVF is incompatible with seL4) this
-# adds -accel tcg,thread=multi and switches the CPU model to 'max', giving
+# adds -accel tcg,thread=multi while retaining the SDK-qualified CPU model, giving
 # a noticeable boot-time speedup for dev iteration.  On Linux/KVM hosts
 # QEMU_FAST is a no-op since hardware acceleration is already in use.
 run-fast:
@@ -1045,12 +1047,77 @@ test-x86-acpi-aml: test-x86-acpi-host test-x86-acpi-loader-host
 	@rg -q '\[Integer\] = 0000000000000010' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '\[Integer\] = 000000000000001F' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '"ACPI0007"' $(BUILD_TMP_DIR)/x86-cpus-eval.log
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-ramfb-host test-display-host
+
+.PHONY: test-display-host
+.PHONY: test-display-init
+.PHONY: test-display
+test-display: test-display-host test-ramfb-host
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer --assert-display --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+test-display-init:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(MAKE) test-framebuffer DISPLAY_RAMFB=1 QEMU_TEST_TIMEOUT=$(QEMU_TEST_TIMEOUT) > $(BUILD_TMP_DIR)/display-init.log 2>&1 || { cat $(BUILD_TMP_DIR)/display-init.log; exit 1; }
+	rg -Fq '[display] private DMA and scanout banks ready' $(BUILD_TMP_DIR)/display-init.log
+	@echo 'Display driver initialized; native framebuffer clients and observer passed (scanout not tested)'
+
+test-display-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_display.c platform/display/service.c -o $(BUILD_TMP_DIR)/test_display
+	$(BUILD_TMP_DIR)/test_display
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_display_producer.c platform/display/producer.c platform/display/service.c -o $(BUILD_TMP_DIR)/test_display_producer
+	$(BUILD_TMP_DIR)/test_display_producer
+
+.PHONY: test-ramfb-host
+test-ramfb-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_ramfb.c platform/display/ramfb.c -o $(BUILD_TMP_DIR)/test_ramfb
+	$(BUILD_TMP_DIR)/test_ramfb
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_ramfb_mmio.c platform/display/ramfb_mmio.c -o $(BUILD_TMP_DIR)/test_ramfb_mmio
+	$(BUILD_TMP_DIR)/test_ramfb_mmio
+
+.PHONY: test-virtio-gpu-host
+test-virtio-gpu-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu_2d.c libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_virtio_gpu_2d
+	$(BUILD_TMP_DIR)/test_virtio_gpu_2d
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I libvmm/include tests/platform/test_virtio_mmio.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c -o $(BUILD_TMP_DIR)/test_virtio_mmio
+	$(BUILD_TMP_DIR)/test_virtio_mmio
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -ffunction-sections -fdata-sections -Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -I tests/platform/mmio-stubs -I libvmm/include -I libvmm/dep/sddf/include -I libvmm/dep/sddf/include/extern tests/platform/test_virtio_net_config.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c -o $(BUILD_TMP_DIR)/test_virtio_net_config
+	$(BUILD_TMP_DIR)/test_virtio_net_config
 
 .PHONY: test-framebuffer-host
+.PHONY: test-input-host
+test-input-host:
+	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_input_queue.c platform/input-virt/service.c -o $(ROOT_DIR)build/tmp/test_input_queue
+	$(ROOT_DIR)build/tmp/test_input_queue
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
+	$(BUILD_TMP_DIR)/test_virtio_input
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_input
+	$(BUILD_TMP_DIR)/test_agentctl_input
+ifeq ($(UNAME_S),Linux)
+	$(CC) -std=c11 -Wall -Wextra -Werror tests/platform/test_guest_input_probe.c -o $(BUILD_TMP_DIR)/test_guest_input_probe
+	$(BUILD_TMP_DIR)/test_guest_input_probe
+endif
+
+.PHONY: guest-input-probe
+guest-input-probe:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(GUEST_LINUX_CC) -static -O2 -std=c11 -Wall -Wextra -Werror tests/guest/input_probe.c -o $(BUILD_TMP_DIR)/guest-input-probe-aarch64
+
+.PHONY: test-agentctl-frame-host
+test-agentctl-frame-host:
+	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+	$(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+
 test-framebuffer-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_queue.c platform/framebuffer/service.c -o $(ROOT_DIR)build/tmp/test_framebuffer_queue
 	$(ROOT_DIR)build/tmp/test_framebuffer_queue
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_observer.c platform/framebuffer/service.c platform/framebuffer/observer.c -o $(ROOT_DIR)build/tmp/test_framebuffer_observer
+	$(ROOT_DIR)build/tmp/test_framebuffer_observer
 
 .PHONY: test-framebuffer
 test-framebuffer: test-framebuffer-host
@@ -1059,7 +1126,7 @@ test-framebuffer: test-framebuffer-host
 .PHONY: test-framebuffer-isolation
 test-framebuffer-isolation:
 	@mkdir -p build/evidence/framebuffer-isolation
-	@set -e; for mode in 1 2 3 4 5 6 7 8; do \
+	@set -e; for mode in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do \
 	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer \
 	        --framebuffer-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
 	    cp build/qemu_virt_aarch64/agentos.img build/evidence/framebuffer-isolation/mode-$$mode.img; \
@@ -1203,7 +1270,7 @@ test-guest-net:
 		echo "test-guest-net requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-net
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-net --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # Guest I/O proof: boot buildroot Linux under linux_vmm and require the
 # emulated virtio-blk (IPA 0x0A020000) to probe, reach DRIVER_OK, and pump
@@ -1253,7 +1320,7 @@ test-guest-blk:
 		echo "test-guest-blk requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # Boot Ubuntu to its login prompt over agentOS's emulated virtio-console,
 # then inject input and require the guest to echo it back through sDDF queues.
@@ -1296,6 +1363,26 @@ test-debian-nocloud-ssh:
 		$(if $(SEEDED_SSH_KNOWN_HOSTS),--seeded-ssh-known-hosts "$(SEEDED_SSH_KNOWN_HOSTS)",) \
 		$(if $(SEEDED_DIRECTORY),--seeded-directory "$(SEEDED_DIRECTORY)",) \
 		--timeout-secs $(QEMU_TEST_TIMEOUT)
+.PHONY: test-guest-gpu
+.PHONY: test-guest-input
+.PHONY: test-guest-graphics-input
+.PHONY: test-guest-display
+# Spark input qualification takes about ten minutes through Debian boot and
+# SSH provisioning. Preserve explicit environment/command-line timeout choices.
+ifeq ($(origin QEMU_TEST_TIMEOUT),file)
+test-guest-input test-guest-graphics-input: QEMU_TEST_TIMEOUT = 1800
+endif
+test-guest-display:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-guest-display --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-graphics-input:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-input:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-gpu:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-gpu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_GPU_SSH_PORT)
 
 test-debian-live:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
@@ -1773,7 +1860,7 @@ help:
 	@echo "  make run GUEST_OS=buildroot"
 	@echo "                        Boot linux_vmm hosting buildroot Linux to a '#' prompt"
 	@echo "                        (no outer ISO; guest is packaged inside guest_vmm_primary.elf)"
-	@echo "  make run-fast         Same as run, plus TCG perf knobs (cpu max + multi-thread)"
+	@echo "  make run-fast         Same as run, plus multi-threaded TCG"
 	@echo "                        No-op on Linux/KVM hosts where HW accel is already on"
 	@echo "                        Recommended dev loop on Apple Silicon:"
 	@echo "                        make run-fast GUEST_OS=buildroot"

@@ -1,0 +1,43 @@
+schema = 2
+id = "debian-gpu-aarch64"
+status = "runtime"
+extends = "debian.toml"
+aliases = ["debian-gpu"]
+
+[target]
+devices = ["net", "block", "console", "gpu"]
+
+[boot]
+command_line = "console=hvc0 loglevel=7 root=UUID=eeb673b7-002d-483a-ba22-a4b6cad94540 rw rootwait systemd.unit=multi-user.target systemd.getty_auto=no cloud-init=disabled panic=0"
+
+[artifacts.dtb]
+source = "generated:linux.dts+profile-selected-virtio-gpu"
+cache = "build/qemu_virt_aarch64/debian-gpu-vm.dtb"
+sha256 = "79f82bcc3a81c4b72995fd72fabbce4e8ad81649905fcd3acc01df3d5ff669ab"
+
+[placements.dual-primary]
+dtb_sha256 = "79f82bcc3a81c4b72995fd72fabbce4e8ad81649905fcd3acc01df3d5ff669ab"
+
+[host.qemu.ssh]
+host_port = 12224
+
+[host.console]
+probe_line = "modprobe virtio_gpu && test -e /dev/dri/card0 && test -c /dev/fb0 && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none && sleep 1 && printf 'agentos-debian-gpu-%s\\n' ready"
+probe_marker = "agentos-debian-gpu-ready"
+probe_timeout_secs = 180
+
+[[host.test]]
+action = "wait-console"
+args = { marker = "# " }
+
+[[host.test]]
+action = "assert-virtio"
+args = { devices = "net,block,console", scope = "host-backed", console_io = "bidirectional" }
+
+[[host.test]]
+action = "wait-ssh"
+args = { account = "root", marker = "Linux" }
+
+[[host.test]]
+action = "assert-frame-pixels"
+args = { x = "0", y = "200", rgb = "332211665544" }
