@@ -20,7 +20,7 @@ sha256 = "8fda6a84a83982b14da5d7215a69dcd4d36ebc9614c8d5e4af239f459aa79937"
 [artifacts.dtb]
 source = "generated:linux.dts+linux-virtio-overlay.dts.in"
 cache = "build/qemu_virt_aarch64/debian-nocloud-vm.dtb"
-sha256 = "6813337fe174ba659170286dcbc345fda396277e2d8f40eaf401d7fee1184584"
+sha256 = "9022af326d2267bbfc39aa5fcdfd0bfff9a89970c11de9e0b90e60d88f412d3d"
 
 [placements.default]
 ram_size = 0x40000000
