@@ -361,6 +361,39 @@ seL4_Error ut_alloc_device_frame(seL4_Word paddr,
     return seL4_InvalidArgument;
 }
 
+/* Retain aligned child device untypeds for the skipped range. They stay in
+ * root's CSpace: deleting all children would reset the kernel watermark.
+ * Binary decomposition takes at most twice the word width, not one cap per
+ * page, and never grants or maps the skipped address space to a driver. */
+static seL4_Error device_advance(dev_ut_entry_t *entry, seL4_Word target_page)
+{
+    if (entry->pages_used > target_page) {
+        return seL4_InvalidArgument;
+    }
+    while (entry->pages_used < target_page) {
+        seL4_Word remaining = target_page - entry->pages_used;
+        seL4_Word pages = 1u;
+        uint32_t bits = 12u;
+        while (pages <= remaining / 2u &&
+               (entry->pages_used & ((pages << 1u) - 1u)) == 0u) {
+            pages <<= 1u;
+            bits++;
+        }
+        seL4_Word slot = ut_alloc_slot();
+        if (slot == seL4_CapNull) {
+            return seL4_NotEnoughMemory;
+        }
+        seL4_Error err = seL4_Untyped_Retype(
+            entry->cap, seL4_UntypedObject, bits,
+            seL4_CapInitThreadCNode, 0u, 0u, slot, 1u);
+        if (err != seL4_NoError) {
+            return err;
+        }
+        entry->pages_used += pages;
+    }
+    return seL4_NoError;
+}
+
 seL4_Error ut_alloc_device_cap_typed(seL4_Word paddr,
                                       uint32_t  object_type,
                                       uint8_t   page_bits,
@@ -393,24 +426,9 @@ seL4_Error ut_alloc_device_cap_typed(seL4_Word paddr,
             return seL4_InvalidArgument;
         }
 
-        /* Advance the untyped watermark to paddr. seL4 retypes sequentially
-         * from the current watermark; dummy 4 KB caps consume any gap. */
-        while (g_dev_ut[i].pages_used < target_page) {
-            seL4_Word dummy = ut_alloc_slot();
-            if (dummy == seL4_CapNull) {
-                return seL4_NotEnoughMemory;
-            }
-            seL4_Error skip_err = seL4_Untyped_Retype(
-                g_dev_ut[i].cap,
-                (seL4_Word)seL4_ARM_SmallPageObject,
-                0u,
-                seL4_CapInitThreadCNode, 0u, 0u,
-                dummy, 1u
-            );
-            if (skip_err != seL4_NoError) {
-                return skip_err;
-            }
-            g_dev_ut[i].pages_used++;
+        seL4_Error skip_err = device_advance(&g_dev_ut[i], target_page);
+        if (skip_err != seL4_NoError) {
+            return skip_err;
         }
 
         if ((g_dev_ut[i].pages_used & (object_pages - 1u)) != 0u) {
@@ -459,34 +477,15 @@ seL4_Error ut_alloc_device_cap(seL4_Word paddr, seL4_CPtr *cap_out)
             continue;
         }
 
-        /* Advance watermark to paddr by retyping dummy frames into throwaway slots.
-         * seL4 allocates frames sequentially from the untyped's watermark, so we
-         * must consume all pages between the current watermark and paddr before
-         * creating the desired frame.  Dummy caps remain in the root CNode but are
-         * never used again (device MMIO pages — not a resource leak in practice). */
         seL4_Word target_page = (paddr - ut_start) >> 12u; /* 4 KB pages from base */
         if (g_dev_ut[i].pages_used > target_page) {
             *cap_out = seL4_CapNull;
             return seL4_InvalidArgument;
         }
-        while (g_dev_ut[i].pages_used < target_page) {
-            seL4_Word dummy = ut_alloc_slot();
-            if (dummy == seL4_CapNull) {
-                *cap_out = seL4_CapNull;
-                return seL4_NotEnoughMemory;
-            }
-            seL4_Error skip_err = seL4_Untyped_Retype(
-                g_dev_ut[i].cap,
-                (seL4_Word)seL4_ARM_SmallPageObject,
-                0u,
-                seL4_CapInitThreadCNode, 0u, 0u,
-                dummy, 1u
-            );
-            if (skip_err != seL4_NoError) {
-                *cap_out = seL4_CapNull;
-                return skip_err;
-            }
-            g_dev_ut[i].pages_used++;
+        seL4_Error skip_err = device_advance(&g_dev_ut[i], target_page);
+        if (skip_err != seL4_NoError) {
+            *cap_out = seL4_CapNull;
+            return skip_err;
         }
 
         seL4_Error err = seL4_Untyped_Retype(
