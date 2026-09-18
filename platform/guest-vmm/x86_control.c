@@ -54,6 +54,20 @@ enum aos_x86_control_result aos_x86_control_step(
 #endif
             (void)aos_guest_vmm_lifecycle_rpc(&request, &reply, runtime);
         }
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        /* Bounded observation only; root never decides a lifecycle action.
+         * Preserve the reply in native memory across this diagnostic IPC. */
+        static unsigned traces;
+        if (traces < 32u || aos_x86_lifecycle_ack) {
+            traces++;
+            seL4_SetMR(0, request.opcode);
+            seL4_SetMR(1, reply.opcode);
+            seL4_SetMR(2, *runtime->state);
+            seL4_SetMR(3, *runtime->started);
+            seL4_Send(AOS_X86_VTX_REPORT_CAP,
+                seL4_MessageInfo_new(AOS_X86_LIFECYCLE_TRACE_LABEL, 0u, 0u, 4u));
+        }
+#endif
         _sel4_msg_to_mrs(&reply);
         info = seL4_MessageInfo_new(reply.opcode, 0u, 0u, _SEL4_MR_COUNT);
 #ifdef CONFIG_KERNEL_MCS

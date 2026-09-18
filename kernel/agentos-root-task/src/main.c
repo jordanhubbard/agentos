@@ -3967,6 +3967,19 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word badge = 0u;
         seL4_MessageInfo_t tag =
             seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        unsigned lifecycle_traces = 0u;
+        while (seL4_MessageInfo_get_label(tag) == AOS_X86_LIFECYCLE_TRACE_LABEL &&
+               seL4_MessageInfo_get_length(tag) == 4u && lifecycle_traces++ < 33u) {
+            seL4_Word trace[4];
+            for (unsigned i = 0; i < 4u; i++) trace[i] = seL4_GetMR(i);
+            dbg_puts("[rt] x86 lifecycle opcode="); dbg_hex(trace[0]);
+            dbg_puts(" status="); dbg_hex(trace[1]);
+            dbg_puts(" state="); dbg_hex(trace[2]);
+            dbg_puts(" started="); dbg_hex(trace[3]); dbg_puts("\n");
+            tag = seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
+        }
+#endif
         seL4_Word status = seL4_GetMR(0);
         seL4_Word reason = seL4_GetMR(1);
         seL4_Word rip = seL4_GetMR(2);

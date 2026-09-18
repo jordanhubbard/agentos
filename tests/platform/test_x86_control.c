@@ -34,6 +34,14 @@ seL4_MessageInfo_t seL4_NBRecv(seL4_CPtr ep, seL4_Word *b, seL4_CPtr reply)
 { assert(state == GUEST_STATE_RUNNING); polls++; return receive(ep, b, reply); }
 void seL4_Send(seL4_CPtr ep, seL4_MessageInfo_t info)
 {
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+    if (ep == AOS_X86_VTX_REPORT_CAP) {
+        assert(info.label == AOS_X86_LIFECYCLE_TRACE_LABEL && info.length == 4);
+        assert(mrs[2] == state && mrs[3] == started);
+        memset(mrs, 0xef, sizeof(mrs));
+        return;
+    }
+#endif
     assert(ep == AGENTOS_IPC_REPLY_CAP && info.length == _SEL4_MR_COUNT);
     _sel4_mrs_to_msg(&received_reply);
     assert(info.label == received_reply.opcode);
