@@ -8,13 +8,15 @@
  * DESTROYING first. False requires another call while servicing device
  * completions; execution must never resume. Retains RAM until every backend
  * has relinquished its references. Acknowledged network detach retires the
- * virtualizer's queue pointers before execution revocation. Releases paging
+ * virtualizer's queue pointers before execution revocation. Block detach
+ * additionally requires valid, empty request and response queues. Releases paging
  * after RAM; service
  * grants and the VMM's private ASID namespace remain management resources.
  * Reconstruction must explicitly reset this state before admitting a guest. */
 typedef struct aos_guest_teardown {
     bool devices_quiesced;
     bool network_detached;
+    bool block_detached;
     bool execution_released;
     bool ram_released;
     bool paging_released;

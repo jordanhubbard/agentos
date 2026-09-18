@@ -125,6 +125,19 @@ void aos_blk_virt_reset(aos_blk_virt_t *v)
     aos_bzero(v, (uint32_t)sizeof(*v));
 }
 
+bool aos_blk_virt_detach(aos_blk_virt_t *v)
+{
+    if (!v || v->num_clients > AOS_BLK_MAX_CLIENTS) return false;
+    for (uint32_t i = 0; i < v->num_clients; i++) {
+        const aos_blk_virt_client_t *c = &v->clients[i];
+        if (!aos_blk_queue_req_valid(c->req, c->capacity) ||
+            !aos_blk_queue_resp_valid(c->resp, c->capacity) ||
+            req_len(c->req) != 0 || resp_len(c->resp) != 0) return false;
+    }
+    aos_blk_virt_reset(v);
+    return true;
+}
+
 void aos_blk_storage_init(aos_blk_storage_info_t *info, uint32_t disk_blocks)
 {
     static const char serial[] = "aos-ram0";

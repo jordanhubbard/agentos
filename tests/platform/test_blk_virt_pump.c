@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
+#include <sys/mman.h>
 
 #include <platform/blk_layout.h>
 #include <platform/blk_virt_pump.h>
@@ -467,6 +468,46 @@ static int test_corrupt_ring_recovery(void)
     PASS("test_corrupt_ring_recovery");
 }
 
+static int test_detach_requires_drain(void)
+{
+    uint8_t *region = mmap(NULL, AOS_BLK_SHMEM_SIZE,
+        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(region != MAP_FAILED);
+    uint8_t disk[AOS_BLK_TRANSFER_SIZE] = {0};
+    aos_blk_virt_t v;
+    aos_blk_virt_client_t c;
+    aos_blk_virt_reset(&v);
+    aos_blk_client_bind(region, 0, &c);
+    aos_blk_client_init_queues(&c);
+    aos_blk_storage_init(c.info, 1);
+    aos_blk_client_set_ram_disk(&c, disk, 1);
+    CHECK(aos_blk_virt_add_client(&v, &c) == 0);
+    c.req->tail = c.capacity + 1;
+    CHECK(!aos_blk_virt_detach(&v));
+    CHECK(c.req->head == 0 && c.req->tail == c.capacity + 1);
+    c.req->tail = 0;
+    c.resp->tail = c.capacity + 1;
+    CHECK(!aos_blk_virt_detach(&v));
+    CHECK(c.resp->head == 0 && c.resp->tail == c.capacity + 1);
+    c.resp->tail = 0;
+    memset(c.data, 0x42, AOS_BLK_TRANSFER_SIZE);
+    CHECK(enqueue_req(&c, AOS_BLK_REQ_WRITE, 0, 0, 1, 801) == 0);
+    CHECK(!aos_blk_virt_detach(&v) && v.num_clients == 1);
+    CHECK(aos_blk_virt_pump(&v) == 1);
+    CHECK(!memcmp(disk, c.data, sizeof(disk)));
+    CHECK(!aos_blk_virt_detach(&v));
+    aos_blk_resp_t response;
+    CHECK(dequeue_resp(&c, &response) == 0);
+    CHECK(response.id == 801 && response.status == AOS_BLK_RESP_OK &&
+          response.success_count == 1);
+    CHECK(aos_blk_virt_detach(&v));
+    CHECK(v.num_clients == 0 && !v.backend && !v.backend_ctx);
+    CHECK(mprotect(region, AOS_BLK_SHMEM_SIZE, PROT_NONE) == 0);
+    CHECK(aos_blk_virt_pump(&v) == 0 && aos_blk_virt_detach(&v));
+    CHECK(munmap(region, AOS_BLK_SHMEM_SIZE) == 0);
+    PASS("test_detach_requires_drain");
+}
+
 int main(void)
 {
     int failed = 0;
@@ -486,6 +527,7 @@ int main(void)
     failed += test_flush_failure_and_malformed_flush();
     failed += test_media_range_checked_before_backend();
     failed += test_corrupt_ring_recovery();
+    failed += test_detach_requires_drain();
     if (failed) {
         printf("%d test(s) failed\n", failed);
         return 1;

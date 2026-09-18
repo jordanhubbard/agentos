@@ -53,6 +53,7 @@ static uint32_t                 g_resp_total;
 static uint32_t                 g_drain_count;
 static uintptr_t                g_guest_base;
 static unsigned                 g_virq;
+static bool                     g_retired;
 
 static uint32_t blk_rd32(const uint8_t *p, uint32_t off)
 {
@@ -188,6 +189,28 @@ bool aos_vmm_virtio_blk_quiesce(void)
     return true;
 }
 
+bool aos_vmm_virtio_blk_detach(void)
+{
+    if (!aos_vmm_virtio_blk_quiesce()) return false;
+    if (!g_blk_virt_attached) return true;
+    sel4_msg_t req = {0}, rep = {0};
+    req.opcode = BLK_VIRT_OP_DETACH;
+    req.length = sizeof(blk_virt_attach_req_t);
+    blk_wr32(req.data, 0u, BLK_VIRT_CONTRACT_VERSION);
+    blk_wr32(req.data, 4u, AOS_BLK_VMM_CLIENT);
+    blk_wr32(req.data, 8u, AOS_BLK_VMM_SLOT);
+    blk_wr32(req.data, 12u, g_media_id);
+    sel4_call((seL4_CPtr)PD_CNODE_SLOT_BLK_VIRT_EP, &req, &rep);
+    if (rep.opcode != SEL4_ERR_OK || rep.length != sizeof(blk_virt_attach_reply_t) ||
+        blk_rd32(rep.data, 0u) != BLK_VIRT_OK ||
+        blk_rd32(rep.data, 4u) != BLK_VIRT_CONTRACT_VERSION) return false;
+    g_blk_virt_attached = 0;
+    g_retired = true;
+    g_aos_client = (aos_blk_virt_client_t){0};
+    g_queue = (blk_queue_handle_t){0};
+    return true;
+}
+
 #ifdef AGENTOS_GUEST_BLOCK_DRAIN_TEST
 static bool blk_test_drain(void)
 {
@@ -199,6 +222,8 @@ static bool blk_test_drain(void)
     }
     if (aos_vmm_virtio_blk_quiesce()) {
         LOG_VMM("guest block drain: PASS accepted requests complete and queues empty\n");
+        if (aos_vmm_virtio_blk_detach())
+            LOG_VMM("guest block drain: queue detach acknowledged\n");
     }
     return true;
 }
@@ -505,7 +530,7 @@ bool aos_vmm_virtio_blk_init_at(uint32_t media_id, uintptr_t guest_base,
 {
     uint8_t *region = shared_region;
 
-    if (g_blk_virt_attached || g_aos_blk_ready || !region || !guest_base ||
+    if (g_blk_virt_attached || g_aos_blk_ready || g_retired || !region || !guest_base ||
         ((uintptr_t)region & (AOS_BLK_TRANSFER_SIZE-1u)) ||
         (uintptr_t)region > UINTPTR_MAX-AOS_BLK_SHMEM_SIZE ||
         (guest_base & (AOS_VIRTIO_BLK_MMIO_SIZE-1u))) return false;

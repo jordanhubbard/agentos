@@ -37,6 +37,10 @@ bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size)
         if (!aos_vmm_virtio_net_detach()) return false;
         state->network_detached = true;
     }
+    if (!state->block_detached) {
+        if (!aos_vmm_virtio_blk_detach()) return false;
+        state->block_detached = true;
+    }
     if (!state->execution_released) {
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
                 AOS_GUEST_EXECUTION_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
