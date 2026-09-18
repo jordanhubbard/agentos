@@ -1,0 +1,26 @@
+{
+  "qualification": "Framebuffer detach combined seeded graphics/input trial",
+  "runtime_revision": "43388db7f46ed5bb2799db9fff5e2b9fecb9dfaf",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "gate": {
+    "result": "PASS",
+    "log_sha256": "49bd9ffcbeaffdc0375d03de733aa7b0ac878b9e6b1783f428c8a9eed2d32f4e"
+  },
+  "target": {
+    "command": "make test-debian-nocloud-graphics-teardown QEMU_TEST_SSH_PORT=12233",
+    "result": "FAIL before teardown: input proof SSH process exited 255",
+    "log_sha256": "d90adaf7576f3c1ecf778a7472999ad7f23ecb41d2184a868c73e9b7a872b936",
+    "qemu_pid": 819798,
+    "qemu_log_stem": "agentos-qemu-O1KvMg",
+    "ssh_stderr": "Timeout, server 127.0.0.1 not responding.",
+    "ssh_stderr_sha256": "38d19e0c81605f8cb5c3537c3b5ce8cce2cfa8fd1187deac15dff10f28a4bece",
+    "prior_progress": "Authenticated Debian SSH, framebuffer capture and physical scanout comparison completed"
+  },
+  "limits": [
+    "Framebuffer detach and optional input-pool recycling were not reached",
+    "Current diagnostics do not distinguish helper upload from final input-process exit",
+    "No confirmed cause for the SSH liveness timeout",
+    "No target detach, recreation or release qualification claim"
+  ]
+}
