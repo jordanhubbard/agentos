@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "sel4_boot.h"
+#include "system_desc.h"
 #include <sel4/arch/vmenter.h>
 #include <platform/x86_vmenter.h>
 #include "contracts/guest_execution_caps.h"
@@ -143,7 +144,7 @@ static void report_and_wait(seL4_CPtr endpoint, seL4_Word status,
 
     for (;;) {
         seL4_Word badge = 0u;
-        (void)seL4_Wait(endpoint, &badge);
+        (void)seL4_Wait(PD_CNODE_SLOT_SELF_EP, &badge);
     }
 }
 
@@ -380,6 +381,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver_endpoint)
             seL4_Yield();
         }
     }
+    endpoint = AOS_X86_VTX_REPORT_CAP;
 
 #ifdef AGENTOS_X86_FIRMWARE_MODES
     qualify_firmware_modes(endpoint);
