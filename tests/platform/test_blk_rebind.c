@@ -19,7 +19,24 @@ int main(void)
         CHECK((uintptr_t)bound.data + AOS_BLK_DATA_BYTES <= va + AOS_BLK_SHMEM_FRAME_SIZE);
     }
     CHECK(aos_blk_rebind_queue_va(AOS_BLK_MAX_CLIENTS) == 0u);
-    CHECK(sizeof(req) == 12u && sizeof(blk_virt_rebind_reply_t) == 12u);
+    CHECK(sizeof(req) == 12u && sizeof(blk_virt_rebind_reply_t) == 16u);
+    blk_virt_rebind_reply_t reply = {BLK_VIRT_OK, BLK_VIRT_REBIND_VERSION, 1u, BLK_VIRT_HW_NONE};
+    CHECK(aos_blk_rebind_reply_valid(&reply, sizeof(reply), 1u));
+    reply.hw_state = BLK_VIRT_HW_VIRTIO_BLK;
+    CHECK(aos_blk_rebind_reply_valid(&reply, sizeof(reply), 1u));
+    CHECK(!aos_blk_rebind_reply_valid(NULL, sizeof(reply), 1u));
+    CHECK(!aos_blk_rebind_reply_valid(&reply, sizeof(reply) - 1u, 1u));
+    CHECK(!aos_blk_rebind_reply_valid(&reply, sizeof(reply) + 1u, 1u));
+    CHECK(!aos_blk_rebind_reply_valid(&reply, sizeof(reply), 0u));
+    CHECK(!aos_blk_rebind_reply_valid(&reply, sizeof(reply), 2u));
+    reply.hw_state = UINT32_MAX;
+    CHECK(!aos_blk_rebind_reply_valid(&reply, sizeof(reply), 1u));
+    reply.hw_state = BLK_VIRT_HW_NONE;
+    reply.status = BLK_VIRT_ERR_BUSY;
+    CHECK(!aos_blk_rebind_reply_valid(&reply, sizeof(reply), 1u));
+    reply.status = BLK_VIRT_OK;
+    reply.version = 1u;
+    CHECK(!aos_blk_rebind_reply_valid(&reply, sizeof(reply), 1u));
     CHECK(aos_blk_rebind_validate(badge, &req, sizeof(req), false, true, 0u) == BLK_VIRT_OK);
     CHECK(aos_blk_rebind_validate(badge, NULL, sizeof(req), false, true, 0u) == BLK_VIRT_ERR_VERSION);
     CHECK(aos_blk_rebind_validate(badge, &req, sizeof(req) - 1u, false, true, 0u) == BLK_VIRT_ERR_VERSION);

@@ -6,7 +6,8 @@
 #include "system_desc.h"
 #include "boot_info.h"
 
-bool aos_blk_virt_rebind(uint32_t client, uint32_t generation)
+bool aos_blk_virt_rebind_with_info(uint32_t client, uint32_t generation,
+                                  blk_virt_rebind_reply_t *attachment)
 {
     if (client >= 2u || !generation) return false;
     const seL4_CPtr frame = AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_BLOCK;
@@ -29,9 +30,15 @@ bool aos_blk_virt_rebind(uint32_t client, uint32_t generation)
     _sel4_mrs_to_msg(&reply);
     if (reply.opcode != SEL4_ERR_OK || reply.length != sizeof(result)) return false;
     __builtin_memcpy(&result, reply.data, sizeof(result));
-    if (result.status != BLK_VIRT_OK || result.version != BLK_VIRT_REBIND_VERSION ||
-        result.generation != generation) return false;
-    return seL4_ARCH_Page_Map(frame, AOS_GUEST_RAM_VMM_VSPACE,
+    if (!aos_blk_rebind_reply_valid(&result, sizeof(result), generation)) return false;
+    if (seL4_ARCH_Page_Map(frame, AOS_GUEST_RAM_VMM_VSPACE,
         aos_blk_rebind_queue_va(client),
-        seL4_AllRights, seL4_ARM_Default_VMAttributes) == seL4_NoError;
+        seL4_AllRights, seL4_ARM_Default_VMAttributes) != seL4_NoError) return false;
+    if (attachment) *attachment = result;
+    return true;
+}
+
+bool aos_blk_virt_rebind(uint32_t client, uint32_t generation)
+{
+    return aos_blk_virt_rebind_with_info(client, generation, NULL);
 }

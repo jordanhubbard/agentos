@@ -20,6 +20,7 @@
 #include <platform/blk_virt_pump.h>
 #include <platform/blk_host_layout.h>
 #include <platform/vmm_virtio_blk.h>
+#include <platform/blk_rebind.h>
 
 _Static_assert(AOS_BLK_TRANSFER_SIZE == BLK_TRANSFER_SIZE,
                "platform blk transfer size must match sDDF BLK_TRANSFER_SIZE");
@@ -54,6 +55,7 @@ static uint32_t                 g_drain_count;
 static uintptr_t                g_guest_base;
 static unsigned                 g_virq;
 static bool                     g_retired;
+static uint32_t                 g_generation;
 
 static uint32_t blk_rd32(const uint8_t *p, uint32_t off)
 {
@@ -587,6 +589,39 @@ bool aos_vmm_virtio_blk_init_at(uint32_t media_id, uintptr_t guest_base,
             (unsigned long)g_guest_base,
             g_virq,
             g_blk_virt_hw == BLK_VIRT_HW_VIRTIO_BLK ? "host" : "RAM");
+    return true;
+}
+
+bool aos_vmm_virtio_blk_adopt(uint32_t media_id, void *shared_region,
+                            const blk_virt_rebind_reply_t *attachment)
+{
+    if (!g_retired || g_blk_virt_attached || g_aos_blk_ready || !g_guest_base ||
+        media_id != g_media_id || !shared_region ||
+        ((uintptr_t)shared_region & (AOS_BLK_TRANSFER_SIZE - 1u)) ||
+        (uintptr_t)shared_region > UINTPTR_MAX - AOS_BLK_SHMEM_SIZE ||
+        !attachment || attachment->generation <= g_generation ||
+        !aos_blk_rebind_reply_valid(attachment, sizeof(*attachment), attachment->generation))
+        return false;
+    aos_blk_virt_client_t fresh;
+    aos_blk_client_bind(shared_region, AOS_BLK_VMM_CLIENT, &fresh);
+    if (!__atomic_load_n(&fresh.info->ready, __ATOMIC_ACQUIRE) ||
+        !fresh.info->capacity || !fresh.info->sector_size) return false;
+    g_aos_client = fresh;
+    blk_queue_init(&g_queue, (blk_req_queue_t *)g_aos_client.req,
+        (blk_resp_queue_t *)g_aos_client.resp, AOS_BLK_QUEUE_CAPACITY);
+    g_aos_blk = (struct virtio_blk_device){0};
+    g_aos_blk_probed = g_aos_blk_driver_ok = g_aos_blk_pumped = 0;
+    g_resp_total = g_drain_count = 0;
+    g_generation = attachment->generation;
+    g_blk_virt_hw = attachment->hw_state;
+    g_blk_virt_attached = 1;
+    if (!virtio_mmio_blk_init(&g_aos_blk, g_guest_base, AOS_VIRTIO_BLK_MMIO_SIZE,
+            g_virq, (uintptr_t)g_aos_client.data, AOS_BLK_DATA_BYTES,
+            (blk_storage_info_t *)g_aos_client.info, &g_queue,
+            AOS_BLK_QUEUE_CAPACITY, 0)) return false;
+    g_aos_blk.config.size_max = AOS_BLK_GUEST_MAX_SEGMENT_SIZE;
+    g_aos_blk_ready = 1;
+    g_retired = false;
     return true;
 }
 

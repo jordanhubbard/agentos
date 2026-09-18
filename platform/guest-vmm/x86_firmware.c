@@ -364,7 +364,9 @@ static bool terminal_teardown_proof(void)
         teardown_proof_stage = 100u + pass * 100u;
         if (!recreated_network_proof(pass * 2u + 1u)) return false;
         teardown_proof_stage = 110u + pass * 100u;
-        if (!aos_blk_virt_rebind(0u, pass + 1u)) return false;
+        blk_virt_rebind_reply_t block_attachment;
+        if (!aos_blk_virt_rebind_with_info(0u, pass + 1u, &block_attachment) ||
+            block_attachment.hw_state != BLK_VIRT_HW_VIRTIO_BLK) return false;
         aos_blk_virt_client_t rebuilt_block;
         aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, 0u, &rebuilt_block);
         if (!rebuilt_block.info->ready || !rebuilt_block.info->capacity ||

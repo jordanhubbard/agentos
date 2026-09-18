@@ -80,7 +80,7 @@ static inline int blk_virt_service_notification(uint64_t badge)
  * Client N implies VMM slot/media N. Generation starts at 1 and increments
  * once per successful rebind; exhaustion fails closed. */
 #define BLK_VIRT_OP_REBIND              0x2C03u
-#define BLK_VIRT_REBIND_VERSION         1u
+#define BLK_VIRT_REBIND_VERSION         2u
 /* Legacy endpoint labels retained for diagnostics/compatibility; version 4
  * clients use the notification capabilities, not these labels. */
 /* VMM -> blk_virt: request queue is non-empty. */
@@ -107,11 +107,13 @@ typedef struct __attribute__((packed)) {
 } blk_virt_rebind_req_t;
 
 /* One frame capability accompanies successful replies only. Storage info
- * in the new frame carries backend geometry and write policy. */
+ * in the new frame carries backend geometry and write policy. Version 2
+ * also returns the current backend kind for fresh VMM device adoption. */
 typedef struct __attribute__((packed)) {
     uint32_t status;
     uint32_t version;
     uint32_t generation;
+    uint32_t hw_state;
 } blk_virt_rebind_reply_t;
 
 /* ── Backend reported by ATTACH (blk_virt_attach_reply_t.hw_state) ────── */

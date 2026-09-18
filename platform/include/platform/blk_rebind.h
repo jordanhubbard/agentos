@@ -29,4 +29,20 @@ static inline uint32_t aos_blk_rebind_validate(uint64_t badge,
 }
 
 bool aos_blk_virt_rebind(uint32_t client, uint32_t generation);
+/* Output is published only after a validated reply and successful mapping. */
+bool aos_blk_virt_rebind_with_info(uint32_t client, uint32_t generation,
+                                  blk_virt_rebind_reply_t *attachment);
+static inline bool aos_blk_rebind_reply_valid(const blk_virt_rebind_reply_t *reply,
+                                             size_t length, uint32_t generation)
+{
+    return reply && length == sizeof(*reply) && generation &&
+        reply->status == BLK_VIRT_OK && reply->version == BLK_VIRT_REBIND_VERSION &&
+        reply->generation == generation &&
+        (reply->hw_state == BLK_VIRT_HW_NONE || reply->hw_state == BLK_VIRT_HW_VIRTIO_BLK);
+}
+/* Stopped, detached device and retired bus required. Adopt already initialized
+ * queues without ATTACH or clearing service metadata. Failed registration
+ * retains backend ownership: detach before queue revocation. */
+bool aos_vmm_virtio_blk_adopt(uint32_t media_id, void *shared_region,
+                            const blk_virt_rebind_reply_t *attachment);
 #endif

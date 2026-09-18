@@ -584,6 +584,8 @@ static void blk_virt_run(seL4_CPtr ep)
                 wr32(rep.data, 0u, status);
                 wr32(rep.data, 4u, BLK_VIRT_REBIND_VERSION);
                 wr32(rep.data, 8u, rebind.generation);
+                wr32(rep.data, 12u, rebound && g_clients[rebind.client].hw ?
+                    BLK_VIRT_HW_VIRTIO_BLK : BLK_VIRT_HW_NONE);
                 rep.length = sizeof(blk_virt_rebind_reply_t);
                 rep.opcode = SEL4_ERR_OK;
                 if (rebound) seL4_SetCap(0, AOS_QUEUE_SERVICE_FRAME_BASE + rebind.client);

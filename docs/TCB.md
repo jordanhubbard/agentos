@@ -347,11 +347,17 @@ asking for detach; BUSY or malformed replies keep teardown retryable and
 prevent capability revocation. Detach does not issue a flush or establish
 durability. Media ownership and the per-client RAM
 fallback disk remain allocated; retired clients cannot silently reattach.
-Block REBIND v1 requires a retired client and its next nonzero generation.
+Block REBIND v2 requires a retired client and its next nonzero generation.
 Root grants blk_virt only its own CNode/VSpace management capabilities. The
 owning VMM transfers its private queue untyped; blk_virt allocates one 2 MiB
 frame, initializes fresh queues, restores the same root-assigned media and
-returns the frame capability. The VMM retains pool revocation authority.
+returns the frame capability and current backend kind in a 16-byte reply.
+The VMM retains pool revocation authority. Its device-adoption helper binds
+the ready storage metadata and existing queues without clearing them or issuing
+ATTACH, resets private VirtIO registers and request bookkeeping, and preserves
+cleanup ownership if registration fails. Host sanitizer tests cover replacement
+descriptor reads, capacity/backend changes, queue preservation and inaccessible
+retired mappings. Native device adoption and a second guest boot remain pending.
 An unsuccessful allocation/map requires pool revocation before retry; a
 committed rebind must be detached before revocation, including if the caller
 fails to receive or map the returned frame. The old detach drain rule remains
