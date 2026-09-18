@@ -753,6 +753,9 @@ endif
 
 # AArch64: include the configured profile-backed VMM slots.
 ifeq ($(ARCH),aarch64)
+  ifeq ($(GUEST_MANAGED_BOOT),1)
+    CFLAGS += -DAGENTOS_GUEST_MANAGED_BOOT=1
+  endif
   ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
     CFLAGS += -DAGENTOS_GUEST_PRIMARY=1
     CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_PRIMARY=1

@@ -59,6 +59,11 @@ in place. Reconstruction must publish fresh objects before replying to CREATE;
 calling back into the synchronously waiting manager would deadlock. The
 contract is `contracts/guest_scheduling_caps.h`. Target qualification of this
 runtime scheduling path remains pending; the VMM reset callback is still absent.
+`make test-guest-scheduling` uses `GUEST_MANAGED_BOOT=1` to defer the single
+guest, leaving no automatic handle-zero guest. It requires explicit manager
+CREATE/BOOT, bidirectional console proof, destruction and stale-handle
+rejection. Ordinary single-guest boot/teardown tests bypass manager CREATE
+and cannot qualify this scheduling bridge on their own.
 
 ARM guest network, block, serial and optional input queue frames now each
 come from a private 2 MiB untyped pool. Root moves its sole pool capability

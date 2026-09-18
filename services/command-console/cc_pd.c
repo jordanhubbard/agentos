@@ -661,7 +661,7 @@ static void cc_trace_record(uint32_t opcode)
 
 /* Dual images defer both vCPUs to explicit vm_manager CREATE calls. They
  * have no pre-existing handle-zero guest to reserve in the inventory. */
-#if defined(AGENTOS_GUEST_DUAL)
+#if defined(AGENTOS_GUEST_DUAL) || defined(AGENTOS_GUEST_MANAGED_BOOT)
 static bool     g_boot_guest_present = false;
 #else
 static bool     g_boot_guest_present = true;

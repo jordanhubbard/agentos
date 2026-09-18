@@ -1354,6 +1354,10 @@ test-guest-console:
 
 .PHONY: test-console-backpressure
 .PHONY: test-guest-teardown
+.PHONY: test-guest-scheduling
+test-guest-scheduling:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-managed-guest --ssh-port $(QEMU_TEST_SSH_PORT)
+
 test-guest-teardown:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-guest-teardown --ssh-port $(QEMU_TEST_SSH_PORT)
 

@@ -155,6 +155,9 @@ pub struct TestArgs {
     /// Require Ubuntu login and bidirectional I/O through emulated virtio-console.
     #[arg(long)]
     pub assert_emulated_console: bool,
+    /// Create, boot and destroy the console guest explicitly through vm_manager.
+    #[arg(long, requires = "assert_emulated_console")]
+    pub assert_managed_guest: bool,
     /// Stall console consumption, then verify the deterministic probe stream.
     #[arg(long, requires = "assert_emulated_console")]
     pub assert_console_backpressure: bool,
