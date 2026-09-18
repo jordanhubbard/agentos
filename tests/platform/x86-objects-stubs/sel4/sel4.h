@@ -13,6 +13,7 @@ typedef int seL4_Error;
 #define seL4_X86_EPTPML4Object 11u
 #define seL4_X86_EPTPDPTObject 12u
 #define seL4_X86_EPTPDObject 13u
+#define seL4_X86_LargePageObject 14u
 seL4_Error seL4_Untyped_Retype(seL4_CPtr, seL4_Word, seL4_Word,
     seL4_CPtr, seL4_Word, seL4_Word, seL4_Word, seL4_Word);
 #endif
