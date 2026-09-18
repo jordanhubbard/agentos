@@ -2777,7 +2777,12 @@ void root_task_main(const seL4_BootInfo *bi)
             const bool frame_service=pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE ||
                                      pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
             const bool cc_service=pd->self_svc_id==SVC_ID_CC_PD;
-            const bool frequent_refills=frame_service || cc_service;
+            const bool execution_runner=pd->self_svc_id==SVC_ID_X86_RUNNER;
+            const bool frequent_refills=frame_service || cc_service || execution_runner
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+                || pd_is_guest_vmm(pd)
+#endif
+                ;
             const seL4_Word sc_bits=seL4_MinSchedContextBits+(frequent_refills ? 3u : 0u);
             seL4_Error sc_err = ut_alloc(seL4_SchedContextObject,
                                           sc_bits,
@@ -2793,7 +2798,7 @@ void root_task_main(const seL4_BootInfo *bi)
 
             seL4_Word sc_budget = PD_DEFAULT_SC_BUDGET_US;
             seL4_Word sc_period = PD_DEFAULT_SC_PERIOD_US;
-            if (pd_is_guest_vmm(pd)) {
+            if (pd_is_guest_vmm(pd) || execution_runner) {
                 sc_budget = VMM_SC_BUDGET_US;
                 sc_period = VMM_SC_PERIOD_US;
             } else if (frame_service) {
