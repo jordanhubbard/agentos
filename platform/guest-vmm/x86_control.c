@@ -5,8 +5,13 @@
 #include "contracts/serial_virt_contract.h"
 #include "contracts/blk_virt_contract.h"
 #include "contracts/net_virt_contract.h"
-#ifdef AGENTOS_X86_USERSPACE_PROOF
 #include "contracts/x86_vtx_proof.h"
+#ifdef AGENTOS_X86_LIFECYCLE_WITNESS
+volatile aos_x86_lifecycle_witness_t aos_x86_control_witness = {
+    .magic = UINT64_C(0x414f534c4354524c), .version = UINT64_C(0x4c49464557495431),
+};
+#endif
+#ifdef AGENTOS_X86_USERSPACE_PROOF
 extern bool aos_x86_lifecycle_ack;
 extern bool aos_x86_lifecycle_boot_ack;
 #endif
@@ -19,6 +24,7 @@ enum aos_x86_control_result aos_x86_control_step(
         return AOS_X86_CONTROL_ERROR;
     seL4_Word badge = 0;
     bool running = *runtime->state == GUEST_STATE_RUNNING;
+    AOS_X86_CONTROL_STAGE(1);
     seL4_MessageInfo_t info;
 #ifdef CONFIG_KERNEL_MCS
     info = running ? seL4_NBRecv(PD_CNODE_SLOT_SELF_EP, &badge, AGENTOS_IPC_REPLY_CAP)
@@ -26,6 +32,12 @@ enum aos_x86_control_result aos_x86_control_step(
 #else
     info = running ? seL4_NBRecv(PD_CNODE_SLOT_SELF_EP, &badge)
                    : seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge);
+#endif
+    AOS_X86_CONTROL_STAGE(2);
+#ifdef AGENTOS_X86_LIFECYCLE_WITNESS
+    aos_x86_control_witness.badge = badge;
+    aos_x86_control_witness.count++;
+    aos_x86_control_witness.state = *runtime->state;
 #endif
     const seL4_Word wakes = SERIAL_VIRT_VMM_WAKE_BADGE |
                            BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE;
@@ -43,6 +55,10 @@ enum aos_x86_control_result aos_x86_control_step(
             seL4_MessageInfo_get_label(info) == seL4_GetMR(0) &&
             seL4_GetMR(1) <= SEL4_MSG_DATA_BYTES) {
             _sel4_mrs_to_msg(&request);
+#ifdef AGENTOS_X86_LIFECYCLE_WITNESS
+            aos_x86_control_witness.opcode = request.opcode;
+#endif
+            AOS_X86_CONTROL_STAGE(3);
 #ifdef AGENTOS_X86_USERSPACE_PROOF
             if (request.opcode == AOS_X86_LIFECYCLE_ACK &&
                 badge == (((seL4_Word)SVC_ID_GUEST_VMM_PRIMARY << 48) |
@@ -62,6 +78,11 @@ enum aos_x86_control_result aos_x86_control_step(
 #endif
             (void)aos_guest_vmm_lifecycle_rpc(&request, &reply, runtime);
         }
+        AOS_X86_CONTROL_STAGE(4);
+#ifdef AGENTOS_X86_LIFECYCLE_WITNESS
+        aos_x86_control_witness.status = reply.opcode;
+        aos_x86_control_witness.state = *runtime->state;
+#endif
 #ifdef AGENTOS_X86_LIFECYCLE_TRACE
         /* Bounded observation only; root never decides a lifecycle action.
          * Preserve the reply in native memory across this diagnostic IPC. */
@@ -78,11 +99,13 @@ enum aos_x86_control_result aos_x86_control_step(
 #endif
         _sel4_msg_to_mrs(&reply);
         info = seL4_MessageInfo_new(reply.opcode, 0u, 0u, _SEL4_MR_COUNT);
+        AOS_X86_CONTROL_STAGE(5);
 #ifdef CONFIG_KERNEL_MCS
         seL4_Send(AGENTOS_IPC_REPLY_CAP, info);
 #else
         seL4_Reply(info);
 #endif
+        AOS_X86_CONTROL_STAGE(6);
     } else if (!running) {
         /* Production endpoint grants are always badged. A blocking receive
          * cannot be the empty NBRecv case. */

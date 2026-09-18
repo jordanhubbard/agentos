@@ -576,8 +576,10 @@ void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_return_t returned)
                     (read_field(ep,CR0) & (PE|PG)) == (PE|PG) &&
                     boot_reads[0] && boot_reads[1];
                 if (passed) {
+                    AOS_X86_CONTROL_STAGE(10);
                     seL4_Send(AOS_X86_LIFECYCLE_PROBE_CAP,
                         seL4_MessageInfo_new(AOS_X86_LIFECYCLE_CHECKPOINT, 0u, 0u, 0u));
+                    AOS_X86_CONTROL_STAGE(11);
                     /* The ring-3 trap is terminal for this fixture. Service
                      * the client's destroy/rejection checks without another
                      * VM entry, even before SUSPEND arrives. */

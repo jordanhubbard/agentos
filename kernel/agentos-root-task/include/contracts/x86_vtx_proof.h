@@ -31,6 +31,18 @@
 #define AOS_X86_LIFECYCLE_TRACE_LABEL 0x584304u
 #define AOS_X86_LIFECYCLE_FAILURE_BADGE 1u
 #define AOS_X86_LIFECYCLE_BOOT_ACK  0x584305u
+#ifdef AGENTOS_X86_LIFECYCLE_WITNESS
+#include <stdint.h>
+/* Debugger observation in private native memory: no IPC or guest mapping. */
+typedef struct {
+    uint64_t magic, version;
+    uint64_t stage, opcode, status, state, badge, count;
+} aos_x86_lifecycle_witness_t;
+extern volatile aos_x86_lifecycle_witness_t aos_x86_control_witness;
+#define AOS_X86_CONTROL_STAGE(n) (aos_x86_control_witness.stage = (n))
+#else
+#define AOS_X86_CONTROL_STAGE(n) ((void)0)
+#endif
 /* Caller indices in the fixed userspace-proof topology. Badge high bits
  * identify the destination service, not the caller's service identity. */
 #define AOS_X86_LIFECYCLE_VMM_INDEX    6u

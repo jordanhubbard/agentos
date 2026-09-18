@@ -5,8 +5,17 @@
 #include "contracts/x86_vtx_proof.h"
 
 static seL4_Word last_operation, last_status, expected_status;
+#ifdef AGENTOS_X86_LIFECYCLE_WITNESS
+static volatile aos_x86_lifecycle_witness_t probe_witness = {
+    .magic = UINT64_C(0x414f534c50524f42), .version = UINT64_C(0x4c49464557495431),
+};
+#define PROBE_STAGE(n, op) do { probe_witness.stage = (n); probe_witness.opcode = (op); } while (0)
+#else
+#define PROBE_STAGE(n, op) ((void)0)
+#endif
 static _Noreturn void fail(void)
 {
+    PROBE_STAGE(5, last_operation);
     seL4_SetMR(0, AOS_X86_VTX_PROOF_FAIL);
     seL4_SetMR(1, last_operation);
     seL4_SetMR(2, last_status);
@@ -17,8 +26,10 @@ static _Noreturn void fail(void)
 }
 static void phase(uint32_t expected)
 {
+    PROBE_STAGE(1, expected);
     seL4_Word badge;
     seL4_MessageInfo_t info = seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge, AGENTOS_IPC_REPLY_CAP);
+    PROBE_STAGE(2, expected);
     last_operation = expected;
     last_status = badge;
     expected_status = ((seL4_Word)SVC_ID_X86_LIFECYCLE_PROBE << 48) |
@@ -32,7 +43,13 @@ static uint32_t call(uint32_t opcode, uint32_t value)
 {
     sel4_msg_t req = {.opcode = opcode, .length = 4u}, rep = {0};
     rep_u32(&req, 0u, value);
+    PROBE_STAGE(3, opcode);
     sel4_call(PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP, &req, &rep);
+    PROBE_STAGE(4, opcode);
+#ifdef AGENTOS_X86_LIFECYCLE_WITNESS
+    probe_witness.status = rep.opcode;
+    probe_witness.count++;
+#endif
     last_operation = opcode;
     last_status = rep.opcode;
     return rep.opcode;
