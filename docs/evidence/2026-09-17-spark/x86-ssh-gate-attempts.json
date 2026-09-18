@@ -1,6 +1,32 @@
 {
   "schema": 1,
+  "platform_regression": {
+    "revision": "bff2e2c6bec5dfc439b9033944c06f9eb61d994f",
+    "host": "Spark",
+    "command": "make gate",
+    "exit_code": 0,
+    "log": "/tmp/agentos-native-ssh-full-gate.log",
+    "log_sha256": "5a2d910f7f9544518ab5c5cefa721a9acb3a5f17d7ca259899e549683c6fb85a",
+    "scope": "Existing full platform gate including host checks, both root-task architecture boots and ARM guest network/block/console proofs; does not replace Debian parity or live GUI qualification"
+  },
   "attempts": [
+    {
+      "attempt": 25,
+      "revision": "3007751",
+      "host": "madmax",
+      "status": "integrated-cold-boot-ssh-passed",
+      "disk": "Same boot-24.raw; no reseeding; new QEMU process",
+      "gate": "make gate-x86_64-debian-ssh with first-boot known_hosts; 600-second timeout; first SSH attempt passed",
+      "result": "Original login key authenticated with strict original host-key verification; exact x86_64 newline output; guest sync succeeded; gate exit 0",
+      "gate_log_sha256": "ae3bf19ed94008eeb1aa3bfd2171dedd4408aa700892e9080415652147f8ef0a",
+      "console_sha256": "ada3510d82685c6df9c3e7cb910cc46c51820683c9d099fc6afe98fa9da374cd",
+      "known_hosts_sha256": "7dfd8ba6397a8a6c3f5e3ce7752dd45773358197ce117aa34272cd28420e6f39",
+      "ssh_stdout_sha256": "aaf631698ae5160ceb04a97681a14887fdcab47cd6e0f163c87485b3b1340b62",
+      "identity_verification": "First and second boot known_hosts receipts compare byte-for-byte equal",
+      "local_evidence": "build/evidence/x86-native-ssh/agentos-qemu-Yhyq55.*",
+      "lifecycle": "Guest sync completed before gate shutdown; no Intel test QEMU remains",
+      "limits": "Single guest platform cold boot; not guest-slot reclamation, concurrent isolation, performance, GUI or full release qualification"
+    },
     {
       "attempt": 24,
       "revision": "3007751",
@@ -19,7 +45,7 @@
       "root_task_elf_sha256": "ed474da37bae5b19f2a4a7ce7ab14508be3f73dd013902ad098888b09518ee37",
       "local_evidence": "build/evidence/x86-native-ssh/agentos-qemu-LxAV1n.*",
       "lifecycle": "First QEMU stopped after successful gate; boot25 starts a new QEMU with the same disk, login key and retained host key",
-      "limits": "Cold-boot gate pending; no throughput, latency, concurrent isolation, GUI or full release qualification"
+      "limits": "Cold-boot followup is attempt 25; no throughput, latency, concurrent isolation, GUI or full release qualification"
     },
     {
       "attempt": 23,
