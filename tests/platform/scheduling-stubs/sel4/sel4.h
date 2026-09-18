@@ -6,6 +6,9 @@ typedef uintptr_t seL4_Word;
 typedef int seL4_Error;
 #define seL4_NoError 0
 #define seL4_AllRights 15u
+#define seL4_ARM_Default_VMAttributes 3u
+seL4_Error seL4_ARM_Page_Unmap(seL4_CPtr);
+seL4_Error seL4_ARM_Page_Map(seL4_CPtr, seL4_CPtr, seL4_Word, seL4_Word, seL4_Word);
 seL4_Error seL4_CNode_Copy(seL4_CPtr, seL4_Word, uint8_t,
     seL4_CPtr, seL4_Word, uint8_t, seL4_Word);
 seL4_Error seL4_CNode_Delete(seL4_CPtr, seL4_Word, uint8_t);

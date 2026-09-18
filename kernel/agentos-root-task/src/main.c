@@ -289,6 +289,7 @@ _Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
 #include "contracts/guest_queue_caps.h"
 #include "contracts/guest_graphics_caps.h"
 #include "contracts/guest_scheduling_caps.h"
+#include "contracts/guest_gic_caps.h"
 _Static_assert(VMM_GUEST_PRIORITY == AOS_GUEST_SCHED_PRIORITY &&
                VMM_SC_BUDGET_US == AOS_GUEST_SCHED_BUDGET_US &&
                VMM_SC_PERIOD_US == AOS_GUEST_SCHED_PERIOD_US,
@@ -299,6 +300,7 @@ _Static_assert(AOS_GUEST_SCHED_EXCHANGE_CAP >= AOS_GUEST_GRAPHICS_POOL_BASE + AO
 #if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
 static seL4_CPtr g_guest_sched_exchange[AOS_GUEST_SCHED_CLIENTS];
 static seL4_CPtr g_guest_sched_control[AOS_GUEST_SCHED_CLIENTS];
+static seL4_CPtr g_guest_gic_mapping[AOS_GUEST_SCHED_CLIENTS];
 #endif
 _Static_assert(AOS_GUEST_GRAPHICS_POOL_BASE > AOS_GUEST_QUEUE_TEST_COPY &&
                AOS_GUEST_GRAPHICS_POOL_BASE + AOS_GUEST_GRAPHICS_POOL_COUNT <= AOS_GUEST_RAM_POOL_BASE,
@@ -806,6 +808,8 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  */
 #define GIC_VCPU_IF_PA   0x08040000UL
 #define GIC_VCPU_IF_VA   0x08010000UL
+_Static_assert(GIC_VCPU_IF_VA == AOS_GUEST_GIC_IPA,
+               "initial and reconstructed guest GIC addresses must agree");
 
 /* QEMU virt virtio-mmio transports.
  *
@@ -1653,6 +1657,10 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     }
     err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_EXCHANGE_CAP,
         pd->cnode_size_bits, seL4_CapInitThreadCNode, exchange, 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+    err = seL4_CNode_Copy(exchange, AOS_GUEST_GIC_VSPACE_EXCHANGE_SLOT,
+        AOS_GUEST_SCHED_EXCHANGE_BITS, seL4_CapInitThreadCNode,
+        guest_vspace, 64u, seL4_AllRights);
     if (err != seL4_NoError) return err;
     g_guest_sched_exchange[owner] = exchange;
     g_guest_sched_control[owner] = schedcontrol_for_node(bi, sched_node_for_pd(pd));
@@ -3213,6 +3221,9 @@ void root_task_main(const seL4_BootInfo *bi)
                 report_guest_gic_failure("[rt] guest GIC vCPU mapping failed; refusing boot\n");
                 return;
             }
+#ifdef CONFIG_KERNEL_MCS
+            g_guest_gic_mapping[pd_is_secondary_guest_vmm(pd) ? 1u : 0u] = gic_copy;
+#endif
         }
 #endif
 
@@ -3642,6 +3653,14 @@ void root_task_main(const seL4_BootInfo *bi)
                     dbg_puts("[rt] guest scheduling exchange grant failed; stopping boot\n");
                     return;
                 }
+                if (!g_guest_gic_mapping[owner] ||
+                    seL4_CNode_Move(pd_cnode, AOS_GUEST_GIC_FRAME_BASE + owner,
+                        pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        g_guest_gic_mapping[owner], 64u) != seL4_NoError) {
+                    dbg_puts("[rt] guest GIC manager grant failed; stopping boot\n");
+                    return;
+                }
+                g_guest_gic_mapping[owner] = seL4_CapNull;
             }
         }
 #endif

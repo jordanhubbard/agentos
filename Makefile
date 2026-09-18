@@ -799,7 +799,12 @@ test-x86-firmware-build:
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
-test-host: test-guest-scheduling-host
+test-host: test-guest-scheduling-host test-guest-gic-mapping-host
+.PHONY: test-guest-gic-mapping-host
+test-guest-gic-mapping-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I tests/platform/scheduling-stubs -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_guest_gic_mapping.c -o $(BUILD_TMP_DIR)/test_guest_gic_mapping
+	@$(BUILD_TMP_DIR)/test_guest_gic_mapping
 .PHONY: test-guest-scheduling-host
 test-guest-scheduling-host:
 	@mkdir -p $(BUILD_TMP_DIR)
