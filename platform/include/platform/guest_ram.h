@@ -45,8 +45,10 @@ bool aos_vmm_guest_ram_release(size_t size);
 bool aos_vmm_guest_ram_rebuild(uint64_t gpa_base, uintptr_t hva_base, size_t size);
 
 #ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
-/* Preboot only: overwrite all RAM, revoke, retype, and verify every byte. */
-bool aos_vmm_guest_ram_recycle_test(uint64_t gpa_base, uintptr_t hva_base, size_t size);
+/* Preboot only: overwrite all RAM, revoke, retype, verify every byte and
+ * restore/verify boot images through the supplied qualification callback. */
+bool aos_vmm_guest_ram_recycle_test(uint64_t gpa_base, uintptr_t hva_base,
+                                   size_t size, bool (*restore_images)(void));
 #endif
 
 #endif /* AOS_PLATFORM_GUEST_RAM_H */

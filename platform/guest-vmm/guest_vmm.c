@@ -1163,6 +1163,36 @@ static bool guest_queue_recycle_test(void)
 }
 #endif
 
+#ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
+static bool guest_restore_embedded_images_test(void)
+{
+    if (g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) return false;
+    const aos_guest_boot_images_t images = {
+        .kernel = _guest_kernel_image,
+        .kernel_size = _guest_kernel_image_end - _guest_kernel_image,
+        .dtb = _guest_dtb_image,
+        .dtb_size = _guest_dtb_image_end - _guest_dtb_image,
+        .initrd = _guest_initrd_image,
+        .initrd_size = _guest_initrd_image_end - _guest_initrd_image,
+    };
+    aos_guest_boot_plan_t restored = {0};
+    if (aos_guest_boot_prepare(&restored, g_guest_profile, guest_ram_vaddr, &images,
+            g_guest_profile->kernel_format == AOS_GUEST_KERNEL_LINUX_IMAGE
+                ? linux_setup_images : NULL) != AOS_GUEST_BOOT_OK) return false;
+    const uintptr_t destinations[] = {restored.kernel_hva, restored.dtb_hva, restored.initrd_hva};
+    const void *sources[] = {images.kernel, images.dtb, images.initrd};
+    const size_t sizes[] = {images.kernel_size, images.dtb_size, images.initrd_size};
+    for (unsigned artifact = 0; artifact < 3; ++artifact) {
+        const volatile uint8_t *destination = (const volatile uint8_t *)destinations[artifact];
+        const uint8_t *source = sources[artifact];
+        for (size_t byte = 0; byte < sizes[artifact]; ++byte)
+            if (destination[byte] != source[byte]) return false;
+    }
+    g_guest_boot_plan = restored;
+    return true;
+}
+#endif
+
 static bool guest_vmm_teardown(void)
 {
     bool done = aos_guest_teardown_step(&guest_teardown, g_guest_profile->ram_size);
@@ -1496,11 +1526,12 @@ void init(void)
 
 #ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
     if (!aos_vmm_guest_ram_recycle_test(g_guest_profile->guest_gpa_base,
-            guest_ram_vaddr, g_guest_profile->ram_size)) {
+            guest_ram_vaddr, g_guest_profile->ram_size, guest_restore_embedded_images_test)) {
         LOG_VMM_ERR("guest RAM recycle: FAIL\n");
         return;
     }
     microkit_dbg_puts("guest RAM recycle: PASS two full overwrite/revoke/rebuild/zero cycles\n");
+    microkit_dbg_puts("guest image recycle: embedded artifacts restored byte for byte twice\n");
 #endif
 
     /* Place guest images in RAM */
@@ -1552,10 +1583,15 @@ void init(void)
         .initrd = _guest_initrd_image,
         .initrd_size = initrd_size,
     };
+#ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
+    /* Boot the last restored copy itself, not a third replacement copy. */
+    enum aos_guest_boot_error boot_error = AOS_GUEST_BOOT_OK;
+#else
     enum aos_guest_boot_error boot_error = aos_guest_boot_prepare(
         &g_guest_boot_plan, g_guest_profile, guest_ram_vaddr, &images,
         g_guest_profile->kernel_format == AOS_GUEST_KERNEL_LINUX_IMAGE
             ? linux_setup_images : NULL);
+#endif
     if (boot_error != AOS_GUEST_BOOT_OK) {
         LOG_VMM_ERR("Failed to initialise guest images\n");
         return;

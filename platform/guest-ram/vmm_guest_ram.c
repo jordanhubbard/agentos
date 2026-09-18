@@ -60,9 +60,10 @@ bool aos_vmm_guest_ram_rebuild(uint64_t gpa, uintptr_t hva, size_t size)
 }
 
 #ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
-bool aos_vmm_guest_ram_recycle_test(uint64_t gpa, uintptr_t hva, size_t size)
+bool aos_vmm_guest_ram_recycle_test(uint64_t gpa, uintptr_t hva, size_t size,
+                                   bool (*restore_images)(void))
 {
-    if (ram_frame_count(size) == 0u || (hva & 7u) != 0u) return false;
+    if (ram_frame_count(size) == 0u || (hva & 7u) != 0u || !restore_images) return false;
     volatile uint64_t *ram = (volatile uint64_t *)hva;
     for (uint32_t pass = 0u; pass < 2u; pass++) {
         for (size_t i = 0u; i < size / sizeof(*ram); i++)
@@ -79,6 +80,7 @@ bool aos_vmm_guest_ram_recycle_test(uint64_t gpa, uintptr_t hva, size_t size)
         if (!aos_vmm_guest_ram_rebuild(gpa, hva, size)) return false;
         for (size_t i = 0u; i < size / sizeof(*ram); i++)
             if (ram[i] != 0u) return false;
+        if (!restore_images()) return false;
     }
     return true;
 }

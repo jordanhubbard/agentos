@@ -143,8 +143,8 @@ pub struct TestArgs {
     /// Require emulated virtio-blk probe + DRIVER_OK + a pumped request.
     #[arg(long)]
     pub assert_emulated_blk: bool,
-    /// Recycle all guest RAM twice before boot, then prove guest block I/O.
-    #[arg(long, requires = "assert_emulated_blk")]
+    /// Recycle RAM and restore embedded images twice before the selected guest I/O proof.
+    #[arg(long)]
     pub assert_guest_ram_recycle: bool,
     /// After destruction, retype private queue pools and verify zero pages and deleted caps.
     #[arg(long, requires = "assert_guest_teardown")]
