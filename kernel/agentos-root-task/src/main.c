@@ -56,6 +56,7 @@
 #include "x86_host_pci.h"
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
+#include "contracts/queue_rebind_caps.h"
 #include <platform/serial_uart.h>
 #ifdef AGENTOS_GUEST_INPUT
 #include <platform/input.h>
@@ -3108,6 +3109,17 @@ void root_task_main(const seL4_BootInfo *bi)
             ep_mint_badge(service_ep, badge,
                            pd_cnode, ep_spec->cnode_slot,
                            pd->cnode_size_bits);
+        }
+
+        if (pd->self_svc_id == SVC_ID_SERIAL_VIRT) {
+            if (pd->cnode_size_bits != AOS_QUEUE_SERVICE_CNODE_BITS ||
+                seL4_CNode_Copy(pd_cnode, AOS_QUEUE_SERVICE_CNODE, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, pd_cnode, 64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_QUEUE_SERVICE_VSPACE, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, vspace, 64u, seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] serial queue reconstruction authority failed\n");
+                return;
+            }
         }
 
         /* ── 4g.4: Distribute device MMIO frame caps ────────────────────────

@@ -92,6 +92,16 @@ records passing host failure tests, full Spark gate and two Intel restoration
 cycles at `4748a19`. These resources remain stopped; a second guest boot is
 not yet qualified.
 
+Serial queue reconstruction uses capability IPC with a monotonically increasing
+generation. After terminal detach and VMM pool revocation, `serial_virt` receives
+the VMM's private untyped, retypes one large queue frame, maps it into its own
+VSpace and returns a frame capability to the VMM. Root supplies only the service's
+own CNode/VSpace management caps at boot. The commit step requires a closed,
+idle frontend gate and a fresh empty guest queue, clears old frontend input and
+output, then reopens admission. Foreign, replayed, skipped and wrapped generations
+are rejected. Host service tests pass; target reconstruction qualification is
+pending. This does not yet reconstruct block/network queues or boot a new guest.
+
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
 that cap's nonzero badge on the success path. It receives no device, IRQ, guest memory

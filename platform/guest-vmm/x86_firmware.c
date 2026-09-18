@@ -36,6 +36,7 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include "x86_guest_objects.h"
 #include <platform/x86_memory_rebuild.h>
 #include <platform/guest_ram.h>
+#include <platform/serial_rebind.h>
 
 #define VCPU AOS_GUEST_VCPU_CAP_BASE
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -227,6 +228,23 @@ static bool terminal_teardown_proof(void)
      * the pool. Exercise every pool, including ROM and device queues, twice.
      * These are stopped scratch frames, never a recreated executing guest. */
     for (unsigned pass = 0; pass < 2u; pass++) {
+        if (!aos_serial_virt_rebind(0u, pass + 1u)) return false;
+        aos_serial_channel_t rebuilt_serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
+        static const uint8_t message[] = "x86-recreated-serial\n";
+        if (aos_serial_queue_write(&rebuilt_serial.from_guest, message,
+                sizeof(message) - 1u) != AOS_SERIAL_PUMP_OK) return false;
+        seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
+        unsigned waits = 0;
+        while (__atomic_load_n(&rebuilt_serial.from_guest.queue->head, __ATOMIC_ACQUIRE)
+                != sizeof(message) - 1u && waits++ < 100000u) seL4_Yield();
+        if (waits >= 100000u || !serial_virt_client_detach(0u)) return false;
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_SERIAL,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_FRAME_BASE + AOS_GUEST_QUEUE_SERIAL,
+                AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup) return false;
         for (unsigned group = 0; group < 3u; group++) {
             unsigned count = group == 0u ? AOS_GUEST_QUEUE_INPUT :
                 group == 1u ? AOS_X86_FIRMWARE_RAM >> AOS_GUEST_RAM_FRAME_BITS :
