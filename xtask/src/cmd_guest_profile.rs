@@ -471,13 +471,16 @@ fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
             && target.autostart == Some(true),
         "x86 boot currently supports one autostart primary guest with one vCPU"
     );
-    ensure!(
-        target
-            .cpu_features
-            .as_ref()
-            .is_none_or(|f| f.required.is_empty() && f.prohibited.is_empty()),
-        "x86 firmware boot does not yet enforce profile CPU feature requests"
-    );
+    if let Some(features) = &target.cpu_features {
+        // Keep admission aligned with the synthetic target CPUID model.
+        // These are exposure requirements, not instruction-trapping policy.
+        let exposed = ["fp", "simd"];
+        ensure!(
+            features.required.iter().all(|f| exposed.contains(&f.as_str()))
+                && features.prohibited.iter().all(|f| !exposed.contains(&f.as_str())),
+            "x86 CPU profile exposes fixed fp/simd; requested requirements or prohibitions are unavailable"
+        );
+    }
     let devices = target.devices.as_ref().unwrap();
     ensure!(
         devices.len() == 3
@@ -2423,6 +2426,41 @@ mod tests {
         let mut bad = profile;
         bad.target.as_mut().unwrap().network_client = Some(1);
         assert!(validate_x86_boot_profile(&bad).is_err());
+    }
+
+    #[test]
+    fn x86_cpu_requests_match_fixed_target_exposure() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) =
+            resolve(&root, Path::new("debian-amd64-2g.toml"), &mut Vec::new()).unwrap();
+        validate_x86_boot_profile(&profile).unwrap();
+        let features = profile
+            .target
+            .as_ref()
+            .unwrap()
+            .cpu_features
+            .as_ref()
+            .unwrap();
+        assert_eq!(features.required, ["fp", "simd"]);
+        assert_eq!(
+            features.prohibited,
+            ["crypto", "rng", "vector", "nested-virt"]
+        );
+        for feature in ["fp", "simd", "crypto", "rng", "vector", "nested-virt"] {
+            let exposed = ["fp", "simd"].contains(&feature);
+            profile.target.as_mut().unwrap().cpu_features = Some(CpuFeatures {
+                version: Some(CPU_FEATURES_VERSION),
+                required: vec![feature.into()],
+                prohibited: vec![],
+            });
+            assert_eq!(validate_x86_boot_profile(&profile).is_ok(), exposed);
+            profile.target.as_mut().unwrap().cpu_features = Some(CpuFeatures {
+                version: Some(CPU_FEATURES_VERSION),
+                required: vec![],
+                prohibited: vec![feature.into()],
+            });
+            assert_eq!(validate_x86_boot_profile(&profile).is_ok(), !exposed);
+        }
     }
 
     #[test]

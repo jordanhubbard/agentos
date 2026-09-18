@@ -20,6 +20,16 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+The x86 firmware profile binder enforces CPU-feature requests against the
+synthetic CPUID model before VM entry. Its fixed baseline exposes x87 (FP)
+and SSE/SSE2 (SIMD); crypto (AES/PCLMUL), RNG (RDRAND/RDSEED), AVX-family
+vectors and nested virtualization are not advertised. Requirements outside
+that baseline and prohibitions of FP/SIMD are rejected by both host tooling
+and target binding. The pinned Debian profile declares this policy explicitly.
+This is CPUID exposure admission, not instruction trapping or a configurable
+CPU implementation. Host tests exhaust the feature masks and compare them
+with generated CPUID; native qualification of this profile policy is pending.
+
 The x86 firmware VMM now polls its service endpoint between VM entries and
 uses the shared guest lifecycle state machine. SUSPEND keeps the native VMM
 thread in its IPC loop; RESUME permits VM entry again with the saved exit

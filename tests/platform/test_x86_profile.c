@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <platform/x86_profile.h>
+#include <platform/x86_cpu.h>
 
 int main(void)
 {
@@ -37,6 +38,20 @@ int main(void)
     p.network_client=1; assert(!BIND()); p.network_client=0;
     p.cpu_features.version=1; p.cpu_features.required=AOS_GUEST_CPU_FEATURE_RNG;
     assert(!BIND()); p.cpu_features.required=0;
+    /* Exhaust the complete feature envelope, including contradictory masks.
+     * The fixed model admits FP/SIMD requirements and forbids exposing the
+     * other groups; it cannot honor a prohibition of its mandatory baseline. */
+    for (unsigned required=0; required<=AOS_GUEST_CPU_FEATURE_ALL; required++) {
+        for (unsigned prohibited=0; prohibited<=AOS_GUEST_CPU_FEATURE_ALL; prohibited++) {
+            p.cpu_features.required=required;
+            p.cpu_features.prohibited=prohibited;
+            bool expected=(required & ~AOS_X86_CPU_PROFILE_FEATURES)==0 &&
+                          (prohibited & AOS_X86_CPU_PROFILE_FEATURES)==0 &&
+                          (required & prohibited)==0;
+            assert(BIND()==expected);
+        }
+    }
+    p.cpu_features.required=0; p.cpu_features.prohibited=0;
     p.kernel_sha256[0]^=1; assert(!BIND()); p.kernel_sha256[0]^=1;
     b.initrd=(const uint8_t *)"abd"; assert(!BIND()); b.initrd=(const uint8_t *)"abc";
     b.kernel_size=33; assert(!BIND()); b.kernel_size=3;

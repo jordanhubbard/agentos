@@ -2,6 +2,14 @@
 #define AOS_X86_CPU_H
 #include <stdbool.h>
 #include <stdint.h>
+#include <platform/guest_profile.h>
+
+/* Profile exposure for the synthetic CPU: FP means x87, SIMD means SSE/SSE2.
+ * Crypto (AES/PCLMUL), RNG (RDRAND/RDSEED), vector (AVX family), and nested
+ * virtualization are not advertised. This describes CPUID exposure, not an
+ * instruction filter. The fixed baseline cannot disable FP or SIMD. */
+#define AOS_X86_CPU_PROFILE_FEATURES \
+    (AOS_GUEST_CPU_FEATURE_FP | AOS_GUEST_CPU_FEATURE_SIMD)
 
 typedef struct { uint32_t eax, ebx, ecx, edx; } aos_x86_cpuid_t;
 

@@ -16,6 +16,11 @@ block_media = 0
 autostart = true
 entry_from_image = false
 
+[target.cpu_features]
+version = 1
+required = ["fp", "simd"]
+prohibited = ["crypto", "rng", "vector", "nested-virt"]
+
 [boot]
 command_line = "console=hvc0 root=UUID=df4df5bb-613a-4382-8cf9-653304605a1f rw rootwait net.ifnames=0 biosdevname=0 panic=0"
 
