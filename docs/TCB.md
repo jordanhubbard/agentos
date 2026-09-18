@@ -28,7 +28,12 @@ that baseline and prohibitions of FP/SIMD are rejected by both host tooling
 and target binding. The pinned Debian profile declares this policy explicitly.
 This is CPUID exposure admission, not instruction trapping or a configurable
 CPU implementation. Host tests exhaust the feature masks and compare them
-with generated CPUID; native qualification of this profile policy is pending.
+with generated CPUID. At `42833d5`, the full Spark gate and two managed Intel
+Debian login/SSH/input/destroy cycles passed. Pinned SSH reported FPU/SSE/SSE2
+and none of the prohibited feature flags. The
+[CPU profile receipt](evidence/2026-09-18-spark/x86-cpu-profile.json) retains
+commands, hashes and the guest-visible witness. Multi-vCPU execution and final
+release acceptance remain pending.
 
 The x86 firmware VMM now polls its service endpoint between VM entries and
 uses the shared guest lifecycle state machine. SUSPEND keeps the native VMM
