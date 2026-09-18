@@ -416,11 +416,19 @@ fn run_seeded_cold_boots(args: &TestArgs) -> anyhow::Result<()> {
     let receipt = directory.join("cold-boots.json");
     let mut status = serde_json::json!({"schema":"agentos.seeded_cold_boots.v1",
         "profile":args.guest_os, "status":"running", "first_boot":false, "second_boot":false,
-        "scope":"two authenticated QEMU cold boots with original host identity; sync followed by QEMU stop, not orderly shutdown or guest-slot recreation"});
+        "scope":"guest-written and synced file across two authenticated QEMU cold boots with original host identity; not orderly shutdown, concurrent isolation or guest-slot recreation"});
     std::fs::write(&receipt, serde_json::to_vec_pretty(&status)?)?;
     let mut round = args.clone();
     round.assert_seeded_cold_boots = false;
     round.seeded_directory = Some(directory.clone());
+    round.seeded_witness = Some(
+        directory
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    status["witness"] = serde_json::json!(round.seeded_witness);
     for second in [false, true] {
         if second {
             round.seed_profile = false;
@@ -440,7 +448,7 @@ fn run_seeded_cold_boots(args: &TestArgs) -> anyhow::Result<()> {
     }
     status["status"] = serde_json::json!("passed");
     std::fs::write(receipt, serde_json::to_vec_pretty(&status)?)?;
-    println!("PASS: two seeded cold boots retained the disk and original SSH host identity");
+    println!("PASS: two seeded cold boots retained the guest-written synced file and original SSH host identity");
     Ok(())
 }
 
@@ -1231,6 +1239,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     .context("seeded SSH requires a runtime profile")?,
                 key,
                 args.seeded_ssh_known_hosts.as_deref(),
+                args.seeded_witness.as_deref(),
                 ssh_port,
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
@@ -2628,6 +2637,7 @@ fn seeded_ssh_via_cc(
     profile: &HostProfilePlan,
     key: &Path,
     known: Option<&Path>,
+    witness: Option<&str>,
     port: u16,
     timeout: Duration,
     qemu: &mut Child,
@@ -2695,6 +2705,7 @@ fn seeded_ssh_via_cc(
                     deadline,
                     &ssh.account,
                     "aarch64",
+                    witness.map(|token| (token, known.is_some())),
                 );
             }
         }
@@ -2877,6 +2888,7 @@ fn seeded_ssh_proof(
     deadline: Instant,
     account: &str,
     expected_arch: &str,
+    witness: Option<(&str, bool)>,
 ) -> anyhow::Result<String> {
     let known = log.with_extension("known_hosts");
     let mut known_file = std::fs::OpenOptions::new()
@@ -2885,6 +2897,7 @@ fn seeded_ssh_proof(
         .open(&known)?;
     writeln!(known_file, "[127.0.0.1]:{port} {host_key}")?;
     let mut attempt = 0;
+    let mut witness_pending = false;
     while Instant::now() < deadline {
         attempt += 1;
         let stdout_path = log.with_extension(format!("ssh-{attempt}.out"));
@@ -2926,7 +2939,13 @@ fn seeded_ssh_proof(
             .arg("-p")
             .arg(port.to_string())
             .arg(format!("{account}@127.0.0.1"))
-            .arg("uname -m && sudo -n sync")
+            .arg(if witness_pending {
+                let (token, second) = witness.context("missing persistence witness")?;
+                let script = persistence_script(token, second)?;
+                format!("sudo -n sh -c '{}'", script.replace('\'', "'\\''"))
+            } else {
+                "uname -m && sudo -n sync".to_string()
+            })
             .stdin(Stdio::null())
             .stdout(std::fs::File::create(&stdout_path)?)
             .stderr(std::fs::File::create(&stderr_path)?);
@@ -2942,11 +2961,31 @@ fn seeded_ssh_proof(
             std::thread::sleep(Duration::from_millis(100));
         };
         drop(child);
+        if witness_pending {
+            // Never replay a write after uncertain delivery. A fresh qualification
+            // is required if the single authenticated witness command fails.
+            anyhow::ensure!(
+                status.is_some_and(|s| s.success()),
+                "seeded persistence command failed or timed out; see {}",
+                stderr_path.display()
+            );
+            let (token, second) = witness.context("missing persistence witness")?;
+            anyhow::ensure!(
+                std::fs::read(&stdout_path)? == format!("{token}\n").as_bytes(),
+                "seeded persistence witness output mismatch"
+            );
+            return Ok(format!("Public-key SSH verified with pinned Ed25519 host key; {expected_arch}; persistence witness {}",
+                if second { "survived cold boot" } else { "written and synced" }));
+        }
         if status.is_some_and(|s| s.success()) {
             anyhow::ensure!(
                 std::fs::read(&stdout_path)? == format!("{expected_arch}\n").as_bytes(),
                 "seeded SSH architecture output mismatch"
             );
+            if witness.is_some() {
+                witness_pending = true;
+                continue;
+            }
             return Ok(format!("Public-key SSH verified with pinned Ed25519 host key; {expected_arch} and sync succeeded"));
         }
         if Instant::now() < deadline {
@@ -3040,7 +3079,7 @@ fn x86_linux_login_probe(
                             continue;
                         };
                         return seeded_ssh_proof(
-                            key, port, &host_key, log_path, deadline, "debian", "x86_64",
+                            key, port, &host_key, log_path, deadline, "debian", "x86_64", None,
                         );
                     }
                     return Ok(
@@ -5766,6 +5805,36 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn persistence_witness_requires_fresh_write_and_read_only_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("guest-state");
+        let run = |second| {
+            let script = super::persistence_script("cold-boot-test", second)
+                .unwrap()
+                .replace("/var/lib/agentos", root.to_str().unwrap());
+            std::process::Command::new("sh")
+                .args(["-c", &script])
+                .output()
+                .unwrap()
+        };
+        assert!(!run(true).status.success());
+        let written = run(false);
+        assert!(written.status.success());
+        assert_eq!(written.stdout, b"cold-boot-test\n");
+        assert!(!run(false).status.success());
+        let retained = run(true);
+        assert!(retained.status.success());
+        assert_eq!(retained.stdout, b"cold-boot-test\n");
+        let file = root.join("persistence-proof");
+        std::fs::write(&file, b"corrupted\n").unwrap();
+        assert!(!run(true).status.success());
+        assert_eq!(std::fs::read(file).unwrap(), b"corrupted\n");
+        for token in ["", "unsafe'quote", "two\nlines", "$(command)"] {
+            assert!(super::persistence_script(token, false).is_err());
+        }
+    }
+
     #[test]
     fn seeded_cold_boot_rejects_changed_profile_image_and_reinitialization() {
         let directory = tempfile::tempdir().unwrap();
