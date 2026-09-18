@@ -364,7 +364,7 @@ $(BUILD_DIR)/x86_string.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_string.c
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_string.o
 $(BUILD_DIR)/x86_firmware_vmm.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_firmware.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_firmware_vmm.o
 .PHONY: verify-x86-firmware
 verify-x86-firmware:
