@@ -57,7 +57,15 @@ explicit CC creation, Debian login and terminal input echo, pinned SSH,
 destruction and stale-handle rejection. An early manager call during the
 initial block read now receives `GUEST_ERR_NOT_READY` without changing guest
 state; the caller retries after initialization. This uses existing endpoint
-and notification authority. Recreation and external GUI acceptance remain pending.
+and notification authority. The native external GUI subsequently qualified
+creation, Debian login and terminal input echo, suspend/resume with fresh echo,
+and destruction on Intel at `3fcdf58`; the
+[GUI receipt](https://github.com/jordanhubbard/agentos_gui/blob/dab03f466ce6d879781a04b7f1fd87aa5f2c7bab/docs/evidence/2026-09-18-intel-console.json)
+records exact binaries and screenshots. `MSG_CC_LOG_STREAM` mode one addresses
+active public guest handles directly, avoiding the legacy slot-number ambiguity.
+It uses the same frontend queues and guest registry, with no new capabilities.
+Legacy slot mode remains supported. Recreation, concurrent native GUI streams,
+long-session transcript rollover and graphical Intel GUI acceptance remain pending.
 
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
