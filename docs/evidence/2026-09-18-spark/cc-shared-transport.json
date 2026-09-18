@@ -1,0 +1,21 @@
+{
+  "qualification": "CC uses the shared VirtIO MMIO and PCI transport",
+  "runtime_revision": "c910234ff0ed942aa8b494a315de911cb5705921",
+  "host": {
+    "commands": ["make test-virtio-host-transport", "make test-cc-transport-host"],
+    "result": "PASS with address and undefined-behavior sanitizers",
+    "scope": "Existing shared MMIO/PCI register and queue bounds tests plus CC startup record validation"
+  },
+  "spark": {
+    "command": "make gate",
+    "sdk": "2.1.0",
+    "result": "PASS, exit 0",
+    "log_sha256": "c6d2bdb3b9f70166d5d3bc55d5a9accf8f16e665b5c151007aa43b3345a5c234",
+    "scope": "Host suite, both root architectures and ARM guest network/block/console; actual CC console API delivered input and observed the guest proof through the shared MMIO transport"
+  },
+  "limits": [
+    "PCI binding is compiled into x86 CC but root provisioning and composition wiring remain pending",
+    "No Intel CC socket or GUI acceptance is claimed",
+    "Socket-close detection and held-input release remain separate outstanding work"
+  ]
+}
