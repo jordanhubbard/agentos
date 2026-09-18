@@ -2,7 +2,7 @@
   "schema": 1,
   "host": "sparky",
   "profile": "debian-arm64-nocloud.toml",
-  "status": "fresh-disk-ssh-passed-cold-boot-pending",
+  "status": "fresh-disk-and-cold-boot-ssh-passed",
   "attempts": [
     {
       "attempt": 3,
@@ -44,7 +44,22 @@
       "ssh_stdout_sha256": "5121ae59314a84da7b4d9587374398f1afa2000b243b3e54f491adefaac54f92",
       "observation": "Udev started, EFI partition was discovered, checked and mounted, and local-fs.target was reached. Stock cloud-init configured networking and Debian reached login. First SSH attempt timed out; second passed using the console-pinned Ed25519 host key, returned exact aarch64 newline and completed sudo -n sync.",
       "lifecycle": "Gate exited 0 and QEMU stopped"
+    },
+    {
+      "attempt": 6,
+      "revision": "581bf18",
+      "status": "same-disk-cold-boot-ssh-passed",
+      "disk": "build/evidence/arm-seeded-boot5/guest.raw",
+      "gate_log": "/tmp/agentos-arm-nocloud-boot6.log",
+      "gate_log_sha256": "9e582b3592e176267be84678bbaab661fb54c966ee29ed82227998dc83183fd5",
+      "console": "build/tmp/agentos-qemu-YWlOzT.console.log",
+      "console_sha256": "fe9f45d22e8a00fe48da39327d489be43381c2cd1daffa7579fac596fd2d5c59",
+      "known_hosts_sha256": "aa9e8c7bf9a6db3eaeb7be2f13c35f4f6aa1ef430d407fab361c08201a465697",
+      "ssh_stdout_sha256": "5121ae59314a84da7b4d9587374398f1afa2000b243b3e54f491adefaac54f92",
+      "observation": "Fresh QEMU process reused the original managed disk after verifying the staged source identity. EFI mounted and login was reached. SSH attempt one timed out during banner exchange; attempt two reported server not responding; attempt three authenticated with the original host-key receipt, returned exact aarch64 newline and completed sudo -n sync. First-boot and cold-boot known_hosts receipts are byte-identical.",
+      "diagnostics": "Journald reported its prior system journal corrupted or uncleanly shut down, renamed it and continued. The preceding gate synced the disk and stopped QEMU; it did not perform a guest shutdown.",
+      "lifecycle": "Gate exited 0 and QEMU stopped"
     }
   ],
-  "limits": "Fresh-disk login and key-only SSH are established for this profile on Spark. Same-disk cold-boot identity, timing parity, graphics integration and release readiness remain unproven."
+  "limits": "Fresh-disk and same-disk cold-boot login and key-only SSH with retained host identity are established for this profile on Spark. Authenticated timing receipts, timing parity, graphics integration and release readiness remain unproven."
 }

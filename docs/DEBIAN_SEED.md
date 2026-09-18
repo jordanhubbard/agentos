@@ -73,7 +73,12 @@ passed pinned-key SSH with exact `aarch64` output and a successful disk sync.
 The first SSH attempt timed out; the second succeeded. Failed attempts and
 the successful boot are recorded in
 `docs/evidence/2026-09-17-spark/arm-nocloud-boot-attempts.json`.
-Same-disk cold-boot identity and timing parity remain pending.
+Same-disk cold-boot authentication also passed using the original host-key
+receipt: the third SSH attempt succeeded after a banner timeout and a server
+response timeout. Both receipts were byte-identical. Journald replaced its
+unclean prior journal after the QEMU stop; this test syncs the disk but does
+not shut the guest down cleanly. Authenticated timing receipts and timing
+parity remain pending.
 
 By default the output is an ext4 partition image. To produce a full raw disk,
 also supply `SEED_DISK_RAW` and `SEED_PARTITION_OFFSET`. For the pinned
