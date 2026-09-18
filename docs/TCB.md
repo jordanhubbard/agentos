@@ -38,6 +38,35 @@ records Intel manager/lifecycle qualification and the full Spark gate at
 `8ebb8ed`, plus the default Debian boot/SSH regression at `d563b67` after
 correcting an automatic-start-only variable declaration collision.
 
+The opt-in `X86_CC_PCI` composition assigns the modern VirtIO console function
+at PCI 00:07.0 to CC, extending its existing host-console device ownership to
+x86. Root orders its device-page reservations with block/network reservations
+and rejects pages shared across device classes. CC receives three private DMA
+pages and a read-only startup record; bus mastering is enabled only after all
+mappings succeed. CC replaces the COM2 frontend driver in this composition
+and owns the serial virtualizer's frontend page. Guests retain only their own
+serial queues. The [initial socket receipt](evidence/2026-09-18-spark/x86-cc-inventory.json)
+records successful empty-inventory and boot-inspection requests through the
+Intel PCI transport, plus the full Spark gate. The subsequent
+[external lifecycle receipt](evidence/2026-09-18-spark/x86-cc-lifecycle.json)
+records CREATE/status/suspend/resume/destroy of the firmware guest and correct
+boot-reserved RAM reporting. CC mode defaults to 256 MiB and uses caller-controlled
+lifetime; native qualification retains its 65536-exit bound. The
+[external Linux receipt](evidence/2026-09-18-spark/x86-cc-linux.json) qualifies
+explicit CC creation, Debian login and terminal input echo, pinned SSH,
+destruction and stale-handle rejection. An early manager call during the
+initial block read now receives `GUEST_ERR_NOT_READY` without changing guest
+state; the caller retries after initialization. This uses existing endpoint
+and notification authority. The native external GUI subsequently qualified
+creation, Debian login and terminal input echo, suspend/resume with fresh echo,
+and destruction on Intel at `3fcdf58`; the
+[GUI receipt](https://github.com/jordanhubbard/agentos_gui/blob/dab03f466ce6d879781a04b7f1fd87aa5f2c7bab/docs/evidence/2026-09-18-intel-console.json)
+records exact binaries and screenshots. `MSG_CC_LOG_STREAM` mode one addresses
+active public guest handles directly, avoiding the legacy slot-number ambiguity.
+It uses the same frontend queues and guest registry, with no new capabilities.
+Legacy slot mode remains supported. Recreation, concurrent native GUI streams,
+long-session transcript rollover and graphical Intel GUI acceptance remain pending.
+
 The userspace qualification adds `x86_lifecycle_probe`, an ordinary client
 with its VMM service endpoint and a send-only failure-report cap. Root rejects
 that cap's nonzero badge on the success path. It receives no device, IRQ, guest memory

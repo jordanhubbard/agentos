@@ -843,6 +843,58 @@ static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
 static seL4_CPtr g_x86_blk_frames[AOS_VIRTIO_PCI_REGIONS];
 static seL4_CPtr g_x86_net_frames[AOS_VIRTIO_PCI_REGIONS];
+#ifdef AGENTOS_X86_CC_PCI
+static seL4_CPtr g_x86_cc_frames[AOS_VIRTIO_PCI_REGIONS];
+static cc_virtio_pci_startup_t g_x86_cc_startup;
+
+/* Boot-only provisioning. The caller must not start CC after any failure.
+ * Partial allocations remain in root; DMA is enabled only after all mappings
+ * and the read-only startup record have been installed successfully. */
+static bool provision_x86_cc(seL4_CPtr vspace)
+{
+    cc_virtio_pci_startup_t startup = g_x86_cc_startup;
+    seL4_CPtr dma[3] = {0};
+    uint64_t pa[3] = {0};
+    const seL4_Word va[3] = {CC_VIRTIO_QUEUE_VA, CC_VIRTIO_TX_BUFFER_VA,
+                              CC_VIRTIO_RX_BUFFER_VA};
+    for (unsigned i = 0; i < 3u; i++) {
+        if (ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &dma[i]) != seL4_NoError)
+            return false;
+        seL4_ARCH_Page_GetAddress_t address = seL4_ARCH_Page_GetAddress(dma[i]);
+        if (address.error != seL4_NoError) return false;
+        pa[i] = address.paddr;
+    }
+    startup.dma.queue_pa = pa[0];
+    startup.dma.tx_buffer_pa = pa[1];
+    startup.dma.rx_buffer_pa = pa[2];
+    if (!cc_virtio_pci_startup_valid(&startup)) return false;
+    for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+        seL4_CPtr copy = ut_alloc_slot();
+        if (!copy || seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                seL4_CapInitThreadCNode, g_x86_cc_frames[r], 64u, seL4_AllRights) != seL4_NoError ||
+            pd_vspace_map_uncached_device_frame(vspace, copy,
+                CC_VIRTIO_PCI_VA + r * CC_VIRTIO_PAGE_BYTES) != seL4_NoError)
+            return false;
+    }
+    for (unsigned i = 0; i < 3u; i++)
+        if (pd_vspace_map_device_frame(vspace, dma[i], va[i]) != seL4_NoError)
+            return false;
+    seL4_CPtr frame = 0;
+    if (ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame) != seL4_NoError ||
+        pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame,
+                                   RT_VQ_SCRATCH_VA) != seL4_NoError) return false;
+    *(volatile cc_virtio_pci_startup_t *)RT_VQ_SCRATCH_VA = startup;
+    AGENTOS_MEMORY_FENCE();
+    if (seL4_ARCH_Page_Unmap(frame) != seL4_NoError) return false;
+    seL4_CPtr reader = ut_alloc_slot();
+    if (!reader || seL4_CNode_Copy(seL4_CapInitThreadCNode, reader, 64u,
+            seL4_CapInitThreadCNode, frame, 64u,
+            seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError ||
+        pd_vspace_map_device_frame(vspace, reader, CC_VIRTIO_STARTUP_VA) != seL4_NoError)
+        return false;
+    return aos_x86_host_pci_enable(AOS_X86_HOST_CONSOLE);
+}
+#endif
 #endif
 
 static seL4_Error allocate_block_dma(const aos_blk_pci_info_t *pci)
@@ -1092,7 +1144,7 @@ static int pd_is_guest_vmm(const pd_desc_t *pd)
 
 static int pd_is_serial_frontend(const pd_desc_t *pd)
 {
-#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET) && !defined(AGENTOS_X86_CC_PCI)
     return pd->self_svc_id == SVC_ID_SERIAL;
 #else
     return pd->self_svc_id == SVC_ID_CC_PD;
@@ -2262,19 +2314,44 @@ void root_task_main(const seL4_BootInfo *bi)
     }
     /* Device watermarks advance monotonically. Order all device pages across
      * both drivers, while refusing any page shared between device classes. */
-    const aos_virtio_pci_layout_t *layouts[2] = {&host_block_layout, &host_net_layout};
-    seL4_CPtr *frames[2] = {g_x86_blk_frames, g_x86_net_frames};
-    for (unsigned a = 0; a < AOS_VIRTIO_PCI_REGIONS; a++)
-        for (unsigned b = 0; b < AOS_VIRTIO_PCI_REGIONS; b++)
-            if ((host_block_layout.region[a].paddr >> 12) ==
-                (host_net_layout.region[b].paddr >> 12)) {
-                dbg_puts("[rt] network and block PCI pages overlap; refusing startup\n");
-                return;
-            }
-    for (unsigned allocation = 0; allocation < 2u * AOS_VIRTIO_PCI_REGIONS; allocation++) {
+#ifdef AGENTOS_X86_CC_PCI
+    aos_virtio_pci_layout_t host_cc_layout;
+    if (aos_x86_host_pci_discover(AOS_X86_HOST_CONSOLE, &host_cc_layout)) {
+        dbg_puts("[rt] CC PCI discovery failed; refusing startup\n");
+        return;
+    }
+    g_x86_cc_startup.dma.magic = CC_VIRTIO_STARTUP_MAGIC;
+    g_x86_cc_startup.dma.version = CC_VIRTIO_STARTUP_PCI_VERSION;
+    g_x86_cc_startup.notify_multiplier = host_cc_layout.notify_multiplier;
+    for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+        g_x86_cc_startup.offset[r] = host_cc_layout.region[r].paddr & 4095u;
+        g_x86_cc_startup.length[r] = host_cc_layout.region[r].length;
+    }
+#endif
+    const aos_virtio_pci_layout_t *layouts[] = {&host_block_layout, &host_net_layout,
+#ifdef AGENTOS_X86_CC_PCI
+        &host_cc_layout,
+#endif
+    };
+    seL4_CPtr *frames[] = {g_x86_blk_frames, g_x86_net_frames,
+#ifdef AGENTOS_X86_CC_PCI
+        g_x86_cc_frames,
+#endif
+    };
+    const unsigned devices = sizeof(layouts) / sizeof(layouts[0]);
+    for (unsigned d = 0; d < devices; d++)
+        for (unsigned e = d + 1; e < devices; e++)
+            for (unsigned a = 0; a < AOS_VIRTIO_PCI_REGIONS; a++)
+                for (unsigned b = 0; b < AOS_VIRTIO_PCI_REGIONS; b++)
+                    if ((layouts[d]->region[a].paddr >> 12) ==
+                        (layouts[e]->region[b].paddr >> 12)) {
+                        dbg_puts("[rt] PCI device classes share a page; refusing startup\n");
+                        return;
+                    }
+    for (unsigned allocation = 0; allocation < devices * AOS_VIRTIO_PCI_REGIONS; allocation++) {
         unsigned next = AOS_VIRTIO_PCI_REGIONS, owner = 0;
         uint64_t page = UINT64_MAX;
-        for (unsigned d = 0; d < 2u; d++) {
+        for (unsigned d = 0; d < devices; d++) {
             for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
                 uint64_t candidate = layouts[d]->region[r].paddr & ~UINT64_C(4095);
                 if (!frames[d][r] && candidate < page) {
@@ -2365,6 +2442,9 @@ void root_task_main(const seL4_BootInfo *bi)
         if (pd->self_svc_id == SVC_ID_CC_PD) fb_clients[AOS_FB_OBSERVER_CLIENT] = i;
 #endif
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
+#ifdef AGENTOS_X86_CC_PCI
+            pd->self_svc_id == SVC_ID_CC_PD ||
+#endif
             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
             pd->self_svc_id == SVC_ID_LOG_DRAIN ||
             pd->self_svc_id == SVC_ID_NET_VIRT ||
@@ -3485,6 +3565,13 @@ void root_task_main(const seL4_BootInfo *bi)
          *      only the three device-visible physical addresses.
          */
         if (name_eq(pd->name, "cc_pd")) {
+#if defined(__x86_64__) && defined(AGENTOS_X86_CC_PCI)
+            if (!provision_x86_cc(vspace)) {
+                dbg_puts("[rt] CC PCI provisioning failed; refusing PD start\n");
+                continue;
+            }
+            dbg_puts("[rt] x86 CC PCI transport resources mapped\n");
+#else
             /* 1. Allocate + map VirtIO MMIO device page */
             seL4_CPtr cc_virtio_cap = seL4_CapNull;
             {
@@ -3570,6 +3657,7 @@ void root_task_main(const seL4_BootInfo *bi)
                 }
             }
 
+#endif
         }
 
         /* ── 4g.4.9: EventBus ring RAM region (agentos-gom) ─────────────────
@@ -3935,6 +4023,9 @@ void root_task_main(const seL4_BootInfo *bi)
                 (uint64_t)g_guest_ram_reservations[i].frame_count << seL4_ARCH_LargePageBits;
 #elif defined(__x86_64__)
         inspect_view.arch = AOS_INSPECT_ARCH_X86_64;
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+        inspect_view.guest_ram_bytes = AOS_X86_FIRMWARE_RAM;
+#endif
 #elif defined(__riscv)
         inspect_view.arch = AOS_INSPECT_ARCH_RISCV64;
 #endif

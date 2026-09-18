@@ -15,6 +15,10 @@ static bool device_config(aos_x86_host_device_t device, uint32_t *select,
         *select = UINT32_C(0x80003000); /* 00:06.0 */
         *expected = UINT32_C(0x10411af4);
         return true;
+    case AOS_X86_HOST_CONSOLE:
+        *select = UINT32_C(0x80003800); /* 00:07.0 */
+        *expected = UINT32_C(0x10431af4);
+        return true;
     default:
         return false;
     }

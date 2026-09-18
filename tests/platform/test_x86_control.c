@@ -155,5 +155,21 @@ int main(void)
     incoming_badge = SERIAL_VIRT_VMM_WAKE_BADGE | 1u;
     assert(aos_x86_control_step(&runtime, wake, &state) == AOS_X86_CONTROL_ERROR);
     assert(wakes == 1 && receives > 0 && polls > 0);
+    /* A manager request arriving during the initial block read must get a
+     * retryable reply without starting or destroying any guest resources. */
+    unsigned old_teardowns = teardowns, old_replies = replies;
+    seL4_Word boot_wake = 99;
+    request(MSG_GUEST_CREATE, 1);
+    assert(aos_x86_control_wait_initializing(&boot_wake));
+    assert(!boot_wake && received_reply.opcode == GUEST_ERR_NOT_READY);
+    assert(received_reply.length == 0 && replies == old_replies + 1);
+    assert(teardowns == old_teardowns && state == GUEST_STATE_DEAD && !started);
+    incoming_badge = BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE;
+    assert(aos_x86_control_wait_initializing(&boot_wake));
+    assert(boot_wake == incoming_badge && replies == old_replies + 1);
+    incoming_badge |= 1;
+    assert(!aos_x86_control_wait_initializing(&boot_wake));
+    incoming_badge = 0;
+    assert(!aos_x86_control_wait_initializing(&boot_wake));
     puts("PASS: x86 control framing, notification dispatch, suspend/resume and terminal retries");
 }

@@ -66,6 +66,7 @@ const system_desc_t system_desc_x86_64 = {
             .init_ep_count = 1u,
             .init_eps = {{ SVC_ID_VIRTIO_BLK, PD_CNODE_SLOT_VIRTIO_BLK_EP }},
         },
+#ifndef AGENTOS_X86_CC_PCI
         {
             .name = "serial_pd",
             .elf_path = "serial_pd.elf",
@@ -76,6 +77,7 @@ const system_desc_t system_desc_x86_64 = {
             .init_ep_count = 1u,
             .init_eps = {{ SVC_ID_SERIAL_VIRT, PD_CNODE_SLOT_SERIAL_VIRT_EP }},
         },
+#endif
         {
             .name = "serial_virt",
             .elf_path = "serial_virt.elf",
@@ -143,6 +145,23 @@ const system_desc_t system_desc_x86_64 = {
             .self_svc_id = SVC_ID_VM_MANAGER,
             .init_ep_count = 1u,
             .init_eps = {{ SVC_ID_GUEST_VMM_PRIMARY, PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP }},
+        },
+#endif
+#ifdef AGENTOS_X86_CC_PCI
+        /* Replaces serial_pd in this composition, so the count is unchanged.
+         * The PCI transport and guest-console frontend have one owner. */
+        {
+            .name = "cc_pd",
+            .elf_path = "cc_pd.elf",
+            .stack_size = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority = 200u,
+            .self_svc_id = SVC_ID_CC_PD,
+            .init_ep_count = 2u,
+            .init_eps = {
+                { SVC_ID_VM_MANAGER, PD_CNODE_SLOT_VM_MANAGER_EP },
+                { SVC_ID_SERIAL_VIRT, PD_CNODE_SLOT_SERIAL_VIRT_EP },
+            },
         },
 #endif
     },

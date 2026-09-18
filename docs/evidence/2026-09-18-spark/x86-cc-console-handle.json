@@ -1,0 +1,34 @@
+{
+  "schema": "agentos.x86_cc_console_handle.v1",
+  "revision": "3fcdf58eddecc37337d96e448ab652793b11bf12",
+  "result": "passed",
+  "host": "Intel Linux madmax via puck.local; local ARM regression on sparky",
+  "gate": "make gate-x86_64-cc-linux",
+  "configuration": "Same pinned Debian, OVMF, disk and SSH identity arguments as x86-cc-linux.json",
+  "acceptance": [
+    "Explicit public-handle console addressing returns Linux login and exact terminal input echo",
+    "Invalid handle, invalid addressing mode and nonzero reserved PD argument rejected",
+    "Early CREATE safely rejected, then CREATE succeeded",
+    "Pinned-key SSH verified x86_64 and sync",
+    "DESTROY succeeded; stale status, suspend, resume and direct console requests rejected"
+  ],
+  "artifacts": {
+    "spark_combined_log": "/tmp/agentos-cc-handle-intel-gate.log",
+    "spark_combined_sha256": "95bf414990c6bc1cd7cfa64de17c3948e8b3515dce13c4b9da3cc6e7953a0df6",
+    "intel_serial_log": "build/tmp/agentos-qemu-JuioxU.log",
+    "intel_serial_sha256": "50be6846c2770fa053d195ddc7ee6fcf8a53ed5829b24f1771681d5530f11f55",
+    "intel_console_log": "build/tmp/agentos-qemu-JuioxU.console.log",
+    "intel_console_sha256": "3ca31984e95404930ec928f7bb212c7dd8d45b3c78831734f4cd7067017e521d",
+    "intel_input_log": "build/tmp/agentos-qemu-JuioxU.cc-input.log",
+    "intel_input_sha256": "477e2d4b880cfd1ee0bcd37f305e1bc68c359d62acccd94aa49cacc309608360",
+    "spark_full_gate_log": "/tmp/agentos-cc-handle-mode-gate.log",
+    "spark_full_gate_sha256": "6b32b8bbe1d0d6946e1e9e3ba195c2f08cbaa5b3f2c88f15cfc6f70e7cd07597"
+  },
+  "native_gui_receipt": "https://github.com/jordanhubbard/agentos_gui/blob/dab03f466ce6d879781a04b7f1fd87aa5f2c7bab/docs/evidence/2026-09-18-intel-console.json",
+  "limitations": [
+    "Single boot-reserved managed guest; recreation and dynamic resource admission remain outstanding",
+    "Terminal input echo does not prove graphical keyboard or pointer input",
+    "Concurrent disk isolation, abrupt disconnect and held-input release remain separate acceptance work",
+    "Canonical integration, required GitHub checks and v0.4 release remain pending"
+  ]
+}

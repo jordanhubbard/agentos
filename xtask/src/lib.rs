@@ -197,6 +197,9 @@ pub struct TestArgs {
     #[arg(long, requires = "assert_firmware_reset", requires = "x86_block_image",
           conflicts_with_all = ["assert_x86_userspace", "assert_guest_faults"])]
     pub assert_x86_linux_login: bool,
+    /// Create Linux through binary CC and qualify its console and destruction.
+    #[arg(long, requires = "assert_x86_linux_login")]
+    pub assert_x86_cc: bool,
     /// Acquire and verify an x86 UEFI boot profile instead of separate artifact arguments.
     #[arg(long, requires = "assert_x86_linux_login")]
     pub x86_boot_profile: Option<std::path::PathBuf>,
@@ -230,6 +233,20 @@ pub struct QemuLaunchArgs {
     /// Use the faster multi-threaded TCG development configuration.
     #[arg(long)]
     pub fast: bool,
+    /// Use the managed Intel binary CC composition.
+    #[arg(long, conflicts_with_all = ["profile", "scenario"])]
+    pub x86_cc: bool,
+    /// Pinned Intel boot profile, prepared through the same path as qualification.
+    #[arg(long, requires = "x86_cc", requires = "x86_block_image")]
+    pub x86_boot_profile: Option<std::path::PathBuf>,
+    /// Existing raw disk for the Intel guest.
+    #[arg(long, requires = "x86_cc")]
+    pub x86_block_image: Option<std::path::PathBuf>,
+    #[arg(long, requires = "x86_block_image")]
+    pub x86_block_write: bool,
+    /// Loopback SSH forwarding port for the Intel guest (zero disables it).
+    #[arg(long, requires = "x86_cc")]
+    pub ssh_port: Option<u16>,
 }
 
 #[derive(clap::Args)]

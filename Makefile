@@ -607,6 +607,17 @@ _RUN_SELECTION_ARGS = $(if $(_SELECTED_GUEST_SCENARIO),--scenario $(_SELECTED_GU
 
 # run (default): build native → QEMU with serial on stdout and a Unix guest
 # =============================================================================
+.PHONY: run-x86_64-cc
+run-x86_64-cc:
+	@cargo xtask qemu-launch --board x86_64_generic_vtx --x86-cc
+
+.PHONY: run-x86_64-cc-linux
+run-x86_64-cc-linux:
+	@test -n "$(X86_ROOT_DISK)" || { echo 'Set X86_ROOT_DISK to a disposable raw Debian root disk'; exit 1; }
+	@cargo xtask qemu-launch --board x86_64_generic_vtx --x86-cc \
+		--x86-boot-profile debian-amd64.toml --x86-block-image "$(X86_ROOT_DISK)" \
+		--x86-block-write --ssh-port $(if $(X86_SSH_PORT),$(X86_SSH_PORT),12224)
+
 run:
 	@if [ -z "$(_SELECTED_GUEST_SCENARIO)" ] && [ -n "$(GUEST_PRIMARY_PROFILE)" ] && [ -n "$(GUEST_SECONDARY_PROFILE)" ]; then \
 		echo "ERROR: interactive two-slot launch requires GUEST_SCENARIO=<alias>"; \
@@ -741,6 +752,16 @@ gate-x86_64-linux-login:
 
 .PHONY: gate-x86_64-storage
 .PHONY: gate-x86_64-debian-ssh
+.PHONY: gate-x86_64-cc-linux
+gate-x86_64-cc-linux:
+	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login --assert-x86-cc \
+		--x86-boot-profile debian-amd64.toml --x86-ssh-key "$(X86_SSH_KEY)" \
+		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
+		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
+		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 gate-x86_64-debian-ssh:
 	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
@@ -877,6 +898,15 @@ test-x86-profile-host:
 	@$(BUILD_TMP_DIR)/test_x86_profile
 test-host: test-virtio-host-transport
 test-host: test-virtio-pci-caps
+test-host: test-cc-transport-host
+
+.PHONY: test-cc-transport-host
+test-cc-transport-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_cc_transport.c \
+		-o $(BUILD_TMP_DIR)/test_cc_transport
+	$(BUILD_TMP_DIR)/test_cc_transport
 
 .PHONY: test-virtio-pci-caps
 test-virtio-pci-caps:

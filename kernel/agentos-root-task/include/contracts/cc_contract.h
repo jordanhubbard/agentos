@@ -119,21 +119,7 @@
  * Device-visible physical addresses and cc_pd CPU virtual addresses are
  * deliberately distinct; DMA addresses must never be dereferenced as pointers.
  */
-#define CC_VIRTIO_STARTUP_MAGIC   0x43435651u /* "CCVQ" */
-#define CC_VIRTIO_STARTUP_VERSION 1u
-#define CC_VIRTIO_MMIO_VA         0x10002000UL
-#define CC_VIRTIO_STARTUP_VA      0x10003000UL
-#define CC_VIRTIO_QUEUE_VA        0x10006000UL
-#define CC_VIRTIO_TX_BUFFER_VA    0x10007000UL
-#define CC_VIRTIO_RX_BUFFER_VA    0x10008000UL
-
-typedef struct __attribute__((packed)) cc_virtio_startup {
-    uint32_t magic;
-    uint32_t version;
-    uint64_t queue_pa;
-    uint64_t tx_buffer_pa;
-    uint64_t rx_buffer_pa;
-} cc_virtio_startup_t;
+#include "cc_transport.h"
 
 /* ─── Command types ──────────────────────────────────────────────────────── */
 
@@ -402,6 +388,13 @@ struct cc_reply_restore {
 };
 
 /* ─── MSG_CC_LOG_STREAM ──────────────────────────────────────────────────── */
+
+/* MR3 address mode. Legacy mode zero retains the slot API below. Mode one
+ * addresses an active public guest handle directly: MR1=handle, MR2=0.
+ * The reply echoes that handle in MR2 and never allocates a log slot. This
+ * avoids ambiguity when a public handle equals another stream's slot number.
+ * Unknown modes and nonzero reserved MR2 are rejected. */
+#define CC_LOG_ADDRESS_HANDLE 1u
 
 /*
  * Drain a guest's serial output as ASCII bytes (agentos-vsi).  cc_pd resolves

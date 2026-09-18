@@ -1,0 +1,31 @@
+{
+  "qualification": "Initial external binary CC requests on the Intel PCI composition",
+  "runtime_revision": "0b424e21bbaaf03313d63ab3a8de26f2b0a94847",
+  "spark": {
+    "command": "make gate",
+    "result": "PASS, exit 0",
+    "log_sha256": "a77f1f7a6b44c37fba63582a73ca84a221da4aebab837ec08ed26c766dd4d195"
+  },
+  "intel": {
+    "host": "madmax Intel Linux via puck.local",
+    "sdk": "2.3.0",
+    "launch": "make run-x86_64-cc with pinned OVMF",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "qemu_pid": 3734903,
+    "socket": "/tmp/agentos-v04-intel-discovery/build/cc_pd.sock",
+    "commands": [
+      "agentctl --socket build/cc_pd.sock list-guests",
+      "agentctl --socket build/cc_pd.sock inspect",
+      "agentctl --socket build/cc_pd.sock list-guests"
+    ],
+    "result": "All three separate connections returned exit 0; inventory stayed empty and inspection identified x86_64 and all eight composition PDs",
+    "client_log_sha256": "b8b2ae3ee16ac9783f061765c384c872e91b6dbb276c7a706b806234cf806bb7"
+  },
+  "limits": [
+    "No guest was created in this probe; lifecycle and console through the external CC socket remain pending",
+    "No external GUI acceptance is claimed",
+    "Inspection still reports zero boot-reserved guest RAM on x86; correct this before inspection acceptance",
+    "Ordinary reconnects were tested, not abrupt partial-frame disconnects or held-input release",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}
