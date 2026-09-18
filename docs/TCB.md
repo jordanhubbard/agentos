@@ -357,7 +357,11 @@ the ready storage metadata and existing queues without clearing them or issuing
 ATTACH, resets private VirtIO registers and request bookkeeping, and preserves
 cleanup ownership if registration fails. Host sanitizer tests cover replacement
 descriptor reads, capacity/backend changes, queue preservation and inaccessible
-retired mappings. Native device adoption and a second guest boot remain pending.
+retired mappings. The [block adoption receipt](evidence/2026-09-18-spark/block-device-adoption.json)
+records two native stopped adoption cycles at `587793b`, including reset-state
+and geometry MMIO probes, exact 4 KiB readback against a pre-teardown copy,
+detach and capability revocation. Native reads use the VMM boot-read path;
+fresh guest descriptors remain host-tested and a second guest boot is pending.
 An unsuccessful allocation/map requires pool revocation before retry; a
 committed rebind must be detached before revocation, including if the caller
 fails to receive or map the returned frame. The old detach drain rule remains
