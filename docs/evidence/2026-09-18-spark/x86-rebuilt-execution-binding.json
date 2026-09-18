@@ -1,0 +1,30 @@
+{
+  "schema": "agentos.x86_rebuilt_execution_binding.v1",
+  "runtime_commit": "d756616cb88eee8bf5fa81aadde13bdb0bd61f28",
+  "accepted_for_guest_recreation": false,
+  "scope": "Stopped reconstructed EPT/VCPU binding to the owning native VMM thread",
+  "host": {
+    "command": "make test-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "result": "passed, terminal exit 0",
+    "checks": "Own-TCB capability and call order, both binding failure boundaries, existing nine object allocation/mapping failure boundaries",
+    "log_sha256": "5e4db9f536781c3e5d4ba2bbd34f23ad308f32a160ac8df0b25418dfe2e0b825"
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "passed, terminal exit 0",
+    "log_sha256": "f977306675d1f2ef06c0fd4c28c7f26f980dbed32d80a3b74e6d4b147a62f7f9"
+  },
+  "intel": {
+    "host": "madmax",
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 with pinned firmware, kernel and initrd",
+    "result": "passed, terminal exit 0",
+    "checks": "Two stopped binding/revocation cycles; stale guest VCPU/EPT capabilities rejected; retained native self-TCB capability copied and temporary copy deleted",
+    "log_sha256": "d6417fe2210ab19b2a7a485e7d89cef9e291b427ee530ae35c3bb6b3b0f6f169",
+    "stage_legend": "150 + pass * 100: bind and revoke guest objects; 151 + pass * 100: retained native TCB"
+  },
+  "limitations": [
+    "Binding occurs after reconstructed memory is released; the rebuilt VCPU is not entered",
+    "Firmware reset, full lifecycle reset integration and an actual second guest boot remain required",
+    "The intermittent serial reconstruction qualification failure remains unresolved"
+  ]
+}
