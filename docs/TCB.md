@@ -375,6 +375,10 @@ caller-managed backend detach and bus retirement. It clears private byte FIFOs,
 VirtIO state and activity counters, rejects reset during a retained TX drain,
 and leaves callbacks disabled if registration fails. The caller must separately
 bind a fresh serial endpoint; this helper does not reopen the virtualizer.
+The [console recreation receipt](evidence/2026-09-18-spark/console-device-recreation.json)
+records host tests for fresh descriptor TX/RX and isolation of buffered bytes,
+plus two native stopped MMIO reset/probe/retirement cycles at `0bb06f3` and the
+full Spark gate. Native replacement descriptor I/O and second boot remain pending.
 The VMM clears its local serial endpoint after acknowledgment; failed replies
 keep teardown retryable before capability revocation. Peer and operator
 channels retain their attachments. Serial queue pages are revoked only after
