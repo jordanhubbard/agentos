@@ -4,6 +4,7 @@
 
 static unsigned calls, fail_at;
 static seL4_CPtr pool;
+static int frame_test;
 static const seL4_CPtr slots[] = {80u, 91u, 102u, 117u, 133u};
 static const seL4_Word expected_types[] = {
     seL4_X86_VCPUObject, seL4_X86_EPTPML4Object,
@@ -16,7 +17,8 @@ seL4_Error seL4_Untyped_Retype(seL4_CPtr source, seL4_Word type,
 {
     assert(calls < AOS_X86_GUEST_OBJECT_COUNT);
     assert(source == pool && root == 7u);
-    assert(type == expected_types[calls] && offset == slots[calls]);
+    assert(type == (frame_test ? seL4_X86_LargePageObject : expected_types[calls]));
+    assert(offset == slots[calls]);
     assert(bits == 0u && node == 0u && depth == 0u && count == 1u);
     calls++;
     return calls == fail_at ? 19 : seL4_NoError;
@@ -34,5 +36,31 @@ int main(void)
             assert(calls == (fail_at ? fail_at : AOS_X86_GUEST_OBJECT_COUNT));
         }
     }
-    puts("PASS: x86 VCPU/EPT private allocation sources and every retype failure");
+    /* Every supported RAM reservation has distinct in-range pool grants;
+     * adding ROM must never consume the frame/alias reconstruction ranges. */
+    for (unsigned count = 1; count <= AOS_GUEST_RAM_MAX_FRAMES; count++) {
+        unsigned char seen[1u << AOS_GUEST_RAM_CNODE_BITS] = {0};
+        for (unsigned i = 0; i < count + AOS_X86_GUEST_ROM_FRAMES; i++) {
+            seL4_CPtr slot = aos_x86_guest_memory_pool_slot(count, i);
+            assert(slot && slot < AOS_GUEST_RAM_FRAME_BASE && !seen[slot]);
+            seen[slot] = 1;
+            if (i < count) assert(slot == AOS_GUEST_RAM_POOL_BASE + i);
+            else assert(slot == AOS_X86_GUEST_ROM_POOL_BASE + i - count);
+        }
+        assert(!aos_x86_guest_memory_pool_slot(count, count + AOS_X86_GUEST_ROM_FRAMES));
+        assert(!aos_x86_guest_memory_pool_slot(count, UINT32_MAX));
+    }
+    assert(!aos_x86_guest_memory_pool_slot(0, 0));
+    assert(!aos_x86_guest_memory_pool_slot(AOS_GUEST_RAM_MAX_FRAMES + 1u, 0));
+    assert(!aos_x86_guest_memory_pool_slot(UINT32_MAX, 0));
+    frame_test = 1;
+    for (pool = 50; pool <= 51; pool++) {
+        for (fail_at = 0; fail_at <= 1; fail_at++) {
+            calls = 0;
+            assert(aos_x86_guest_frame_retype(pool, 7u, slots[0]) ==
+                   (fail_at ? 19 : seL4_NoError));
+            assert(calls == 1);
+        }
+    }
+    puts("PASS: x86 private object/frame sources, failure propagation and bounded RAM/ROM grants");
 }

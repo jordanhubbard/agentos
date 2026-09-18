@@ -9,6 +9,7 @@
  */
 
 #include "system_desc.h"
+#include "contracts/guest_ram_caps.h"
 
 #if defined(AGENTOS_X86_VTX)
 const system_desc_t system_desc_x86_64 = {
@@ -80,7 +81,12 @@ const system_desc_t system_desc_x86_64 = {
             .name = "guest_vmm_primary",
             .elf_path = "guest_vmm_primary.elf",
             .stack_size = 0x10000u,
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+            /* Private RAM/ROM pool grants and future frame/alias ranges. */
+            .cnode_size_bits = AOS_GUEST_RAM_CNODE_BITS,
+#else
             .cnode_size_bits = 10u,
+#endif
             .priority = 250u,
             .self_svc_id = SVC_ID_GUEST_VMM_PRIMARY,
 #ifdef AGENTOS_X86_FIRMWARE_RESET

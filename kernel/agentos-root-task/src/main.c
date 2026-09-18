@@ -1707,7 +1707,7 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
                                     seL4_CPtr vmm_vspace)
 {
     if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY ||
-        pd->cnode_size_bits < 10u ||
+        pd->cnode_size_bits != AOS_GUEST_RAM_CNODE_BITS ||
         (uintptr_t)_binary_x86_firmware_bin_end -
         (uintptr_t)_binary_x86_firmware_bin_start != AOS_X86_FIRMWARE_BYTES) {
         return seL4_InvalidArgument;
@@ -1736,18 +1736,30 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
     err = seL4_X86_EPTPD_Map(objects[4], objects[1], 0xc0000000u, attr);
     if (err != seL4_NoError) return err;
 
-    const seL4_Word page_bytes = 1u << 21;
+    _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_RAM_FRAME_BITS,
+                   "x86 RAM pool must contain exactly one large frame");
+    _Static_assert(AOS_X86_FIRMWARE_BYTES ==
+                   (AOS_X86_GUEST_ROM_FRAMES << AOS_GUEST_RAM_FRAME_BITS),
+                   "ROM pool count must cover the firmware exactly");
+    const seL4_Word page_bytes = 1u << AOS_GUEST_RAM_FRAME_BITS;
+    const unsigned ram_frames = AOS_X86_FIRMWARE_RAM / page_bytes;
     /* Root initializes private guest frames through one temporary mapping.
      * ROM has no guest write permission. No host device or MMIO is mapped. */
     for (unsigned i = 0u; i < (AOS_X86_FIRMWARE_RAM + AOS_X86_FIRMWARE_BYTES) / page_bytes; i++) {
-        seL4_CPtr frame;
+        seL4_CPtr frame, pool;
+        seL4_CPtr pool_slot = aos_x86_guest_memory_pool_slot(ram_frames, i);
+        if (!pool_slot) return seL4_RangeError;
         const seL4_Word offset = (seL4_Word)i * page_bytes;
         const int rom = offset >= AOS_X86_FIRMWARE_RAM;
         const seL4_Word rom_offset = rom ? offset - AOS_X86_FIRMWARE_RAM : 0u;
         const seL4_Word gpa = rom ? AOS_X86_FIRMWARE_BASE + rom_offset : offset;
-        err = ut_alloc_cap(seL4_X86_LargePageObject, 0u, &frame);
+        err = ut_alloc_cap(seL4_UntypedObject, AOS_GUEST_RAM_FRAME_BITS, &pool);
         if (err != seL4_NoError) return err;
-        (void)cap_acct_record(seL4_CapNull, frame, seL4_X86_LargePageObject, pd_index, pd->name);
+        frame = ut_alloc_slot();
+        if (frame == seL4_CapNull) return seL4_NotEnoughMemory;
+        err = aos_x86_guest_frame_retype(pool, seL4_CapInitThreadCNode, frame);
+        if (err != seL4_NoError) return err;
+        (void)cap_acct_record(pool, frame, seL4_X86_LargePageObject, pd_index, pd->name);
         err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame, 0x70000000u);
         if (err != seL4_NoError) return err;
         volatile uint8_t *dst = (volatile uint8_t *)0x70000000u;
@@ -1772,7 +1784,19 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         err = seL4_X86_Page_MapEPT(frame, objects[1], gpa,
                                    rom ? seL4_CapRights_new(0u, 0u, 1u, 0u) : seL4_AllRights, attr);
         if (err != seL4_NoError) return err;
+        err = seL4_CNode_Move(pd_cnode, pool_slot, pd->cnode_size_bits,
+            seL4_CapInitThreadCNode, pool, 64u);
+        if (err != seL4_NoError) return err;
     }
+    const seL4_CPtr sources[] = {pd_cnode, vmm_vspace, objects[1]};
+    const seL4_Word slots[] = {AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_RAM_VMM_VSPACE, AOS_GUEST_RAM_GUEST_VSPACE};
+    for (unsigned i = 0; i < 3u; i++) {
+        err = seL4_CNode_Copy(pd_cnode, slots[i], pd->cnode_size_bits,
+            seL4_CapInitThreadCNode, sources[i], 64u, seL4_AllRights);
+        if (err != seL4_NoError) return err;
+    }
+    dbg_puts("[rt] x86 private RAM and ROM pools delegated to owning VMM\n");
     err = seL4_X86_VCPU_SetTCB(objects[0], vmm_tcb);
     if (err != seL4_NoError) return err;
     err = seL4_TCB_SetEPTRoot(vmm_tcb, objects[1]);
