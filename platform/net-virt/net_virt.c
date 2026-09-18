@@ -57,6 +57,7 @@ typedef struct {
     uint8_t               attached;
     uint8_t               retired;
     uint8_t               hw;          /* frames go to net_pd (else hub pump) */
+    uint8_t               raw_open;    /* driver handle exists even if link is down */
     uint8_t               rx_pending;  /* probe net_pd for RX on next service */
     uint8_t               tx_marked;
     uint8_t               rx_marked;
@@ -126,7 +127,7 @@ static int net_pd_call(uint32_t opcode, uint32_t arg0, uint32_t arg1,
     wr32(req.data, 0u, arg0);
     wr32(req.data, 4u, arg1);
     sel4_call((seL4_CPtr)PD_CNODE_SLOT_NET_PD_EP, &req, rep);
-    return rep->opcode == SEL4_ERR_OK &&
+    return rep->length >= sizeof(uint32_t) && rep->opcode == SEL4_ERR_OK &&
            rd32(rep->data, 0u) == NET_SVC_RAW_OK;
 }
 
@@ -415,9 +416,11 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
             nrep.length >= 18u) {
             uint32_t slot = rd32(nrep.data, 8u);
 
+            c->handle = rd32(nrep.data, 4u);
+            c->raw_open = 1u;
+
             if (slot >= NET_SVC_SLOT_BASE &&
                 slot + NET_SVC_SLOT_SIZE <= AGENTOS_NET_SHARED_SIZE) {
-                c->handle = rd32(nrep.data, 4u);
                 c->slot_off = slot;
                 for (uint32_t i = 0u; i < 6u; i++) {
                     mac[i] = nrep.data[12u + i];
@@ -478,10 +481,18 @@ static void handle_detach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
         status = NET_VIRT_ERR_BAD_CLIENT;
     } else {
         nv_client_t *c = &g_clients[client_id];
+        sel4_msg_t close_rep = {0};
         /* This PD serializes control and pumping. RAW_SEND/RECV are
          * synchronous copies into the driver's separate transfer page, so
          * none can retain a client-page reference after returning here. */
-        if (c->attached && !c->hw && aos_net_virt_remove_client(&g_hub, &c->q)) {
+        if (c->attached && c->raw_open &&
+            !net_pd_call(NET_SVC_OP_RAW_CLOSE, c->handle, 0u, &close_rep)) {
+            /* Retain ownership and the queue for a retry. Never report
+             * retirement while the driver still owns this raw session. */
+            status = NET_VIRT_ERR_UNAVAILABLE;
+        } else if (c->attached && !c->hw &&
+                   aos_net_virt_remove_client(&g_hub, &c->q)) {
+            c->raw_open = 0u;
             status = NET_VIRT_ERR_UNAVAILABLE;
         } else {
             *c = (nv_client_t){ .retired = 1u };
