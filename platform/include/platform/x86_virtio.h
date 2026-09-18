@@ -19,6 +19,12 @@ _Static_assert(AOS_X86_VIRTIO_GSI_BASE+AOS_X86_VIRTIO_SLOTS <= AOS_X86_IOAPIC_IN
  * contiguous guest RAM starting at GPA zero and
  * ending before the device aperture. It does not implement sparse high RAM. */
 bool aos_x86_virtio_init(aos_x86_ioapic_t *ioapic, void *ram, size_t ram_size);
+/* After vCPUs stop and device backends detach, forget the old bus without
+ * dereferencing its devices, controller or RAM. Disable GPA translation and
+ * reject late MMIO/IRQ activity. Idempotent. The next init must supply a
+ * reset private IOAPIC and newly mapped RAM before registering fresh devices.
+ * This does not reset backend state or rebuild guest resources itself. */
+void aos_x86_virtio_retire(void);
 bool aos_x86_virtio_contains(uint64_t gpa);
 /* Caller validates the fault, instruction and guest VA-to-GPA translation.
  * Transport registers require aligned DWORD accesses. Read-only device config

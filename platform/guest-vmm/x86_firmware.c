@@ -121,7 +121,9 @@ static bool control_start(void)
 }
 static bool control_teardown(void)
 {
-    return aos_guest_teardown_step(&teardown_state, AOS_X86_FIRMWARE_RAM);
+    if (!aos_guest_teardown_step(&teardown_state, AOS_X86_FIRMWARE_RAM)) return false;
+    aos_x86_virtio_retire();
+    return true;
 }
 static void control_wake(seL4_Word badge, void *context)
 {
@@ -277,6 +279,14 @@ static bool terminal_teardown_proof(void)
         seL4_MessageInfo_new(AOS_X86_VTX_PROOF_LABEL, 0u, 0u, 4u));
     if (!teardown_state.paging_released || !aos_x86_lifecycle_ack) return false;
     if (virtio_gpa_to_hva(0u, 1u) != NULL) return false;
+    for (unsigned slot = 0; slot < AOS_X86_VIRTIO_SLOTS; slot++) {
+        uint64_t address = AOS_X86_VIRTIO_BASE + slot * AOS_X86_VIRTIO_STRIDE;
+        uint32_t value = 0xaced1234u;
+        if (aos_x86_virtio_contains(address) ||
+            aos_x86_virtio_access(address, 4u, false, &value) || value != 0xaced1234u)
+            return false;
+    }
+    aos_x86_virtio_retire();
     const seL4_CPtr stale[] = {VCPU, AOS_GUEST_RAM_GUEST_VSPACE};
     for (unsigned i = 0; i < 2u; i++) {
         if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,

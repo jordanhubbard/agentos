@@ -303,6 +303,12 @@ references. The ARM production teardown callback stops device admission,
 drains accepted block and console work, releases graphics resources, then
 revokes the execution pool, RAM pools and paging pool. Failure remains non-resumable and
 retryable; completed stages are not re-entered after capability revocation.
+The x86 teardown callback also retires its private VirtIO bus after complete
+resource release. Retirement disables GPA translation and forgets device,
+IOAPIC and RAM pointers without dereferencing them, so revoked mappings are
+not accessed. Late MMIO and IRQ activity is rejected until a new bus is
+initialized and devices are registered. Backend/device state and the new
+IOAPIC must still be reset separately before a subsequent boot.
 Before capability revocation it also requires a network contract-v6 detach
 acknowledgment. The single-threaded virtualizer drops that client's queue
 pointers, including any hub-pump entry, before replying. Subsequent wakeups
