@@ -67,6 +67,20 @@ It uses the same frontend queues and guest registry, with no new capabilities.
 Legacy slot mode remains supported. Recreation, concurrent native GUI streams,
 long-session transcript rollover and graphical Intel GUI acceptance remain pending.
 
+Managed x86 CREATE after complete DESTROY now reconstructs private execution,
+RAM/ROM and service queues, clears retained device/serial/clock state, restores
+firmware CPU state and uses a fresh VM entry. Root delegates authority only at
+boot. A reconstruction error latches the slot DEAD; cleanup requires validated
+backend detach replies before revoking partial resources. Ambiguous REBIND
+failures do not permit guessing a generation for automatic retry. At `8d1c319`,
+the binary CC gate passed two pinned Debian login/SSH/input/destroy cycles in
+one seL4 boot with distinct public handles and stale-handle rejection; full
+Spark and host gates also passed. The
+[managed recreation receipt](evidence/2026-09-18-spark/x86-managed-recreation.json)
+records the test-harness failure and correction. Integrated failure injection,
+the intermittent serial qualification failure and native GUI recreation
+acceptance remain outstanding; this is not v0.4 release acceptance.
+
 The x86 firmware VMM receives a dedicated ASID pool for its EPT namespace at
 boot, retained outside the revocable VCPU/EPT object pool. Root assigns the
 initial EPT through that private pool and moves its capability to the VMM;
@@ -77,13 +91,13 @@ TCB, map guest RAM or start execution. The terminal qualification now exercises
 two reconstruction/revocation cycles; the
 [stopped-object receipt](evidence/2026-09-18-spark/x86-stopped-object-rebuild.json)
 records passing Intel qualification and the full Spark gate at `8714bd3`.
-Full guest recreation still needs memory, queues and boot reset.
+Those stopped checks alone did not establish guest recreation.
 Root also grants the firmware VMM a capability to its own native TCB in a
 separate retained slot. This grants no root or peer thread capability. The
 VMM can attach a rebuilt EPT and VCPU to that thread while execution remains
 stopped; the native thread is outside the guest object pool's revocation tree.
-Both binding failures propagate without starting execution. Firmware state
-initialization and actual second boot remain separate requirements.
+Both binding failures propagate without starting execution. The managed
+integration above adds firmware initialization and second-boot qualification.
 
 The memory reconstruction helper accepts only the configured RAM reservation
 and a complete retained firmware image outside the guest aliases. It retypes

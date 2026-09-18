@@ -1,0 +1,75 @@
+{
+  "schema": "agentos.x86_managed_recreation.v1",
+  "revision": "8d1c3190994fe28c605b32c609a4eec88126706b",
+  "runtime_revision": "7ce017c0fc9d5a61f0cb887f379b645e70f7d44b",
+  "accepted_for_v04_release": false,
+  "result": "passed, terminal exit 0",
+  "host": "Intel Linux madmax via puck.local",
+  "command": "cd /tmp/agentos-v04-intel-discovery && if pgrep -f '[q]emu-system-x86_64'; then exit 3; fi && git fetch origin platform/x86-guest-recreation && git checkout --detach 8d1c319 && cp --reflink=auto --sparse=always --no-clobber /tmp/agentos-debian-amd64/boot-24.raw /tmp/agentos-debian-amd64/recreate-8d1c319.raw && make gate-x86_64-cc-linux SEL4_SDK_VERSION=2.3.0 X86_ROOT_DISK=/tmp/agentos-debian-amd64/recreate-8d1c319.raw X86_SSH_KEY=/tmp/agentos-debian-amd64/ssh-seed-19/identity X86_SSH_PORT=12224 X86_SSH_KNOWN_HOSTS=/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-LxAV1n.known_hosts X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=600",
+  "scope": "Two managed pinned Debian boot/SSH/input/destroy cycles in one seL4 boot; the second CREATE reconstructs the retired guest",
+  "acceptance": [
+    "CREATE returned handle 1 after initialization, then handle 2 after complete destruction",
+    "Both generations reached Debian 13 login through binary CC and canonical virtio-console",
+    "Both generations completed public-key SSH with the retained Ed25519 host identity; uname returned x86_64 and sync succeeded",
+    "Generation 1 echoed agentos-cc-input-probe; generation 2 echoed agentos-cc-recreated-probe",
+    "DESTROY succeeded in both generations; status, suspend, resume and console calls rejected destroyed handles",
+    "The rebuilt guest boot used the profile's configured 1 GiB RAM reservation and restored firmware",
+    "Full Spark make gate and full host suite passed"
+  ],
+  "logs": {
+    "intel_run": {
+      "path": "/tmp/agentos-managed-recreate-intel-retry.log on sparky",
+      "sha256": "36df2e72a19a7e2a89df4e65ad15305a1ccd233850638eb03a8ddb5932d7e1a9"
+    },
+    "spark_gate": {
+      "path": "/tmp/agentos-managed-recreate-harness-gate.log",
+      "sha256": "83eccf6a4f0309f8d1ba88797c47baedcc706405484f2ecedf7bf3182c2301f0"
+    },
+    "host_suite": {
+      "path": "/tmp/agentos-managed-recreate-harness-host.log",
+      "sha256": "7fae40504b34cd1eb453c4ed0bfafe065b6b3a00f477dbad90abf1450dc7214d"
+    },
+    "intel_target": {
+      "path": "build/tmp/agentos-qemu-1Tslbu.log",
+      "sha256": "1f1efee6c116457889382ba9df87b621bef6038d29a7440945c6e378e2aba46d"
+    },
+    "first_console": {
+      "path": "build/tmp/agentos-qemu-1Tslbu.console.log",
+      "sha256": "88ad00bc563d48166f74bea66d074e812a1ae0d872d881516f600dbf79172c84"
+    },
+    "second_console": {
+      "path": "build/tmp/agentos-qemu-1Tslbu.recreated.console.log",
+      "sha256": "4dc2e08ce81cec571771252cd8df59496b90f45337c94fc6c9716e61142cdd27"
+    },
+    "first_input": {
+      "path": "build/tmp/agentos-qemu-1Tslbu.cc-input.log",
+      "sha256": "25eb380e94823555c17a842f8f6f1b9be722c08b70cd32c5c542f654781ecd84"
+    },
+    "second_input": {
+      "path": "build/tmp/agentos-qemu-1Tslbu.recreated.cc-input.log",
+      "sha256": "c89c82a9ffaf3b4061a2c6acea10688f457bfdb4505de3fa6b48b661041357df"
+    },
+    "ssh_outputs": {
+      "paths": [
+        "build/tmp/agentos-qemu-1Tslbu.ssh-1.out",
+        "build/tmp/agentos-qemu-1Tslbu.recreated.ssh-1.out"
+      ],
+      "sha256_each": "aaf631698ae5160ceb04a97681a14887fdcab47cd6e0f163c87485b3b1340b62"
+    }
+  },
+  "superseded_attempt": {
+    "revision": "7ce017c",
+    "result": "failed in test harness after recreation admission",
+    "reason": "Second-generation console stem was incorrectly used as the target VMM log path, causing ENOENT before second-boot observation",
+    "run_sha256": "0703ab4d17f9ba3e8ce321ef554f7f26f57c4ec15c66529a0db05db5f76635e4",
+    "correction": "Separate target log and per-generation artifact paths; regression covers independent transcripts and target-failure detection"
+  },
+  "limitations": [
+    "Integrated reconstruction failure-injection coverage remains required; primitive allocation, mapping, device and reset checks do not cover every transaction failure",
+    "An ambiguous or failed reconstruction latches the guest DEAD; cleanup retains pool ownership until acknowledged backend detach and does not guess generations for automatic retry",
+    "The separate intermittent serial reconstruction qualification failure remains unresolved",
+    "This is binary CC client acceptance, not native GUI recreation acceptance",
+    "Dynamic desktop resources, concurrent writable-disk isolation, broader roadmap gates and canonical integration remain pending",
+    "Current GitHub required checks remain queued; no release or bypass"
+  ]
+}
