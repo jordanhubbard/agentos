@@ -59,7 +59,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
             AOS_SERIAL_FRONTEND_FRAME * AOS_SERIAL_FRAME_SIZE +
             i * AOS_SERIAL_FRONTEND_STRIDE);
     }
-    agentos_log_info("serial_virt", "READY: isolated serial queue service v3");
+    agentos_log_info("serial_virt", "READY: isolated serial queue service v4");
     for (;;) {
         seL4_Word badge = 0;
 #ifdef CONFIG_KERNEL_MCS

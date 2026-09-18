@@ -159,7 +159,7 @@ asking for detach; BUSY or malformed replies keep teardown retryable and
 prevent capability revocation. Detach does not issue a flush or establish
 durability. Media ownership and the per-client RAM
 fallback disk remain allocated; retired clients cannot silently reattach.
-Serial contract v3 adds terminal VMM-role detach under the existing guest
+Serial contract v4 retains terminal VMM-role detach under the existing guest
 badge authority. The service stops both transfer directions, clears its guest
 channel pointers and marks the frontend detached before acknowledging. It
 does not wait for unread terminal bytes, which may be abandoned at destruction.
@@ -167,6 +167,16 @@ The VMM clears its local serial endpoint after acknowledgment; failed replies
 keep teardown retryable before capability revocation. Peer and operator
 channels retain their attachments. Serial queue pages are revoked only after
 all services detach; reattachment requires an explicit generation/reset path.
+Frontend admission now uses an atomic CLOSED/BUSY gate in each channel's
+metadata. CC reads/writes and x86 UART steps hold BUSY while accessing queues.
+Detach permanently sets CLOSED and returns BUSY until an admitted access
+finishes; ending that access cannot clear CLOSED. Late accesses change no
+queue cursor. The UART abandons pending local bytes after closure and does no
+further UART I/O. Host tests exercise this interleaving and preserve peer and
+operator progress. ARM teardown/full gate and Intel Debian VMX/SSH passed at
+`6d9702f`; [the receipt](evidence/2026-09-18-spark/serial-frontend-retirement.json)
+separates host interleaving coverage from target regression evidence.
+This fence does not reopen channels or implement generation/reset semantics.
 Input uses a one-shot detach handshake at the end of each existing VMM-owned
 event page. The stopped VMM publishes a versioned request and signals the
 service. Before acknowledging, `input_virt` removes that client from private
@@ -868,7 +878,7 @@ live scheduler inspection.
 The separate `operator_session` PD is a native client, outside the TCB. It has
 one serial queue page, serial-virtualizer attach/send capabilities, its own
 receive-only notification and the read-only boot snapshot. It has no driver,
-guest lifecycle, guest-memory or CC frontend authority. Serial contract v3
+guest lifecycle, guest-memory or CC frontend authority. Serial contract v4
 binds operator role/client 2 to its own badge, independently of the two VMM
 identities and CC's frontend identity.
 

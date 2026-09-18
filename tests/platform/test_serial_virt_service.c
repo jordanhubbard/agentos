@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <platform/serial_virt_service.h>
+#include <platform/serial_frontend.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -116,6 +117,20 @@ int main(void)
           SERIAL_VIRT_ERR_VERSION && service.guest_attached[0],
           "wrong detach version preserves attachment");
     req.version = SERIAL_VIRT_CONTRACT_VERSION;
+    check(aos_serial_frontend_begin(&service.frontend[0]) == AOS_SERIAL_PUMP_OK,
+          "frontend can admit an operation before retirement");
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_BUSY && service.guest_attached[0] && !service.guest_retired[0],
+          "detach waits for admitted frontend access before forgetting guest pointers");
+    aos_serial_frontend_end(&service.frontend[0]);
+    uint8_t late = 'x'; uint32_t late_count = 99;
+    uint32_t old_tail = service.frontend[0].to_guest.queue->tail;
+    uint32_t old_head = service.frontend[0].from_guest.queue->head;
+    check(aos_serial_frontend_write(&service.frontend[0], &late, 1) == AOS_SERIAL_PUMP_INVALID &&
+          aos_serial_frontend_read(&service.frontend[0], &late, 1, &late_count) == AOS_SERIAL_PUMP_INVALID &&
+          !late_count && service.frontend[0].to_guest.queue->tail == old_tail &&
+          service.frontend[0].from_guest.queue->head == old_head,
+          "ending an admitted operation preserves retirement and rejects late I/O without cursor changes");
     check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
           SERIAL_VIRT_OK && !service.guest_attached[0] && service.guest_retired[0] &&
           !service.guest[0].meta && !service.guest[0].from_guest.queue &&

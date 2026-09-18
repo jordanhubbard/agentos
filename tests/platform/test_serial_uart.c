@@ -38,7 +38,8 @@ int main(void)
     initializing=false;
     aos_serial_queue_t txq={0},rxq={0};
     uint8_t tx[4]={0},rx[4]={0};
-    aos_serial_uart_t uart={.channel={.from_guest={&txq,tx,4},.to_guest={&rxq,rx,4}}};
+    aos_serial_channel_meta_t meta={0};
+    aos_serial_uart_t uart={.channel={.from_guest={&txq,tx,4},.to_guest={&rxq,rx,4},.meta=&meta}};
     const uint8_t bytes[]={1,2,3,4};
     assert(aos_serial_queue_write(&uart.channel.from_guest,bytes,4)==AOS_SERIAL_PUMP_OK);
     bool changed=false;
@@ -64,5 +65,13 @@ int main(void)
     assert(!aos_serial_uart_step(&uart,&io,&changed));
     status=0; txq.tail=txq.head+5;
     assert(!aos_serial_uart_step(&uart,&io,&changed));
-    puts("PASS: UART initialization, exact bytes, TX/RX backpressure and I/O failures");
+    assert(meta.frontend_gate == 0); /* Failed I/O must release admission. */
+    unsigned previous_writes = writes, previous_reads = in_n;
+    uart.tx_pending = uart.rx_pending = true;
+    meta.frontend_gate = AOS_SERIAL_FRONTEND_CLOSED;
+    io_failed = true;
+    assert(aos_serial_uart_step(&uart,&io,&changed) && !changed);
+    assert(!uart.tx_pending && !uart.rx_pending && writes == previous_writes && in_n == previous_reads);
+    assert(meta.frontend_gate == AOS_SERIAL_FRONTEND_CLOSED);
+    puts("PASS: UART exact bytes, backpressure, I/O failures and closed frontend admission");
 }

@@ -1,0 +1,38 @@
+{
+  "qualification": "Serial frontend retirement admission fence",
+  "runtime_revision": "6d9702fb36749a6a6c13e29df0ec63b6836b5302",
+  "source_clean_during_tests": true,
+  "arm": {
+    "host": "Spark AArch64",
+    "target_command": "make test-guest-teardown QEMU_TEST_SSH_PORT=12237",
+    "target_result": "PASS, exit0; live console I/O, destroy, resource revocation and stale lifecycle-handle rejection",
+    "target_log_sha256": "8bfb4cc30443e79a252640c0588d16fd05836b23c40b5599f6594186902a72dd",
+    "serial_log_sha256": "6fdd3dbea72c4472049fcec4dccaa08930d4a673abf6bfbda1d53ad952bc7870",
+    "gate_command": "make gate QEMU_TEST_SSH_PORT=12237",
+    "gate_result": "PASS, exit0",
+    "gate_log_sha256": "fcb0b9075108dfaafa98450b5cf290206447b67dd3c4adccd1814f8e2cfe216b"
+  },
+  "intel": {
+    "host": "madmax Intel Linux via puck.local",
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600 with retained pinned Debian media, SSH host key and OVMF",
+    "result": "PASS, exit0; public-key SSH with pinned Ed25519 host key, x86_64 and sync",
+    "log_sha256": "e6391832d742028382582cf637dad53833902b0750f05ee2b1ab048eb19654aa",
+    "console_log_sha256": "9b782d598b43eb2c73c53fdae3509fa600d69af175f2e3b27aeabde14b48b3e6",
+    "serial_log_sha256": "40ce515b161d635de28447c34b7d57483e1062432f859922e305f00fbb063114",
+    "qemu_pid": 3122513,
+    "qemu_log_stem": "agentos-qemu-6sAq2l",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5"
+  },
+  "host_tests": [
+    "Detach closes admission and waits for an admitted frontend operation",
+    "Operation completion preserves closure; late reads/writes do not move cursors",
+    "Retired guest page protection with continued peer/operator traffic",
+    "UART exact bytes, backpressure, I/O failure cleanup and closed-channel pending-byte discard"
+  ],
+  "limits": [
+    "The critical close/in-flight interleaving is host-tested, not target fault-injected",
+    "Intel qualifies the updated UART path during boot/SSH, not x86 lifecycle teardown",
+    "No channel reopening or generation/reset protocol is implemented",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}

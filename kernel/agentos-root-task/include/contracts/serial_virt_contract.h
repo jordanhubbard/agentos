@@ -6,9 +6,11 @@
 
 /* Only attachment control uses IPC. Console bytes use shared sDDF byte queues.
  * Notifications are persistent seL4 Signals, not endpoint NBSends. */
-#define SERIAL_VIRT_CONTRACT_VERSION 3u
+#define SERIAL_VIRT_CONTRACT_VERSION 4u
 #define SERIAL_VIRT_OP_ATTACH 0x2d01u
-/* Version 3 terminal guest detach: same layouts as attach, VMM role only.
+/* Version 4 terminal guest detach: same layouts as attach, VMM role only.
+ * Frontend queue access uses the shared admission gate. Detach closes it
+ * permanently and returns BUSY while an admitted operation is in progress.
  * The producer must stop before calling. OK retires the service's pointers
  * to this guest page and marks its frontend detached. Pending terminal bytes
  * may be abandoned; no viewer drain is required. Repeated detach is OK;

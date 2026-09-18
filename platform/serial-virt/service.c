@@ -31,6 +31,10 @@ uint32_t aos_serial_virt_detach(aos_serial_virt_service_t *service,
         return SERIAL_VIRT_ERR_AUTHORITY;
     const uint32_t client = request->client;
     if (service->guest_retired[client]) return SERIAL_VIRT_OK;
+    if (!service->frontend[client].meta) return SERIAL_VIRT_ERR_PROTOCOL;
+    uint32_t gate = __atomic_fetch_or(&service->frontend[client].meta->frontend_gate,
+        AOS_SERIAL_FRONTEND_CLOSED, __ATOMIC_ACQ_REL);
+    if (gate & AOS_SERIAL_FRONTEND_BUSY) return SERIAL_VIRT_ERR_BUSY;
     if (service->frontend_attached[client])
         __atomic_store_n(&service->frontend[client].meta->attached, 0u, __ATOMIC_RELEASE);
     service->guest_attached[client] = 0;

@@ -41,6 +41,7 @@
 #include "sel4_boot.h"
 #include "serial_log.h"
 #include "serial_virt_client.h"
+#include <platform/serial_frontend.h>
 #include <platform/serial_virt_layout.h>
 #include <platform/console_input.h>
 #include <platform/input.h>
@@ -842,7 +843,7 @@ static bool cc_serial_input(uint32_t handle, const cc_input_event_t *event,
         bytes = &byte;
         length = 1;
     } else if (length != event->keycode || length > CC_INPUT_TEXT_MAX) return false;
-    if (aos_serial_queue_write(&cc_serial_channels[slot].to_guest, bytes, length) !=
+    if (aos_serial_frontend_write(&cc_serial_channels[slot], bytes, length) !=
         AOS_SERIAL_PUMP_OK) return false;
     if (length) {
         seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
@@ -860,7 +861,7 @@ static bool cc_serial_drain(uint32_t handle, uint8_t *dst, uint32_t max,
 {
     uint32_t slot;
     if (!cc_serial_slot(handle, false, &slot)) return false;
-    if (aos_serial_queue_read(&cc_serial_channels[slot].from_guest, dst, max,
+    if (aos_serial_frontend_read(&cc_serial_channels[slot], dst, max,
                              bytes_drained) != AOS_SERIAL_PUMP_OK) return false;
     if (*bytes_drained) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
     return true;
@@ -1636,9 +1637,9 @@ static void handle_operator(const cc_req_wire_t *req, cc_reply_wire_t *rep, bool
     if (!cc_serial_attached[slot]) { rep->mr[0] = CC_ERR_RELAY_FAULT; return; }
     aos_serial_pump_status_t status;
     if (write) {
-        status = aos_serial_queue_write(&cc_serial_channels[slot].to_guest, req->shmem, req->mr[1]);
+        status = aos_serial_frontend_write(&cc_serial_channels[slot], req->shmem, req->mr[1]);
         if (status == AOS_SERIAL_PUMP_OK) count = req->mr[1];
-    } else status = aos_serial_queue_read(&cc_serial_channels[slot].from_guest,
+    } else status = aos_serial_frontend_read(&cc_serial_channels[slot],
                                           rep->shmem, req->mr[1], &count);
     rep->mr[0] = status == AOS_SERIAL_PUMP_OK ? CC_OK :
                  status == AOS_SERIAL_PUMP_FULL ? CC_ERR_WOULD_BLOCK : CC_ERR_RELAY_FAULT;
