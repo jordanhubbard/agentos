@@ -288,6 +288,18 @@ _Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
 #include "contracts/guest_paging_caps.h"
 #include "contracts/guest_queue_caps.h"
 #include "contracts/guest_graphics_caps.h"
+#include "contracts/guest_scheduling_caps.h"
+_Static_assert(VMM_GUEST_PRIORITY == AOS_GUEST_SCHED_PRIORITY &&
+               VMM_SC_BUDGET_US == AOS_GUEST_SCHED_BUDGET_US &&
+               VMM_SC_PERIOD_US == AOS_GUEST_SCHED_PERIOD_US,
+               "root and runtime guest scheduling policy must agree");
+_Static_assert(AOS_GUEST_SCHED_EXCHANGE_CAP >= AOS_GUEST_GRAPHICS_POOL_BASE + AOS_GUEST_GRAPHICS_POOL_COUNT &&
+               AOS_GUEST_SCHED_EXCHANGE_CAP < AOS_GUEST_RAM_POOL_BASE,
+               "scheduling exchange must not overlap guest pool caps");
+#if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
+static seL4_CPtr g_guest_sched_exchange[AOS_GUEST_SCHED_CLIENTS];
+static seL4_CPtr g_guest_sched_control[AOS_GUEST_SCHED_CLIENTS];
+#endif
 _Static_assert(AOS_GUEST_GRAPHICS_POOL_BASE > AOS_GUEST_QUEUE_TEST_COPY &&
                AOS_GUEST_GRAPHICS_POOL_BASE + AOS_GUEST_GRAPHICS_POOL_COUNT <= AOS_GUEST_RAM_POOL_BASE,
                "graphics pool caps must not overlap queue test slots or RAM pools");
@@ -1629,6 +1641,21 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     }
     cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_sc_slot,
                     seL4_SchedContextObject, pd_index, pd->name);
+    unsigned owner = pd_is_secondary_guest_vmm(pd) ? 1u : 0u;
+    seL4_CPtr exchange = seL4_CapNull;
+    err = ut_alloc_cap(seL4_CapTableObject, AOS_GUEST_SCHED_EXCHANGE_BITS, &exchange);
+    if (err != seL4_NoError) return err;
+    seL4_CPtr objects[AOS_GUEST_SCHED_OBJECTS] = {guest_tcb_slot, guest_sc_slot, self_ep};
+    for (unsigned slot = 0; slot < AOS_GUEST_SCHED_OBJECTS; slot++) {
+        err = seL4_CNode_Copy(exchange, slot, AOS_GUEST_SCHED_EXCHANGE_BITS,
+            seL4_CapInitThreadCNode, objects[slot], 64u, seL4_AllRights);
+        if (err != seL4_NoError) return err;
+    }
+    err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_EXCHANGE_CAP,
+        pd->cnode_size_bits, seL4_CapInitThreadCNode, exchange, 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+    g_guest_sched_exchange[owner] = exchange;
+    g_guest_sched_control[owner] = schedcontrol_for_node(bi, sched_node_for_pd(pd));
 #endif
 
     err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_IPC_FRAME_CAP,
@@ -3588,6 +3615,36 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif /* CONFIG_KERNEL_MCS */
 
         /* ── 4h: Record all new caps in the accounting tree ─────────────── */
+#if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
+        if (pd->self_svc_id == SVC_ID_VM_MANAGER) {
+            if (pd->cnode_size_bits != AOS_GUEST_SCHED_MANAGER_BITS) return;
+            seL4_CPtr authority = seL4_CapNull;
+            if (ut_alloc_cap(seL4_TCBObject, 0u, &authority) != seL4_NoError ||
+                seL4_TCB_SetMCPriority(authority, seL4_CapInitThreadTCB,
+                    AOS_GUEST_SCHED_PRIORITY) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_AUTHORITY,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, authority,
+                    64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_MANAGER_CNODE,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, pd_cnode,
+                    64u, seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] guest scheduling manager authority failed; stopping boot\n");
+                return;
+            }
+            for (unsigned owner = 0; owner < AOS_GUEST_SCHED_CLIENTS; owner++) {
+                if (!g_guest_sched_exchange[owner]) continue;
+                if (seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_EXCHANGE_BASE + owner,
+                        pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        g_guest_sched_exchange[owner], 64u, seL4_AllRights) != seL4_NoError ||
+                    seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_CONTROL_BASE + owner,
+                        pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        g_guest_sched_control[owner], 64u, seL4_AllRights) != seL4_NoError) {
+                    dbg_puts("[rt] guest scheduling exchange grant failed; stopping boot\n");
+                    return;
+                }
+            }
+        }
+#endif
         cap_acct_record(seL4_CapNull, pd_cnode, seL4_CapTableObject,   i, pd->name);
         cap_acct_record(seL4_CapNull, vspace,   seL4_ARM_VSpaceObject, i, pd->name);
 #if defined(__aarch64__)

@@ -46,6 +46,20 @@ Private paging revocation and the full OS gate passed at `d00759c`;
 records the console-proof target and retained management resources.
 Reconstruction remains pending.
 
+ARM `vm_manager` now configures guest scheduling between the VMM's CREATE
+reply and its BOOT call. Root gives each VMM a private capability exchange
+CNode containing only its guest TCB, scheduling context and VMM fault endpoint;
+the manager receives both exchanges and each guest's root-selected CPU
+SchedControl cap. An inert authority TCB bounds manager priority assignment
+to 150. VMMs receive neither SchedControl nor that authority TCB. The manager
+copies objects into private scratch slots, applies the fixed 25 ms / 100 ms
+budget and priority, then deletes every temporary copy, failing closed on
+lookup, configuration or cleanup errors. Root's initial configuration remains
+in place. Reconstruction must publish fresh objects before replying to CREATE;
+calling back into the synchronously waiting manager would deadlock. The
+contract is `contracts/guest_scheduling_caps.h`. Target qualification of this
+runtime scheduling path remains pending; the VMM reset callback is still absent.
+
 ARM guest network, block, serial and optional input queue frames now each
 come from a private 2 MiB untyped pool. Root moves its sole pool capability
 to the owning VMM. Once every service acknowledges detach, teardown revokes

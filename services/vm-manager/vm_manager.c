@@ -44,6 +44,9 @@
 #include "contracts/vm_manager_contract.h"
 #include "system_desc.h"
 #include <platform/guest_memory_layout.h>
+#if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
+#include <platform/guest_scheduling.h>
+#endif
 /* vm_manager.h includes the guest-neutral slot multiplexer contract. */
 #include "vm_manager.h"
 
@@ -311,6 +314,9 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
         if (dedicated_guest_rpc(slot_id, MSG_GUEST_CREATE, payload,
                                 (uint32_t)sizeof(payload),
                                 (sel4_msg_t *)0) != VM_OK ||
+#if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
+            !aos_guest_scheduling_configure(ep == g_secondary_vmm_ep ? 1u : 0u) ||
+#endif
             dedicated_guest_call(slot_id, MSG_GUEST_BOOT,
                                  VM_SLOT_RUNNING) != VM_OK) {
             g_slot_vmm_ep[slot_id] = 0u;
