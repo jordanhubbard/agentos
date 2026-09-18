@@ -1631,7 +1631,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if result.is_ok() && args.assert_guest_ram_recycle {
         result = wait_for_all_markers(
             &log_path,
-            &["guest RAM recycle: PASS two full overwrite/revoke/rebuild/zero cycles"],
+            &[
+                "guest RAM recycle: PASS two full overwrite/revoke/rebuild/zero cycles",
+                "guest image recycle: embedded artifacts restored byte for byte twice",
+            ],
             Duration::from_secs(10),
             &mut qemu,
         );
