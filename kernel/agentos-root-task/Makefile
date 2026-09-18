@@ -316,18 +316,18 @@ $(BUILD_DIR)/x86_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_memory.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_apic.o $(BUILD_DIR)/x86_memory.o
-$(BUILD_DIR)/x86_ioapic.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_ioapic.c
+$(BUILD_DIR)/x86_ioapic.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_ioapic.c Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_ioapic.o
 # The firmware VMM uses the shared transport core, with diagnostics routed
 # through the existing freestanding printf implementation in m3_bare_metal.
 $(BUILD_DIR)/x86_virtio.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_virtio.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -mgeneral-regs-only -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
-$(BUILD_DIR)/x86_virtio_mmio.o: $(REPO_ROOT_MK)/libvmm/src/virtio/mmio.c
+$(BUILD_DIR)/x86_virtio_mmio.o: $(REPO_ROOT_MK)/libvmm/src/virtio/mmio.c Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
 $(BUILD_DIR)/x86_virtio_gpa.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpa.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
@@ -396,12 +396,12 @@ $(BUILD_DIR)/x86_block_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/block.c
 $(BUILD_DIR)/x86_vmm_block.o: $(REPO_ROOT_MK)/platform/blk-virt/vmm_virtio_blk.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
-$(BUILD_DIR)/x86_net_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/net.c
+$(BUILD_DIR)/x86_net_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/net.c Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
-$(BUILD_DIR)/x86_vmm_net.o: $(REPO_ROOT_MK)/platform/net-virt/vmm_virtio_net.c
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_net.o: $(REPO_ROOT_MK)/platform/net-virt/vmm_virtio_net.c Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(X86_SERIAL_CFLAGS) -ffunction-sections -fdata-sections $< -o $@
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_net_backend.o $(BUILD_DIR)/x86_vmm_net.o
 $(BUILD_DIR)/x86_fsmalloc.o: $(REPO_ROOT_MK)/libvmm/dep/sddf/util/fsmalloc.c
 	@mkdir -p $(BUILD_DIR)
