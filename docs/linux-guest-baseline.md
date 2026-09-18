@@ -70,6 +70,23 @@ Virtio MMIO, network, block, and ext4 are modules; all four corresponding
 modules are present in the stock initrd. This establishes acquisition and
 boot-artifact inputs, not an agentOS Debian amd64 boot or SSH qualification.
 
+The experimental Intel root-disk check is `make gate-x86_64-linux-login`.
+It requires the existing hash-pinned `X86_FIRMWARE_IMAGE`, `X86_BOOT_KERNEL`,
+`X86_BOOT_INITRD`, and `X86_BOOT_CMDLINE_FILE` inputs and a disposable raw
+`X86_ROOT_DISK`, which the guest may write. The command-line file must end in
+one NUL byte. `X86_BOOT_RAM_BYTES` defaults to `0x10000000u` (256 MiB); the
+current EPT layout accepts aligned sizes from 32 MiB through 1 GiB and rejects
+overlap with the private VMM ROM mapping. This check records the canonical
+virtio-console stream and requires a login prompt, rejecting panic and
+emergency-mode output. It does not assert authenticated access.
+
+The initial Debian attempts remain unsuccessful. After removing the small
+fixture's exit budget from this mode and handling discovery of an absent
+PS/2 controller, both 256 MiB and 1 GiB attempts timed out without console
+output. See the [retained attempt record](evidence/2026-09-17-spark/x86-debian-login-attempts.json).
+Execution-state diagnostics and a successful Debian boot are still required;
+neither the larger RAM setting nor the gate's existence closes that work.
+
 The acquisition recipe also retains and pins the complete `SHA512SUMS`
 manifest from `cdimage.debian.org`. On 2026-09-14, the cloud download alias
 redirected the image to `chuangtzu.ftp.acc.umu.se`, whose TLS certificate

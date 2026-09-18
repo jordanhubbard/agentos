@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "status": "not-qualified",
+  "target_host": "madmax",
+  "target_architecture": "Intel x86_64 nested VMX",
+  "local_validation_host": "Spark ARM64",
+  "runtime_revision": "9b33a33911df567deb45d58b175337d95f8fe38f",
+  "artifacts": {
+    "image": "debian-13-generic-amd64-20260831-2587.qcow2",
+    "image_sha512": "5a069019420fb9441ad4f8004c661fadb747edd5662ca54a17c8f923dee7d717e21dbdaa4ba72d6fce7f920e0217f0a9af382298a7d46ed4bc9dc33ac19181b6",
+    "kernel_sha256": "2b2358b37674d2505350528875bb17afae2a36522a9e8a9417eaca65a7da0e08",
+    "stock_initrd_sha256": "52c4b03c086ad3843dac011f5c09b3d41751543fd7270ec6500269cc4338fd2a",
+    "command_line_sha256": "713395be4e5a4ffb428017750907e782af8f180f280554634a82d4d920b467a5",
+    "command_line": "console=hvc0 root=UUID=df4df5bb-613a-4382-8cf9-653304605a1f rw rootwait net.ifnames=0 biosdevname=0 panic=-1",
+    "command_line_encoding": "ASCII with one trailing NUL",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5"
+  },
+  "attempts": [
+    {
+      "revision": "4c9c0fcf63e44b61c28605b01d9860da1b114e53",
+      "ram_bytes": 268435456,
+      "result": "Stopped at the 65536-exit firmware fixture budget",
+      "log": "agentos-qemu-iPLxd8.log",
+      "log_sha256": "fc7f368fdaf656458aac5ccd2255cfb71e341f0e17fbe1e241ea64578db63b42"
+    },
+    {
+      "revision": "25f04ff52e1c6508dda0bfc194e4b2185889e6db",
+      "ram_bytes": 268435456,
+      "result": "Target rejected a byte read from PS2 status port 0x64 at kernel RIP 0xffffffff940838f4",
+      "log": "agentos-qemu-Esz34P.log",
+      "log_sha256": "fb1e315c0b50914bf4ed14efb584eebf3fbd3f0273f3d10fa94d6e6b66b1126c"
+    },
+    {
+      "revision": "136b17b334a7894c2306e21b64eaafa53abc5ead",
+      "ram_bytes": 268435456,
+      "result": "180-second login timeout; empty console transcript; no reported target fault",
+      "log": "agentos-qemu-wtZpRQ.log",
+      "log_sha256": "3ada83b46d00bcc5b3efbaf5e23376898981cfbda1075a66e82727387cd5b703"
+    },
+    {
+      "revision": "9b33a33911df567deb45d58b175337d95f8fe38f",
+      "ram_bytes": 1073741824,
+      "result": "180-second login timeout; empty console transcript; no reported target fault",
+      "log": "agentos-qemu-Ck0DF2.log",
+      "log_sha256": "3ada83b46d00bcc5b3efbaf5e23376898981cfbda1075a66e82727387cd5b703"
+    }
+  ],
+  "regressions": {
+    "spark_gate_revision": "9b33a33911df567deb45d58b175337d95f8fe38f",
+    "spark_gate_result": "PASS: full make gate including host tests, architecture smoke boots and guest net/block/console checks",
+    "spark_gate_log_sha256": "727c7ca2d20b1bbe138dfc867a47f5c66af52fe42a2c99019e51ff524cd7cef0",
+    "rust_unit_tests": "87 passed at 25f04ff; later target changes did not modify Rust",
+    "ram_compile_checks": "Default and 1 GiB accepted; undersized, unaligned, greater than 1 GiB and ROM-overlapping windows rejected",
+    "ps2_host_test": "New absent-device assertions failed before the fix and passed afterward",
+    "intel_storage_gate_revision": "9b33a33911df567deb45d58b175337d95f8fe38f",
+    "intel_storage_gate_result": "PASS: Ubuntu qualification fixture console and ARP roundtrips, block I/O, and full disk persistence across two platform cold boots",
+    "intel_storage_gate_log_sha256": "b8cf132cab9e400d8f7e372bfe5586aae20bce761f4f5881c25d1ef6551d0933"
+  },
+  "retained_directory": "build/evidence/x86-debian-login",
+  "limitations": [
+    "No Debian userspace, root mount, login, networking, SSH, or lifecycle success is established",
+    "The 1 GiB experiment did not establish that memory shortage caused the empty console",
+    "The harness still accepts explicit artifact arguments; x86 guest-profile consumption is pending",
+    "No release claim; the login gate remains failing"
+  ]
+}
