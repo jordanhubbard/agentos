@@ -1,0 +1,27 @@
+{
+  "qualification": "Private graphics-pool reclamation combined seeded trial",
+  "runtime_revision": "86ec40bfa0eeccd691abdb45a3373747bcae9bd6",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "gate": {
+    "result": "PASS",
+    "log_sha256": "5012ec7089d9a2fb7c883ebbf817d5ecdcd05b5bc26f7e2966a5240fceda68a4"
+  },
+  "target": {
+    "command": "make test-debian-nocloud-graphics-teardown QEMU_TEST_SSH_PORT=12235",
+    "result": "FAIL before teardown: input release-pass SSH session timed out",
+    "log_sha256": "6f382421de5c1c3a158828958b62802a700e2c84a5f68ee7ace61c932a004344",
+    "qemu_pid": 885261,
+    "qemu_log_stem": "agentos-qemu-d3l5FZ",
+    "ssh_release_stderr": "Timeout, server 127.0.0.1 not responding.",
+    "ssh_release_stderr_sha256": "38d19e0c81605f8cb5c3537c3b5ce8cce2cfa8fd1187deac15dff10f28a4bece",
+    "prior_progress": "Authenticated Debian SSH, full framebuffer capture, all scanout pixels matched, explicit-input pass completed with four keyboard and seven pointer events",
+    "frame_sha256": "ad15c2d7ae529b74289668f9e50594cb4f02ca2a48be57b5de82da248d581065",
+    "input_helper_sha256": "2ba0315a3bc89917f9bd4762fd54a25cb0d250635dd34830cf02c2c8b981e517"
+  },
+  "limits": [
+    "Held-state release proof failed; teardown and graphics-pool recycling were not reached",
+    "No confirmed cause for the SSH liveness timeout",
+    "No target graphics reclamation, recreation or release qualification claim"
+  ]
+}

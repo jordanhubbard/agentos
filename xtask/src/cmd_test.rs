@@ -5020,8 +5020,17 @@ fn prove_profile_input_pass(
             }
         }
     });
+    let ready = receive
+        .recv_timeout(Duration::from_secs(60))
+        .context("waiting for input checker readiness")?
+        .with_context(|| {
+            format!(
+                "input checker readiness failed; release_mode={release}; stderr={}",
+                stderr_path.display()
+            )
+        })?;
     anyhow::ensure!(
-        receive.recv_timeout(Duration::from_secs(60))?? == "AGENTOS_INPUT_READY",
+        ready == "AGENTOS_INPUT_READY",
         "input probe did not become ready"
     );
     println!("[xtask:test] input proof: guest checker ready");
@@ -5064,9 +5073,17 @@ fn prove_profile_input_pass(
             )
         })?;
     }
+    let completed = receive
+        .recv_timeout(Duration::from_secs(120))
+        .context("waiting for input checker event completion")?
+        .with_context(|| {
+            format!(
+                "input checker completion failed; release_mode={release}; stderr={}",
+                stderr_path.display()
+            )
+        })?;
     anyhow::ensure!(
-        receive.recv_timeout(Duration::from_secs(120))??
-            == "AGENTOS_INPUT_PASS keyboard=4 pointer=7",
+        completed == "AGENTOS_INPUT_PASS keyboard=4 pointer=7",
         "guest input event mismatch"
     );
     println!("[xtask:test] input proof: exact guest event sequence matched");
