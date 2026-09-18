@@ -4,7 +4,7 @@
   "target_host": "madmax",
   "target_architecture": "Intel x86_64 nested VMX",
   "local_validation_host": "Spark ARM64",
-  "runtime_revision": "5a2dc27",
+  "runtime_revision": "1c034a8",
   "artifacts": {
     "image": "debian-13-generic-amd64-20260831-2587.qcow2",
     "image_sha512": "5a069019420fb9441ad4f8004c661fadb747edd5662ca54a17c8f923dee7d717e21dbdaa4ba72d6fce7f920e0217f0a9af382298a7d46ed4bc9dc33ac19181b6",
@@ -116,6 +116,18 @@
       "gate_log_sha256": "7603509a596aced0bfdbdee51334c0e3bb908aa10a092377bed199ffa68976f7",
       "console_sha256": "5725e454311b4b2bdf352f72d840136bf96f5f131baa82983491e0612a61bfa9",
       "scope": "Artifact acquisition is profile-driven; Intel gate still receives explicit artifact paths and pins"
+    },
+    {
+      "attempt": 17,
+      "runtime_revision": "1c034a8",
+      "result": "PASS: make gate-x86_64-linux-login X86_BOOT_PROFILE=debian-amd64.toml; firmware pin and fresh writable root disk supplied separately",
+      "root_task_elf_sha256": "15d43412aabae9c34069a189953676af68c8361cfa08804c0ab199dd4b753f65",
+      "initrd_sha256": "abd60fc57af0f02f62c119b149b7aaae0f978023fd7517ab3bc0a2535e839884",
+      "command_line_sha256": "c03169c91e93f9abbbe31ba270cd69086fea2567f2b6b8e129ea36d22c2aaa00",
+      "host_manifest_sha256": "017349c0828e75becb96bff72161682f7100b8b04f1c3233c77d19cd2f846b88",
+      "gate_log_sha256": "c76678f4f9ac189389a1aaccac7ad4d58ca198da6e4b97306d642df2cc987e83",
+      "console_sha256": "2bc4aaa4b03f65f393faa6519d6b695d1222478c265a7ac405bb30b13b23d068",
+      "scope": "Intel independently acquired and verified profile artifacts and supplied the command line and RAM; no explicit boot artifact or RAM overrides. Compiled manifest is host evidence, not target-enforced policy."
     }
   ],
   "handoff_diagnosis": {
@@ -125,6 +137,9 @@
     "ssh_failure": "Attempt 12 retained guest memory contains sshd: no hostkeys available -- exiting. Provisioning remains required."
   },
   "regressions": {
+    "profile_selector_spark_gate_revision": "1c034a8",
+    "profile_selector_spark_gate_result": "PASS: full make gate, including 92 Rust tests and existing ARM guest I/O gates",
+    "profile_selector_spark_gate_log_sha256": "f4969b3b56dc27f6c0c3c43c31829167db447213cca90a8caeaca01a277f9549",
     "profile_acquisition_spark_gate_revision": "79c9cac",
     "profile_acquisition_spark_gate_result": "PASS: full make gate, including 91 Rust tests, existing profile checks and ARM guest I/O gates",
     "profile_acquisition_spark_gate_log_sha256": "521e39e3cb16cfa58f5b44092cf9055617905cf10d9bc7c72ef2957227f0e40b",
@@ -144,7 +159,7 @@
   "limitations": [
     "Debian root mount and console login prompt are observed; networking, SSH and lifecycle qualification remain unproven",
     "The 1 GiB experiment did not establish that memory shortage caused the empty console",
-    "The harness still accepts explicit artifact arguments; x86 guest-profile consumption is pending",
+    "The harness selects verified profile boot artifacts; target-side manifest enforcement is still pending",
     "No release claim; x86 target profile consumption, provisioning and release qualification remain incomplete"
   ]
 }
