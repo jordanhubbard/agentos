@@ -537,6 +537,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 && args.virtualizer_authority_probe.is_none()),
         "console backpressure requires a freshly built Ubuntu deterministic probe image"
     );
+    anyhow::ensure!(
+        !args.assert_guest_teardown
+            || (args.board == "qemu_virt_aarch64"
+                && !args.no_build
+                && !args.keep_running
+                && (args.assert_emulated_console
+                    || args.seed_profile
+                    || args.seeded_ssh_key.is_some())),
+        "guest teardown requires a fresh ARM console proof or authenticated seeded profile"
+    );
     let repo_root = repo_root()?;
     let initial_agentos_revision = agentos_revision(&repo_root)?;
     let timing_source_tree_clean = agentos_worktree_clean(&repo_root)?;
@@ -1515,7 +1525,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 
     if result.is_ok() && args.assert_guest_teardown {
-        result = verify_guest_teardown(&cc_sock, &log_path, &mut qemu);
+        result = verify_guest_teardown(&cc_sock, &log_path, &mut qemu)
+            .map(|proof| format!("{}; {proof}", result.as_deref().unwrap()));
     }
 
     let mut desktop_evidence = None;
