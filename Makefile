@@ -855,6 +855,12 @@ test-x86-secondary-firmware-build:
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
+test-host: test-arm-recreate-host
+.PHONY: test-arm-recreate-host
+test-arm-recreate-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_arm_recreate.c platform/guest-vmm/arm_recreate.c -o $(BUILD_TMP_DIR)/test_arm_recreate
+	$(BUILD_TMP_DIR)/test_arm_recreate
 test-host: test-x86-cpu-host
 test-host: test-x86-composition-host
 test-host: test-vm-manager-identity-host

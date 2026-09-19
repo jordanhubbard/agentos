@@ -207,7 +207,9 @@ GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.$(VMM_SLOT).o
 VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.$(VMM_SLOT).o
 VMM_GUEST_PAGING_OBJ := $(BUILD_DIR)/vmm_guest_paging.$(VMM_SLOT).o
 VMM_GUEST_EXECUTION_OBJ := $(BUILD_DIR)/vmm_guest_execution.$(VMM_SLOT).o
-GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o $(BUILD_DIR)/guest_teardown.$(VMM_SLOT).o
+GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o $(BUILD_DIR)/guest_teardown.$(VMM_SLOT).o $(BUILD_DIR)/arm_recreate.$(VMM_SLOT).o
+$(BUILD_DIR)/arm_recreate.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/guest-vmm/arm_recreate.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
 GUEST_SERIAL_OBJS := $(BUILD_DIR)/serial_pump.$(VMM_SLOT).o $(BUILD_DIR)/serial_endpoint.$(VMM_SLOT).o
 GUEST_VMM_LOOP_OBJ := $(BUILD_DIR)/guest_vmm_loop.$(VMM_SLOT).o
 GUEST_PROFILE_VALIDATE_OBJ := $(BUILD_DIR)/guest_profile_validate.$(VMM_SLOT).o
