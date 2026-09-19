@@ -1,0 +1,16 @@
+{
+  "schema": "agentos.x86_runner_ownership.v1",
+  "date": "2026-09-19",
+  "revision": "ecc389d",
+  "source_tree_clean": true,
+  "status": "host_gate_and_firmware_compile_pass_native_pending",
+  "task": "task_4090f05598f74a9cafbb571a6271b6e5",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "tests": ["make test-x86-runner-ownership-host", "make gate", "make test-x86-firmware-build"],
+  "gate_log_sha256": "13dde4880d143de19c6175d07e5ab408002592d2dea271e688c0a343e780f259",
+  "firmware_log_sha256": "3087865a71cf6ad9642add6de193ea25d6e9d98251f4f49b363fbb186e03ad0b",
+  "proof_compile_log_sha256": "8404ca3cd01262e6b9aa6c8eeb7c49f12a2c1672e98d274ca1b694787edbbe56",
+  "proof_compile_scope": "Separate rt_main.o compilation with X86_USERSPACE_PROOF=1 covers native fault routing. Empty boot blob placeholders satisfy Make selectors only; no image or boot claim from that compile-only check.",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership",
+  "limitations": ["No secondary guest provisioned by the default descriptor", "No concurrent storage proof", "Intel regression pending", "No canonical integration or release acceptance"]
+}
