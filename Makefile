@@ -753,11 +753,22 @@ gate-x86_64-linux-login:
 .PHONY: gate-x86_64-storage
 .PHONY: gate-x86_64-debian-ssh
 .PHONY: gate-x86_64-cc-linux
+.PHONY: x86-smp-probe gate-x86_64-smp
+x86-smp-probe:
+	@mkdir -p $(BUILD_TMP_DIR)
+	clang -target x86_64-linux-gnu -fuse-ld=lld -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pie -nostdlib -static \
+		-Wl,-e,_start -Wl,--build-id=none tests/platform/x86_smp_probe.c \
+		tests/platform/x86_smp_probe_start.S -o $(BUILD_TMP_DIR)/x86-smp-probe
+gate-x86_64-smp: x86-smp-probe
+	$(MAKE) gate-x86_64-cc-linux X86_BOOT_PROFILE=debian-amd64-2cpu.toml \
+		X86_SMP_PROBE=$(BUILD_TMP_DIR)/x86-smp-probe
 gate-x86_64-cc-linux:
 	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login --assert-x86-cc \
 		--x86-boot-profile $(if $(X86_BOOT_PROFILE),$(X86_BOOT_PROFILE),debian-amd64.toml) --x86-ssh-key "$(X86_SSH_KEY)" \
+		$(if $(X86_SMP_PROBE),--x86-smp-probe "$(X86_SMP_PROBE)",) \
 		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
 		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
 		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)

@@ -479,6 +479,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "Intel SSH proof requires a private-key file and nonzero --ssh-port"
     );
     anyhow::ensure!(
+        args.x86_smp_probe.is_none()
+            || (args.assert_x86_cc
+                && args.x86_ssh_key.is_some()
+                && args.x86_smp_probe.as_ref().is_some_and(|p| p.is_file())),
+        "Intel SMP probe requires managed CC, pinned SSH and a payload file"
+    );
+    anyhow::ensure!(
         args.x86_block_image.is_none() || args.board == "x86_64_generic_vtx",
         "qualification block image requires the Intel VMX board"
     );
@@ -1411,6 +1418,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     args.x86_ssh_key
                         .as_deref()
                         .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
+                    args.x86_smp_probe.as_deref(),
                     &mut qemu,
                 )
             } else if args.assert_x86_linux_login {
@@ -3076,6 +3084,47 @@ fn x86_retained_host_key(path: &Path, port: u16) -> anyhow::Result<String> {
     Ok(format!("ssh-ed25519 {}", fields[2]))
 }
 
+fn seeded_ssh_command(key: &Path, port: u16, known: &Path, account: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("ssh");
+    command
+        .args([
+            "-F",
+            "/dev/null",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "IdentityAgent=none",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "PasswordAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
+            "HostKeyAlgorithms=ssh-ed25519",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=5",
+            "-o",
+            "ServerAliveCountMax=2",
+        ])
+        .arg("-o")
+        .arg(format!("UserKnownHostsFile={}", known.display()))
+        .arg("-i")
+        .arg(key)
+        .arg("-p")
+        .arg(port.to_string())
+        .arg(format!("{account}@127.0.0.1"));
+    command
+}
+
 fn seeded_ssh_proof(
     key: &Path,
     port: u16,
@@ -3096,43 +3145,8 @@ fn seeded_ssh_proof(
         attempt += 1;
         let stdout_path = log.with_extension(format!("ssh-{attempt}.out"));
         let stderr_path = log.with_extension(format!("ssh-{attempt}.err"));
-        let mut command = std::process::Command::new("ssh");
+        let mut command = seeded_ssh_command(key, port, &known, account);
         command
-            .args([
-                "-F",
-                "/dev/null",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "IdentityAgent=none",
-                "-o",
-                "PreferredAuthentications=publickey",
-                "-o",
-                "PasswordAuthentication=no",
-                "-o",
-                "KbdInteractiveAuthentication=no",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "GlobalKnownHostsFile=/dev/null",
-                "-o",
-                "HostKeyAlgorithms=ssh-ed25519",
-                "-o",
-                "ConnectTimeout=10",
-                "-o",
-                "ServerAliveInterval=5",
-                "-o",
-                "ServerAliveCountMax=2",
-            ])
-            .arg("-o")
-            .arg(format!("UserKnownHostsFile={}", known.display()))
-            .arg("-i")
-            .arg(key)
-            .arg("-p")
-            .arg(port.to_string())
-            .arg(format!("{account}@127.0.0.1"))
             .arg("uname -m && sudo -n sync")
             .stdin(Stdio::null())
             .stdout(std::fs::File::create(&stdout_path)?)
@@ -3300,11 +3314,56 @@ fn x86_cc_console_bytes(cc: &mut CcClient, handle: u32) -> anyhow::Result<Vec<u8
     Ok(reply.shmem[..len].to_vec())
 }
 
+fn x86_smp_ssh_proof(probe: &Path, key: &Path, port: u16, log: &Path) -> anyhow::Result<String> {
+    let size = std::fs::metadata(probe)?.len();
+    anyhow::ensure!(size > 0 && size <= 1024 * 1024, "invalid SMP payload size");
+    let known = log.with_extension("known_hosts");
+    // The preceding SSH proof created this pinned receipt for this generation.
+    x86_retained_host_key(&known, port)?;
+    let output = log.with_extension("smp.out");
+    let errors = log.with_extension("smp.err");
+    let mut command = seeded_ssh_command(key, port, &known, "debian");
+    command
+        .arg(concat!(
+            "umask 077; d=$(mktemp -d /tmp/agentos-smp.XXXXXX) || exit 1; ",
+            "cat > \"$d/probe\" && chmod 700 \"$d/probe\" && \"$d/probe\"; ",
+            "r=$?; rm -f \"$d/probe\"; rmdir \"$d\"; exit \"$r\""
+        ))
+        .stdin(std::fs::File::open(probe)?)
+        .stdout(std::fs::File::create(&output)?)
+        .stderr(std::fs::File::create(&errors)?);
+    let mut child = ChildGuard::new(command.spawn()?);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "SMP workload timed out; see {}",
+            errors.display()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    anyhow::ensure!(
+        status.success(),
+        "SMP workload failed; see {}",
+        errors.display()
+    );
+    anyhow::ensure!(
+        std::fs::read(&output)? == b"PASS: online=0-1 affinity=0,1 overlapping x87/SSE workers\n",
+        "SMP workload evidence mismatch; see {}",
+        output.display()
+    );
+    Ok("two online CPUs, pinned overlapping workers and x87/SSE state verified".into())
+}
+
 fn x86_cc_linux_probe(
     socket: &Path,
     log_path: &Path,
     timeout: Duration,
     ssh: Option<(&Path, u16, Option<&Path>)>,
+    smp_probe: Option<&Path>,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
@@ -3343,7 +3402,7 @@ fn x86_cc_linux_probe(
             qemu,
         )?;
         anyhow::ensure!(handle != 0, "CREATE returned reserved boot handle");
-        let proof = x86_linux_login_reader_with_artifacts(
+        let mut proof = x86_linux_login_reader_with_artifacts(
             |chunk| {
                 let bytes = x86_cc_console_bytes(&mut cc, handle).map_err(std::io::Error::other)?;
                 if bytes.is_empty() {
@@ -3361,6 +3420,11 @@ fn x86_cc_linux_probe(
             Instant::now() + timeout,
             ssh,
         )?;
+        if let Some(payload) = smp_probe {
+            let (key, port, _) = ssh.context("SMP qualification requires pinned SSH")?;
+            proof.push_str("; ");
+            proof.push_str(&x86_smp_ssh_proof(payload, key, port, &generation_log)?);
+        }
 
         // Exercise real guest input after login readiness, without requiring a
         // password or changing the guest. The terminal must echo these exact bytes.

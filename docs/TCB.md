@@ -20,6 +20,13 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+`make gate-x86_64-smp` now requires two online Linux CPUs and overlapping
+CPU-affined x87/SSE workers in both managed lifecycle generations. The
+freestanding C/Assembly payload runs only inside the guest, over the existing
+pinned SSH qualification path, and adds no target authority. Its result and
+errors are retained per generation. See [x86 SMP qualification](x86-smp.md).
+Host compilation and tests pass; native workload acceptance is still pending.
+
 The firmware coordinator now retains a separate native runner sequence,
 entry/exit snapshot, timer-initialization state and LAPIC/startup record for
 each of its two provisioned CPU contexts. VMCS and register operations use
