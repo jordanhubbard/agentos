@@ -9,7 +9,7 @@
  * This grant alone does not implement suspend, destroy or reconstruction. */
 #define AOS_X86_GUEST_OBJECT_POOL_CAP 461u
 #define AOS_X86_GUEST_OBJECT_POOL_BITS 16u
-#define AOS_X86_GUEST_OBJECT_COUNT 6u
+#define AOS_X86_GUEST_OBJECT_COUNT 7u
 
 /* Retained private ASID namespace, architecture-exclusive with ARM's ASID
  * grant. No global ASID controller is delegated. Intermediate EPT caps are
@@ -28,5 +28,7 @@
  * one VCPU. INIT may revoke this child without destroying shared EPT. */
 #define AOS_X86_VCPU_POOL_CAP 507u
 #define AOS_X86_VCPU_POOL_BITS 14u
+#define AOS_X86_AP_VCPU_POOL_CAP 508u
+#define AOS_X86_AP_RUNNER_TCB_CAP 509u
 
 #endif

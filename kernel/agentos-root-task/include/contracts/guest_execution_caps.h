@@ -4,7 +4,8 @@
 
 /* Retain libvmm's TCB/VCPU registration offsets. Each range reserves 64
  * vCPU entries below the VMM's guest RAM capability ranges. Only vCPU zero is
- * installed today. SC authority belongs only to the owning VMM. */
+ * installed on ARM; x86 firmware reserves VCPUs zero and one in separate
+ * native runners. SC authority belongs only to the owning VMM. */
 #define AOS_GUEST_TCB_CAP_BASE 266u
 #define AOS_GUEST_VCPU_CAP_BASE 330u
 #define AOS_GUEST_SC_CAP_BASE 394u

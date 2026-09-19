@@ -856,7 +856,7 @@ else ifeq ($(ARCH),x86_64)
   # Include linux_vmm stub so the image can reference it
   IMAGES += guest_vmm_primary.elf
   ifeq ($(X86_FIRMWARE_RESET),1)
-    IMAGES += x86_runner.elf
+    IMAGES += x86_runner.elf x86_runner_ap.elf
   endif
   ifeq ($(X86_USERSPACE_PROOF),1)
     IMAGES += x86_lifecycle_probe.elf
@@ -1448,6 +1448,8 @@ $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_runner_client.o $(BUILD_DIR
 endif
 $(BUILD_DIR)/x86_runner.elf: $(BUILD_DIR)/x86_runner.pd.o $(BUILD_DIR)/x86_runner.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+$(BUILD_DIR)/x86_runner_ap.elf: $(BUILD_DIR)/x86_runner.elf
+	cp $< $@
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
 $(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c $(GUEST_CONFIG_STAMP) Makefile
 	@mkdir -p $(BUILD_DIR)

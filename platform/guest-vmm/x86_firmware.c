@@ -761,6 +761,31 @@ static bool terminal_teardown_proof(void)
         if (!recreated_network_device_proof(pass * 2u + 2u)) return false;
         if (!recreated_block_device_proof(pass * 2u + 2u)) return false;
         if (!recreated_console_device_proof(pass + 1u)) return false;
+        /* Execute through the second native runner while both fresh VCPUs
+         * exist. The AP starts in real mode at page 8 and exits on HLT. */
+        teardown_proof_stage=157u+pass*100u;
+        static aos_x86_runner_t proof_ap_runner={.next_sequence=1};
+        const seL4_CPtr ap_execution=AOS_GUEST_VCPU_CAP_BASE+1u;
+        aos_x86_vmenter_entry_t ap_start={0};
+        seL4_Word ap_failed=0;
+        if (aos_x86_guest_vcpu_bind(ap_execution,AOS_X86_AP_RUNNER_TCB_CAP)!=seL4_NoError ||
+            aos_x86_firmware_startup_cpu(ap_execution,8u,&ap_start,&ap_failed)!=seL4_NoError)
+            return false;
+        const seL4_Word bsp_marker=0x1234abc0u+pass;
+        seL4_X86_VCPU_WriteVMCS_t marked=seL4_X86_VCPU_WriteVMCS(VCPU,0x681eu,bsp_marker);
+        if (marked.error) return false;
+        *(volatile uint8_t *)(AOS_X86_FIRMWARE_RAM_VA+0x8000u)=0xf4u;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        aos_x86_vmenter_return_t ap_exit={0};
+        if (!aos_x86_runner_call(&proof_ap_runner,AOS_X86_AP_RUNNER_ENDPOINT_CAP,&ap_start,&ap_exit) ||
+            ap_exit.result!=SEL4_VMENTER_RESULT_FAULT || ap_exit.badge ||
+            ap_exit.words[SEL4_VMENTER_FAULT_REASON_MR]!=12u ||
+            ap_exit.words[SEL4_VMENTER_CALL_EIP_MR]!=0u ||
+            ap_exit.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR]!=1u) return false;
+        seL4_X86_VCPU_ReadVMCS_t unchanged=seL4_X86_VCPU_ReadVMCS(VCPU,0x681eu);
+        if (unchanged.error || unchanged.value!=bsp_marker) return false;
+        if (aos_x86_guest_vcpu_rebuild(AOS_X86_AP_VCPU_POOL_CAP,ap_execution)!=seL4_NoError)
+            return false;
         teardown_proof_stage = 140u + pass * 100u;
         if (!aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM)) return false;
         const seL4_CPtr retired_frames[] = {AOS_GUEST_RAM_FRAME_BASE,
@@ -804,13 +829,10 @@ static bool terminal_teardown_proof(void)
             if (value.error || (value.value & reset_fields[i].mask) !=
                     reset_fields[i].value) return false;
         }
-        /* A second, distinct VCPU proves that startup writes honor the
-         * selected capability and cannot silently alter the bootstrap CPU.
-         * It is never bound or entered in this register-state qualification. */
+        /* The reconstructed second VCPU proves startup writes honor the
+         * selected capability and cannot alter the bootstrap CPU. */
         teardown_proof_stage = 155u + pass * 100u;
-        const seL4_CPtr ap_vcpu=AOS_GUEST_QUEUE_TEST_FRAME;
-        if (seL4_Untyped_Retype(AOS_X86_GUEST_OBJECT_POOL_CAP,seL4_X86_VCPUObject,0u,
-                AOS_GUEST_RAM_SELF_CNODE,0u,0u,ap_vcpu,1u)!=seL4_NoError) return false;
+        const seL4_CPtr ap_vcpu=AOS_GUEST_VCPU_CAP_BASE+1u;
         const unsigned vectors[]={0u,8u,255u};
         for (unsigned v=0; v<sizeof(vectors)/sizeof(vectors[0]); v++) {
             aos_x86_vmenter_entry_t ap_entry={0x11u,0x22u,0x33u};
@@ -850,7 +872,7 @@ static bool terminal_teardown_proof(void)
             return false;
         seL4_X86_VCPU_ReadVMCS_t stale_cpu=seL4_X86_VCPU_ReadVMCS(AOS_GUEST_QUEUE_TEST_COPY,0x6808u);
         if (stale_cpu.error==seL4_NoError) return false;
-        if (aos_x86_guest_objects_bind()!=seL4_NoError ||
+        if (aos_x86_guest_vcpu_bind(VCPU,AOS_X86_VMM_SELF_TCB_CAP)!=seL4_NoError ||
             aos_x86_firmware_reset(&reset_entry,&failed_field)!=seL4_NoError ||
             failed_field || reset_entry.ip!=0xfff0u) return false;
         last_base=seL4_X86_VCPU_ReadVMCS(ap_vcpu,0x6808u);
