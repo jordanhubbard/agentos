@@ -126,6 +126,14 @@ ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
 endif
 
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
+  # Build each coordinator and its canonical adapters in a separate directory.
+  # This selector does not add a secondary PD to the system descriptor.
+  X86_VMM_SLOT ?= primary
+  ifeq ($(X86_VMM_SLOT),secondary)
+    CFLAGS += -DAGENTOS_GUEST_SECONDARY=1
+  else ifneq ($(X86_VMM_SLOT),primary)
+    $(error X86_VMM_SLOT must be primary or secondary)
+  endif
   CFLAGS += -DAGENTOS_X86_VTX=1
   CFLAGS_ROOT_TASK += -DAGENTOS_X86_VTX=1
   ifeq ($(X86_LINUX_LOGIN),1)

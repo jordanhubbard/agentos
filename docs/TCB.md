@@ -20,6 +20,14 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+The x86 coordinator now selects runner ownership and queue revocation pools
+by its root-assigned slot. A separately compiled secondary coordinator uses
+client/media one for canonical device attachment and reconstruction; its
+manifest must match that build identity. The default descriptor still spawns
+only the primary guest and its runner pair. Secondary compilation and profile
+admission tests do not establish concurrent guest provisioning or storage
+isolation; those remain v0.4 acceptance requirements.
+
 `make gate-x86_64-smp` now requires two online Linux CPUs and overlapping
 CPU-affined x87/SSE workers in both managed lifecycle generations. The
 freestanding C/Assembly payload runs only inside the guest, over the existing

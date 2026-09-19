@@ -1890,8 +1890,9 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         if (err != seL4_NoError) return err;
     }
     dbg_puts("[rt] x86 private RAM and ROM pools delegated to owning VMM\n");
+    const unsigned queue_owner = pd_is_secondary_guest_vmm(pd) ? 1u : 0u;
     for (unsigned kind = 0; kind < AOS_GUEST_QUEUE_INPUT; kind++) {
-        seL4_CPtr *pool = &g_guest_queue_pools[0][kind];
+        seL4_CPtr *pool = &g_guest_queue_pools[queue_owner][kind];
         if (*pool == seL4_CapNull) return seL4_InvalidCapability;
         err = seL4_CNode_Move(pd_cnode, AOS_GUEST_QUEUE_POOL_BASE + kind,
             pd->cnode_size_bits, seL4_CapInitThreadCNode, *pool, 64u);

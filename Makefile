@@ -830,6 +830,17 @@ test-x86-firmware-build:
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_virtio_pci_caps.o
 	@echo "PASS: x86 firmware VMM, serial/block drivers and block/network virtualizer link checks"
 
+.PHONY: test-x86-secondary-firmware-build
+test-x86-secondary-firmware-build:
+	$(MAKE) test-x86-firmware-build GUEST_OS=none X86_VMM_SLOT=secondary BUILD_TMP_DIR=$(abspath $(BUILD_TMP_DIR)/secondary)
+	$(MAKE) -C kernel/agentos-root-task \
+		BUILD_DIR=$(abspath $(BUILD_TMP_DIR)/secondary-managed) \
+		AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic_vtx \
+		SEL4_SDK=$(SEL4_SDK) SEL4_SDK_VERSION=$(SEL4_SDK_VERSION) \
+		X86_FIRMWARE_RESET=1 X86_MANAGED_START=1 X86_VMM_SLOT=secondary \
+		$(abspath $(BUILD_TMP_DIR)/secondary-managed)/x86_firmware_vmm.o
+	@echo "PASS: secondary x86 coordinator and canonical adapters link; managed reset path compiles"
+
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
 # lint-source is a source lint (policy-check's sibling), not a test; it is
