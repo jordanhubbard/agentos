@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "date": "2026-09-19",
-  "status": "host_and_full_gate_pass_target_graphics_pending",
+  "status": "host_gate_and_clean_revision_graphics_input_pass",
   "task": "task_00ba79d8c6024e43a5cb3d7dffff9696",
   "base_revision": "b781265",
   "source_state": "Gate ran on the uncommitted optimization subsequently committed with this receipt; source hash below binds the changed target file. This is not final clean-revision release qualification.",
@@ -29,9 +29,29 @@
   "gate_log_sha256": "723eb4b1d2d027ab621be0e03ff24644ba94781a26b1da1ef947d317d7b849f3",
   "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-gpu-backing-walk",
   "limitations": [
-    "Target graphics timing and input qualification pending.",
     "No claim this fixes cold SSH session setup.",
     "No changed qualification deadline or guest policy.",
     "No native GUI or full release acceptance."
-  ]
+  ],
+  "target_qualification": {
+    "revision": "a7ed99f2ae456d2084a4b27b39993048a6576bdb",
+    "source_tree_clean": true,
+    "profile": "debian-nocloud-graphics-input-aarch64",
+    "status": "passed_and_retained_for_native_clients",
+    "harness_exit": "pending_retained_guest_shutdown",
+    "frame_dimensions": [
+      1024,
+      768
+    ],
+    "matching_scanout_pixels": 786432,
+    "frame_capture_seconds": 13,
+    "frame_sha256": "ad15c2d7ae529b74289668f9e50594cb4f02ca2a48be57b5de82da248d581065",
+    "image_sha256": "e92c6c7b0a3129355b5e93d8ddc684e78545be2db645c0300743f2254cdb3399",
+    "input_modes": [
+      "explicit-events",
+      "server-held-release",
+      "paused-backpressure"
+    ],
+    "snapshot_archive_sha256": "bc7dfb35f7b7f39f0fa6e08b9e9a3b0fdb1260e21275a8f88adb9ee1c159396f"
+  }
 }
