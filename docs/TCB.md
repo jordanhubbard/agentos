@@ -64,8 +64,10 @@ and publishes entry inputs only after checked VMCS writes succeed. The Intel
 teardown qualification additionally allocates a separate second VCPU from
 the private execution pool, checks startup vectors 0, 8 and 255, checks that
 bootstrap state is unchanged, rejects vector 256, and verifies revocation.
-This additional vCPU is not bound or entered by that test. Native qualification
-of these new checks is pending; normal guest admission remains one CPU.
+This additional vCPU is not bound or entered by that test. At `92879a3`, these
+checks passed on Intel, along with the full Spark gate. The
+[AP startup receipt](evidence/2026-09-18-spark/x86-ap-startup.json) records the
+commands and artifact hashes. Normal guest admission remains one CPU.
 
 The x86 firmware profile binder enforces CPU-feature requests against the
 synthetic CPUID model before VM entry. Its fixed baseline exposes x87 (FP)
