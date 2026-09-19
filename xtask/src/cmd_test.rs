@@ -6316,15 +6316,48 @@ fn profile_ssh_expectation(profile: &HostProfilePlan) -> anyhow::Result<(&str, &
     ))
 }
 
+fn retain_scenario_ssh_attempt(
+    directory: &Path,
+    attempt: usize,
+    profile: &str,
+    account: &str,
+    port: u16,
+    marker: &str,
+    output: &std::process::Output,
+) -> anyhow::Result<bool> {
+    std::fs::create_dir_all(directory)?;
+    let prefix = directory.join(format!("attempt-{attempt}"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let accepted = output.status.success() && (marker.is_empty() || stdout.trim() == marker);
+    std::fs::write(prefix.with_extension("stdout"), &output.stdout)?;
+    std::fs::write(prefix.with_extension("stderr"), &output.stderr)?;
+    let receipt = serde_json::json!({
+        "schema": "agentos.scenario_ssh_attempt.v1", "profile": profile,
+        "account": account, "host_port": port, "command": "uname -s",
+        "attempt": attempt, "exit_code": output.status.code(),
+        "process_success": output.status.success(), "expected_stdout": marker,
+        "accepted": accepted,
+        "stdout_sha256": sha256_bytes(&output.stdout),
+        "stderr_sha256": sha256_bytes(&output.stderr),
+    });
+    std::fs::write(
+        prefix.with_extension("json"),
+        serde_json::to_vec_pretty(&receipt)?,
+    )?;
+    Ok(accepted)
+}
+
 fn wait_for_scenario_guest_ssh(
     guest: &ScenarioGuestPlan,
     ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
+    evidence: &Path,
 ) -> anyhow::Result<()> {
     let (account, marker) = profile_ssh_expectation(&guest.profile)?;
     let start = Instant::now();
     let mut last = String::from("no SSH attempt completed");
+    let mut attempt = 0;
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for profile authenticated SSH")?;
         let probe = spawn_ssh_probe(&ssh_key.private_key, guest.ssh_host_port, account)?;
@@ -6332,7 +6365,16 @@ fn wait_for_scenario_guest_ssh(
             .wait_with_output()
             .with_context(|| format!("failed to wait for {} SSH probe", guest.profile.id))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if output.status.success() && (marker.is_empty() || stdout.trim() == marker) {
+        attempt += 1;
+        if retain_scenario_ssh_attempt(
+            evidence,
+            attempt,
+            &guest.profile.id,
+            account,
+            guest.ssh_host_port,
+            marker,
+            &output,
+        )? {
             return Ok(());
         }
         last = format!(
@@ -6354,14 +6396,24 @@ fn wait_for_scenario_ssh(
     ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
+    evidence: &Path,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let mut failures = Vec::new();
+    let mut round = 0;
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for scenario authenticated SSH")?;
         failures.clear();
-        for guest in &scenario.guests {
-            match wait_for_scenario_guest_ssh(guest, ssh_key, Duration::from_secs(35), qemu) {
+        round += 1;
+        for (index, guest) in scenario.guests.iter().enumerate() {
+            let directory = evidence.join(format!("round-{round}-guest-{index}"));
+            match wait_for_scenario_guest_ssh(
+                guest,
+                ssh_key,
+                Duration::from_secs(35),
+                qemu,
+                &directory,
+            ) {
                 Ok(()) => println!(
                     "[xtask:test] {} authenticated SSH ready in concurrent probe",
                     guest.profile.id
@@ -6398,6 +6450,12 @@ fn wait_for_dual_guest_consoles_via_cc(
     keep_running: bool,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
+    let ssh_evidence = cc_sock.with_extension("ssh-evidence");
+    std::fs::create_dir(&ssh_evidence).context("create fresh scenario SSH evidence directory")?;
+    println!(
+        "[xtask:test] Scenario SSH transcripts: {}",
+        ssh_evidence.display()
+    );
     let create_timeout = timeout;
     /*
      * VirtIO-console is a byte stream. Keep one connection across both
@@ -6488,8 +6546,14 @@ fn wait_for_dual_guest_consoles_via_cc(
         Duration::from_secs(600),
         qemu,
     )?;
-    wait_for_scenario_guest_ssh(lead, ssh_key, Duration::from_secs(180), qemu)
-        .with_context(|| format!("{} SSH was not live before checkpoint", lead.profile.id))?;
+    wait_for_scenario_guest_ssh(
+        lead,
+        ssh_key,
+        Duration::from_secs(180),
+        qemu,
+        &ssh_evidence.join("lead-before-suspend"),
+    )
+    .with_context(|| format!("{} SSH was not live before checkpoint", lead.profile.id))?;
     println!(
         "[xtask:test] {} authenticated SSH live before suspend",
         lead.profile.id
@@ -6506,8 +6570,14 @@ fn wait_for_dual_guest_consoles_via_cc(
         "[xtask:test] resumed {} handle={} state={} for immediate SSH checkpoint",
         lead.profile.id, lead_handle, lead_probe_resume
     );
-    wait_for_scenario_guest_ssh(lead, ssh_key, Duration::from_secs(180), qemu)
-        .with_context(|| format!("{} SSH did not survive checkpoint", lead.profile.id))?;
+    wait_for_scenario_guest_ssh(
+        lead,
+        ssh_key,
+        Duration::from_secs(180),
+        qemu,
+        &ssh_evidence.join("lead-after-resume"),
+    )
+    .with_context(|| format!("{} SSH did not survive checkpoint", lead.profile.id))?;
     let lead_boot_suspend = suspend_guest_via_cc(&mut boot_cc, lead_handle)
         .with_context(|| format!("failed to defer provisioned {}", lead.profile.id))?;
     println!(
@@ -6544,7 +6614,13 @@ fn wait_for_dual_guest_consoles_via_cc(
     )?;
     resume_guest_via_cc(&mut boot_cc, lead_handle)
         .with_context(|| format!("failed to resume provisioned {}", lead.profile.id))?;
-    let ssh = wait_for_scenario_ssh(scenario, ssh_key, Duration::from_secs(600), qemu)?;
+    let ssh = wait_for_scenario_ssh(
+        scenario,
+        ssh_key,
+        Duration::from_secs(600),
+        qemu,
+        &ssh_evidence.join("concurrent"),
+    )?;
 
     if !keep_running {
         destroy_guest_via_cc(&mut boot_cc, deferred_handle, Some(&deferred.profile))
@@ -7103,6 +7179,54 @@ mod tests {
             std::fs::read_to_string(directory.path().join("seeded-profile.txt")).unwrap(),
             "resolved profile"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn scenario_ssh_receipts_preserve_bytes_and_reject_wrong_output_or_exit() {
+        use std::os::unix::process::ExitStatusExt;
+        let dir = tempfile::tempdir().unwrap();
+        for (attempt, code, bytes, expected) in [
+            (1, 0, b"Linux\n".as_slice(), true),
+            (2, 0, b"FreeBSD\n".as_slice(), false),
+            (3, 1, b"Linux\n".as_slice(), false),
+            (4, 0, b"Linux\xff\n".as_slice(), false),
+        ] {
+            let output = std::process::Output {
+                status: std::process::ExitStatus::from_raw(code << 8),
+                stdout: bytes.to_vec(),
+                stderr: b"diagnostic\xff\n".to_vec(),
+            };
+            assert_eq!(
+                super::retain_scenario_ssh_attempt(
+                    dir.path(),
+                    attempt,
+                    "debian",
+                    "debian",
+                    12222,
+                    "Linux",
+                    &output
+                )
+                .unwrap(),
+                expected
+            );
+            let prefix = dir.path().join(format!("attempt-{attempt}"));
+            assert_eq!(
+                std::fs::read(prefix.with_extension("stdout")).unwrap(),
+                bytes
+            );
+            assert_eq!(
+                std::fs::read(prefix.with_extension("stderr")).unwrap(),
+                output.stderr
+            );
+            let receipt: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(prefix.with_extension("json")).unwrap())
+                    .unwrap();
+            assert_eq!(receipt["accepted"], expected);
+            assert_eq!(receipt["exit_code"], code);
+            assert_eq!(receipt["stdout_sha256"], super::sha256_bytes(bytes));
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 12);
     }
 
     #[test]
