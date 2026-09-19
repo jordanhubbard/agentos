@@ -1,0 +1,17 @@
+{
+  "status": "passed two-vCPU Intel Linux recreation gate",
+  "source_revision": "6df47ad94e9385f5eb406cc7cc604edd6b20be88",
+  "source_tree_clean": true,
+  "host": "madmax Intel Linux with nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "command": "make gate-x86_64-smp with isolated writable disk, pinned Ed25519 SSH identity and port 12248",
+  "profile": "debian-amd64-2cpu.toml",
+  "make_exit": 0,
+  "exit_evidence": "Detached launcher recorded smp.exit=0; launcher 2434936 and QEMU 2439525 absent after completion.",
+  "proof": "Both managed boots authenticated with the pinned host key, reported x86_64 and synced. Each ran the actual SMP probe with exact output: PASS: online=0-1 affinity=0,1 overlapping x87/SSE workers. Binary CC create, console input echo, destroy, fresh-handle recreation, second boot and stale-handle rejection passed.",
+  "root_task_sha256": "163d1a408bedcbed19e3b1839c03b02722e133fc6df67c9c08ea0ff5c83bf569",
+  "log_sha256": "dcc553f79200de4ad7c7a9b08faf7f3dc29a1f1e382c02643f3903da3105183e",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-smp-6df47ad.tar.gz",
+  "archive_sha256": "1fa98109652c0411c8093038da7d62870bf3715d11376008ca92fec8c5d2d906",
+  "limits": "One two-vCPU guest recreated sequentially. Does not establish concurrent fresh guest storage isolation, crash recovery, all resource-admission limits, x86 graphics/input, final release integration or v0.4 completion. Archive includes successful SSH and SMP outputs, console/input logs, full gate log and launcher exit; no private identities or disk contents."
+}
