@@ -25,7 +25,7 @@ exposes it as `agentctl input-release GUEST_HANDLE keyboard|pointer`. Its
 zero accepted-event count acknowledges retained work, not completion in the
 guest. Existing GUI version-1 requests remain unchanged.
 
-`make test-guest-input QEMU_TEST_TIMEOUT=1800` runs the evdev checker four times:
+`make test-guest-input QEMU_TEST_TIMEOUT=1800` runs the evdev checker five times:
 first with explicit release events, then with zero-event server release
 requests. Both passes require identical key, button, motion and SYN packets.
 Separate `.input.json` and `.input-release.json` receipts distinguish the two
@@ -43,6 +43,12 @@ The fourth pass closes the connection while keys/buttons are held, without
 release events or a release RPC, and requires the same exact evdev releases.
 Input batches within each pass use one connection; CLI-per-batch close would
 otherwise release held state before the intended proof step.
+The fifth pass saturates both device paths while paused, closes the connection
+without a release request, and reconnects before resuming. Both devices must
+still reject new input, and after resume Linux must observe exact down/SYN and
+up/SYN packets. Its separate `.input-paused-disconnect.json` receipt qualifies
+retained releases across reconnect under backpressure only when the target
+run passes; host tests alone do not establish that result.
 
 `make test-input-host` checks exact release events, unchanged queues under
 backpressure, keyboard/pointer isolation, repeats, and all 255 supported keys

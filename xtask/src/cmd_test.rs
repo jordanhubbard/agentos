@@ -5623,6 +5623,7 @@ fn prove_profile_input(
         InputProofMode::Release,
         InputProofMode::Backpressure,
         InputProofMode::Disconnect,
+        InputProofMode::PausedDisconnect,
     ] {
         prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, mode)?;
     }
@@ -5638,6 +5639,7 @@ enum InputProofMode {
     Release,
     Backpressure,
     Disconnect,
+    PausedDisconnect,
 }
 
 impl InputProofMode {
@@ -5647,6 +5649,7 @@ impl InputProofMode {
             Self::Release => "server-held-state",
             Self::Backpressure => "paused-backpressure",
             Self::Disconnect => "connection-close",
+            Self::PausedDisconnect => "paused-connection-close",
         }
     }
     fn stem(self) -> &'static str {
@@ -5655,7 +5658,11 @@ impl InputProofMode {
             Self::Release => "input-release",
             Self::Backpressure => "input-backpressure",
             Self::Disconnect => "input-disconnect",
+            Self::PausedDisconnect => "input-paused-disconnect",
         }
+    }
+    fn paused(self) -> bool {
+        matches!(self, Self::Backpressure | Self::PausedDisconnect)
     }
 }
 
@@ -5740,7 +5747,11 @@ fn validate_input_session_reply(reply: &CcReply, query: &[u8; 544]) -> anyhow::R
     Ok(status)
 }
 
-fn prove_paused_input_release(socket: &Path, qemu: &mut Child) -> anyhow::Result<[usize; 2]> {
+fn prove_paused_input_release(
+    socket: &Path,
+    qemu: &mut Child,
+    disconnect: bool,
+) -> anyhow::Result<[usize; 2]> {
     let mut cc = CcClient::connect(socket)?;
     suspend_guest_via_cc(&mut cc, 0)?;
     let result = (|| {
@@ -5766,7 +5777,7 @@ fn prove_paused_input_release(socket: &Path, qemu: &mut Child) -> anyhow::Result
                 anyhow::ensure!(blocked, "paused {name} queue never applied backpressure");
             }
             anyhow::ensure!(accepted[device] > 0, "{name} accepted no held-state input");
-            for _ in 0..2 {
+            for _ in 0..if disconnect { 0 } else { 2 } {
                 anyhow::ensure!(
                     input_session_result(&mut cc, qemu, true, name, &[])? == 0,
                     "{name} release was not retained"
@@ -5777,10 +5788,30 @@ fn prove_paused_input_release(socket: &Path, qemu: &mut Child) -> anyhow::Result
                 "new {name} input bypassed pending release"
             );
         }
+        if disconnect {
+            // EOF is the only release trigger. Reconnect while still paused:
+            // the new generation must not erase releases retained by input_virt.
+            drop(cc.stream.take());
+            cc = CcClient::connect(socket)?;
+            for (name, code) in [("keyboard", "184"), ("pointer", "273")] {
+                anyhow::ensure!(
+                    input_session_result(&mut cc, qemu, false, name, &["1", code, "1"])? == 3,
+                    "reconnect bypassed pending {name} release"
+                );
+            }
+        }
         Ok(accepted)
     })();
     // Resume even after a failed assertion, before awaiting guest SSH cleanup.
-    let resumed = resume_guest_via_cc(&mut cc, 0);
+    let resumed = (|| {
+        if cc.stream.is_none() {
+            cc = CcClient::connect(socket)?;
+        }
+        resume_guest_via_cc(&mut cc, 0)
+    })();
+    if let Err(error) = &resumed {
+        eprintln!("[xtask:test] paused input cleanup could not resume guest: {error:#}");
+    }
     let accepted = result?;
     resumed?;
     Ok(accepted)
@@ -5827,7 +5858,7 @@ fn prove_profile_input_pass(
     wait_qualification_child(&mut upload, qemu, 150)
         .with_context(|| format!("input probe upload failed; see {}", stderr_path.display()))?;
     let mut probe = ChildGuard::new(
-        command(if mode == InputProofMode::Backpressure {
+        command(if mode.paused() {
             "timeout 240 /tmp/agentos-input-probe --backpressure"
         } else {
             "timeout 130 /tmp/agentos-input-probe"
@@ -5862,17 +5893,17 @@ fn prove_profile_input_pass(
         ],
         &["pointer", "1", "272", "0"],
     ];
-    let accepted_while_paused = if mode == InputProofMode::Backpressure {
-        Some(prove_paused_input_release(socket, qemu)?)
+    let accepted_while_paused = if mode.paused() {
+        Some(prove_paused_input_release(
+            socket,
+            qemu,
+            mode == InputProofMode::PausedDisconnect,
+        )?)
     } else {
         None
     };
     let mut input_connection = None;
-    for (index, batch) in batches
-        .iter()
-        .enumerate()
-        .filter(|_| mode != InputProofMode::Backpressure)
-    {
+    for (index, batch) in batches.iter().enumerate().filter(|_| !mode.paused()) {
         // The same guest checker requires identical evdev output. In the
         // release pass only the server knows which key/button must be released.
         let up = index == 1 || index == 3;
@@ -5901,7 +5932,7 @@ fn prove_profile_input_pass(
         &receive,
         &mut probe,
         &stderr_path,
-        if mode == InputProofMode::Backpressure {
+        if mode.paused() {
             "AGENTOS_INPUT_PASS keyboard=4 pointer=4"
         } else {
             "AGENTOS_INPUT_PASS keyboard=4 pointer=7"
@@ -5914,12 +5945,13 @@ fn prove_profile_input_pass(
         "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
         "agentos_revision": agentos_revision(repo)?, "source_tree_clean": agentos_worktree_clean(repo)?,
         "helper_sha256": sha256_bytes(&std::fs::read(helper)?),
-        "keyboard_events": 4, "pointer_events": if mode == InputProofMode::Backpressure { 4 } else { 7 },
+        "keyboard_events": 4, "pointer_events": if mode.paused() { 4 } else { 7 },
         "accepted_batches_while_paused": accepted_while_paused,
         "scope": "persistent public binary CC connection through virtio-input to exact Linux evdev packets",
         "release_mode": mode.name(),
-        "connection_close_without_release_request": mode == InputProofMode::Disconnect,
-        "excludes": ["physical input devices", "peer guest isolation", "guest recreation", "GUI process termination", "paused disconnect"],
+        "connection_close_without_release_request": matches!(mode, InputProofMode::Disconnect | InputProofMode::PausedDisconnect),
+        "paused_disconnect_qualified": mode == InputProofMode::PausedDisconnect,
+        "excludes": ["physical input devices", "peer guest isolation", "guest recreation", "GUI process termination"],
         "stderr": stderr_path,
     });
     std::fs::write(
