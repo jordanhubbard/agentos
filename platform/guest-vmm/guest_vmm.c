@@ -615,6 +615,8 @@ static uintptr_t g_guest_kernel_pc = 0u;
 static bool     gpu_shmem_ready    = false;
 static aos_arm_recreate_t reconstruction;
 static bool reconstruction_active;
+static bool reconstruction_pending;
+static bool reconstruction_ready;
 static bool guest_vmm_reset(void);
 static void guest_vmm_reset_cleanup(void);
 
@@ -1386,10 +1388,9 @@ static seL4_CPtr g_vmm_listen_ep;
  */
 static void guest_vmm_wait_blk_event(void)
 {
-    /* CREATE owns the lifecycle reply object during reconstruction. A nested
-     * receive could overwrite it. Yield to the block service instead; the
-     * media loader polls its completion queue on return. */
-    if (reconstruction_active) { seL4_Yield(); return; }
+    /* Reconstruction runs after the initiating NOT_READY reply. No outer
+     * reply object is held here; nested lifecycle requests are rejected by
+     * guest_initializing while the block service completes media staging. */
     seL4_Word badge = 0u;
 #ifdef CONFIG_KERNEL_MCS
     seL4_MessageInfo_t info =
@@ -1845,7 +1846,7 @@ static void guest_vmm_reset_cleanup(void)
 {
     (void)aos_arm_recreate_cleanup(&reconstruction,&reset_ops,NULL);
 }
-static bool guest_vmm_reset(void)
+static bool guest_vmm_reconstruct(void)
 {
     if (reconstruction.failed) { guest_vmm_reset_cleanup(); return false; }
     if (!guest_teardown.execution_released || !guest_teardown.ram_released ||
@@ -1876,6 +1877,29 @@ static bool guest_vmm_reset(void)
     bool success=aos_arm_recreate_run(&reconstruction,&reset_ops,NULL,enabled);
     guest_initializing=reconstruction_active=false;
     return success;
+}
+
+static bool guest_vmm_reset(void)
+{
+    if (reconstruction_ready) {
+        reconstruction_ready = false;
+        return true;
+    }
+    if (reconstruction.failed || reconstruction_active || reconstruction_pending ||
+        !guest_teardown.execution_released || !guest_teardown.ram_released ||
+        !guest_teardown.paging_released || guest_started) return false;
+    reconstruction_pending = true;
+    /* Return NOT_READY now. Media staging must not hold the caller's reply
+     * object or block the entire control chain until an ISO initrd is read. */
+    return false;
+}
+
+static void guest_vmm_after_rpc_reply(void)
+{
+    if (reconstruction.failed) { guest_vmm_reset_cleanup(); return; }
+    if (!reconstruction_pending) return;
+    reconstruction_pending = false;
+    reconstruction_ready = guest_vmm_reconstruct();
 }
 
 void init(void)
@@ -2242,6 +2266,7 @@ void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
         .notified = guest_vmm_notified,
         .net_rx_ready = aos_vmm_virtio_net_rx_ready,
         .blk_resp_ready = aos_vmm_virtio_blk_resp_ready,
+        .after_rpc_reply = guest_vmm_after_rpc_reply,
     };
     aos_guest_vmm_loop(ep, reply_cap, &loop_ops);
 }

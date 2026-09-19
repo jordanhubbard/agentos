@@ -11,6 +11,7 @@ static jmp_buf complete;
 static seL4_Word incoming_badge, incoming_label, observed_badge;
 static unsigned receives, notifications, rpcs, faults, sends, checks, failures;
 static unsigned ready_calls;
+static unsigned after_reply_calls;
 static uint32_t state = GUEST_STATE_RUNNING;
 seL4_MessageInfo_t seL4_Recv(seL4_CPtr endpoint, seL4_Word *badge, seL4_CPtr reply)
 {
@@ -30,6 +31,12 @@ static seL4_MessageInfo_t fault(seL4_Word badge, seL4_MessageInfo_t info)
     faults++; observed_badge = badge; return info;
 }
 static void ready(void) { ready_calls++; }
+static void after_reply(void)
+{
+    /* Receiving here must not overwrite an outstanding outer reply. */
+    if (sends != 1 || rpcs != 1) failures++;
+    after_reply_calls++;
+}
 static void check(int condition, const char *name)
 {
     printf("%s %u - %s\n", condition ? "ok" : "not ok", ++checks, name);
@@ -40,7 +47,8 @@ static void dispatch(seL4_Word badge, seL4_Word label)
     incoming_badge = badge; incoming_label = label;
     receives = notifications = rpcs = faults = sends = 0;
     ready_calls = 0;
-    const aos_guest_vmm_loop_ops_t ops = {&state, rpc, fault, notified, ready, ready};
+    after_reply_calls = 0;
+    const aos_guest_vmm_loop_ops_t ops = {&state, rpc, fault, notified, ready, ready, after_reply};
     if (!setjmp(complete)) aos_guest_vmm_loop(1, 9, &ops);
 }
 int main(void)
@@ -78,6 +86,8 @@ int main(void)
     dispatch(0, MSG_GUEST_CREATE);
     check(rpcs == 1 && sends == 1 && !notifications && !faults,
           "real lifecycle IPC retains its normal reply path");
+    check(after_reply_calls == 1,
+          "deferred reconstruction runs only after lifecycle reply delivery");
     dispatch(AOS_INPUT_VMM_WAKE_BADGE, MSG_GUEST_DESTROY);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == AOS_INPUT_VMM_WAKE_BADGE,
@@ -111,6 +121,7 @@ int main(void)
     dispatch(UINT64_C(1) << 62, 7);
     check(faults == 1 && sends == 1 && !notifications && !rpcs,
           "real VCPU fault badge remains on the fault path");
+    check(after_reply_calls == 0, "VCPU faults cannot trigger deferred lifecycle work");
     for (uint64_t badge = 1; badge <= 7; badge++)
         check(serial_virt_service_notification(badge),
               "combined serial notification bits classify without an IPC label");

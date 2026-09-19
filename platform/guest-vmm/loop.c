@@ -44,9 +44,11 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
             seL4_MessageInfo_t reply = ops->rpc(info);
 #ifdef CONFIG_KERNEL_MCS
             seL4_Send(reply_cap, reply);
+            if (ops->after_rpc_reply) ops->after_rpc_reply();
             info = seL4_Recv(endpoint, &badge, reply_cap);
 #else
             seL4_Reply(reply);
+            if (ops->after_rpc_reply) ops->after_rpc_reply();
             info = seL4_Recv(endpoint, &badge);
 #endif
         } else if (label == NET_SVC_EVENT_RX_READY) {
