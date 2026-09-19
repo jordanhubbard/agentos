@@ -156,6 +156,35 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
     }
 }
 
+enum aos_guest_restart_result aos_guest_vmm_restart_step(
+    const aos_guest_vmm_runtime_t *runtime)
+{
+    if (!runtime || !runtime->state || !runtime->started || !runtime->suspend ||
+        !runtime->teardown || !runtime->reset || !runtime->start)
+        return AOS_GUEST_RESTART_FAILED;
+    sel4_msg_t request = {.opcode = MSG_GUEST_DESTROY, .length = 8u}, reply = {0};
+    rep_u32(&request, 0u, runtime->guest_id);
+    if (*runtime->state == GUEST_STATE_RUNNING ||
+        *runtime->state == GUEST_STATE_DESTROYING) {
+        if (!aos_guest_vmm_lifecycle_rpc(&request, &reply, runtime) || reply.opcode != GUEST_OK)
+            return AOS_GUEST_RESTART_WAIT;
+    }
+    if (*runtime->state == GUEST_STATE_DEAD) {
+        request.opcode = MSG_GUEST_CREATE;
+        request.length = 4u;
+        rep_u32(&request, 0u, runtime->os_type);
+        if (!aos_guest_vmm_lifecycle_rpc(&request, &reply, runtime) || reply.opcode != GUEST_OK)
+            return AOS_GUEST_RESTART_FAILED;
+    }
+    if (*runtime->state != GUEST_STATE_READY) return AOS_GUEST_RESTART_FAILED;
+    request.opcode = MSG_GUEST_BOOT;
+    rep_u32(&request, 0u, runtime->guest_id);
+    if (!aos_guest_vmm_lifecycle_rpc(&request, &reply, runtime) || reply.opcode != GUEST_OK ||
+        *runtime->state != GUEST_STATE_RUNNING || !*runtime->started)
+        return AOS_GUEST_RESTART_FAILED;
+    return AOS_GUEST_RESTART_RUNNING;
+}
+
 bool aos_guest_vmm_console_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
                                const aos_guest_vmm_runtime_t *runtime)
 {

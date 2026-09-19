@@ -25,5 +25,8 @@ enum aos_x86_control_result aos_x86_control_step(
  * a notification. Early callers receive NOT_READY and can retry; no guest
  * state changes. A valid device notification is returned in wake_badge. */
 bool aos_x86_control_wait_initializing(seL4_Word *wake_badge);
+/* Nonblocking equivalent for teardown retries. Empty receive succeeds with
+ * badge zero; concurrent callers still receive NOT_READY. */
+bool aos_x86_control_poll_initializing(seL4_Word *wake_badge);
 
 #endif

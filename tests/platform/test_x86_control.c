@@ -21,6 +21,7 @@ static unsigned receives, polls, replies, suspends, resumes, teardowns, wakes;
 static bool transition_ok = true, teardown_ok;
 static uint32_t state = GUEST_STATE_RUNNING;
 static bool started = true;
+static bool initializing_poll;
 seL4_Word seL4_GetMR(int n) { assert(n >= 0 && n < 120); return mrs[n]; }
 void seL4_SetMR(int n, seL4_Word v) { assert(n >= 0 && n < 120); mrs[n] = v; }
 static seL4_MessageInfo_t receive(seL4_CPtr ep, seL4_Word *badge, seL4_CPtr reply)
@@ -32,7 +33,7 @@ static seL4_MessageInfo_t receive(seL4_CPtr ep, seL4_Word *badge, seL4_CPtr repl
 seL4_MessageInfo_t seL4_Recv(seL4_CPtr ep, seL4_Word *b, seL4_CPtr reply)
 { assert(state != GUEST_STATE_RUNNING); receives++; return receive(ep, b, reply); }
 seL4_MessageInfo_t seL4_NBRecv(seL4_CPtr ep, seL4_Word *b, seL4_CPtr reply)
-{ assert(state == GUEST_STATE_RUNNING); polls++; return receive(ep, b, reply); }
+{ assert(initializing_poll || state == GUEST_STATE_RUNNING); polls++; return receive(ep, b, reply); }
 void seL4_Send(seL4_CPtr ep, seL4_MessageInfo_t info)
 {
 #ifdef AGENTOS_X86_USERSPACE_PROOF
@@ -171,6 +172,20 @@ int main(void)
     assert(boot_wake == incoming_badge && replies == old_replies + 1);
     incoming_badge |= 1;
     assert(!aos_x86_control_wait_initializing(&boot_wake));
+    unsigned old_polls = polls;
+    initializing_poll = true;
+    incoming_badge = 0;
+    assert(aos_x86_control_poll_initializing(&boot_wake) && !boot_wake);
+    assert(polls == old_polls + 1);
+    request(MSG_GUEST_BOOT, 0);
+    assert(aos_x86_control_poll_initializing(&boot_wake));
+    assert(!boot_wake && received_reply.opcode == GUEST_ERR_NOT_READY);
+    assert(state == GUEST_STATE_DEAD && !started && teardowns == old_teardowns);
+    incoming_badge = BLK_VIRT_VMM_WAKE_BADGE;
+    assert(aos_x86_control_poll_initializing(&boot_wake));
+    assert(boot_wake == BLK_VIRT_VMM_WAKE_BADGE);
+    incoming_badge |= 1;
+    assert(!aos_x86_control_poll_initializing(&boot_wake));
     incoming_badge = 0;
     assert(!aos_x86_control_wait_initializing(&boot_wake));
     puts("PASS: x86 control framing, notification dispatch, suspend/resume and terminal retries");

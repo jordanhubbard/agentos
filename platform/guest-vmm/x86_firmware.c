@@ -1712,6 +1712,29 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
             stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, linear,
                  reason == 31u || reason == 32u ? (uint32_t)regs.ecx : reason == 48u ? fault_gpa : qual);
         }
+        if (config.reset_requested) {
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+            /* This exit belongs to the retiring context. Never write its
+             * registers back or enter either runner while reset is pending. */
+            have_return = false;
+            enum aos_guest_restart_result result;
+            do {
+                seL4_Word badge = 0;
+                if (!aos_x86_control_poll_initializing(&badge))
+                    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x525354u, rip, 1u);
+                if (badge) control_wake(badge, &serial_endpoint);
+                result = aos_guest_vmm_restart_step(&runtime);
+                if (result == AOS_GUEST_RESTART_WAIT) seL4_Yield();
+            } while (result == AOS_GUEST_RESTART_WAIT);
+            if (result != AOS_GUEST_RESTART_RUNNING) {
+                if (reset_transaction.cleanup_pending) reset_abort();
+                stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x525354u, rip, lifecycle_state);
+            }
+            continue; /* Consume reset_entry_pending at the loop head. */
+#else
+            stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x525354u, rip, lifecycle_state);
+#endif
+        }
         service_serial(&serial_endpoint);
         aos_vmm_virtio_blk_after_fault();
         aos_vmm_virtio_net_after_fault();

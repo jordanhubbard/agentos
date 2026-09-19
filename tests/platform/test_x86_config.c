@@ -87,8 +87,31 @@ static void boot_tests(void)
     fw(&b,0x14,bytes,8); assert(read_le(bytes,8)==0);
 }
 
+static void reset_tests(void)
+{
+    aos_x86_config_t a, b;
+    assert(aos_x86_config_init(&a, 0x8000000));
+    assert(aos_x86_config_init(&b, 0x8000000));
+    select_pci(&a, 0x80000600u);
+    assert(!a.reset_requested);
+    io(&a, 0xcf9, 1, true, 2);
+    assert(!a.reset_requested && io(&a, 0xcf9, 1, false, 0) == 2);
+    io(&a, 0xcf9, 1, true, 6);
+    assert(a.reset_requested && !b.reset_requested);
+    io(&a, 0xcf9, 1, true, 0);
+    assert(a.reset_requested); /* A later write cannot cancel pending reset. */
+    assert(aos_x86_config_init(&a, 0x8000000));
+    assert(!a.reset_requested && !a.reset_control);
+    io(&a, 0x60, 1, true, 0xfe);
+    io(&a, 0x64, 1, true, 0xff);
+    assert(!a.reset_requested);
+    io(&a, 0x64, 1, true, 0xfe);
+    assert(a.reset_requested && !b.reset_requested);
+}
+
 int main(void)
 {
+    reset_tests();
     boot_tests();
     aos_x86_config_t a, b;
     assert(!aos_x86_config_init(NULL, 0x2000000));
@@ -174,6 +197,7 @@ int main(void)
     select_pci(&a, 0x80000000);
     aos_x86_config_t before_partial=a;
     for (unsigned port=0xcf8;port<0xcfc;port++) {
+        if (port == 0xcf9) continue; /* Byte reset register has its own tests. */
         io(&a,port,1,true,0xff);
         if (!(port&1)) io(&a,port,2,true,0xffff);
     }

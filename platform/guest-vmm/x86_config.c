@@ -146,6 +146,16 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks)
 {
     if (!s || !value || (width != 1u && width != 2u && width != 4u)) return false;
+    /* PIIX reset control, independent of the overlapping PCI address port.
+     * Only byte accesses decode here. RCPU requests a whole guest reset;
+     * SRST is retained for readback, matching the board's register model. */
+    if (port == 0xcf9u && width == 1u) {
+        if (write) {
+            s->reset_control = (uint8_t)*value & 2u;
+            if (*value & 4u) s->reset_requested = true;
+        } else *value = s->reset_control;
+        return true;
+    }
     /* Legacy I/O-delay writes have no device state. All emulated register
      * operations complete synchronously before the guest resumes. */
     if (write && width==1u && (port==0x80u || port==0xedu)) return true;
@@ -157,8 +167,11 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
     }
     /* No PS/2 controller is provisioned. Undecoded byte I/O reads all ones;
      * writes have no effect. Linux's bounded i8042 flush detects absence.
-     * This creates neither keyboard data nor an interrupt source. */
+     * The firmware's reset pulse is a platform reset request, without
+     * creating keyboard data or an interrupt source. */
     if (width==1u && (port==0x60u || port==0x64u)) {
+        if (write && port==0x64u && (*value & 0xffu)==0xfeu)
+            s->reset_requested = true;
         if (!write) *value=0xffu;
         return true;
     }

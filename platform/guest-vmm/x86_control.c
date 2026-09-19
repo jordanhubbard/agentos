@@ -16,15 +16,17 @@ extern bool aos_x86_lifecycle_ack;
 extern bool aos_x86_lifecycle_boot_ack;
 #endif
 
-bool aos_x86_control_wait_initializing(seL4_Word *wake_badge)
+static bool initializing_receive(seL4_Word *wake_badge, bool wait)
 {
     if (!wake_badge) return false;
     *wake_badge = 0;
     seL4_Word badge = 0;
 #ifdef CONFIG_KERNEL_MCS
-    (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge, AGENTOS_IPC_REPLY_CAP);
+    if (wait) (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge, AGENTOS_IPC_REPLY_CAP);
+    else (void)seL4_NBRecv(PD_CNODE_SLOT_SELF_EP, &badge, AGENTOS_IPC_REPLY_CAP);
 #else
-    (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge);
+    if (wait) (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge);
+    else (void)seL4_NBRecv(PD_CNODE_SLOT_SELF_EP, &badge);
 #endif
     const seL4_Word wakes = SERIAL_VIRT_VMM_WAKE_BADGE |
                            BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE;
@@ -42,9 +44,15 @@ bool aos_x86_control_wait_initializing(seL4_Word *wake_badge)
 #else
         seL4_Reply(info);
 #endif
-    } else return false;
+    } else return !wait;
     return true;
 }
+
+bool aos_x86_control_wait_initializing(seL4_Word *wake_badge)
+{ return initializing_receive(wake_badge, true); }
+
+bool aos_x86_control_poll_initializing(seL4_Word *wake_badge)
+{ return initializing_receive(wake_badge, false); }
 
 enum aos_x86_control_result aos_x86_control_step(
     const aos_guest_vmm_runtime_t *runtime,
