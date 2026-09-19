@@ -35,3 +35,9 @@ changing normalization or claiming one host detent equals one guest detent.
 The passing exact key/button qualification remains separate. Precise input
 latency and abrupt-disconnect release remain unproven. Artifacts are retained
 under `/home/jkh/.local/share/agentos-evidence/2026-09-19-native-motion-wheel/`.
+
+Shutdown is also a failed acceptance result for this run: after Escape,
+Stop live display, and normal Alt+F4, the native log reported
+`Segmentation fault (core dumped)` and Make error 139 (wrapper exit 2).
+The process was absent on recheck. Earlier successful native shutdown receipts
+do not supersede this failure; the crash requires diagnosis.
