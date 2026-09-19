@@ -31,7 +31,9 @@ int main(void)
             if (device==0) {
                 assert(accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&repeat));
                 assert(repeat_pending && repeats==0);
-                assert(!accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&repeat));
+                assert(accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&repeat));
+                struct input_event wrong_repeat=repeat; wrong_repeat.code=KEY_F13;
+                assert(!accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&wrong_repeat));
                 struct input_event early_up=down[0]; early_up.value=0;
                 assert(!accept_disconnect_event(0,positions,&held,&repeat_pending,&repeats,&early_up));
                 struct input_event wrong_syn=syn; wrong_syn.code=SYN_DROPPED;

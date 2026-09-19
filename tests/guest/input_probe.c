@@ -87,6 +87,9 @@ static bool accept_disconnect_event(unsigned device,unsigned positions[2],bool *
     /* Linux can repeat a held key independently of the host. Require each
      * repeat's packet boundary without advancing the release sequence. */
     if (device==0 && *repeat_pending) {
+        /* The native GUI may batch several repeats into one packet. */
+        if (event->type==EV_KEY && event->code==KEY_F12 && event->value==2)
+            return true;
         if (event->type!=EV_SYN || event->code!=SYN_REPORT) return false;
         *repeat_pending=false;
         ++*repeats;
@@ -184,6 +187,13 @@ int main(int argc,char **argv)
                       accept_event(backpressure,gui,i,&positions[i],&events[j]))) {
                     fprintf(stderr,"unexpected device %u event %u: %u/%u/%d\n",i,
                             positions[i],events[j].type,events[j].code,events[j].value);
+                    if (disconnect) {
+                        fprintf(stderr,"repeat_pending=%u complete_repeat_packets=%u batch_index=%u\n",
+                                repeat_pending,repeats,j);
+                        for (unsigned k=0;k<(size_t)bytes/sizeof(*events);++k)
+                            fprintf(stderr,"batch[%u]=%u/%u/%d\n",k,
+                                    events[k].type,events[k].code,events[k].value);
+                    }
                     return 1;
                 }
                 if (disconnect && held && !held_reported) {

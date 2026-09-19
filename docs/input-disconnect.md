@@ -87,6 +87,7 @@ Linux may emit F12 autorepeat while the key is held. The checker counts these
 repeat/SYN packets separately, only after the complete keyboard down packet
 and before its release. A missing repeat SYN, wrong key, pointer repeat or
 repeat after release fails; repeats never advance the required release sequence.
+Several F12 repeats may share one SYN packet, as observed through the native GUI.
 Only after observing that milestone, terminate the exact owned GUI process
 without sending keyup, mouseup, a release RPC or a protocol goodbye. Require
 `AGENTOS_GUI_DISCONNECT_PASS` and SSH exit zero, then release the host input
