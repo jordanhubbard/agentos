@@ -298,12 +298,56 @@ stale-handle rejection and recovery after invalid bounds or ring occupancy.
 This is a new queue service, not an extension of the retired framebuffer PD.
 Its focused target test asserts real create/write/flip/status/read/destroy
 transactions from both native clients. `make test-framebuffer-isolation`
-boots eight images covering each client's read/write access to the other
-queue page and the private arena. Each client first completes its authorized
+boots sixteen images covering each client's read/write access to the other
+queue page, private surface arena, observer page and private snapshot arena.
+Each client first completes its authorized
 pixel transactions; only root emits the isolation marker after matching the
-fault badge, address and access direction. Both focused tests passed locally
-on Spark. They do not establish hardware scanout, guest DRM/input or an
-external export client. Those remain required for the v0.4 graphics outcome.
+fault badge, address and access direction. All sixteen cases passed on Spark
+at `3b00d93`, including exact observer exports from both native clients in
+each image. [The qualification record](evidence/2026-09-16-spark/framebuffer-observer.json)
+identifies all sixteen retained images. Hardware scanout and guest DRM/input
+remain required for v0.4.
+
+The in-progress libvmm GPU backend (`libvmm/src/virtio/gpu*.c`) implements
+bounded 2D resource commands and direct control/cursor virtqueues, with
+`platform/gpu-virt/framebuffer_adapter.c` translating backend operations to
+the framebuffer queue contract. The AArch64 `GUEST_GRAPHICS=1` variant adds
+`framebuffer_queue` and grants each VMM only its own client page and dedicated
+read/send notification capabilities. These notifications are separate from the
+VMM's bound network/block/console notification. Only the framebuffer service
+maps private surface storage and both client pages. The guest profile's GPU
+flag selects VMM initialization and the faulting DTB window at `0x0a040000`,
+virtual INTID 54. No physical GPU frame or IRQ is granted to either VMM or the
+framebuffer service. The `debian-gpu` profile exercises this variant.
+Host tests verify exact pixels through the real framebuffer queue implementation;
+the framebuffer service receives a 1 ms budget per 10 ms period and a 1 KiB
+scheduling context with additional refill records. Short queue exchanges must
+not discard most of the available budget through refill coalescing. The kernel
+retains a 10% CPU ceiling. CC retains its existing 1% ceiling with a 100 us
+budget per 10 ms period and a 1 KiB scheduling context with extra refill
+records. Its host VirtIO polling yields must not defer each request or reply
+for the old one-second period. Other PD and guest scheduling parameters are
+unchanged. The shorter period needs target latency and integration qualification;
+it does not grant CC any additional device or guest-memory authority.
+Combined guest graphics/input qualification at this scheduling revision is
+pending. A physical display driver and target peer-input isolation also remain
+required; native observer exports do not establish either property.
+
+The graphics and focused framebuffer variants also grant CC a separate observer queue.
+Only CC and `framebuffer_queue` map that page; neither VMM receives it.
+The framebuffer service alone maps the additional private snapshot arena.
+CC resolves public guest handles before requesting a capture. The observer
+can capture, read and release immutable copies of selected committed frames;
+it cannot modify surfaces. Snapshot cookies are scoped to the existing
+privileged, serialized CC transport, not a new public authentication boundary.
+The focused target image exported exact 40 by 40 frames from both native
+clients through CC in multiple chunks on Spark. Guest DRM, a 1024 by 768 CC
+capture with exact profile-written pixels, authenticated SSH and the full gate
+passed on Spark at `8fb8ba1`; see the
+[graphics base receipt](evidence/2026-09-17-spark/graphics-base-integration.json).
+Physical scanout and combined guest input remain separate qualifications.
+The focused framebuffer image uses two explicit test-only public handles for
+the native pixel producers; those handles are absent from production images.
 
 The retired `services/legacy-pds/framebuffer_pd.c` rejects `HW_DIRECT`
 creation with `FB_ERR_BAD_BACKEND`. Its former MMIO probe and successful

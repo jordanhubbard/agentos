@@ -364,6 +364,21 @@ ifdef SEL4_TEST_IMAGE
   IMAGES += test_runner.elf
 endif
 
+ifdef GUEST_GRAPHICS
+  ifneq ($(ARCH),aarch64)
+    $(error GUEST_GRAPHICS requires aarch64)
+  endif
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+    $(error GUEST_GRAPHICS cannot be combined with focused test images)
+  endif
+  ifeq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+    $(error GUEST_GRAPHICS requires a guest profile)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_GRAPHICS=1
+  CFLAGS += -DAGENTOS_GUEST_GRAPHICS=1
+  IMAGES += framebuffer_queue.elf
+endif
+
 ifdef FRAMEBUFFER_TEST
   ifneq ($(ARCH),aarch64)
     $(error FRAMEBUFFER_TEST requires aarch64)
@@ -697,7 +712,10 @@ $(BUILD_DIR)/framebuffer_service.o: $(REPO_ROOT)/platform/framebuffer/service.c
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/framebuffer_queue.o: $(REPO_ROOT)/platform/framebuffer/framebuffer_pd.c
 	$(CC) $(CFLAGS) -c $< -o $@
-$(BUILD_DIR)/framebuffer_queue.elf: $(BUILD_DIR)/framebuffer_queue.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+$(BUILD_DIR)/framebuffer_observer.o: $(REPO_ROOT)/platform/framebuffer/observer.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/framebuffer_queue.o: $(GUEST_CONFIG_STAMP)
+$(BUILD_DIR)/framebuffer_queue.elf: $(BUILD_DIR)/framebuffer_queue.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/framebuffer_client0.o: $(REPO_ROOT)/tests/platform/framebuffer_client_pd.c $(GUEST_CONFIG_STAMP)
 	$(CC) $(CFLAGS) -DFB_TEST_CLIENT=0 -c $< -o $@
@@ -901,7 +919,7 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 $(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/framebuffer_observer.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)
@@ -1047,6 +1065,11 @@ SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-framebuffer-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
 	{ cat $<; printf '\n[[pd]]\nname = "framebuffer_queue"\npriority = 215\n'; printf '\n[[pd]]\nname = "framebuffer_client0"\npriority = 214\n'; printf '\n[[pd]]\nname = "framebuffer_client1"\npriority = 214\n'; } > $@
+else ifdef GUEST_GRAPHICS
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-guest-graphics.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml) $(GUEST_CONFIG_STAMP)
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "framebuffer_queue"\npriority = 215\n'; $(if $(strip $(GUEST_SECONDARY_PROFILE)),printf '\n[[pd]]\nname = "guest_vmm_secondary"\npriority = 250\n';,) } > $@
 else ifdef NATIVE_RUST_TEST
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-native-rust-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)

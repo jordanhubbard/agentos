@@ -105,6 +105,7 @@ QEMU_TEST_TIMEOUT ?= 300
 # Console and live-media proofs may run beside a retained guest instance.
 # Zero keeps the profile's normal forwarding port.
 QEMU_TEST_SSH_PORT ?= 0
+QEMU_TEST_GPU_SSH_PORT ?= 12224
 # Correct suspend accounting freezes each guest's architectural time while it
 # is stopped.  A full vendor-live-media dual proof can therefore take longer
 # than the old 90-minute bound that accidentally included a clock jump.
@@ -695,13 +696,31 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # lint-source is a source lint (policy-check's sibling), not a test; it is
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-agentctl-frame-host
+
+.PHONY: test-virtio-gpu-host
+test-virtio-gpu-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu_2d.c libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_virtio_gpu_2d
+	$(BUILD_TMP_DIR)/test_virtio_gpu_2d
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I libvmm/include tests/platform/test_virtio_mmio.c libvmm/src/virtio/mmio.c -o $(BUILD_TMP_DIR)/test_virtio_mmio
+	$(BUILD_TMP_DIR)/test_virtio_mmio
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -ffunction-sections -fdata-sections -Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -I tests/platform/mmio-stubs -I libvmm/include -I libvmm/dep/sddf/include -I libvmm/dep/sddf/include/extern tests/platform/test_virtio_net_config.c libvmm/src/virtio/mmio.c -o $(BUILD_TMP_DIR)/test_virtio_net_config
+	$(BUILD_TMP_DIR)/test_virtio_net_config
 
 .PHONY: test-framebuffer-host
+.PHONY: test-agentctl-frame-host
+test-agentctl-frame-host:
+	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+	$(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+
 test-framebuffer-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_queue.c platform/framebuffer/service.c -o $(ROOT_DIR)build/tmp/test_framebuffer_queue
 	$(ROOT_DIR)build/tmp/test_framebuffer_queue
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_observer.c platform/framebuffer/service.c platform/framebuffer/observer.c -o $(ROOT_DIR)build/tmp/test_framebuffer_observer
+	$(ROOT_DIR)build/tmp/test_framebuffer_observer
 
 .PHONY: test-framebuffer
 test-framebuffer: test-framebuffer-host
@@ -710,7 +729,7 @@ test-framebuffer: test-framebuffer-host
 .PHONY: test-framebuffer-isolation
 test-framebuffer-isolation:
 	@mkdir -p build/evidence/framebuffer-isolation
-	@set -e; for mode in 1 2 3 4 5 6 7 8; do \
+	@set -e; for mode in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do \
 	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer \
 	        --framebuffer-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
 	    cp build/qemu_virt_aarch64/agentos.img build/evidence/framebuffer-isolation/mode-$$mode.img; \
@@ -931,6 +950,10 @@ test-ubuntu-virtio:
 # End-state proof: boot Ubuntu's real Casper initrd and ISO filesystem to a
 # serial login while requiring real I/O through every agentOS VirtIO class.
 .PHONY: test-debian-live
+.PHONY: test-guest-gpu
+test-guest-gpu:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-gpu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_GPU_SSH_PORT)
+
 test-debian-live:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
 
