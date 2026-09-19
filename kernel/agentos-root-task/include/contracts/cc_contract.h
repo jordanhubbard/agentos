@@ -75,12 +75,16 @@
 /* MSG_CC_FRAME_CAPTURE, graphics images (and focused framebuffer tests) only:
  * MR1=public guest handle for CAPTURE, otherwise zero; MR2=MR3=0.
  * Shmem contains aos_fb_observer_request_t (framebuffer_observer.h), with
- * version=1, operation=CAPTURE/READ/RELEASE, id=client=0. CC resolves the guest
+ * version=1, operation=CAPTURE/READ/RELEASE/READ_PACKED, id=client=0. CC resolves the guest
  * handle to its private slot; callers cannot name a raw slot or surface.
- * READ length is at most 4056 bytes. All unused request fields must be zero.
+ * READ length is at most 4056 bytes. Optional READ_PACKED requests up to
+ * 65536 pixel-aligned snapshot bytes and returns an encoded nonempty prefix
+ * in at most 4056 bytes; see framebuffer_observer.h for its exact encoding.
+ * Legacy CC peers reject READ_PACKED with CC_ERR_INVALID_ARG. All unused request fields must be zero.
  * Reply MR0=CC_OK for a valid service response, MR1=40+payload bytes,
  * MR2=observer status, MR3=observer version. Shmem contains the 40-byte
- * aos_fb_observer_response_t (id=0) followed by READ's XRGB8888 bytes.
+ * aos_fb_observer_response_t (id=0) followed by READ's XRGB8888 bytes or
+ * READ_PACKED's header and encoded payload. Response length is wire bytes.
  * A nonzero observer status returns no pixels. CAPTURE returns an immutable
  * tightly packed image's dimensions, committed sequence and nonzero cookie.
  * A subsequent successful CAPTURE replaces the previous snapshot. RELEASE
