@@ -30,7 +30,8 @@ static void terminal_detach(aos_fb_client_t *peer)
     __atomic_store_n(&r->detach.request, 1u, __ATOMIC_RELEASE);
     assert(aos_fb_pump(&client) == 1);
     assert(__atomic_load_n(&r->detach.ack, __ATOMIC_ACQUIRE) == 1);
-    assert(!client.region && !client.selected_handle && !client.next_handle);
+    assert(!client.region && !client.selected_handle && client.next_handle==1);
+    assert(client.retired && client.generation==0);
     for (unsigned i = 0; i < AOS_FB_MAX_SURFACES; i++)
         assert(!client.surfaces[i].handle && !client.surfaces[i].staging &&
                !client.surfaces[i].committed);

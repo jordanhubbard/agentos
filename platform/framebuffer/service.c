@@ -45,6 +45,22 @@ int aos_fb_client_init(aos_fb_client_t *c, aos_fb_region_t *r,
     return 0;
 }
 
+int aos_fb_client_rebind(aos_fb_client_t *c, aos_fb_region_t *r,
+                         uint8_t *arena, size_t bytes, uint32_t generation)
+{
+    if (!c || c->region || !c->retired || c->generation==UINT32_MAX ||
+        !generation || generation!=c->generation+1u || !r || !arena ||
+        bytes<AOS_FB_ARENA_BYTES || r->req_head || r->req_tail ||
+        r->resp_head || r->resp_tail || r->detach.version ||
+        r->detach.request || r->detach.ack) return -1;
+    aos_fb_client_t fresh;
+    if (aos_fb_client_init(&fresh,r,arena,bytes)!=0) return -1;
+    fresh.next_handle=c->next_handle;
+    fresh.generation=generation;
+    *c=fresh;
+    return 0;
+}
+
 static aos_fb_surface_t *lookup(aos_fb_client_t *c, uint64_t handle)
 {
     if (handle == 0) return NULL;
@@ -145,7 +161,12 @@ unsigned aos_fb_pump(aos_fb_client_t *c)
         /* Single-threaded with observer snapshots and display forwarding:
          * neither can hold a surface pointer across this service iteration.
          * Existing observer snapshots are separate service-owned copies. */
+        uint64_t next_handle=c->next_handle;
+        uint32_t generation=c->generation;
         memset(c, 0, sizeof(*c));
+        c->next_handle=next_handle;
+        c->generation=generation;
+        c->retired=1u;
         publish(&r->detach.ack, 1u);
         return 1;
     }

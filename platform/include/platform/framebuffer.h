@@ -80,6 +80,7 @@ typedef struct aos_fb_surface {
 typedef struct aos_fb_client {
     aos_fb_region_t *region;
     uint64_t next_handle;
+    uint32_t generation, retired;
     uint64_t selected_handle;
     uint32_t selected_x, selected_y, selected_width, selected_height;
     aos_fb_surface_t surfaces[AOS_FB_MAX_SURFACES];
@@ -90,6 +91,13 @@ typedef struct aos_fb_client {
  * Return 0 on success, -1 for invalid configuration. */
 int aos_fb_client_init(aos_fb_client_t *client, aos_fb_region_t *region,
                        uint8_t *arena, size_t arena_bytes);
+/* Commit fresh mapped queue/arena pages after terminal detach. The service
+ * caller must authorize the owner and finish every capability mapping first.
+ * Fresh queues must be empty. Preserve handle identity across generations;
+ * neither old queues nor old arena memory are accessed. Failure leaves the
+ * retired client unchanged. This never resets observers or peer clients. */
+int aos_fb_client_rebind(aos_fb_client_t *client, aos_fb_region_t *region,
+                         uint8_t *arena, size_t arena_bytes, uint32_t generation);
 /* A pump processes at most QUEUE_CAPACITY requests and never consumes a
  * request without space for its response. Callers signal the peer after
  * submitting requests AND after draining responses: this resumes work after
