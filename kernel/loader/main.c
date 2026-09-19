@@ -9,7 +9,7 @@
  *   1. Parse agentos_img_hdr_t from IMAGE_DATA_ADDR
  *   2. Load seL4 kernel ELF LOAD segments → physical addresses
  *   3. Load root_task ELF LOAD segments → physical addresses
- *   4. Set up EL2 page tables (L0 + L1, 1 GB blocks)
+ *   4. Set up EL2 identity and ELF-derived kernel mappings
  *   5. Enable MMU (TTBR0_EL2)
  *   6. Jump to seL4 kernel virtual entry point
  *
@@ -28,7 +28,7 @@
  *   x3 = v_entry         (root_task virtual entry point)
  *   x4 = dtb_addr_p      (0 = no DTB)
  *   x5 = dtb_size        (0 = no DTB)
- *   PC = 0x8060000000    (kernel virtual entry)
+ *   PC = ELF e_entry    (kernel virtual entry)
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include "elf.h"
 #include "agentos_img.h"
+#include "page_tables.h"
 
 /* ── Memory addresses ─────────────────────────────────────────────────────── */
 
@@ -68,9 +69,6 @@ static void uart_puthex(uint64_t v)
         uart_putc(n < 10 ? '0' + n : 'a' + n - 10);
     }
 }
-
-/* seL4 kernel virtual entry point (from sel4.elf e_entry) */
-#define KERNEL_VENTRY     UINT64_C(0x8060000000)
 
 /* ── Page table descriptor bit fields (AArch64 LPAE) ────────────────────── */
 
@@ -105,6 +103,7 @@ static void uart_puthex(uint64_t v)
 extern uint64_t page_table_l0[512];
 extern uint64_t page_table_l1a[512]; /* covers VA 0..512GB (L0[0])  */
 extern uint64_t page_table_l1b[512]; /* covers VA 512GB..1TB (L0[1])*/
+extern uint64_t page_table_l2[512];
 
 /* ── Minimal bare-metal memory operations ────────────────────────────────── */
 
@@ -201,7 +200,7 @@ static int elf_load(const void *elf_data,
 /* ── Page table setup ────────────────────────────────────────────────────── */
 
 /*
- * setup_page_tables — populate L0 + L1 tables with 1 GB block mappings.
+ * setup_page_tables — identity map the loader, then map kernel ELF segments.
  *
  * VA layout (with 48-bit VAs, 4 KB pages, 3-level walk starting at L0):
  *   L0 index = VA[47:39]   (9 bits, selects 512 GB region)
@@ -214,13 +213,12 @@ static int elf_load(const void *elf_data,
  *             covers loader at 0x44000000, image at 0x48000000,
  *             kernel phys at 0x60000000, root_task phys at 0x41000000
  *
- *   L0[1] → L1b  (VA 512GB..1TB)
- *     L1b[1] = 0x40000000 (VA 0x8040000000..0x807FFFFFFF → PA 0x40000000..0x7FFFFFFF)
- *             kernel virtual 0x8060000000 maps to PA 0x60000000 ✓
+ *   L0[1] → L1b → L2: a high kernel window using 2 MiB blocks.
+ *     Both virtual addresses and physical destinations come from PT_LOAD.
  *
  * All blocks use normal-memory inner-shareable WB attributes (AttrIndx=0).
  */
-static void setup_page_tables(void)
+static bool setup_page_tables(const void *kernel_elf)
 {
     /*
      * L0[0]: table descriptor → L1a
@@ -237,13 +235,21 @@ static void setup_page_tables(void)
     page_table_l1a[0] = (UINT64_C(0x00000000)) | BLOCK_ATTRS;
     page_table_l1a[1] = (UINT64_C(0x40000000)) | BLOCK_ATTRS;
 
-    /*
-     * L1b — high kernel window
-     * VA 0x8040000000 is L0[1]/L1b[1] (index = (0x8040000000 >> 30) & 0x1FF = 1).
-     * This block maps VA 0x8040000000..0x807FFFFFFF → PA 0x40000000..0x7FFFFFFF.
-     * Kernel virtual entry 0x8060000000 falls in PA 0x60000000.  ✓
-     */
-    page_table_l1b[1] = (UINT64_C(0x40000000)) | BLOCK_ATTRS;
+    const Elf64_Ehdr *header = kernel_elf;
+    const Elf64_Phdr *segments = (const Elf64_Phdr *)
+        ((const uint8_t *)kernel_elf + header->e_phoff);
+    bool entry_mapped = false;
+    for (uint16_t i = 0; i < header->e_phnum; i++) {
+        const Elf64_Phdr *segment = &segments[i];
+        if (segment->p_type != PT_LOAD || !segment->p_memsz) continue;
+        if (!loader_map_kernel_segment(page_table_l1b, page_table_l2,
+                segment->p_vaddr, segment->p_paddr, segment->p_memsz))
+            return false;
+        if (header->e_entry >= segment->p_vaddr &&
+            header->e_entry - segment->p_vaddr < segment->p_memsz)
+            entry_mapped = true;
+    }
+    return entry_mapped;
 }
 
 /* ── MMU enable (implemented in mmu.S) ──────────────────────────────────── */
@@ -292,7 +298,10 @@ void loader_main(void)
 
     /* 4. Set up EL2 page tables */
     uart_puts("setting up page tables...\n");
-    setup_page_tables();
+    if (!setup_page_tables(kernel_elf)) {
+        uart_puts("FATAL: unsupported kernel ELF mapping\n");
+        for (;;) { __asm__ volatile("wfe"); }
+    }
 
     /* Memory/instruction barrier before enabling MMU */
     __asm__ volatile("dsb sy" ::: "memory");
@@ -314,7 +323,7 @@ void loader_main(void)
      *   x4 = 0               (no DTB)
      *   x5 = 0               (DTB size = 0)
      *
-     * The kernel entry lives at a high virtual address (0x8060000000) which
+     * The kernel entry lives at a high virtual address which
      * C cannot call directly as a function pointer on all toolchains, so we
      * use inline assembly with an explicit register load for the branch target.
      */
@@ -325,7 +334,7 @@ void loader_main(void)
     register uint64_t r4 __asm__("x4") = (uint64_t)0;    /* no DTB */
     register uint64_t r5 __asm__("x5") = (uint64_t)0;    /* DTB size = 0 */
 
-    uint64_t kentry = KERNEL_VENTRY;
+    uint64_t kentry = kernel_v_entry;
 
     __asm__ volatile(
         "br %[kentry]"

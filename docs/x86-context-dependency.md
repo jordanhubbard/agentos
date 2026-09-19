@@ -74,8 +74,38 @@ local kernel patches. The earlier agent-imposed blanket SDK build hold was
 unnecessary and has been corrected in the ledger. Installed release SDKs and
 default pins remain unchanged during qualification.
 
-The custom CR2 proposal is deferred. No local kernel patch or upstream
-publication is authorized by this plan. Adoption still requires reproducible
+The user explicitly approved both this isolated upstream qualification and
+the scoped upstream-compatible CR2 fix with full requalification on
+2026-09-19. This authorizes a narrow exception to the local-kernel-change
+rule if that fix remains necessary. The custom CR2 proposal remains deferred
+while the merged upstream VMX fix is tested; no local kernel patch has been
+made. Upstream publication is not part of this approval. Adoption still requires reproducible
 build evidence and renewed native, single-CPU, two-CPU, lifecycle and full
 Spark qualification. No release may infer Linux SMP success from the short
 native tests, a successful build or the upstream source audit.
+
+## Initial candidate qualification
+
+The isolated GNU build and a clean rebuild in a second directory produced
+byte-identical seL4 kernels and SDK headers for the release configurations
+of `qemu_virt_aarch64`, `x86_64_generic` and `x86_64_generic_vtx`. This is not
+a claim that the entire SDK archive reproduces: auxiliary Microkit runtime
+artifacts differ, including the stripped Rust initialiser. agentOS uses its
+own loader/root task and does not link those runtime artifacts.
+
+The Intel userspace/teardown gate passed with this candidate at `979ec65`.
+The first managed Debian attempt reached login but used a known-hosts pin
+from a different seeded image; it was aborted and is not accepted. The
+baseline disk's public host key was then read through a read-only loop device
+and matched the observed key. Managed one-CPU and SMP qualification remain
+pending.
+
+The first Spark gate stopped at kernel entry: the new ARM kernel's ELF entry
+is `0xffc0000000`, while the loader used a fixed `0x8060000000` branch target
+and mapping. The loader now maps ELF load segments with 2 MiB blocks and
+branches to `e_entry`. A host page-table walk checks both old and new layouts,
+including segment tails and overlapping blocks with matching translations.
+The full candidate `make gate` and the installed 2.3.0 ARM boot regression
+then passed. The [initial receipt](evidence/2026-09-19-spark/upstream-sdk-initial.json)
+records hashes and limitations; final integrated revision qualification is
+still required before adoption or release.
