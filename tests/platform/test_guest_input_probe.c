@@ -5,6 +5,24 @@
 #include <assert.h>
 int main(void)
 {
+    unsigned latency_position=0;
+    for (unsigned i=0;i<40;++i) {
+        struct input_event e={.type=(i&1) ? EV_SYN : EV_KEY,
+            .code=(i&1) ? SYN_REPORT : KEY_F12,.value=(i&1) ? 123 : (int)(1-((i/2)&1))};
+        struct input_event bad=e;
+        bad.code++;
+        assert(!accept_latency_event(&latency_position,&bad) && latency_position==i);
+        bad=e; bad.type++;
+        assert(!accept_latency_event(&latency_position,&bad) && latency_position==i);
+        if (!(i&1)) {
+            bad=e; bad.value=2;
+            assert(!accept_latency_event(&latency_position,&bad) && latency_position==i);
+            bad=e; bad.value=1-e.value;
+            assert(!accept_latency_event(&latency_position,&bad) && latency_position==i);
+        }
+        assert(accept_latency_event(&latency_position,&e) && latency_position==i+1);
+    }
+    assert(!accept_latency_event(&latency_position,&(struct input_event){0}));
     for (unsigned mode=0;mode<3;++mode)
     for (unsigned device=0;device<2;++device) {
         bool backpressure=mode!=0,gui=mode==2;

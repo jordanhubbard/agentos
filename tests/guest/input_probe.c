@@ -15,6 +15,17 @@
 #include <unistd.h>
 
 typedef struct { unsigned short type, code; int value; } expected_event_t;
+/* One transition per packet makes each flushed receipt unambiguous. */
+static bool accept_latency_event(unsigned *position,const struct input_event *event)
+{
+    if (*position>=40) return false;
+    bool syn=(*position & 1)!=0;
+    if (syn ? (event->type!=EV_SYN || event->code!=SYN_REPORT) :
+        (event->type!=EV_KEY || event->code!=KEY_F12 ||
+         event->value!=(int)(1-((*position/2)&1)))) return false;
+    ++*position;
+    return true;
+}
 static const expected_event_t keyboard[] = {
     {EV_KEY,KEY_F13,1},{EV_SYN,SYN_REPORT,0},
     {EV_KEY,KEY_F13,0},{EV_SYN,SYN_REPORT,0}
@@ -83,8 +94,9 @@ int main(int argc,char **argv)
     bool backpressure=argc==2 && !strcmp(argv[1],"--backpressure");
     bool gui=argc==2 && !strcmp(argv[1],"--gui");
     bool motion=argc==2 && !strcmp(argv[1],"--gui-pointer");
-    if (argc!=1 && !backpressure && !gui && !motion) { fprintf(stderr,"usage: input-probe [--backpressure|--gui|--gui-pointer]\n"); return 2; }
-    gui=gui || motion;
+    bool latency=argc==2 && !strcmp(argv[1],"--gui-latency");
+    if (argc!=1 && !backpressure && !gui && !motion && !latency) { fprintf(stderr,"usage: input-probe [--backpressure|--gui|--gui-pointer|--gui-latency]\n"); return 2; }
+    gui=gui || motion || latency;
     /* Native GUI qualification uses its supported F12 physical key and a
      * stationary captured click. The CLI/backpressure recipes retain F13. */
     backpressure=backpressure || gui;
@@ -112,7 +124,8 @@ int main(int argc,char **argv)
     if (start<0) return 1;
     unsigned positions[2]={0,0};
     bool pending[2]={false,false};
-    while (positions[0]<(motion ? 2u : 4u) || positions[1]<(motion ? 5u : backpressure ? 4u : 7u) || pending[0] || pending[1]) {
+    while (latency ? positions[0]<40 :
+           (positions[0]<(motion ? 2u : 4u) || positions[1]<(motion ? 5u : backpressure ? 4u : 7u) || pending[0] || pending[1])) {
         int64_t now=milliseconds();
         if (now<0 || now-start>=120000) { fprintf(stderr,"input deadline expired\n"); return 1; }
         struct pollfd fds[2]={{devices[0],POLLIN,0},{devices[1],POLLIN,0}};
@@ -125,18 +138,23 @@ int main(int argc,char **argv)
             ssize_t bytes=read(devices[i],events,sizeof(events));
             if (bytes<0 && (errno==EINTR || errno==EAGAIN)) continue;
             if (bytes<=0 || bytes%(ssize_t)sizeof(*events)) return 1;
-            for (unsigned j=0;j<(size_t)bytes/sizeof(*events);++j)
-                if (!(motion ? accept_gui_event(i,&positions[i],&pending[i],&events[j]) :
+            for (unsigned j=0;j<(size_t)bytes/sizeof(*events);++j) {
+                if (!(latency ? (i==0 && accept_latency_event(&positions[0],&events[j])) : motion ? accept_gui_event(i,&positions[i],&pending[i],&events[j]) :
                       accept_event(backpressure,gui,i,&positions[i],&events[j]))) {
                     fprintf(stderr,"unexpected device %u event %u: %u/%u/%d\n",i,
                             positions[i],events[j].type,events[j].code,events[j].value);
                     return 1;
                 }
+                if (latency && !(positions[0]&1)) {
+                    printf("AGENTOS_INPUT_ACK %u\n",positions[0]/2);
+                    fflush(stdout);
+                }
+            }
         }
     }
     struct pollfd extra[2]={{devices[0],POLLIN,0},{devices[1],POLLIN,0}};
     if (poll(extra,2,200)!=0) { fprintf(stderr,"unexpected trailing input\n"); return 1; }
     close(devices[0]); close(devices[1]);
-    puts(motion ? "AGENTOS_GUI_POINTER_PASS key=F12 x=17 y=-9 wheel=1 button=left packets=complete" : gui ? "AGENTOS_GUI_INPUT_PASS keyboard=4 pointer=4" : backpressure ? "AGENTOS_INPUT_PASS keyboard=4 pointer=4" : "AGENTOS_INPUT_PASS keyboard=4 pointer=7");
+    puts(latency ? "AGENTOS_GUI_LATENCY_PASS transitions=20" : motion ? "AGENTOS_GUI_POINTER_PASS key=F12 x=17 y=-9 wheel=1 button=left packets=complete" : gui ? "AGENTOS_GUI_INPUT_PASS keyboard=4 pointer=4" : backpressure ? "AGENTOS_INPUT_PASS keyboard=4 pointer=4" : "AGENTOS_INPUT_PASS keyboard=4 pointer=7");
     return 0;
 }
