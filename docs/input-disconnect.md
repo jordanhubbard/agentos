@@ -118,3 +118,13 @@ The verifier-runtime repair is tracked by
 `task_c66efe1c0eb44ee5926250ebcd38e5e3`; declaring prerequisites does not install
 them or turn that rejected review into a pass. Policy and profile checks remain
 part of the unchanged `make test-host` contract.
+
+The first three-pass attempt at `55fd91e` passed the host suite and full OS
+gate, but the explicit-events checker ended its output before its READY
+marker. No input was injected. Debian had reported udev and network-service
+startup failures before eventually reaching the shell and authenticated SSH.
+The checker stderr was empty, and its SSH process exit status was not retained.
+The [failed-attempt receipt](evidence/2026-09-19-spark/input-backpressure-first-run.json)
+preserves the logs and limits. The harness now includes phase, SSH process
+status and bounded stderr in such failures; no cause or target backpressure
+pass is inferred from this attempt.

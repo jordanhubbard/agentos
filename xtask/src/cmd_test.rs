@@ -3732,6 +3732,46 @@ fn input_probe_line(reader: &mut impl Read) -> anyhow::Result<String> {
     anyhow::bail!("input probe output line exceeds 128 bytes")
 }
 
+fn expect_input_probe_line(
+    receive: &std::sync::mpsc::Receiver<anyhow::Result<String>>,
+    probe: &mut Child,
+    stderr_path: &Path,
+    expected: &str,
+    seconds: u64,
+) -> anyhow::Result<()> {
+    let result = receive
+        .recv_timeout(Duration::from_secs(seconds))
+        .map_err(anyhow::Error::from)
+        .and_then(|line| line);
+    let failure = match result {
+        Ok(line) if line == expected => return Ok(()),
+        Ok(line) => format!("expected {expected:?}, received {line:?}"),
+        Err(error) => format!("waiting for {expected:?}: {error:#}"),
+    };
+    // EOF can reach the reader just before ssh exits. Retain its actual status
+    // before ChildGuard cleanup otherwise replaces the useful failure context.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let status = loop {
+        let status = probe.try_wait()?;
+        if status.is_some() || Instant::now() >= deadline {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = Vec::new();
+    std::fs::File::open(stderr_path)?
+        .take(2048)
+        .read_to_end(&mut stderr)?;
+    let status = status
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "still running".into());
+    anyhow::bail!(
+        "input probe {failure}; ssh process status={status}; stderr prefix={:?}; full stderr: {}",
+        String::from_utf8_lossy(&stderr),
+        stderr_path.display()
+    );
+}
+
 fn prove_profile_input(
     repo: &Path,
     socket: &Path,
@@ -3967,10 +4007,13 @@ fn prove_profile_input_pass(
             }
         }
     });
-    anyhow::ensure!(
-        receive.recv_timeout(Duration::from_secs(60))?? == "AGENTOS_INPUT_READY",
-        "input probe did not become ready"
-    );
+    expect_input_probe_line(
+        &receive,
+        &mut probe,
+        &stderr_path,
+        "AGENTOS_INPUT_READY",
+        60,
+    )?;
     let batches: &[&[&str]] = &[
         &["keyboard", "1", "183", "1"],
         &["keyboard", "1", "183", "0"],
@@ -4014,15 +4057,17 @@ fn prove_profile_input_pass(
         // agentctl validates the exact response and never retries input batches.
         wait_input_child(&mut submit, qemu, 30)?;
     }
-    anyhow::ensure!(
-        receive.recv_timeout(Duration::from_secs(120))??
-            == if mode == InputProofMode::Backpressure {
-                "AGENTOS_INPUT_PASS keyboard=4 pointer=4"
-            } else {
-                "AGENTOS_INPUT_PASS keyboard=4 pointer=7"
-            },
-        "guest input event mismatch"
-    );
+    expect_input_probe_line(
+        &receive,
+        &mut probe,
+        &stderr_path,
+        if mode == InputProofMode::Backpressure {
+            "AGENTOS_INPUT_PASS keyboard=4 pointer=4"
+        } else {
+            "AGENTOS_INPUT_PASS keyboard=4 pointer=7"
+        },
+        120,
+    )?;
     wait_input_child(&mut probe, qemu, 15)?;
     let receipt = serde_json::json!({
         "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
