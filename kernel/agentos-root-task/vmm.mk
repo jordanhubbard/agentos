@@ -114,8 +114,10 @@ $(BUILD_DIR)/input_queue.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/input-virt/serv
 	clang $(VMM_CFLAGS) -c $< -o $@
 ifdef GUEST_GRAPHICS
 VMM_CFLAGS += -DAGENTOS_GUEST_GRAPHICS=1
-GUEST_GPU_OBJS := $(BUILD_DIR)/gpu_framebuffer.$(VMM_SLOT).o $(BUILD_DIR)/vmm_virtio_gpu.$(VMM_SLOT).o $(BUILD_DIR)/gpu_queue.$(VMM_SLOT).o
+GUEST_GPU_OBJS := $(BUILD_DIR)/gpu_framebuffer.$(VMM_SLOT).o $(BUILD_DIR)/vmm_virtio_gpu.$(VMM_SLOT).o $(BUILD_DIR)/gpu_queue.$(VMM_SLOT).o $(BUILD_DIR)/graphics_rebind.$(VMM_SLOT).o
 endif
+$(BUILD_DIR)/graphics_rebind.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/framebuffer/rebind_client.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/gpu_framebuffer.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/gpu-virt/framebuffer_adapter.c $(VMM_CONFIG_STAMP)
 	clang $(VMM_CFLAGS) -c $< -o $@

@@ -13,5 +13,7 @@
 #define AOS_GUEST_GRAPHICS_ARENA_FRAMES 12u
 #define AOS_GUEST_GRAPHICS_POOL_COUNT (1u + AOS_GUEST_GRAPHICS_ARENA_FRAMES)
 #define AOS_GUEST_GRAPHICS_POOL_BITS 21u
+/* Adjacent to the four ordinary queue-frame destinations, outside paging. */
+#define AOS_GUEST_GRAPHICS_QUEUE_FRAME 3864u
 
 #endif

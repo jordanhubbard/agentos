@@ -1,4 +1,5 @@
 #include <platform/framebuffer_rebind.h>
+#include <platform/framebuffer_rebind_client.h>
 #include "contracts/virtualizer_authority.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -7,6 +8,33 @@
 
 int main(void)
 {
+    fb_rebind_req_t request={FB_REBIND_VERSION,0,1,0};
+    fb_rebind_reply_t reply={FB_REBIND_OK,FB_REBIND_VERSION,1,0};
+    assert(aos_fb_rebind_reply_valid(FB_REBIND_STAGE,&request,&reply,sizeof(reply),1,0));
+    assert(!aos_fb_rebind_reply_valid(FB_REBIND_STAGE,&request,&reply,sizeof(reply),0,0));
+    assert(!aos_fb_rebind_reply_valid(FB_REBIND_STAGE,&request,&reply,sizeof(reply),1,1));
+    assert(!aos_fb_rebind_reply_valid(FB_REBIND_STAGE,&request,&reply,sizeof(reply)-1,1,0));
+    assert(!aos_fb_rebind_reply_valid(FB_REBIND_STAGE,&request,NULL,sizeof(reply),1,0));
+    assert(!aos_fb_rebind_reply_valid(0,&request,&reply,sizeof(reply),1,0));
+    reply.generation++;
+    assert(!aos_fb_rebind_reply_valid(FB_REBIND_STAGE,&request,&reply,sizeof(reply),1,0));
+    reply.generation--;
+    reply.index++;
+    assert(!aos_fb_rebind_reply_valid(FB_REBIND_STAGE,&request,&reply,sizeof(reply),1,0));
+    reply.index--;
+    reply.version++;
+    assert(!aos_fb_rebind_reply_valid(FB_REBIND_STAGE,&request,&reply,sizeof(reply),1,0));
+    reply.version--;
+    for (uint32_t op=FB_REBIND_STAGE;op<=FB_REBIND_ABORT;op++) {
+        for (uint32_t status=FB_REBIND_OK;status<=FB_REBIND_RESOURCE;status++) {
+            reply.status=status;
+            unsigned caps=op==FB_REBIND_STAGE && status==FB_REBIND_OK;
+            assert(aos_fb_rebind_reply_valid(op,&request,&reply,sizeof(reply),caps,0));
+            assert(!aos_fb_rebind_reply_valid(op,&request,&reply,sizeof(reply),!caps,0));
+        }
+    }
+    reply.status=FB_REBIND_RESOURCE+1;
+    assert(!aos_fb_rebind_reply_valid(FB_REBIND_STAGE,&request,&reply,sizeof(reply),0,0));
     aos_fb_client_t c={.retired=1,.next_handle=19};
     aos_fb_rebind_t stage={0};
     fb_rebind_req_t q={FB_REBIND_VERSION,0,1,0};
