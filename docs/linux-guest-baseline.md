@@ -216,3 +216,32 @@ The full local artifacts are under `build/evidence/persistent-boot-aaumdV/`
 and `build/evidence/v04-spark-ubuntu/`; serial log paths in the receipts refer
 to the original runner. The JSON files alone are not substitutes for those
 runtime artifacts. Final release qualification must run at the release revision.
+
+### Integrated seeded cold boots, 2026-09-19
+
+On Spark, clean revision `d40350c711b7551fcc7679c7d3c9f62b869c9798`
+passed `make test-debian-nocloud-cold-boots SEL4_SDK_VERSION=2.3.0
+QEMU_TEST_SSH_PORT=12270 QEMU_TEST_TIMEOUT=1800`. Both QEMU processes
+exited. The [result](evidence/2026-09-19-spark/debian-seeded-cold-boots.json)
+records two authenticated boots using the retained writable disk and original
+Ed25519 SSH host identity. Both passed the architecture, disk-sync and
+host-backed VirtIO net/block/console checks. Source media and agentOS image
+identity were checked before the second boot; the image SHA-256 was
+`89d0e2aec1e32a21091d0b993b9864daa0e9319f976bbe5aa40a635a68b63c0f`.
+
+The [first timing](evidence/2026-09-19-spark/debian-seeded-first-timing.json)
+was 735,401 ms and the
+[second timing](evidence/2026-09-19-spark/debian-seeded-second-timing.json)
+was 603,190 ms, from launch request to completed authenticated SSH. These are
+individual observations, not a performance comparison. The second boot's
+first SSH attempt timed out; the bounded retry succeeded with the original
+host key. Journald also reported its journal as corrupted or uncleanly shut
+down, renamed it, and continued. Preserve both observations when assessing
+baseline reliability: this gate uses sync followed by QEMU stop, not orderly
+guest shutdown, and does not prove journal integrity or guest-slot recreation.
+
+Full local artifacts, including both disk copies, the target image, logs and
+hash manifest, are retained under
+`/home/jkh/.local/share/agentos-evidence/2026-09-19-debian-cold-boots/`.
+This checkpoint does not promote Debian into every required gate or establish
+x86 parity, concurrent storage isolation, or final release acceptance.

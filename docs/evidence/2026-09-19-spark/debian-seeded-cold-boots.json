@@ -1,0 +1,8 @@
+{
+  "first_boot": true,
+  "profile": "debian-arm64-nocloud",
+  "schema": "agentos.seeded_cold_boots.v1",
+  "scope": "two authenticated QEMU cold boots with original host identity; sync followed by QEMU stop, not orderly shutdown or guest-slot recreation",
+  "second_boot": true,
+  "status": "passed"
+}

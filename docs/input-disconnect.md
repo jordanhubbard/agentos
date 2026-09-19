@@ -151,3 +151,22 @@ has SHA-256 `b81056be9586233aae64ee5d514c01570c23dfec6fbc7f262e4d587b2b49d5a8`.
 The prior early exit did not recur, but no cause or fix is established for it.
 Debian baseline task `task_26e8b1157ffe449483d2fe1c44f2a8be` retains that
 reliability concern. Abrupt socket loss remains unqualified.
+
+### Integrated input qualification
+
+Clean integration revision `94f88afaed7de7fa8b03d8b6026b0e6b85a45efe`
+passed the full Spark `make gate` and all three `make test-guest-input` passes
+with SDK 2.3 and SSH port 12269. The retained
+[explicit input](evidence/2026-09-19-spark/input-integration-events.json),
+[held-input release](evidence/2026-09-19-spark/input-integration-held.json),
+[paused-input release](evidence/2026-09-19-spark/input-integration-paused.json)
+and [boot timing](evidence/2026-09-19-spark/input-integration-timing.json)
+receipts bind that run separately from the earlier input-branch qualification.
+The image SHA-256 is
+`0bb135d8b1d99c8090c7b19c71d21dea6db49215b96124b2581a6d762fd6f55e`.
+The local archive
+`/home/jkh/.local/share/agentos-evidence/2026-09-19-input-backpressure/94f88af-integration.tar.gz`
+has SHA-256 `4df249946e20ce2cd2e983cc5bba901ee52841549748314d9b95fa437f503328`.
+These integration receipts were absent from the branch after its earlier
+documentation update and have now been restored from that verified archive.
+They qualify ARM input behavior, not abrupt transport loss or x86 SMP.
