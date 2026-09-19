@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "source_revision": "6df47ad94e9385f5eb406cc7cc604edd6b20be88",
+  "source_tree_clean": true,
+  "host": "Spark aarch64 Linux",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "command": "make test-framebuffer test-framebuffer-isolation QEMU_TEST_TIMEOUT=300",
+  "make_exit": 0,
+  "target_runs_passed": 17,
+  "isolation_modes_passed": 16,
+  "proof": "Both framebuffer clients completed create/write/flip/status/read/destroy with exact pixels. The native observer exported isolated client frames through CC in multiple chunks. Each of sixteen separate isolation images produced the root-verified expected client data fault.",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/framebuffer-6df47ad",
+  "log_sha256": "f735524217ee4f6dd9e24437265be8822a8f3cdb876a26404490731960a7473c",
+  "artifacts": "Full qualification log, sixteen mode images and image-sha256.txt",
+  "limits": "Native framebuffer service and mapping isolation only. Does not prove guest graphics/input reconstruction, physical input ownership, interactive latency, final integrated release revision or v0.4 completion."
+}
