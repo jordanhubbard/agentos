@@ -26,18 +26,21 @@ Each has its own native TCB, VSpace, IPC buffer, scheduling context and
 VCPUs use the guest's shared EPT. Whole-guest reconstruction binds both fresh
 VCPUs, while per-CPU reconstruction can revoke either child independently.
 The normal manifest binder still admits one guest CPU. The Intel teardown
-qualification now attempts a real-mode HLT through the second runner in
-each reconstruction pass and checks that the bootstrap RIP is unchanged;
-target qualification of this extension is pending. Linux AP startup,
+qualification passed a real-mode HLT through the second runner in
+each reconstruction pass and checked that the bootstrap RIP was unchanged.
+The full Spark gate also passed at `1951d52`. The
+[second-runner receipt](evidence/2026-09-18-spark/x86-second-runner.json)
+records retained images, logs and hashes. Linux AP startup,
 matching topology and multi-CPU workload acceptance remain unfinished.
 
 LAPIC state now carries an immutable physical APIC ID and bootstrap flag.
 APIC ID reads, physical interrupt routing, self-IPIs and the APIC-base MSR
 use that context rather than assuming CPU zero. Host tests cover all usable
 xAPIC IDs, broadcast-ID rejection and isolation between destination contexts.
-The firmware runtime still provisions one bootstrap CPU. Additional native
-execution contexts, thread-safe IPC buffers, INIT/SIPI and lifecycle integration
-remain required before admitting multi-vCPU profiles; these host checks do
+The firmware runtime still admits one bootstrap CPU. The second native
+execution context is provisioned and separately qualified above; guest-driven
+INIT/SIPI and lifecycle integration remain required before admitting multi-vCPU
+profiles. These LAPIC host checks do
 not establish multi-CPU guest execution.
 
 The private x86 execution runner is a VMM component with a

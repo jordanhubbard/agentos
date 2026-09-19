@@ -1,0 +1,42 @@
+{
+  "schema": "agentos.x86.second-runner-qualification.v1",
+  "date_utc": "2026-09-19",
+  "revision": "1951d521eebf696d06ccf46cc8514b4fc3172f6e",
+  "scope": "Second native runner VM entry and independent VCPU reconstruction; normal guest admission remains one CPU",
+  "host": {
+    "command": "make test-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log": "agentos-smp-second-runner-host.log",
+    "sha256": "589a79d75b5021e93ee6e06dab00af10becd2edaa4664c378c2ea6b1ebd230bf"
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log": "agentos-smp-second-runner-spark.log",
+    "sha256": "2afc293419690596476c0b8fce8209157498e8d114af089a98593c2f7c67f8ef"
+  },
+  "intel": {
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4 QEMU_TEST_TIMEOUT=120",
+    "exit_code": 0,
+    "log": "agentos-smp-second-runner-intel.log",
+    "sha256": "89e82b3c69078b2dafa51ef7e538ec60e000dc45e4d8299833a2471ecc7d2533",
+    "root_elf_sha256": "9112bfe94f405db0278c320742d3b9695611a72da53a7161400553bcc2b0675b",
+    "target_log": "agentos-qemu-29sQV4.log",
+    "target_log_sha256": "4796014b6115f5111d1829e51de8014391b3da2fe1ce5674b54a1e4aeffd7ddf",
+    "qemu_pid": 1071302,
+    "qemu_gone_after_completion": true,
+    "observed": [
+      "Second runner enters AP VCPU at real-mode startup vector 8 and returns exact HLT exit in both reconstruction passes",
+      "Bootstrap VCPU RIP sentinel remains unchanged across AP execution",
+      "AP VCPU is selectively reconstructed through its own child untyped",
+      "Whole-guest object reconstruction and existing Linux ring3, block, network and lifecycle proofs pass"
+    ]
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-second-runner",
+  "remaining": [
+    "Connect INIT/SIPI, per-CPU runtime state and scheduling",
+    "Expose matching CPUID/APIC/ACPI topology before admitting two CPUs",
+    "Qualify two online Linux CPUs with concurrent workload and two managed lifecycle generations",
+    "Complete remaining v0.4 roadmap, GUI integration, required CI and release gates"
+  ]
+}
