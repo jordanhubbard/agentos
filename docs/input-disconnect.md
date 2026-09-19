@@ -25,7 +25,7 @@ exposes it as `agentctl input-release GUEST_HANDLE keyboard|pointer`. Its
 zero accepted-event count acknowledges retained work, not completion in the
 guest. Existing GUI version-1 requests remain unchanged.
 
-`make test-guest-input QEMU_TEST_TIMEOUT=1800` runs the evdev checker three times:
+`make test-guest-input QEMU_TEST_TIMEOUT=1800` runs the evdev checker four times:
 first with explicit release events, then with zero-event server release
 requests. Both passes require identical key, button, motion and SYN packets.
 Separate `.input.json` and `.input-release.json` receipts distinguish the two
@@ -39,6 +39,10 @@ down/SYN and one up/SYN for each device, with no extra events. The
 `.input-backpressure.json` receipt records accepted batches and actual guest
 events. A timeout or malformed reply cannot count as backpressure. This does
 not simulate a lost connection; target results must be recorded separately.
+The fourth pass closes the connection while keys/buttons are held, without
+release events or a release RPC, and requires the same exact evdev releases.
+Input batches within each pass use one connection; CLI-per-batch close would
+otherwise release held state before the intended proof step.
 
 `make test-input-host` checks exact release events, unchanged queues under
 backpressure, keyboard/pointer isolation, repeats, and all 255 supported keys
@@ -56,7 +60,17 @@ for client/device pairs that accepted input. A later open cannot cancel the
 pending close; the input virtualizer retains accepted releases through queue
 backpressure and rejects new batches until their releases are queued.
 
-The full Spark gate passes with this transport. Live input regression and
+Binary clients now wait for CC's reset-complete greeting and acknowledge its
+nonzero connection generation before sending commands. See `cc_contract.h`
+for the exact fixed-size bootstrap frames. This prevents a replacement
+connection's first request from being discarded by the pending close reset.
+Partial reads and failed writes invalidate the connection; commands and
+ambiguous replies are never replayed across a reset. The CLI, Rust test harness
+and external GUI must be upgraded together; legacy peers fail closed.
+
+The earlier MULTIPORT revision passed the full Spark gate; the new bootstrap
+has passed the native operator-session reconnect, fragmentation and 128-report
+backpressure test. Its full gate remains pending. Live input regression and
 abrupt GUI termination with guest-observed key/button releases remain
 required before claiming disconnect cleanup. The legacy shell timeout
 harness still describes the old console transport and must be replaced or

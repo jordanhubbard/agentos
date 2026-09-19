@@ -4234,6 +4234,21 @@ struct CcClient {
     stream: Option<UnixStream>,
 }
 
+#[cfg(test)]
+fn mock_cc_sync(stream: &mut UnixStream) {
+    let mut greeting = [0u8; CC_REPLY_SIZE];
+    for (offset, word) in [(0, 0x43435244), (4, 1), (8, 7), (12, 9)] {
+        wr32(&mut greeting, offset, word);
+    }
+    stream.write_all(&greeting).unwrap();
+    let mut request = [0u8; CC_REQ_SIZE];
+    stream.read_exact(&mut request).unwrap();
+    wr32(&mut greeting, 0, 0x261f);
+    assert_eq!(request, greeting);
+    wr32(&mut greeting, 0, 0);
+    stream.write_all(&greeting).unwrap();
+}
+
 impl CcClient {
     fn connect(cc_sock: &Path) -> anyhow::Result<Self> {
         let stream = Self::connect_stream(cc_sock)?;
@@ -4243,7 +4258,7 @@ impl CcClient {
     }
 
     fn connect_stream(cc_sock: &Path) -> anyhow::Result<UnixStream> {
-        let stream = UnixStream::connect(cc_sock)
+        let mut stream = UnixStream::connect(cc_sock)
             .with_context(|| format!("failed to connect to {}", cc_sock.display()))?;
         stream
             .set_read_timeout(Some(CC_IO_TIMEOUT))
@@ -4251,6 +4266,22 @@ impl CcClient {
         stream
             .set_write_timeout(Some(CC_IO_TIMEOUT))
             .context("failed to set CC socket write timeout")?;
+        let mut greeting = [0u8; CC_REPLY_SIZE];
+        read_cc_frame(&mut stream, &mut greeting).context("CC ready greeting")?;
+        anyhow::ensure!(
+            rd32(&greeting, 0) == 0x43435244
+                && rd32(&greeting, 4) == 1
+                && (rd32(&greeting, 8) | rd32(&greeting, 12)) != 0
+                && greeting[16..].iter().all(|b| *b == 0),
+            "invalid CC ready greeting"
+        );
+        let mut sync = greeting;
+        wr32(&mut sync, 0, 0x261f);
+        write_cc_frame(&mut stream, &sync).context("CC connection sync")?;
+        let mut reply = [0u8; CC_REPLY_SIZE];
+        read_cc_frame(&mut stream, &mut reply).context("CC connection acknowledgment")?;
+        wr32(&mut greeting, 0, 0);
+        anyhow::ensure!(reply == greeting, "invalid CC connection acknowledgment");
         Ok(stream)
     }
 
@@ -6720,6 +6751,7 @@ mod tests {
             let listener = UnixListener::bind(&socket).unwrap();
             let server = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
+                mock_cc_sync(&mut stream);
                 let mut exchanges = vec![
                     (MSG_CC_DESTROY_GUEST, CC_ERR_RELAY_FAULT),
                     (MSG_CC_LOG_STREAM, console_status),
@@ -6751,6 +6783,7 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            mock_cc_sync(&mut stream);
             let mut request = [0u8; CC_REQ_SIZE];
             stream.read_exact(&mut request).unwrap();
             assert_eq!(rd32(&request, 0), MSG_CC_LOG_STREAM);
@@ -6771,6 +6804,7 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            mock_cc_sync(&mut stream);
             for arch in [VIBEOS_ARCH_AARCH64, VIBEOS_ARCH_X86_64] {
                 let mut request = [0u8; CC_REQ_SIZE];
                 stream.read_exact(&mut request).unwrap();
@@ -7084,6 +7118,7 @@ mod tests {
             let listener = UnixListener::bind(&socket).unwrap();
             let server = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
+                mock_cc_sync(&mut stream);
                 for operation in 1..=3 {
                     let mut q = [0u8; CC_REQ_SIZE];
                     stream.read_exact(&mut q).unwrap();
@@ -7407,6 +7442,7 @@ mod tests {
         let listener = UnixListener::bind(&socket).expect("bind CC test socket");
         let server = std::thread::spawn(move || {
             let (mut first, _) = listener.accept().expect("accept first CC connection");
+            mock_cc_sync(&mut first);
             let mut first_request = [0u8; CC_REQ_SIZE];
             first
                 .read_exact(&mut first_request)

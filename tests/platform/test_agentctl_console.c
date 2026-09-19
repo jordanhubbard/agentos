@@ -45,6 +45,42 @@ static void stalled_transport(void)
     g_stream_fd = -1;
 }
 
+static void bootstrap_contract(void)
+{
+    for (unsigned mode = 0; mode < 5; ++mode) {
+        int fds[2];
+        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (!child) {
+            close(fds[0]);
+            uint8_t byte;
+            assert(recv(fds[1], &byte, 1, MSG_DONTWAIT) < 0 && errno == EAGAIN);
+            cc_reply_wire_t hello = {.mr = {CC_CONNECTION_MAGIC, 1, 7, 9}};
+            if (mode == 1) hello.mr[1] = 2;
+            if (mode == 2) hello.mr[2] = hello.mr[3] = 0;
+            if (mode == 3) hello.shmem[4095] = 1;
+            assert(write_full(fds[1], &hello, sizeof(hello)));
+            if (mode == 0 || mode == 4) {
+                cc_req_wire_t ack;
+                assert(read_full(fds[1], &ack, sizeof(ack)));
+                hello.mr[0] = MSG_CC_CONNECTION_SYNC;
+                assert(memcmp(&ack, &hello, sizeof(ack)) == 0);
+                hello.mr[0] = CC_OK;
+                if (mode == 4) hello.mr[2]++;
+                assert(write_full(fds[1], &hello, sizeof(hello)));
+            }
+            close(fds[1]);
+            _exit(0);
+        }
+        close(fds[1]);
+        assert(connection_sync(fds[0]) == (mode == 0));
+        close(fds[0]);
+        int status;
+        assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && !WEXITSTATUS(status));
+    }
+}
+
 static void serve(int fd, unsigned mode)
 {
     cc_req_wire_t req;
@@ -63,6 +99,7 @@ static void serve(int fd, unsigned mode)
 int main(void)
 {
     stalled_transport();
+    bootstrap_contract();
     for (unsigned mode = 0; mode < 5; ++mode) {
         int fds[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);

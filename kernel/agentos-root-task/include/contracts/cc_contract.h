@@ -22,7 +22,8 @@
  *     uses the direct relay API below.
  *   - Sessions expire after CC_SESSION_TIMEOUT_TICKS of inactivity.
  *   - Multiple concurrent sessions are supported (CC_MAX_SESSIONS).
- *   - The CC PD does not initiate communication; it only responds to PPCs.
+ *   - Session IPC responds to PPCs. Binary socket connections first receive
+ *     the server greeting described below.
  *
  * Direct relay API (Phase 5a):
  *   MSG_CC_LIST_GUESTS       → CC handle registry + vm_manager INFO
@@ -54,6 +55,23 @@
 
 #pragma once
 #include "../agentos.h"
+
+/* Binary socket bootstrap (not MSG_CC_CONNECT session allocation): the host
+ * MUST read a complete 4112-byte greeting before sending any bytes. CC emits
+ * it only after transport reset and acceptance of disconnected-input releases.
+ * Greeting words: MAGIC, VERSION, generation low, generation high; payload zero.
+ * The generation is nonzero and never reused during a CC process lifetime.
+ * Host sends CONNECTION_SYNC, VERSION, generation low/high, with zero payload.
+ * CC replies CC_OK, VERSION, generation low/high, with zero payload. Only then
+ * may commands be sent. Invalid or partial bootstrap closes/reset the stream;
+ * no command is dispatched before synchronization. This is ordering, not
+ * authentication. Legacy peers fail closed; there is no legacy fallback.
+ * On any ambiguous command/reply failure, close without replaying the command.
+ * Each frame direction has a bounded deadline; partial progress cannot renew it.
+ * A failed bootstrap may be retried on a fresh socket before any command is sent.
+ */
+#define CC_CONNECTION_MAGIC 0x43435244u
+#define CC_CONNECTION_VERSION 1u
 
 /* MSG_CC_INSPECT: MR1=AOS_INSPECT_VERSION, MR2=MR3=0; no input payload.
  * Reply MR0=CC_OK, MR1=sizeof(aos_inspect_snapshot_t), MR2=flags, MR3=version;

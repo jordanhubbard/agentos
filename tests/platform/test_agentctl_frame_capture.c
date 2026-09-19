@@ -8,6 +8,14 @@
 static void serve(int listener, unsigned mode)
 {
     int fd = accept(listener, NULL, NULL);
+    cc_reply_wire_t hello = {.mr = {CC_CONNECTION_MAGIC, CC_CONNECTION_VERSION, 7, 9}};
+    assert(write_full(fd, &hello, sizeof(hello)));
+    cc_req_wire_t sync;
+    assert(read_full(fd, &sync, sizeof(sync)));
+    hello.mr[0] = MSG_CC_CONNECTION_SYNC;
+    assert(memcmp(&sync, &hello, sizeof(sync)) == 0);
+    hello.mr[0] = CC_OK;
+    assert(write_full(fd, &hello, sizeof(hello)));
     assert(fd >= 0);
     aos_fb_observer_region_t region = {0};
     uint8_t committed[40 * 40 * 4];

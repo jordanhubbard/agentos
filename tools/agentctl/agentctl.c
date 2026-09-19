@@ -98,6 +98,8 @@ static uint32_t parse_u32(const char *s, const char *name)
     return (uint32_t)v;
 }
 
+static bool connection_sync(int fd);
+
 static int connect_cc(void)
 {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -119,6 +121,11 @@ static int connect_cc(void)
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         fprintf(stderr, "agentctl: cannot connect to %s: %s\n",
                 g_sock_path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if (!connection_sync(fd)) {
+        fprintf(stderr, "agentctl: CC connection synchronization failed\n");
         close(fd);
         return -1;
     }
@@ -163,6 +170,23 @@ static bool write_full(int fd, const void *buf, size_t n)
 static bool read_full(int fd, void *buf, size_t n)
 {
     return transfer_full(fd, buf, n, false);
+}
+
+static bool connection_sync(int fd)
+{
+    cc_reply_wire_t greeting, reply;
+    if (!read_full(fd, &greeting, sizeof(greeting)) ||
+        greeting.mr[0] != CC_CONNECTION_MAGIC ||
+        greeting.mr[1] != CC_CONNECTION_VERSION ||
+        !(greeting.mr[2] | greeting.mr[3])) return false;
+    for (unsigned i = 0; i < sizeof(greeting.shmem); ++i)
+        if (greeting.shmem[i]) return false;
+    cc_req_wire_t request = {.opcode = MSG_CC_CONNECTION_SYNC,
+        .mr = {CC_CONNECTION_VERSION, greeting.mr[2], greeting.mr[3]}};
+    if (!write_full(fd, &request, sizeof(request)) ||
+        !read_full(fd, &reply, sizeof(reply))) return false;
+    greeting.mr[0] = CC_OK;
+    return memcmp(&greeting, &reply, sizeof(reply)) == 0;
 }
 
 static bool cc_call(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3,

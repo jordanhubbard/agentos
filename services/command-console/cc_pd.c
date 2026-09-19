@@ -34,7 +34,6 @@
 #include "contracts/fault_inject_contract.h"
 #include "contracts/log_drain_contract.h"
 #include "contracts/agent_pool_contract.h"
-#include "cc_retry_cache.h"
 #include "cc_vm_client.h"
 #include "contracts/vm_manager_contract.h"
 #include "sel4_ipc.h"
@@ -365,19 +364,6 @@ static bool virtio_serial_init(void)
     return true;
 }
 
-static void virtio_serial_recover_tx(void)
-{
-    cc_dbg_puts("[cc_pd] resetting VirtIO serial after incomplete reply\n");
-    g_transport_ready = false;
-    aos_virtio_host_set_status(&g_transport, VSTATUS_FAILED);
-    VQ_MB();
-    aos_virtio_host_set_status(&g_transport, 0u);
-    VQ_MB();
-    if (!virtio_serial_init()) {
-        cc_dbg_puts("[cc_pd] VirtIO serial recovery failed\n");
-    }
-}
-
 static bool vio_serial_write(const void *buf, uint32_t n)
 {
     if (!g_transport_ready) return false;
@@ -501,6 +487,7 @@ static bool vio_serial_read(void *buf, uint32_t n)
             seL4_Yield();
             wait++;
             if (wait >= CC_VIRTIO_RX_WAIT_LIMIT) {
+                if (n == total) { wait = 0; continue; }
                 cc_dbg_puts("[cc_pd] RX timeout waiting for used ring\n");
                 return false;
             }
@@ -1989,8 +1976,9 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
      * 4112 bytes, which would exhaust cc_pd's 16 KB stack otherwise.    */
     static cc_req_wire_t   g_req;
     static cc_reply_wire_t g_rep;
-    static cc_retry_cache_t g_retry;
-    cc_retry_cache_init(&g_retry);
+    uint64_t connection_generation = 0;
+    bool greeting_sent = false;
+    bool connection_active = false;
     cc_vm_client_init(&g_vm_client, cc_vm_rpc, NULL);
 #if defined(__aarch64__) || defined(AGENTOS_X86_CC_PCI)
     cc_serial_init();
@@ -2014,7 +2002,7 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 
     while (1) {
         if (g_control.close_pending) {
-            cc_retry_cache_init(&g_retry);
+            greeting_sent = connection_active = false;
             __builtin_memset(&g_req, 0, sizeof(g_req));
             __builtin_memset(&g_rep, 0, sizeof(g_rep));
 #ifdef AGENTOS_GUEST_INPUT
@@ -2033,30 +2021,48 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 #ifdef AGENTOS_GUEST_INPUT
         if (!cc_release_disconnected_input()) { seL4_Yield(); continue; }
 #endif
+        if (!vio_control_poll()) { g_control.close_pending = true; continue; }
+        if (g_control.close_pending) continue;
+        if (!g_control.host_open) { seL4_Yield(); continue; }
+        if (!greeting_sent) {
+            /* Clients send nothing until this reset-complete greeting. */
+            if (connection_generation == UINT64_MAX) { seL4_Yield(); continue; }
+            ++connection_generation;
+            __builtin_memset(&g_rep, 0, sizeof(g_rep));
+            g_rep.mr[0] = CC_CONNECTION_MAGIC;
+            g_rep.mr[1] = CC_CONNECTION_VERSION;
+            g_rep.mr[2] = (uint32_t)connection_generation;
+            g_rep.mr[3] = (uint32_t)(connection_generation >> 32);
+            if (!vio_serial_write(&g_rep, sizeof(g_rep))) {
+                g_control.close_pending = true;
+                continue;
+            }
+            greeting_sent = true;
+        }
         if (!vio_serial_read(&g_req, sizeof(g_req))) {
+            g_control.close_pending = true;
             continue;
         }
-        if (!cc_retry_cache_replay(&g_retry, &g_req, &g_rep)) {
-            __builtin_memset(&g_rep, 0, sizeof(g_rep));
+        __builtin_memset(&g_rep, 0, sizeof(g_rep));
+        if (!connection_active) {
+            bool valid = g_req.opcode == MSG_CC_CONNECTION_SYNC &&
+                g_req.mr[0] == CC_CONNECTION_VERSION &&
+                g_req.mr[1] == (uint32_t)connection_generation &&
+                g_req.mr[2] == (uint32_t)(connection_generation >> 32);
+            for (unsigned i = 0; i < sizeof(g_req.shmem); ++i)
+                valid &= g_req.shmem[i] == 0;
+            if (!valid) { g_control.close_pending = true; continue; }
+            g_rep.mr[0] = CC_OK;
+            g_rep.mr[1] = CC_CONNECTION_VERSION;
+            g_rep.mr[2] = (uint32_t)connection_generation;
+            g_rep.mr[3] = (uint32_t)(connection_generation >> 32);
+            connection_active = true;
+        } else {
             cc_dispatch(&g_req, &g_rep);
         }
         if (!vio_serial_write(&g_rep, sizeof(g_rep))) {
-            if (g_control.close_pending) continue;
-            /*
-             * The operation may already have changed state. Save the exact
-             * request/reply pair before resetting the poisoned TX queue.
-             * First retry the reply on the fresh queue so the still-connected
-             * host does not need to wait for its frame deadline.  Retain the
-             * cache either way: if the socket crossed its deadline at the
-             * same instant, a reconnecting host can repeat the request without
-             * executing it twice.
-             */
-            cc_retry_cache_record(&g_retry, &g_req, &g_rep);
-            virtio_serial_recover_tx();
-            if (!vio_serial_write(&g_rep, sizeof(g_rep))) {
-                cc_dbg_puts("[cc_pd] recovered reply TX remained blocked\n");
-                virtio_serial_recover_tx();
-            }
+            /* Delivery is ambiguous. Invalidate this connection, never replay. */
+            g_control.close_pending = true;
         }
     }
 }
