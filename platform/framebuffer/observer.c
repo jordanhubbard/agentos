@@ -5,6 +5,39 @@
 static uint32_t load(const uint32_t *p) { return __atomic_load_n(p,__ATOMIC_ACQUIRE); }
 static void publish(uint32_t *p,uint32_t n) { __atomic_store_n(p,n,__ATOMIC_RELEASE); }
 
+static void put_le32(uint8_t *p, uint32_t value)
+{
+    for (unsigned i=0;i<4;++i) p[i]=(uint8_t)(value>>(8u*i));
+}
+
+/* Private immutable snapshot only; each input pixel is inspected at most
+ * twice and no access rounds beyond the validated requested range. */
+static uint32_t packed_read(uint8_t *out, const uint8_t *source, uint32_t length)
+{
+    uint32_t consumed=0, written=AOS_FB_PACKED_HEADER_BYTES;
+    while (consumed<length && written+8u<=AOS_FB_PACKED_WIRE_MAX) {
+        uint32_t run=4;
+        while (run<length-consumed &&
+               !memcmp(source+consumed,source+consumed+run,4)) run+=4;
+        put_le32(out+written,run/4u);
+        memcpy(out+written+4,source+consumed,4);
+        consumed+=run;
+        written+=8;
+    }
+    uint32_t raw=length;
+    if (raw>AOS_FB_PACKED_WIRE_MAX-AOS_FB_PACKED_HEADER_BYTES)
+        raw=AOS_FB_PACKED_WIRE_MAX-AOS_FB_PACKED_HEADER_BYTES;
+    if (consumed<raw || (consumed==raw && written>=raw+AOS_FB_PACKED_HEADER_BYTES)) {
+        memcpy(out+AOS_FB_PACKED_HEADER_BYTES,source,raw);
+        put_le32(out,raw);
+        put_le32(out+4,AOS_FB_PACKED_RAW);
+        return raw+AOS_FB_PACKED_HEADER_BYTES;
+    }
+    put_le32(out,consumed);
+    put_le32(out+4,AOS_FB_PACKED_RUNS);
+    return written;
+}
+
 int aos_fb_observer_init(aos_fb_observer_t *o, aos_fb_observer_region_t *r,
     aos_fb_client_t *clients, uint32_t count, uint32_t mask, void *snapshot, size_t bytes)
 {
@@ -36,7 +69,7 @@ static aos_fb_observer_response_t execute(aos_fb_observer_t *o,const aos_fb_obse
 {
     aos_fb_observer_response_t p={.version=AOS_FB_OBSERVER_VERSION,.id=q->id};
     if (q->version!=AOS_FB_OBSERVER_VERSION || q->operation<AOS_FB_CAPTURE ||
-        q->operation>AOS_FB_CAPTURE_RELEASE) { p.status=AOS_FB_OBSERVER_BAD_REQUEST; return p; }
+        q->operation>AOS_FB_CAPTURE_READ_PACKED) { p.status=AOS_FB_OBSERVER_BAD_REQUEST; return p; }
     if (q->operation==AOS_FB_CAPTURE) {
         if (q->cookie || q->offset || q->length) { p.status=AOS_FB_OBSERVER_BAD_REQUEST; return p; }
         if (q->client>=o->client_count || !(o->allowed_mask & (1u<<q->client))) {
@@ -65,6 +98,13 @@ static aos_fb_observer_response_t execute(aos_fb_observer_t *o,const aos_fb_obse
                 q->length>o->bytes-q->offset) { p.status=AOS_FB_OBSERVER_BAD_BOUNDS; return p; }
             memcpy(o->region->data,o->snapshot+q->offset,q->length);
             p.length=q->length;
+        } else if (q->operation==AOS_FB_CAPTURE_READ_PACKED) {
+            if (!q->length || q->length>AOS_FB_PACKED_SOURCE_MAX ||
+                (q->offset|q->length)&3u || q->offset>o->bytes ||
+                q->length>o->bytes-q->offset) {
+                p.status=AOS_FB_OBSERVER_BAD_BOUNDS; return p;
+            }
+            p.length=packed_read(o->region->data,o->snapshot+q->offset,q->length);
         } else {
             if (q->offset || q->length) { p.status=AOS_FB_OBSERVER_BAD_REQUEST; return p; }
             o->cookie=0;

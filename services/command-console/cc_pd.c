@@ -1706,11 +1706,13 @@ static void handle_frame_capture(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     __builtin_memcpy(&query, req->shmem, sizeof(query));
     if (req->mr[1] || req->mr[2] || query.version != AOS_FB_OBSERVER_VERSION ||
         query.id || query.client || query.operation < AOS_FB_CAPTURE ||
-        query.operation > AOS_FB_CAPTURE_RELEASE ||
+        query.operation > AOS_FB_CAPTURE_READ_PACKED ||
         (query.operation == AOS_FB_CAPTURE && (query.cookie || query.offset || query.length)) ||
         (query.operation != AOS_FB_CAPTURE && (req->mr[0] || !query.cookie)) ||
         (query.operation == AOS_FB_CAPTURE_READ && (!query.length ||
             query.length > CC_WIRE_SHMEM_SIZE - sizeof(aos_fb_observer_response_t))) ||
+        (query.operation == AOS_FB_CAPTURE_READ_PACKED && (!query.length ||
+            query.length > AOS_FB_PACKED_SOURCE_MAX || ((query.offset | query.length) & 3u))) ||
         (query.operation == AOS_FB_CAPTURE_RELEASE && (query.offset || query.length))) {
         rep->mr[0] = CC_ERR_INVALID_ARG;
         return;
@@ -1766,7 +1768,9 @@ static void handle_frame_capture(const cc_req_wire_t *req, cc_reply_wire_t *rep)
         response.status <= AOS_FB_OBSERVER_EXHAUSTED &&
         response.length <= CC_WIRE_SHMEM_SIZE - sizeof(response) &&
         (response.length == 0 || (response.status == AOS_FB_OBSERVER_OK &&
-            query.operation == AOS_FB_CAPTURE_READ && response.length == query.length));
+            ((query.operation == AOS_FB_CAPTURE_READ && response.length == query.length) ||
+             (query.operation == AOS_FB_CAPTURE_READ_PACKED &&
+              response.length >= AOS_FB_PACKED_HEADER_BYTES + 4u))));
     if (valid) {
         response.id = 0;
         __builtin_memcpy(rep->shmem, &response, sizeof(response));
