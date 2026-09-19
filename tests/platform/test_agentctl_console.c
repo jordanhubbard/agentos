@@ -1,9 +1,49 @@
 /* Console bytes must survive the public CLI, including non-text data. */
+#define CC_FRAME_TIMEOUT_MS 200
 #define main agentctl_main
 #include "../../tools/agentctl/agentctl.c"
 #undef main
 #include <assert.h>
 #include <sys/wait.h>
+
+static void stalled_transport(void)
+{
+    int fds[2];
+    uint8_t bytes[32] = {0};
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    struct timespec start, end;
+    assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+    assert(!read_full(fds[0], bytes, sizeof(bytes)) && errno == ETIMEDOUT);
+    assert(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
+    int64_t elapsed = (end.tv_sec - start.tv_sec) * 1000 +
+                      (end.tv_nsec - start.tv_nsec) / 1000000;
+    assert(elapsed >= 190 && elapsed < 2000);
+    /* A prefix without EOF must also expire. */
+    assert(write_full(fds[1], bytes, 1));
+    assert(!read_full(fds[0], bytes, sizeof(bytes)) && errno == ETIMEDOUT);
+    close(fds[0]); close(fds[1]);
+
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    int capacity = 4096;
+    assert(setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &capacity, sizeof(capacity)) == 0);
+    uint8_t *large = calloc(1, 1024 * 1024);
+    assert(large);
+    assert(!write_full(fds[0], large, 1024 * 1024) && errno == ETIMEDOUT);
+    free(large);
+    close(fds[0]); close(fds[1]);
+
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    g_stream_fd = fds[0];
+    cc_reply_wire_t reply;
+    assert(!cc_call(MSG_CC_INSPECT, 1, 0, 0, NULL, 0, &reply));
+    cc_req_wire_t request;
+    assert(read_full(fds[1], &request, sizeof(request)));
+    assert(request.opcode == MSG_CC_INSPECT && request.mr[0] == 1);
+    /* Shutdown follows the single request; no replay or extra frame. */
+    assert(recv(fds[1], bytes, sizeof(bytes), 0) == 0);
+    close(fds[0]); close(fds[1]);
+    g_stream_fd = -1;
+}
 
 static void serve(int fd, unsigned mode)
 {
@@ -22,6 +62,7 @@ static void serve(int fd, unsigned mode)
 
 int main(void)
 {
+    stalled_transport();
     for (unsigned mode = 0; mode < 5; ++mode) {
         int fds[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);

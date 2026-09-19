@@ -32,6 +32,9 @@
 #define DEFAULT_CC_SOCK "build/cc_pd.sock"
 #define MY_BADGE 0xA6E70001u
 #define CC_WIRE_SHMEM_SIZE 4096u
+#ifndef CC_FRAME_TIMEOUT_MS
+#define CC_FRAME_TIMEOUT_MS 30000
+#endif
 
 typedef struct {
     uint32_t opcode;
@@ -122,30 +125,44 @@ static int connect_cc(void)
     return fd;
 }
 
-static bool write_full(int fd, const void *buf, size_t n)
+/* Absolute deadline per frame direction, including partial progress. */
+static bool transfer_full(int fd, void *buf, size_t n, bool writing)
 {
-    const uint8_t *p = (const uint8_t *)buf;
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) return false;
+    int64_t deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + CC_FRAME_TIMEOUT_MS;
+    uint8_t *p = buf;
     while (n > 0) {
-        ssize_t w = write(fd, p, n);
-        if (w < 0 && errno == EINTR) continue;
-        if (w <= 0) return false;
-        p += (size_t)w;
-        n -= (size_t)w;
+        if (clock_gettime(CLOCK_MONOTONIC, &now)) return false;
+        int64_t left = deadline - ((int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000);
+        if (left <= 0) { errno = ETIMEDOUT; return false; }
+        struct pollfd wait = {.fd = fd, .events = writing ? POLLOUT : POLLIN};
+        int ready = poll(&wait, 1, (int)left);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) return false;
+        if (!ready) { errno = ETIMEDOUT; return false; }
+        int flags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+        if (writing) flags |= MSG_NOSIGNAL;
+#endif
+        ssize_t count = writing ? send(fd, p, n, flags) : recv(fd, p, n, flags);
+        if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (count < 0) return false;
+        if (!count) { errno = ECONNRESET; return false; }
+        p += (size_t)count;
+        n -= (size_t)count;
     }
     return true;
 }
 
+static bool write_full(int fd, const void *buf, size_t n)
+{
+    return transfer_full(fd, (void *)buf, n, true);
+}
+
 static bool read_full(int fd, void *buf, size_t n)
 {
-    uint8_t *p = (uint8_t *)buf;
-    while (n > 0) {
-        ssize_t r = read(fd, p, n);
-        if (r < 0 && errno == EINTR) continue;
-        if (r <= 0) return false;
-        p += (size_t)r;
-        n -= (size_t)r;
-    }
-    return true;
+    return transfer_full(fd, buf, n, false);
 }
 
 static bool cc_call(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3,
@@ -167,9 +184,12 @@ static bool cc_call(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3,
     if (fd < 0) return false;
     bool ok = write_full(fd, &req, sizeof(req)) &&
               read_full(fd, reply, sizeof(*reply));
+    int error = errno;
+    if (!ok) shutdown(fd, SHUT_RDWR);
     if (g_stream_fd < 0) close(fd);
     if (!ok) {
-        fprintf(stderr, "agentctl: CC frame I/O failed\n");
+        fprintf(stderr, "agentctl: CC frame I/O failed: %s; delivery is uncertain, request not replayed\n",
+                strerror(error));
     }
     return ok;
 }
