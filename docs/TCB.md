@@ -20,6 +20,17 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+The opt-in `X86_DUAL_GUEST=1` managed Linux composition now adds a secondary
+coordinator and a separate bootstrap/AP runner pair. Root provisions them
+through the existing per-owner guest RAM, EPT, TCB and queue paths. The
+secondary coordinator and adapters are compiled in their own build directory,
+with a distinct verified manifest and client/media one. VM manager and queue
+virtualizers are compiled with both routes enabled; only driver PDs receive
+hardware mappings. Qualification report endpoints are allocated per guest,
+and the legacy root report consumer retains the primary endpoint. It is not
+a combined two-guest success reporter. The image and topology checks pass;
+concurrent boot, independent lifecycle and persistent storage remain unqualified.
+
 The x86 coordinator now selects runner ownership and queue revocation pools
 by its root-assigned slot. A separately compiled secondary coordinator uses
 client/media one for canonical device attachment and reconstruction; its

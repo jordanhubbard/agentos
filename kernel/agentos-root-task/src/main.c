@@ -4004,12 +4004,14 @@ void root_task_main(const seL4_BootInfo *bi)
             /* Qualification reports must not compete with the VMM for
              * lifecycle calls on its service endpoint. The reporter gets
              * send authority only, without receive or capability transfer. */
-            vm_err = ut_alloc_cap(seL4_EndpointObject, 0u,
-                                  &g_x86_vtx_proof_endpoint);
+            seL4_CPtr report_endpoint = seL4_CapNull;
+            vm_err = ut_alloc_cap(seL4_EndpointObject, 0u, &report_endpoint);
+            if (!pd_is_secondary_guest_vmm(pd))
+                g_x86_vtx_proof_endpoint = report_endpoint;
             if (vm_err == seL4_NoError) {
                 vm_err = seL4_CNode_Copy(pd_cnode, AOS_X86_VTX_REPORT_CAP,
                     pd->cnode_size_bits, seL4_CapInitThreadCNode,
-                    g_x86_vtx_proof_endpoint, 64u,
+                    report_endpoint, 64u,
                     seL4_CapRights_new(0u, 0u, 0u, 1u));
             }
             if (vm_err != seL4_NoError) {

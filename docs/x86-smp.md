@@ -90,6 +90,13 @@ device initialization only. The current descriptor still starts one guest;
 secondary guest I/O, concurrent disk isolation and persistence remain separate
 v0.4 requirements. The receipt must not describe this mode as a dual-guest pass.
 
+The first native two-disk run at `1b4094d` failed because this marker was
+absent. It uses `log_drain_write`, whose fallback is disabled when the release
+SDK lacks `CONFIG_PRINTING`; the x86 composition has no log-drain PD. This
+failed run is retained and does not establish second-media acceptance.
+Concurrent guest I/O is still required; a missing diagnostic must not be
+treated as a passing device check.
+
 ## Preparing a secondary coordinator
 
 `make prepare-x86-profile X86_BOOT_PROFILE=debian-amd64-secondary.toml
@@ -103,3 +110,23 @@ The selected slot must agree with all four profile identities: guest ID,
 control type, network client and block media. The default runtime path still
 requires the primary slot. Preparing a secondary manifest does not spawn its
 coordinator or runner pair, attach its disk, or qualify concurrent storage.
+
+## Opt-in two-guest image
+
+After preparing both profiles, the existing `make build` interface accepts
+`X86_DUAL_GUEST=1 X86_CC_PCI=1 X86_SECONDARY_BLOCK=1 X86_LINUX_LOGIN=1`
+with the primary profile's emitted arguments and the usual pinned firmware
+and SDK arguments. Supply the secondary manifest using
+`X86_SECONDARY_BOOT_PROFILE_BIN` and `X86_SECONDARY_BOOT_PROFILE_SHA256`.
+The two profiles must agree on kernel, initrd, command line and RAM size;
+the secondary build shares these immutable inputs and verifies its own
+manifest against its compiled slot and resources at admission.
+
+The image has two coordinators, each with its own runner pair. The secondary
+coordinator builds under `<BUILD_DIR>/secondary`; the primary build's objects
+are not reused for its guest adapters. Both guests have public lifecycle
+routes through VM manager. The ordinary composition remains one guest.
+Use two independently seeded disks, not the small blank disk used solely
+for driver initialization qualification. This image build does not prove
+concurrent boot, network routing, peer progress during teardown or persistent
+storage isolation. Those runtime results remain required for v0.4.

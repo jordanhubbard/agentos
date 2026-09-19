@@ -856,6 +856,20 @@ test-x86-secondary-firmware-build:
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
+test-host: test-x86-composition-host
+
+.PHONY: test-x86-composition-host
+test-x86-composition-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -iquote kernel/agentos-root-task/include \
+		-DAGENTOS_X86_VTX=1 -DAGENTOS_X86_FIRMWARE_RESET=1 -DAGENTOS_X86_CC_PCI=1 -DAGENTOS_X86_MANAGED_START=1 \
+		tests/platform/test_x86_composition.c kernel/agentos-root-task/src/system_desc_x86_64.c -o $(BUILD_TMP_DIR)/test_x86_composition
+	$(BUILD_TMP_DIR)/test_x86_composition
+	$(CC) -std=c11 -Wall -Wextra -Werror -iquote kernel/agentos-root-task/include \
+		-DAGENTOS_X86_VTX=1 -DAGENTOS_X86_FIRMWARE_RESET=1 -DAGENTOS_X86_CC_PCI=1 -DAGENTOS_X86_MANAGED_START=1 -DAGENTOS_X86_DUAL_GUEST=1 \
+		tests/platform/test_x86_composition.c kernel/agentos-root-task/src/system_desc_x86_64.c -o $(BUILD_TMP_DIR)/test_x86_dual_composition
+	$(BUILD_TMP_DIR)/test_x86_dual_composition
+
 test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
