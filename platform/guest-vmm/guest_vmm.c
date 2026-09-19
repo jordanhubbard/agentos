@@ -1761,7 +1761,7 @@ static bool reset_release(void *context,unsigned resource)
     }
     return false;
 }
-static bool reset_step(void *context,aos_arm_recreate_step_t step,uint32_t generation)
+static bool reset_step_impl(void *context,aos_arm_recreate_step_t step,uint32_t generation)
 {
     (void)context;
     switch (step) {
@@ -1831,6 +1831,14 @@ static bool reset_step(void *context,aos_arm_recreate_step_t step,uint32_t gener
     case AOS_ARM_RECREATE_MEDIA: return guest_vmm_stage_media();
     default: return false;
     }
+}
+static bool reset_step(void *context,aos_arm_recreate_step_t step,uint32_t generation)
+{
+    LOG_VMM("ARM reconstruction: generation=%u step=%u begin\n",generation,(unsigned)step);
+    bool success=reset_step_impl(context,step,generation);
+    LOG_VMM("ARM reconstruction: generation=%u step=%u result=%s\n",
+            generation,(unsigned)step,success ? "ready" : "failed");
+    return success;
 }
 static void reset_publish(void *context)
 {
