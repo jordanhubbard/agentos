@@ -1,0 +1,20 @@
+{
+  "accepted_batches_while_paused": null,
+  "agentos_revision": "bc785e9ffd9065c7d2d8ad5efd3ee89563f49b58",
+  "excludes": [
+    "physical input devices",
+    "peer guest isolation",
+    "guest recreation",
+    "abrupt disconnect"
+  ],
+  "helper_sha256": "0d7766ef52797a0aa024e74099d2402f9b6237b4c5cb1325bfe886248bd78ee2",
+  "keyboard_events": 4,
+  "pointer_events": 7,
+  "profile": "debian-input-aarch64",
+  "release_mode": "explicit-events",
+  "schema": "agentos.guest_input.v1",
+  "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+  "source_tree_clean": true,
+  "status": "pass",
+  "stderr": "/tmp/agentos-v04-input-release/build/tmp/agentos-qemu-3mUQ03.input.stderr"
+}
