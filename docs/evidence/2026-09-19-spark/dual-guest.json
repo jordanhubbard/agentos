@@ -1,0 +1,44 @@
+{
+  "schema": "agentos.manual-qualification.v1",
+  "source_revision": "ff47898c9d12af9f6eae9748cf5247a8e804deb4",
+  "source_clean": true,
+  "host": "sparky",
+  "host_architecture": "aarch64",
+  "board": "qemu_virt_aarch64",
+  "sdk_version": "2.3.0",
+  "command": "make demo-test SEL4_SDK_VERSION=2.3.0",
+  "timeout_seconds": 7200,
+  "scenario": "dual-release-aarch64",
+  "profiles": ["freebsd-15-aarch64", "ubuntu-live-aarch64"],
+  "result": "pass",
+  "exit_code": 0,
+  "proven": [
+    "Both profiles reached their expected console prompts and completed console probes",
+    "FreeBSD authenticated SSH before suspend and after immediate resume",
+    "FreeBSD was suspended while Ubuntu booted, then resumed",
+    "Both profiles passed concurrent authenticated SSH",
+    "Both profiles were destroyed and invalid or destroyed handles were rejected"
+  ],
+  "observations": [
+    "FreeBSD reported secondary GPT warnings for its installation media and no time-of-day clock",
+    "Ubuntu reported a udev queue timeout, hostname/FQDN warnings and stream-fd errors before reaching its shell",
+    "The unchanged gate continued through those warnings and passed; no causal fixes are inferred",
+    "The harness and QEMU process were terminal before artifact preservation completed"
+  ],
+  "not_proven": [
+    "Concurrent writable-disk isolation or snapshot compatibility",
+    "Concurrent Debian integration guests",
+    "Bare-metal Spark device support or x86 SMP",
+    "Canonical integration, required hosted checks or final v0.4 release acceptance"
+  ],
+  "retained_local_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-dual-ff47898",
+  "sha256": {
+    "agentos.img": "72445740fa830735d880a59ffcca882dce77a6854776ac19dac3972aa33a717f",
+    "loader.elf": "bf4a3e37aa357a02ec99e8d36b71fbba7a1d60b801425bce66f354c4a33499bf",
+    "root_task.elf": "680d93d796b90c06657aa3ec345865a6670d9dc88759839e774a4eb2770abf1d",
+    "serial.log": "659748801c3714c2721838f19906cd59fbde76629c84e67172efd5411769091e",
+    "network.pcap": "c8a6bc4b3370dc5dd60240b12bbc7c47142e72e869f2c6130c1f1292042cf96c",
+    "qemu.stderr": "2d7f5346b65def9dbf56b0b44e31499afa0cf67b452b9b086259fbc0c4620e17",
+    "target.log": "f36f26709214074383b459882edf3dace608d707bd1f01de9a621e550ca679d4"
+  }
+}
