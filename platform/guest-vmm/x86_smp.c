@@ -1,5 +1,22 @@
 #include <platform/x86_smp.h>
 
+bool aos_x86_smp_next(const aos_x86_smp_cpu_t *cpus, size_t count,
+                      unsigned current, unsigned *next)
+{
+    if (!cpus || !next || !count || count>AOS_X86_SMP_MAX_CPUS || current>=count)
+        return false;
+    for (unsigned i=0;i<count;i++)
+        if ((unsigned)cpus[i].state>AOS_X86_CPU_START_PENDING) return false;
+    for (unsigned step=1;step<=count;step++) {
+        unsigned cpu=(current+step)%(unsigned)count;
+        if (cpus[cpu].state==AOS_X86_CPU_RUNNING && !cpus[cpu].reset_pending) {
+            *next=cpu;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool aos_x86_smp_icr(aos_x86_smp_cpu_t *cpus, size_t count, unsigned sender,
                      uint32_t command, uint64_t ticks)
 {

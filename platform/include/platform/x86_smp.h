@@ -26,4 +26,9 @@ typedef struct {
  * Supported delivery: fixed edge, INIT assert/deassert, SIPI. */
 bool aos_x86_smp_icr(aos_x86_smp_cpu_t *, size_t count, unsigned sender,
                      uint32_t command, uint64_t ticks);
+/* Bounded round robin starting after current, including current last. A CPU
+ * awaiting reset/startup is not runnable. False leaves *next unchanged (no
+ * runnable CPU or invalid arguments/state); caller continues lifecycle IPC. */
+bool aos_x86_smp_next(const aos_x86_smp_cpu_t *, size_t count, unsigned current,
+                      unsigned *next);
 #endif

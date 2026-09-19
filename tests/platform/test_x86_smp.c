@@ -23,6 +23,32 @@ static void reject(size_t count,unsigned sender,uint32_t command,uint64_t ticks)
 }
 int main(void)
 {
+    unsigned next=99;
+    init(2);
+    assert(aos_x86_smp_next(cpus,2,0,&next) && next==0);
+    cpus[1].state=AOS_X86_CPU_RUNNING;
+    assert(aos_x86_smp_next(cpus,2,0,&next) && next==1);
+    assert(aos_x86_smp_next(cpus,2,1,&next) && next==0);
+    cpus[1].reset_pending=true;
+    assert(aos_x86_smp_next(cpus,2,0,&next) && next==0);
+    cpus[0].state=AOS_X86_CPU_WAIT_SIPI; next=99;
+    assert(!aos_x86_smp_next(cpus,2,0,&next) && next==99);
+    cpus[1].state=AOS_X86_CPU_START_PENDING; cpus[1].reset_pending=false;
+    assert(!aos_x86_smp_next(cpus,2,0,&next) && next==99);
+    assert(!aos_x86_smp_next(NULL,2,0,&next));
+    assert(!aos_x86_smp_next(cpus,0,0,&next));
+    assert(!aos_x86_smp_next(cpus,33,0,&next));
+    assert(!aos_x86_smp_next(cpus,2,2,&next));
+    assert(!aos_x86_smp_next(cpus,2,0,NULL));
+    init(32);
+    for (unsigned i=0;i<32;i++) cpus[i].state=AOS_X86_CPU_RUNNING;
+    next=31;
+    for (unsigned i=0;i<96;i++) {
+        assert(aos_x86_smp_next(cpus,32,next,&next));
+        assert(next==i%32);
+    }
+    cpus[31].state=(aos_x86_cpu_start_state_t)-1; next=99;
+    assert(!aos_x86_smp_next(cpus,32,0,&next) && next==99);
     init(4);
     reject(0,0,0x40,100); reject(33,0,0x40,100); reject(4,4,0x40,100);
     reject(4,0,0x40,99);

@@ -1443,8 +1443,11 @@ $(BUILD_DIR)/x86_runner.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner.c $(REP
 $(BUILD_DIR)/x86_runner_client.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner_client.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_smp.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_smp.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
 ifeq ($(X86_FIRMWARE_RESET),1)
-$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_runner_client.o $(BUILD_DIR)/x86_runner.o
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_runner_client.o $(BUILD_DIR)/x86_runner.o $(BUILD_DIR)/x86_smp.o
 endif
 $(BUILD_DIR)/x86_runner.elf: $(BUILD_DIR)/x86_runner.pd.o $(BUILD_DIR)/x86_runner.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@

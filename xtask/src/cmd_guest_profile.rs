@@ -465,11 +465,11 @@ fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
         "x86 boot requires an x86-64 UEFI kernel profile"
     );
     ensure!(
-        target.vcpus == Some(1)
+        matches!(target.vcpus, Some(1 | 2))
             && target.guest_id == Some(0)
             && target.control_type == Some(1)
             && target.autostart == Some(true),
-        "x86 boot currently supports one autostart primary guest with one vCPU"
+        "x86 boot supports one autostart primary guest with one or two provisioned vCPUs"
     );
     if let Some(features) = &target.cpu_features {
         // Keep admission aligned with the synthetic target CPUID model.
@@ -2404,6 +2404,8 @@ mod tests {
         validate_x86_boot_profile(&profile).unwrap();
         let mut bad = profile.clone();
         bad.target.as_mut().unwrap().vcpus = Some(2);
+        validate_x86_boot_profile(&bad).unwrap();
+        bad.target.as_mut().unwrap().vcpus = Some(3);
         assert!(validate_x86_boot_profile(&bad).is_err());
         let mut bad = profile.clone();
         bad.target.as_mut().unwrap().guest_id = Some(1);

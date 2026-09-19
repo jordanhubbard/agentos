@@ -33,7 +33,9 @@ int main(void)
     assert(BIND());
     assert(!aos_x86_profile_bind(&p,sizeof(p)-1,&b,0x40000000,0x80000000));
     assert(!aos_x86_profile_bind(&p,sizeof(p),&b,0x20000000,0x80000000));
-    p.vcpu_count=2; assert(!BIND()); p.vcpu_count=1;
+    p.vcpu_count=2; assert(BIND());
+    p.vcpu_count=3; assert(!BIND());
+    p.vcpu_count=0; assert(!BIND()); p.vcpu_count=1;
     p.guest_id=1; assert(!BIND()); p.guest_id=0;
     p.network_client=1; assert(!BIND()); p.network_client=0;
     p.cpu_features.version=1; p.cpu_features.required=AOS_GUEST_CPU_FEATURE_RNG;

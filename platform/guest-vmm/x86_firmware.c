@@ -99,12 +99,6 @@ static aos_x86_vmenter_return_t firmware_start(const aos_x86_vmenter_entry_t *en
     cpu->returned=returned;
     return returned;
 }
-static aos_x86_vmenter_return_t firmware_resume_notification(
-    const aos_x86_vmenter_return_t *returned)
-{
-    const aos_x86_vmenter_entry_t entry={returned->words[0],returned->words[1],returned->words[2]};
-    return firmware_start(&entry);
-}
 
 #define VCPU (AOS_GUEST_VCPU_CAP_BASE+selected_cpu)
 const char vmm_pd_name[] = "guest_vmm_x86";
@@ -150,6 +144,7 @@ extern const uint8_t _binary_x86_firmware_bin_start[], _binary_x86_firmware_bin_
 static struct {
     aos_x86_config_t *config, initial_config;
     aos_x86_ioapic_t *ioapic;
+    unsigned ioapic_id;
     aos_serial_endpoint_t *serial;
     aos_x86_vmenter_entry_t *entry;
     uint64_t *started;
@@ -288,6 +283,57 @@ static uint64_t timestamp(void)
     return ((uint64_t)hi << 32) | lo;
 }
 
+static aos_x86_vmenter_return_t firmware_run_cpu(seL4_CPtr ep)
+{
+    firmware_cpu_t *cpu=firmware_cpu();
+    /* Arm before the first entry too: an AP trampoline can spin without any
+     * emulated I/O while waiting for another guest CPU. */
+    if (!cpu->timer_quantum) {
+        if (!aos_x86_cpu_clock_supported(tsc_hz))
+            stop(ep,AOS_X86_VTX_PROOF_FAIL,0x434c4bu,0,tsc_hz);
+        seL4_X86_VCPU_ReadMSR_t misc=seL4_X86_VCPU_ReadMSR(VCPU,0x485u);
+        uint64_t tick=UINT64_C(1)<<(misc.value&31u);
+        if (misc.error || tick>tsc_hz/1000u || !(misc.value&(1u<<6)))
+            stop(ep,AOS_X86_VTX_PROOF_FAIL,0x54494du,0,
+                 misc.error ? (uint64_t)misc.error : misc.value);
+        timer_shift=misc.value&31u;
+        cpu->timer_quantum=(uint32_t)((tsc_hz/1000u+tick-1u)/tick);
+        write_field(ep,PIN_CONTROLS,read_field(ep,PIN_CONTROLS)|(1u<<6));
+        if (!(read_field(ep,PIN_CONTROLS)&(1u<<6)))
+            stop(ep,AOS_X86_VTX_PROOF_FAIL,0x54494du,0,0);
+    }
+    write_field(ep,PREEMPTION_COUNTER,cpu->timer_quantum);
+    return firmware_start(&cpu->entry);
+}
+
+static bool firmware_apply_startup(unsigned count)
+{
+    if (!count || count>2u || !control_transition()) return false;
+    const seL4_CPtr pools[]={AOS_X86_VCPU_POOL_CAP,AOS_X86_AP_VCPU_POOL_CAP};
+    const seL4_CPtr tcbs[]={AOS_X86_VMM_SELF_TCB_CAP,AOS_X86_AP_RUNNER_TCB_CAP};
+    for (unsigned cpu=0;cpu<count;cpu++) {
+        aos_x86_smp_cpu_t *startup=&firmware_startup[cpu];
+        const seL4_CPtr vcpu=AOS_GUEST_VCPU_CAP_BASE+cpu;
+        if (startup->reset_pending) {
+            /* ICR processing already retired virtual APIC state. Preserve its
+             * requested startup while replacing all native guest state. */
+            aos_x86_smp_cpu_t requested=*startup;
+            firmware_retire(cpu);
+            *startup=requested;
+            if (aos_x86_guest_vcpu_rebuild(pools[cpu],vcpu)!=seL4_NoError ||
+                aos_x86_guest_vcpu_bind(vcpu,tcbs[cpu])!=seL4_NoError) return false;
+            startup->reset_pending=false;
+        }
+        if (startup->state==AOS_X86_CPU_START_PENDING) {
+            seL4_Word failed=0;
+            if (aos_x86_firmware_startup_cpu(vcpu,startup->startup_vector,
+                    &firmware_cpus[cpu].entry,&failed)!=seL4_NoError) return false;
+            startup->state=AOS_X86_CPU_RUNNING;
+        }
+    }
+    return true;
+}
+
 #if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
 /* A failed REBIND reply can be ambiguous: the service may already own the
  * transferred pool. Keep that ownership until a validated DETACH reply. Do
@@ -367,7 +413,7 @@ static bool reset_step(void *context, aos_x86_recreate_step_t step, uint32_t gen
         *reset_context.config = reset_context.initial_config;
         *reset_context.started = timestamp();
         return firmware_init_startup(*reset_context.started) &&
-            aos_x86_ioapic_init(reset_context.ioapic, 1u) &&
+            aos_x86_ioapic_init(reset_context.ioapic, reset_context.ioapic_id) &&
             aos_x86_virtio_init(reset_context.ioapic, (void *)AOS_X86_FIRMWARE_RAM_VA,
                 AOS_X86_FIRMWARE_RAM);
     case AOS_X86_RECREATE_NET_REBIND:
@@ -1074,8 +1120,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
     if (!aos_x86_config_init(&config, AOS_X86_FIRMWARE_RAM))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434647u, 0, 0);
     static aos_x86_acpi_bundle_t acpi;
-    if (!aos_x86_acpi_bundle_init(&acpi) || !aos_x86_config_acpi(&config,&acpi))
-        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x41435049u, 0, 0);
+    unsigned cpu_count=1u;
 #ifdef AGENTOS_X86_BOOT_KERNEL
     const aos_x86_boot_blobs_t boot={
         .kernel=_binary_x86_boot_kernel_bin_start,
@@ -1094,10 +1139,17 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
             (size_t)(_binary_x86_boot_profile_bin_end-_binary_x86_boot_profile_bin_start),
             &boot, AOS_X86_FIRMWARE_RAM, AOS_X86_FIRMWARE_RAM_VA))
         stop(ep,AOS_X86_VTX_PROOF_FAIL,0x505246u,0,0);
+    cpu_count=((const aos_guest_profile_manifest_t *)_binary_x86_boot_profile_bin_start)->vcpu_count;
 #endif
     if (!aos_x86_config_boot(&config,&boot))
         stop(ep,AOS_X86_VTX_PROOF_FAIL,0x424f4fu,0,boot.kernel_size);
 #endif
+    const aos_x86_acpi_topology_t topology={.lapic_gpa=AOS_X86_APIC_BASE,
+        .ioapic_gpa=AOS_X86_IOAPIC_BASE,.ioapic_id=cpu_count>1u ? 15u : 1u,
+        .cpu_count=(uint8_t)cpu_count,.cpus={{.uid=0,.apic_id=0},{.uid=1,.apic_id=1}}};
+    if (!aos_x86_acpi_bundle_topology(&acpi,&topology) ||
+        !aos_x86_config_acpi(&config,&acpi))
+        stop(ep,AOS_X86_VTX_PROOF_FAIL,0x41435049u,0,0);
     /* Admit the architectural ratio or an identified KVM board's explicit
      * clock leaf. A missing frequency cannot be replaced by invented time. */
     aos_x86_cpuid_t clock = host_id(0).eax >= 0x15u ? host_id(0x15u) : (aos_x86_cpuid_t){0};
@@ -1109,7 +1161,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
     if (!firmware_init_startup(started))
         stop(ep,AOS_X86_VTX_PROOF_FAIL,0x435055u,0,0);
     aos_x86_ioapic_t ioapic;
-    if (!aos_x86_ioapic_init(&ioapic, 1u))
+    if (!aos_x86_ioapic_init(&ioapic, topology.ioapic_id))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x494f4150u, 0, 1u);
     if (!aos_x86_virtio_init(&ioapic, (void *)AOS_X86_FIRMWARE_RAM_VA,
                             AOS_X86_FIRMWARE_RAM))
@@ -1149,6 +1201,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
     reset_context.config = &config;
     reset_context.initial_config = config;
     reset_context.ioapic = &ioapic;
+    reset_context.ioapic_id = topology.ioapic_id;
     reset_context.serial = &serial_endpoint;
     reset_context.entry = &firmware_cpus[0].entry;
     reset_context.started = &started;
@@ -1192,7 +1245,8 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         service_serial(&serial_endpoint);
         if (lifecycle_state == GUEST_STATE_RUNNING) seL4_Yield();
     }
-    aos_x86_vmenter_return_t returned = firmware_start(&firmware_cpu()->entry);
+    aos_x86_vmenter_return_t returned = firmware_run_cpu(ep);
+    bool have_return=true;
     for (;;) {
         enum aos_x86_control_result control;
         do {
@@ -1207,10 +1261,12 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
 #if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
         if (reset_entry_pending) {
             reset_entry_pending = false;
-            returned = firmware_start(&firmware_cpu()->entry);
+            returned = firmware_run_cpu(ep);
+            have_return=true;
             continue;
         }
 #endif
+        if (!have_return) goto schedule_next;
         aos_x86_apic_t *apic=&firmware_startup[selected_cpu].apic;
         seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
         if (returned.result == SEL4_VMENTER_RESULT_NOTIF && returned.badge &&
@@ -1224,8 +1280,9 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
             if (returned.badge & NET_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_net_rx_ready();
             /* Queue completion leaves its IOAPIC line pending. The next
              * bounded VMX timer exit routes it through the common event path. */
-            returned = firmware_resume_notification(&returned);
-            continue;
+            firmware_cpu()->entry=(aos_x86_vmenter_entry_t){
+                returned.words[0],returned.words[1],returned.words[2]};
+            goto schedule_next;
         }
         if (returned.result != SEL4_VMENTER_RESULT_FAULT)
             stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x4e5446u, rip, returned.badge);
@@ -1274,22 +1331,6 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         if (read_field(ep, IDT_VECTORING) & (1u << 31))
             stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x564543u, rip, reason);
         firmware_cpu_t *cpu=firmware_cpu();
-        if (!cpu->timer_quantum) {
-            /* The rate is supplied by the kernel through the VCPU cap, not
-             * guessed from a CPU model or read with a privileged instruction. */
-            seL4_X86_VCPU_ReadMSR_t misc=seL4_X86_VCPU_ReadMSR(VCPU,0x485u);
-            uint64_t tick=UINT64_C(1) << (misc.value & 31u);
-            timer_shift=misc.value & 31u;
-            if (!aos_x86_cpu_clock_supported(hz))
-                stop(ep,AOS_X86_VTX_PROOF_FAIL,0x434c4bu,rip,
-                     ((uint64_t)clock.ecx << 32) | ((clock.eax & 0xffffu) << 16) | (clock.ebx & 0xffffu));
-            if (misc.error || tick > hz/1000u || !(misc.value & (1u << 6)))
-                stop(ep,AOS_X86_VTX_PROOF_FAIL,0x54494du,rip,misc.error ? (uint64_t)misc.error : misc.value);
-            cpu->timer_quantum=(uint32_t)((hz/1000u+tick-1u)/tick);
-            write_field(ep,PIN_CONTROLS,read_field(ep,PIN_CONTROLS) | (1u << 6));
-            if (!(read_field(ep,PIN_CONTROLS) & (1u << 6)))
-                stop(ep,AOS_X86_VTX_PROOF_FAIL,0x54494du,rip,0);
-        }
         uint64_t now = timestamp();
         bool gp=false;
         if (reason == 52u || reason == 7u) {
@@ -1435,7 +1476,9 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
             unsigned eoi_vector = physical == AOS_X86_APIC_BASE+0xb0u && op.write ?
                 aos_x86_apic_eoi_vector(apic) : 0u;
             bool handled = physical >= AOS_X86_APIC_BASE && physical < AOS_X86_APIC_BASE+4096 ?
-                op.width == 4 && aos_x86_apic_io(apic, (unsigned)(physical-AOS_X86_APIC_BASE), op.write, &value, now) :
+                op.width == 4 && (op.write && physical==AOS_X86_APIC_BASE+0x300u ?
+                    aos_x86_smp_icr(firmware_startup,cpu_count,selected_cpu,value,now) :
+                    aos_x86_apic_io(apic,(unsigned)(physical-AOS_X86_APIC_BASE),op.write,&value,now)) :
                 physical >= AOS_X86_IOAPIC_BASE && physical < AOS_X86_IOAPIC_BASE+4096 ?
                 op.width == 4 && aos_x86_ioapic_io(&ioapic, (unsigned)(physical-AOS_X86_IOAPIC_BASE), op.write, &value) :
                 aos_x86_virtio_contains(physical) ?
@@ -1511,16 +1554,25 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         service_serial(&serial_endpoint);
         aos_vmm_virtio_blk_after_fault();
         aos_vmm_virtio_net_after_fault();
+        /* Self INIT discards this exit's old architectural state. */
+        if (firmware_startup[selected_cpu].reset_pending ||
+            firmware_startup[selected_cpu].state!=AOS_X86_CPU_RUNNING)
+            goto schedule_next;
         seL4_Error err = seL4_X86_VCPU_WriteRegisters(VCPU, &regs);
         if (err) stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, rip, err);
         /* Only VMM-owned emulated sources may assert these inputs. No host
          * device or physical IRQ capability is exposed to the guest. */
         for (unsigned input=0; input<AOS_X86_IOAPIC_INPUTS; input++) {
             aos_x86_ioapic_route_t route;
-            if (aos_x86_ioapic_route(&ioapic, input, &route) &&
-                aos_x86_apic_route(apic, route.vector, route.destination,
-                                   route.logical, route.level))
-                aos_x86_ioapic_accept(&ioapic, input);
+            if (aos_x86_ioapic_route(&ioapic, input, &route)) {
+                bool delivered=false;
+                for (unsigned target=0;target<cpu_count;target++)
+                    if (firmware_startup[target].state==AOS_X86_CPU_RUNNING &&
+                        aos_x86_apic_route(&firmware_startup[target].apic,route.vector,
+                                          route.destination,route.logical,route.level))
+                        delivered=true;
+                if (delivered) aos_x86_ioapic_accept(&ioapic,input);
+            }
         }
         unsigned vector=aos_x86_apic_pending(apic,timestamp());
         if (vector == AOS_X86_APIC_INVALID_VECTOR)
@@ -1537,8 +1589,19 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         }
         if (event.interruption_info) write_field(ep,ACTIVITY,0u);
         if (gp) write_field(ep,ENTRY_EXCEPTION_ERROR_CODE,event.error_code);
-        write_field(ep,PREEMPTION_COUNTER,cpu->timer_quantum);
         cpu->entry=(aos_x86_vmenter_entry_t){rip+event.advance,controls,event.interruption_info};
-        returned = firmware_start(&cpu->entry);
+schedule_next:
+        have_return=false;
+        if (!firmware_apply_startup(cpu_count))
+            stop(ep,AOS_X86_VTX_PROOF_FAIL,0x534d50u,0,selected_cpu);
+        unsigned next_cpu=selected_cpu;
+        if (!aos_x86_smp_next(firmware_startup,cpu_count,selected_cpu,&next_cpu)) {
+            seL4_Yield();
+            continue;
+        }
+        if (!firmware_select(next_cpu))
+            stop(ep,AOS_X86_VTX_PROOF_FAIL,0x534d50u,0,next_cpu);
+        returned=firmware_run_cpu(ep);
+        have_return=true;
     }
 }
