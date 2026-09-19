@@ -760,8 +760,70 @@ static bool reconstructed_cpu_context_proof(seL4_CPtr ep)
         if (*(const volatile uint32_t *)(data+0x30u)!=(cpu ? 39u : 17u)) return false;
         for (unsigned i=0;i<16u;i++)
             if (data[0x20u+i]!=(uint8_t)(0x31u+cpu*0x40u+i)) return false;
-        firmware_retire(cpu);
     }
+    /* Distinct page-table roots map the same virtual address to four private
+     * sentinel pages. Guest MOV CR3 changes each CPU's own address space; the
+     * other CPU runs between each observation, with the shared EPT unchanged. */
+    volatile uint8_t *ram=(volatile uint8_t *)AOS_X86_FIRMWARE_RAM_VA;
+    for (unsigned table=0;table<4u;table++) {
+        unsigned base=0x10000u+table*0x3000u;
+        volatile uint64_t *pml4=(volatile uint64_t *)(ram+base);
+        volatile uint64_t *pdpt=(volatile uint64_t *)(ram+base+0x1000u);
+        volatile uint64_t *pd=(volatile uint64_t *)(ram+base+0x2000u);
+        for (unsigned i=0;i<512u;i++) pml4[i]=pdpt[i]=pd[i]=0;
+        pml4[0]=(base+0x1000u)|3u;
+        pdpt[0]=(base+0x2000u)|3u;
+        pd[0]=0x83u; /* identity map code, stack and page tables */
+        pd[2]=((table+1u)*0x200000u)|0x83u;
+        *(volatile uint64_t *)(ram+(table+1u)*0x200000u)=UINT64_C(0xabcd123456780000)+table;
+    }
+    for (unsigned cpu=0;cpu<2u;cpu++) {
+        teardown_proof_stage=1500u+cpu;
+        if (!firmware_select(cpu)) return false;
+        const uint8_t code[]={0x48,0x8b,0x03,0xf4, /* mov (rbx),rax; hlt */
+            0x0f,0x22,0xda,0x48,0x8b,0x03,0xf4, /* mov rdx,cr3; read; hlt */
+            0x48,0x8b,0x03,0xf4}; /* retain new translation after peer ran */
+        for (unsigned i=0;i<sizeof(code);i++) ram[(8u+cpu)*4096u+i]=code[i];
+        seL4_VCPUContext regs={.ebx=0x400000u,.edx=0x10000u+(cpu*2u+1u)*0x3000u};
+        if (seL4_X86_VCPU_WriteRegisters(VCPU,&regs)!=seL4_NoError) return false;
+        write_field(ep,0x0802u,8u);
+        write_field(ep,CS_BASE,0u);
+        write_field(ep,CS_RIGHTS,0xa09bu);
+        write_field(ep,0x4802u,UINT32_MAX);
+        write_field(ep,CR4,read_field(ep,CR4)|PAE);
+        write_field(ep,CR4_SHADOW,PAE|(1u<<9));
+        write_field(ep,0x6802u,0x10000u+cpu*2u*0x3000u);
+        write_field(ep,CR0,PE|PG|0x10u);
+        write_field(ep,CR0_SHADOW,PE|PG|0x10u);
+        write_field(ep,EFER,LME|LMA);
+        write_field(ep,ENTRY,read_field(ep,ENTRY)|ENTRY_LONG|(1u<<15));
+        firmware_cpu()->entry=(aos_x86_vmenter_entry_t){(8u+cpu)*4096u,1u<<7,0};
+    }
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    for (unsigned phase=0;phase<3u;phase++) {
+        for (unsigned cpu=0;cpu<2u;cpu++) {
+            teardown_proof_stage=1600u+phase*100u+cpu*10u;
+            if (!firmware_select(cpu)) return false;
+            aos_x86_vmenter_return_t returned={0};
+            bool halted=false;
+            for (unsigned attempt=0;attempt<64u;attempt++) {
+                returned=firmware_run_cpu(ep);
+                if (returned.result!=SEL4_VMENTER_RESULT_FAULT || returned.badge) return false;
+                if (returned.words[SEL4_VMENTER_FAULT_REASON_MR]==12u) { halted=true; break; }
+                if (returned.words[SEL4_VMENTER_FAULT_REASON_MR]!=52u) return false;
+                firmware_cpu()->entry.ip=returned.words[SEL4_VMENTER_CALL_EIP_MR];
+            }
+            const unsigned offsets[]={3u,10u,14u};
+            unsigned table=cpu*2u+(phase!=0u);
+            if (!halted || returned.words[SEL4_VMENTER_CALL_EIP_MR]!=(8u+cpu)*4096u+offsets[phase] ||
+                returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR]!=1u) return false;
+            teardown_proof_stage++;
+            if (returned.words[SEL4_VMENTER_FAULT_EAX]!=UINT64_C(0xabcd123456780000)+table ||
+                returned.words[SEL4_VMENTER_FAULT_CR3_MR]!=0x10000u+table*0x3000u) return false;
+            firmware_cpu()->entry.ip=returned.words[SEL4_VMENTER_CALL_EIP_MR]+1u;
+        }
+    }
+    for (unsigned cpu=0;cpu<2u;cpu++) firmware_retire(cpu);
     return firmware_select(previous);
 }
 
