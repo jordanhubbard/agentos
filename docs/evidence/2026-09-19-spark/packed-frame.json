@@ -1,0 +1,52 @@
+{
+  "schema": "agentos.packed_frame_target.v1",
+  "host": "sparky Linux aarch64; QEMU TCG cortex-a57",
+  "revision": "fb2a416b1305d5edaeeba8d2f24ae7fad06992e6",
+  "target_implementation": "a9391b0aeb83e5475bbb140ae12be8de8ad8050d",
+  "gui_implementation": "2f9c96d",
+  "gui_checkout": "9396a75379c6514140f66affb5fd3ae863a3a7cd",
+  "image_sha256": "d34fadcf4da8cc681893409a6b9802c593ab35f4513203f958e1c26c30ca677e",
+  "gui_binary_sha256": "8182ffb35456aaa261875b7ea32275054cbf0c73b108aa784e92c0f365368481",
+  "qualification": {
+    "gate": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12276 passed",
+    "gate_log_sha256": "f05f6645843f5662c579b9b94d1db8508823b45dae50afb2030578ed68d9b235",
+    "guest": "make demo-guest-display SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12276 QEMU_TEST_TIMEOUT=1800; interactive terminal attached; qualified guest retained",
+    "readiness_probes": 1,
+    "readiness_sequence": 101,
+    "captured_sequence": 101,
+    "qemu_scanout_pixels_matched": 786432,
+    "qualified_frame_sha256": "cb9b1f94595564c62a17a1e987f5e8b3877467efcf4510191e78261c25de9643",
+    "ssh": "Provisioning completed; separate authenticated SSH emitted AGENTOS_READY_DIAGNOSTIC"
+  },
+  "transfer_comparisons": [
+    {"order":"raw-first", "sequence":645, "raw_ms":9544.628587, "gui_batch_ms":1237.125085, "raw_client_calls":776, "gui_batch_client_calls":97, "bytes":3145728, "pixels_equal":true},
+    {"order":"packed-first", "sequence":685, "raw_ms":8642.280464, "gui_batch_ms":1408.38987, "raw_client_calls":776, "gui_batch_client_calls":97, "bytes":3145728, "pixels_equal":true}
+  ],
+  "method": "make benchmark-frame-transfer, production GUI Rust CC client; two orders, each comparing every byte of a single immutable snapshot",
+  "native_gui": {
+    "display": ":1",
+    "size": [1024,768],
+    "captures": [{"sequence":787,"seconds":1.7},{"sequence":836,"seconds":1.6},{"sequence":907,"seconds":2.0},{"sequence":931,"seconds":1.8}],
+    "keyboard": "During live refresh, typed packed-ui without Enter; full string appeared on the guest login screen with 18 batches acknowledged",
+    "clear": "Ctrl+U visibly cleared the guest line during live refresh; UI showed 20 total batches acknowledged",
+    "stop": "Stop live display returned to stopped state without error",
+    "close": "Alt+F4 closed native window; make run exited zero"
+  },
+  "screenshots": {
+    "agentos-gui-packed-target-capture.png":"4615dd6a4315850a98260775a24f6a09ddd8fa73c7300c1366541770c0de0b9a",
+    "agentos-gui-packed-target-live-input.png":"ee77a24cb7a46d71aaa4f37e8df47969e1ae5a019a2b7dec19e03d7f9772a701",
+    "agentos-gui-packed-target-live-cleared.png":"8f1a9a069f1c86b3e7ba396b212a9a96d0318fde41593f8e83173b9f2e79df99",
+    "agentos-gui-packed-target-stopped.png":"ec82f725cb6db0e5e2ee21a9d69ad9ca4a8b63647fdf93b36f3f5d51ae9fcd07"
+  },
+  "artifacts":"/home/jkh/.local/share/agentos-evidence/2026-09-19-packed-frame/",
+  "limitations": [
+    "Mostly flat Debian console frame; varied desktop content, incompressible-image target throughput and pointer interaction remain unqualified",
+    "Two paired transport samples with uncontrolled host background load; client calls are not a general wire-request counter",
+    "Transport timings exclude native rendering and capture; native displayed timings include capture, transfer and canvas update",
+    "No precise input-to-screen latency or high-frame-rate claim",
+    "Earlier same-image run failed retention for missing terminal; another failed on a black snapshot. Both logs remain retained",
+    "This readiness run succeeded on its first probe and does not establish the earlier black-frame cause or its resolution",
+    "No abrupt-disconnect input cleanup claim; required reviews, CI and canonical integration remain pending"
+  ],
+  "task":"task_5dd48e2ddd46473ab45df5b8ae8ee6c1"
+}
