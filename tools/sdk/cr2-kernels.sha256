@@ -1,0 +1,3 @@
+a9248cc642afa357d2ef8dfdd73d4fec31afec513581685ce219141824eeaaa1  board/qemu_virt_aarch64/release/elf/sel4.elf
+1bd69383ad5cdd52fa292ff1466bf6bc184f3d8ed429a7c3f4a0695de86a94a4  board/x86_64_generic/release/elf/sel4.elf
+0f5e9cf9ed7672fb745371b5f2aa0b20df1a49f24e707b88161c9ee4aefc2f9d  board/x86_64_generic_vtx/release/elf/sel4.elf

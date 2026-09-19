@@ -409,6 +409,8 @@ endif
 # setup/demo: two-command first-run path and one-command repeatable showcase
 # =============================================================================
 .PHONY: sdk-check
+include tools/sdk/candidate.mk
+
 sdk-check:
 	@test -d "$(SEL4_SDK)/board" || \
 		(echo "ERROR: Microkit SDK missing at $(SEL4_SDK); run 'make sdk'." && exit 1)
@@ -839,6 +841,14 @@ test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-pag
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
 test-host: test-untyped-host
+test-host: test-loader-page-tables-host
+.PHONY: test-loader-page-tables-host
+test-loader-page-tables-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I kernel/loader \
+		tests/platform/test_loader_page_tables.c -o $(BUILD_TMP_DIR)/test_loader_page_tables
+	$(BUILD_TMP_DIR)/test_loader_page_tables
+
 .PHONY: test-untyped-host
 test-untyped-host:
 	@mkdir -p $(BUILD_TMP_DIR)

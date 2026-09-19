@@ -1,0 +1,45 @@
+{
+  "schema": "agentos.sdk-build-qualification.v1",
+  "date_utc": "2026-09-19",
+  "revision": "de1458c244258202aaaa63cd890b1c526202b7e5",
+  "candidate_version": "2.3.1-agentos-e60776ac-cr2",
+  "sources": {
+    "microkit": "ec86afdcd662b5976d11d4994acf1b11a2979882",
+    "sel4_base": "e60776acc31097ca063806c257f07a3ec05eacf8",
+    "sel4_patch": "tools/sdk/patches/sel4-e60776ac-cr2.patch",
+    "sel4_patch_sha256": "e65c2f6c966a223e5785cc0298f228d3fcdb86ffccf9c66290e1617beec69027",
+    "authorization": "User-approved scoped CR2 fix and full requalification; no upstream acceptance claimed"
+  },
+  "build": {
+    "target": "make sdk-candidate",
+    "output": "/home/jkh/.cache/agentos/sdk-make-cr2-20260919",
+    "compiler": "GNU GCC 13.3.0, Ubuntu 13.3.0-6ubuntu2~24.04.1",
+    "configuration": "release, fresh CMake cache with verification/debug/printing/IRQ reporting/colour printing disabled before initial configure",
+    "kernel_manifest": "tools/sdk/cr2-kernels.sha256",
+    "manifest_result": "all three kernel hashes matched",
+    "exit_code": 0,
+    "log_sha256": "15d7f19627e5235a74d9062d999c89c4c1f39d4cdf9dd64e422a8ab8f447c23e",
+    "guards": "Existing output and output inside the checkout were rejected without replacing prior results",
+    "scope": "Kernels and generated headers for the agentOS custom loader; auxiliary Microkit tool and initialiser skipped"
+  },
+  "spark": {
+    "host_tests": {
+      "target": "make test-host",
+      "exit_code": 0,
+      "log_sha256": "3fc771d8a6693103d790ab89c6eb5b16b143d02fcb8a54ea56cb9414a453caa9"
+    },
+    "full_gate": {
+      "target": "make gate",
+      "sdk": "fresh Make-built candidate",
+      "exit_code": 0,
+      "log_sha256": "0e3b02e7e89047c4fcd700ac826954cae5f1dd5f8ecbb1bb51f872131020c073"
+    }
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-cr2-candidate",
+  "limitations": [
+    "Intel runtime acceptance is separate from this build and Spark receipt",
+    "No default SDK adoption or release qualification",
+    "No whole-SDK bit reproducibility or unused Microkit component qualification",
+    "No upstream acceptance or formal verification claim"
+  ]
+}

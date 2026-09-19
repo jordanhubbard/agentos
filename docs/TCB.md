@@ -25,7 +25,10 @@ CPU-affined x87/SSE workers in both managed lifecycle generations. The
 freestanding C/Assembly payload runs only inside the guest, over the existing
 pinned SSH qualification path, and adds no target authority. Its result and
 errors are retained per generation. See [x86 SMP qualification](x86-smp.md).
-Host compilation and tests pass; native workload acceptance is still pending.
+Host compilation and tests pass. The approved CR2 dependency candidate passed
+both native workload generations at `de1458c`; its
+[receipt](evidence/2026-09-19-spark/cr2-intel-smp.json) does not establish default
+SDK adoption or final release qualification.
 
 The firmware coordinator now retains a separate native runner sequence,
 entry/exit snapshot, timer-initialization state and LAPIC/startup record for
