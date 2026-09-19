@@ -1,0 +1,29 @@
+{
+  "schema": "agentos.sdk-display-cadence-control.v1",
+  "date_utc": "2026-09-19",
+  "revision": "4dc8e9d187f8569e99c4093901c2fe1c25be0e3b",
+  "status": "partial",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "change": "CC budget/period restored from 100us/1000us to 1000us/10000us, preserving the 10 percent CPU ceiling",
+  "intel": {
+    "command": "make gate-x86_64-smp",
+    "make_exit_code": 0,
+    "result": "Both managed guest generations passed pinned SSH, two online CPUs, overlapping pinned x87/SSE workers, binary CC input, destroy/recreate and stale handle rejection",
+    "timeout_seconds": 600,
+    "initial_disk_sha256": "fdcdd0dc1a4384cc01d3bfce4a7dd232de4001d01380e06b58b728f24c1daaf3",
+    "kernel_sha256": "0f5e9cf9ed7672fb745371b5f2aa0b20df1a49f24e707b88161c9ee4aefc2f9d",
+    "root_task_sha256": "10c70367be17d8de1c5784a52abe001fbbb97cbcc92b122c8c984d00066d2ab2",
+    "log_sha256": "fec9c0afbf13c2cf797fc1f00f0c22b9b9dc3cc0c12cc2dd8ec6787599ff75ef",
+    "archive": "intel-cadence-control-smp-pass.tar.gz",
+    "archive_sha256": "d1709c18158a8740281149d5286235ad097574816f1565259865a76976b08f68",
+    "limitation": "Host was shared; a load sample is retained. A single successful control does not establish scheduling cadence as the cause of the earlier timeout"
+  },
+  "spark": {
+    "command": "make gate",
+    "make_exit_code": 0,
+    "log_sha256": "77295f095db3b98654b0acc81843e51c7e44a0784070018e938a0b677e54ea6c",
+    "graphics_lifecycle": "Still running when recorded; not accepted"
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
+  "limitations": "Diagnostic branch only. No cadence fix acceptance, native GUI rendering or input latency claim, canonical integration, or release qualification. Earlier combined runtime failures remain valid."
+}
