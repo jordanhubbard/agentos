@@ -673,7 +673,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 
     anyhow::ensure!(
-        !args.keep_running || args.guest_os == "both" || args.assert_desktop || args.assert_live,
+        !args.keep_running
+            || args.guest_os == "both"
+            || args.assert_desktop
+            || args.assert_live
+            || args.seed_profile
+            || args.seeded_ssh_key.is_some(),
         "--keep-running requires a dual guest, desktop or authenticated live profile"
     );
     if args.assert_emulated_net
