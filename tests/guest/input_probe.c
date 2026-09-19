@@ -80,9 +80,24 @@ static bool accept_event(bool backpressure,bool gui,unsigned device,unsigned *po
 /* Both complete down packets must be observed before either release. The
  * host waits for this milestone before terminating the GUI process. */
 static bool accept_disconnect_event(unsigned device,unsigned positions[2],bool *held,
+                                    bool *repeat_pending,unsigned *repeats,
                                     const struct input_event *event)
 {
-    if (device>1 || (!*held && positions[device]>=2)) return false;
+    if (device>1) return false;
+    /* Linux can repeat a held key independently of the host. Require each
+     * repeat's packet boundary without advancing the release sequence. */
+    if (device==0 && *repeat_pending) {
+        if (event->type!=EV_SYN || event->code!=SYN_REPORT) return false;
+        *repeat_pending=false;
+        ++*repeats;
+        return true;
+    }
+    if (device==0 && positions[0]==2 && event->type==EV_KEY &&
+        event->code==KEY_F12 && event->value==2) {
+        *repeat_pending=true;
+        return true;
+    }
+    if (!*held && positions[device]>=2) return false;
     if (!accept_event(true,true,device,&positions[device],event)) return false;
     if (positions[0]==2 && positions[1]==2) *held=true;
     return true;
@@ -148,6 +163,8 @@ int main(int argc,char **argv)
     unsigned positions[2]={0,0};
     bool pending[2]={false,false};
     bool held=false,held_reported=false;
+    bool repeat_pending=false;
+    unsigned repeats=0;
     while (latency ? positions[0]<40 :
            (positions[0]<(motion ? 2u : 4u) || positions[1]<(motion ? 5u : backpressure ? 4u : 7u) || pending[0] || pending[1])) {
         int64_t now=milliseconds();
@@ -163,7 +180,7 @@ int main(int argc,char **argv)
             if (bytes<0 && (errno==EINTR || errno==EAGAIN)) continue;
             if (bytes<=0 || bytes%(ssize_t)sizeof(*events)) return 1;
             for (unsigned j=0;j<(size_t)bytes/sizeof(*events);++j) {
-                if (!(disconnect ? accept_disconnect_event(i,positions,&held,&events[j]) : latency ? (i==0 && accept_latency_event(&positions[0],&events[j])) : motion ? accept_gui_event(i,&positions[i],&pending[i],&events[j]) :
+                if (!(disconnect ? accept_disconnect_event(i,positions,&held,&repeat_pending,&repeats,&events[j]) : latency ? (i==0 && accept_latency_event(&positions[0],&events[j])) : motion ? accept_gui_event(i,&positions[i],&pending[i],&events[j]) :
                       accept_event(backpressure,gui,i,&positions[i],&events[j]))) {
                     fprintf(stderr,"unexpected device %u event %u: %u/%u/%d\n",i,
                             positions[i],events[j].type,events[j].code,events[j].value);
@@ -184,6 +201,7 @@ int main(int argc,char **argv)
     struct pollfd extra[2]={{devices[0],POLLIN,0},{devices[1],POLLIN,0}};
     if (poll(extra,2,200)!=0) { fprintf(stderr,"unexpected trailing input\n"); return 1; }
     close(devices[0]); close(devices[1]);
+    if (disconnect) printf("AGENTOS_GUI_REPEAT_PACKETS %u\n",repeats);
     puts(disconnect ? "AGENTOS_GUI_DISCONNECT_PASS keyboard=4 pointer=4 held_before_release=true" : latency ? "AGENTOS_GUI_LATENCY_PASS transitions=20" : motion ? "AGENTOS_GUI_POINTER_PASS key=F12 x=17 y=-9 wheel=1 button=left packets=complete" : gui ? "AGENTOS_GUI_INPUT_PASS keyboard=4 pointer=4" : backpressure ? "AGENTOS_INPUT_PASS keyboard=4 pointer=4" : "AGENTOS_INPUT_PASS keyboard=4 pointer=7");
     return 0;
 }

@@ -82,7 +82,11 @@ For abrupt native GUI termination, `make guest-input-probe` also builds the
 rendered display and capturing the pointer. Send a stationary F12 down and
 left-button down through the native GUI. The probe prints
 `AGENTOS_GUI_HELD keyboard=F12 pointer=left` only after both complete down/SYN
-packets arrive; an early release, repeat or pointer motion fails the recipe.
+packets arrive; an early release or pointer motion fails the recipe.
+Linux may emit F12 autorepeat while the key is held. The checker counts these
+repeat/SYN packets separately, only after the complete keyboard down packet
+and before its release. A missing repeat SYN, wrong key, pointer repeat or
+repeat after release fails; repeats never advance the required release sequence.
 Only after observing that milestone, terminate the exact owned GUI process
 without sending keyup, mouseup, a release RPC or a protocol goodbye. Require
 `AGENTOS_GUI_DISCONNECT_PASS` and SSH exit zero, then release the host input

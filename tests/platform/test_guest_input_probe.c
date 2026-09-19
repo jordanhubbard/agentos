@@ -7,32 +7,46 @@ int main(void)
 {
     for (unsigned first=0;first<2;++first) {
         unsigned positions[2]={0,0};
-        bool held=false;
+        bool held=false,repeat_pending=false;
+        unsigned repeats=0;
         struct input_event syn={.type=EV_SYN,.code=SYN_REPORT};
         struct input_event down[2]={{.type=EV_KEY,.code=KEY_F12,.value=1},
                                    {.type=EV_KEY,.code=BTN_LEFT,.value=1}};
+        struct input_event key_repeat={.type=EV_KEY,.code=KEY_F12,.value=2};
+        assert(!accept_disconnect_event(0,positions,&held,&repeat_pending,&repeats,&key_repeat));
         for (unsigned order=0;order<2;++order) {
             unsigned device=first^order;
-            assert(accept_disconnect_event(device,positions,&held,&down[device]));
+            assert(accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&down[device]));
             assert(!held);
-            assert(accept_disconnect_event(device,positions,&held,&syn));
+            assert(accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&syn));
             assert(held==(order==1));
             if (!held) {
                 struct input_event early=down[device]; early.value=0;
-                assert(!accept_disconnect_event(device,positions,&held,&early));
+                assert(!accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&early));
                 assert(positions[device]==2);
             }
         }
         for (unsigned device=0;device<2;++device) {
             struct input_event repeat=down[device]; repeat.value=2;
-            assert(!accept_disconnect_event(device,positions,&held,&repeat));
+            if (device==0) {
+                assert(accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&repeat));
+                assert(repeat_pending && repeats==0);
+                assert(!accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&repeat));
+                struct input_event early_up=down[0]; early_up.value=0;
+                assert(!accept_disconnect_event(0,positions,&held,&repeat_pending,&repeats,&early_up));
+                struct input_event wrong_syn=syn; wrong_syn.code=SYN_DROPPED;
+                assert(!accept_disconnect_event(0,positions,&held,&repeat_pending,&repeats,&wrong_syn));
+                assert(accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&syn));
+                assert(!repeat_pending && repeats==1 && positions[0]==2);
+            } else assert(!accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&repeat));
             struct input_event up=down[device]; up.value=0;
-            assert(accept_disconnect_event(device,positions,&held,&up));
-            assert(accept_disconnect_event(device,positions,&held,&syn));
+            assert(accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&up));
+            assert(accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&syn));
             assert(positions[device]==4);
-            assert(!accept_disconnect_event(device,positions,&held,&up));
+            assert(!accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&repeat));
+            assert(!accept_disconnect_event(device,positions,&held,&repeat_pending,&repeats,&up));
         }
-        assert(!accept_disconnect_event(2,positions,&held,&syn));
+        assert(!accept_disconnect_event(2,positions,&held,&repeat_pending,&repeats,&syn));
     }
     unsigned latency_position=0;
     for (unsigned i=0;i<40;++i) {
