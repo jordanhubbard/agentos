@@ -9,7 +9,7 @@
  * Transport:  VirtIO MMIO serial, virtio-mmio-bus.2 (PA 0x0A000400).
  *   QEMU args: -chardev socket,id=cc_pd_char,path=build/cc_pd.sock,...
  *              -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0
- *              -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0
+ *              -device virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0,nr=1
  *   Wire frame (both directions): 4112 bytes
  *     Request:  opcode(4) + mr[3](12) + shmem(4096) = 4112
  *     Reply:    mr[4](16) + shmem(4096) = 4112
@@ -49,6 +49,7 @@
 #include <platform/operator_session.h>
 #include <platform/framebuffer_observer.h>
 #include <platform/virtio_host_transport.h>
+#include <platform/cc_serial_control.h>
 #include "system_desc.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -57,7 +58,7 @@
 /* ─── VirtIO console driver ──────────────────────────────────────────────── */
 /*
  * Transport: virtio-serial-device on QEMU virtio-mmio-bus.2 (PA 0x0A000400).
- * QEMU bridges the virtconsole named "cc.0" to build/cc_pd.sock. A validated
+ * QEMU bridges the serial port named "cc.0" to build/cc_pd.sock. A validated
  * x86 PCI startup record selects the shared modern PCI transport instead.
  *
  * The root task allocates three 4K frames and maps them at fixed CPU virtual
@@ -135,6 +136,15 @@ typedef struct { uint16_t flags; uint16_t idx; vq_used_elem_t ring[VQ_DEPTH]; ui
 #define RX_USED_OFF   768u  /* 38 B; 4-byte aligned */
 #define TX_TAIL_OFF   1024u /* second descriptor payload, within queue page */
 #define RX_TAIL_OFF   1088u /* second descriptor payload, within queue page */
+#define CTL_RX_DESC_OFF  1280u
+#define CTL_RX_AVAIL_OFF 1408u
+#define CTL_RX_USED_OFF  1536u
+#define CTL_RX_DATA_OFF  1664u
+#define CTL_TX_DESC_OFF  2048u
+#define CTL_TX_AVAIL_OFF 2176u
+#define CTL_TX_USED_OFF  2304u
+#define CTL_TX_DATA_OFF  2432u
+#define CTL_PACKET_BYTES 64u
 #define VQ_PAGE_BYTES 4096u
 #define VQ_TAIL_BYTES 64u
 #define VQ_DESC_F_NEXT  1u
@@ -142,7 +152,9 @@ typedef struct { uint16_t flags; uint16_t idx; vq_used_elem_t ring[VQ_DEPTH]; ui
 
 static seL4_Word          g_vq_pa[3];       /* [0]=structs, [1]=TX buf, [2]=RX buf */
 static aos_virtio_host_t g_transport;
-static aos_virtio_host_queue_t g_transport_queues[2];
+static aos_virtio_host_queue_t g_transport_queues[6];
+static cc_serial_control_t g_control;
+static uint16_t g_control_used;
 static bool g_transport_ready;
 static uint16_t           g_rx_used_last;   /* shadow of RX used ring consumer idx */
 
@@ -157,6 +169,14 @@ static uint16_t           g_rx_used_last;   /* shadow of RX used ring consumer i
 #define RX_DESC  ((volatile vq_desc_t  *)(QP + RX_DESC_OFF))
 #define RX_AVAIL ((volatile vq_avail_t *)(QP + RX_AVAIL_OFF))
 #define RX_USED  ((volatile vq_used_t  *)(QP + RX_USED_OFF))
+#define CTL_RX_DESC ((volatile vq_desc_t *)(QP + CTL_RX_DESC_OFF))
+#define CTL_RX_AVAIL ((volatile vq_avail_t *)(QP + CTL_RX_AVAIL_OFF))
+#define CTL_RX_USED ((volatile vq_used_t *)(QP + CTL_RX_USED_OFF))
+#define CTL_TX_DESC ((volatile vq_desc_t *)(QP + CTL_TX_DESC_OFF))
+#define CTL_TX_AVAIL ((volatile vq_avail_t *)(QP + CTL_TX_AVAIL_OFF))
+#define CTL_TX_USED ((volatile vq_used_t *)(QP + CTL_TX_USED_OFF))
+_Static_assert(CTL_TX_DATA_OFF + CTL_PACKET_BYTES <= VQ_PAGE_BYTES,
+               "CC control queues fit existing driver-owned DMA page");
 
 #if defined(__aarch64__)
 #define VQ_MB() __asm__ volatile("dsb sy" ::: "memory")
@@ -171,14 +191,65 @@ static uint16_t           g_rx_used_last;   /* shadow of RX used ring consumer i
 static bool vio_queue_setup(uint32_t qidx,
                              seL4_Word desc_pa, seL4_Word avail_pa, seL4_Word used_pa)
 {
-    return qidx < 2u && aos_virtio_host_queue_bind(&g_transport,
+    return qidx < 6u && aos_virtio_host_queue_bind(&g_transport,
         &g_transport_queues[qidx], (uint16_t)qidx, VQ_DEPTH,
         desc_pa, avail_pa, used_pa);
+}
+
+static bool vio_control_send(uint16_t event)
+{
+    if (!cc_serial_control_encode(event, (void *)(QP + CTL_TX_DATA_OFF))) return false;
+    CTL_TX_DESC[0] = (vq_desc_t){g_vq_pa[0] + CTL_TX_DATA_OFF, 8u, 0u, 0u};
+    uint16_t used = CTL_TX_USED->idx;
+    CTL_TX_AVAIL->ring[CTL_TX_AVAIL->idx % VQ_DEPTH] = 0;
+    VQ_MB();
+    CTL_TX_AVAIL->idx++;
+    VQ_MB();
+    if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[3])) return false;
+    for (unsigned wait = 0; wait < CC_VIRTIO_TX_WAIT_LIMIT; ++wait) {
+        VQ_MB();
+        if (CTL_TX_USED->idx != used)
+            return (uint16_t)(CTL_TX_USED->idx - used) == 1u &&
+                   CTL_TX_USED->ring[used % VQ_DEPTH].id == 0u;
+        seL4_Yield();
+    }
+    return false;
+}
+
+static bool vio_control_poll(void)
+{
+    VQ_MB();
+    uint16_t available = (uint16_t)(CTL_RX_USED->idx - g_control_used);
+    if (available > VQ_DEPTH) return false;
+    while (available--) {
+        vq_used_elem_t used = CTL_RX_USED->ring[g_control_used % VQ_DEPTH];
+        if (used.id >= VQ_DEPTH || used.len > CTL_PACKET_BYTES ||
+            !cc_serial_control_receive(&g_control,
+                (const void *)(QP + CTL_RX_DATA_OFF + used.id * CTL_PACKET_BYTES),
+                used.len)) return false;
+        ++g_control_used;
+        CTL_RX_AVAIL->ring[CTL_RX_AVAIL->idx % VQ_DEPTH] = (uint16_t)used.id;
+        VQ_MB();
+        CTL_RX_AVAIL->idx++;
+        VQ_MB();
+        if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[2])) return false;
+    }
+    if (g_control.ready_pending) {
+        if (!vio_control_send(CC_SERIAL_PORT_READY)) return false;
+        g_control.ready_pending = false;
+    }
+    if (g_control.open_pending) {
+        if (!vio_control_send(CC_SERIAL_PORT_OPEN)) return false;
+        g_control.open_pending = false;
+    }
+    return true;
 }
 
 static bool virtio_serial_init(void)
 {
     g_transport_ready = false;
+    cc_serial_control_reset(&g_control);
+    g_control_used = 0;
     __builtin_memset(g_transport_queues, 0, sizeof(g_transport_queues));
     const volatile cc_virtio_startup_t *sp =
         (const volatile cc_virtio_startup_t *)CC_VIRTIO_STARTUP_VA;
@@ -215,7 +286,7 @@ static bool virtio_serial_init(void)
     aos_virtio_host_set_status(&g_transport, 0u);
     aos_virtio_host_set_status(&g_transport, VSTATUS_ACK);
     aos_virtio_host_set_status(&g_transport, VSTATUS_ACK | VSTATUS_DRIVER);
-    /* Only VERSION_1 is implemented. In particular, EVENT_IDX requires
+    /* VERSION_1 and MULTIPORT are implemented. EVENT_IDX requires
      * publishing used_event thresholds; accepting it with a fixed zero
      * threshold suppresses completion interrupts after the first event. */
     uint32_t feat1 = aos_virtio_host_features(&g_transport, 1u);
@@ -223,7 +294,11 @@ static bool virtio_serial_init(void)
         aos_virtio_host_set_status(&g_transport, VSTATUS_FAILED);
         return false;
     }
-    aos_virtio_host_set_features(&g_transport, 0u, 0u);
+    if (!(aos_virtio_host_features(&g_transport, 0u) & (1u << 1))) {
+        aos_virtio_host_set_status(&g_transport, VSTATUS_FAILED);
+        return false;
+    }
+    aos_virtio_host_set_features(&g_transport, 0u, 1u << 1); /* MULTIPORT */
     aos_virtio_host_set_features(&g_transport, 1u, 1u); /* VERSION_1 */
     aos_virtio_host_set_status(&g_transport, VSTATUS_ACK | VSTATUS_DRIVER | VSTATUS_FEAT_OK);
     uint32_t s_after = aos_virtio_host_status(&g_transport);
@@ -238,10 +313,14 @@ static bool virtio_serial_init(void)
      * from a known epoch before making them ready again. */
     __builtin_memset((void *)QP, 0, 4096u);
     VQ_MB();
-    if (!vio_queue_setup(0u,
+    if (!vio_queue_setup(4u,
             g_vq_pa[0] + RX_DESC_OFF, g_vq_pa[0] + RX_AVAIL_OFF, g_vq_pa[0] + RX_USED_OFF) ||
-        !vio_queue_setup(1u,
-            g_vq_pa[0] + TX_DESC_OFF, g_vq_pa[0] + TX_AVAIL_OFF, g_vq_pa[0] + TX_USED_OFF)) {
+        !vio_queue_setup(5u,
+            g_vq_pa[0] + TX_DESC_OFF, g_vq_pa[0] + TX_AVAIL_OFF, g_vq_pa[0] + TX_USED_OFF) ||
+        !vio_queue_setup(2u, g_vq_pa[0] + CTL_RX_DESC_OFF,
+            g_vq_pa[0] + CTL_RX_AVAIL_OFF, g_vq_pa[0] + CTL_RX_USED_OFF) ||
+        !vio_queue_setup(3u, g_vq_pa[0] + CTL_TX_DESC_OFF,
+            g_vq_pa[0] + CTL_TX_AVAIL_OFF, g_vq_pa[0] + CTL_TX_USED_OFF)) {
         aos_virtio_host_set_status(&g_transport, VSTATUS_FAILED);
         return false;
     }
@@ -268,8 +347,18 @@ static bool virtio_serial_init(void)
     VQ_MB();
     RX_AVAIL->idx = 1u;
     VQ_MB();
-    if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[0])) return false;
+    if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[4])) return false;
     g_rx_used_last = 0u;
+    for (unsigned i = 0; i < VQ_DEPTH; ++i) {
+        CTL_RX_DESC[i] = (vq_desc_t){g_vq_pa[0] + CTL_RX_DATA_OFF + i * CTL_PACKET_BYTES,
+                                  CTL_PACKET_BYTES, VQ_DESC_F_WRITE, 0u};
+        CTL_RX_AVAIL->ring[i] = i;
+    }
+    VQ_MB();
+    CTL_RX_AVAIL->idx = VQ_DEPTH;
+    VQ_MB();
+    if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[2]) ||
+        !vio_control_send(CC_SERIAL_DEVICE_READY)) return false;
     g_transport_ready = true;
 
     cc_dbg_puts("[cc_pd] VirtIO serial ready\n");
@@ -292,6 +381,7 @@ static void virtio_serial_recover_tx(void)
 static bool vio_serial_write(const void *buf, uint32_t n)
 {
     if (!g_transport_ready) return false;
+    if (!vio_control_poll() || g_control.close_pending || !g_control.host_open) return false;
     const uint8_t *p = (const uint8_t *)buf;
     while (n > 0u) {
         uint32_t frame = n;
@@ -326,7 +416,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
         cc_dbg_puts(" desc_addr="); cc_dbg_hex(TX_DESC[0].addr);
         cc_dbg_puts("\n");
 #endif
-        if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[1])) return false;
+        if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[5])) return false;
 #ifdef CC_PD_TRACE_TX
         uint16_t cur_used = TX_USED->idx;
         cc_dbg_puts("[cc_pd] TX post-notify used="); cc_dbg_hex(cur_used); cc_dbg_puts("\n");
@@ -347,7 +437,7 @@ static bool vio_serial_write(const void *buf, uint32_t n)
              * rescan it instead of leaving the caller blocked indefinitely.
              */
             if ((wait % CC_VIRTIO_RENOTIFY_INTERVAL) == 0u) {
-                if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[1])) return false;
+                if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[5])) return false;
             }
             if (wait >= CC_VIRTIO_TX_WAIT_LIMIT) {
                 cc_dbg_puts("[cc_pd] TX timeout waiting for used ring\n");
@@ -380,6 +470,8 @@ static bool vio_serial_read(void *buf, uint32_t n)
         uint16_t cur;
         uint32_t wait = 0u;
         for (;;) {
+            if (!vio_control_poll()) { g_control.close_pending = true; return false; }
+            if (g_control.close_pending) return false;
             VQ_MB();
             cur = RX_USED->idx;
             if (cur != g_rx_used_last) { break; }
@@ -395,7 +487,8 @@ static bool vio_serial_read(void *buf, uint32_t n)
                 VQ_MB();
                 if (seL4_IRQHandler_Ack(PD_IRQHANDLER_SLOT_BASE) == seL4_NoError) {
                     VQ_MB();
-                    if (RX_USED->idx == g_rx_used_last) {
+                    if (RX_USED->idx == g_rx_used_last &&
+                        CTL_RX_USED->idx == g_control_used) {
                         seL4_Word badge;
                         seL4_Wait(PD_CNODE_SLOT_CC_IRQ_WAIT, &badge);
                     }
@@ -443,7 +536,7 @@ static bool vio_serial_read(void *buf, uint32_t n)
         VQ_MB();
         RX_AVAIL->idx++;
         VQ_MB();
-        if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[0])) return false;
+        if (!aos_virtio_host_queue_notify(&g_transport, &g_transport_queues[4])) return false;
     }
     return true;
 }
@@ -1643,6 +1736,37 @@ static void handle_operator(const cc_req_wire_t *req, cc_reply_wire_t *rep, bool
     if (count) seL4_Signal(PD_CNODE_SLOT_SERIAL_VIRT_NOTIFY);
 }
 
+#ifdef AGENTOS_GUEST_INPUT
+static uint32_t g_input_next_id;
+static uint32_t g_input_touched;
+static uint32_t g_input_release_pending;
+
+/* The virtualizer retains accepted releases across a full guest event queue
+ * and rejects later input for that device until release ordering is satisfied. */
+static bool cc_release_disconnected_input(void)
+{
+    for (unsigned bit = 0; bit < AOS_INPUT_CLIENTS * AOS_INPUT_DEVICES; ++bit) {
+        if (!(g_input_release_pending & (1u << bit))) continue;
+        aos_input_request_t query = {.version = AOS_INPUT_RELEASE_VERSION,
+            .id = ++g_input_next_id, .client = bit / AOS_INPUT_DEVICES,
+            .device = bit % AOS_INPUT_DEVICES};
+        aos_input_frontend_t *frontend = (void *)AOS_INPUT_FRONTEND_VA;
+        if (aos_input_submit(frontend, &query) != 0) return false;
+        seL4_Signal(PD_CNODE_SLOT_INPUT_PEER_NOTIFY);
+        aos_input_response_t response;
+        while (aos_input_receive(frontend, &response) != 0) {
+            seL4_Word badge;
+            seL4_Wait(PD_CNODE_SLOT_INPUT_WAIT, &badge);
+        }
+        seL4_Signal(PD_CNODE_SLOT_INPUT_PEER_NOTIFY);
+        if (response.version != query.version || response.id != query.id ||
+            response.status != AOS_INPUT_OK || response.accepted != 0u) return false;
+        g_input_release_pending &= ~(1u << bit);
+    }
+    return true;
+}
+#endif
+
 static void handle_input_submit(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     aos_input_request_t query;
@@ -1675,8 +1799,7 @@ static void handle_input_submit(const cc_req_wire_t *req, cc_reply_wire_t *rep)
         }
         query.client=entry->slot;
     }
-    static uint32_t next_id;
-    query.id=++next_id;
+    query.id=++g_input_next_id;
     aos_input_frontend_t *frontend=(void *)AOS_INPUT_FRONTEND_VA;
     if (aos_input_submit(frontend,&query)!=0) { rep->mr[0]=CC_ERR_RELAY_FAULT; return; }
     seL4_Signal(PD_CNODE_SLOT_INPUT_PEER_NOTIFY);
@@ -1689,6 +1812,8 @@ static void handle_input_submit(const cc_req_wire_t *req, cc_reply_wire_t *rep)
         response.accepted!=(response.status==AOS_INPUT_OK ? query.count : 0u)) {
         rep->mr[0]=CC_ERR_RELAY_FAULT;
     } else {
+        if (!release && response.status == AOS_INPUT_OK)
+            g_input_touched |= 1u << (query.client * AOS_INPUT_DEVICES + query.device);
         response.id=0;
         __builtin_memcpy(rep->shmem,&response,sizeof(response));
         rep->mr[0]=CC_OK; rep->mr[1]=sizeof(response);
@@ -1888,6 +2013,26 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 #endif
 
     while (1) {
+        if (g_control.close_pending) {
+            cc_retry_cache_init(&g_retry);
+            __builtin_memset(&g_req, 0, sizeof(g_req));
+            __builtin_memset(&g_rep, 0, sizeof(g_rep));
+#ifdef AGENTOS_GUEST_INPUT
+            g_input_release_pending |= g_input_touched;
+            g_input_touched = 0;
+#endif
+            /* Reset also discards any partially received frame and stale
+             * used entries. Control RX is reposted before DEVICE_READY. */
+            g_control = (cc_serial_control_t){0};
+            if (!virtio_serial_init()) {
+                g_control.close_pending = true;
+                seL4_Yield();
+                continue;
+            }
+        }
+#ifdef AGENTOS_GUEST_INPUT
+        if (!cc_release_disconnected_input()) { seL4_Yield(); continue; }
+#endif
         if (!vio_serial_read(&g_req, sizeof(g_req))) {
             continue;
         }
@@ -1896,6 +2041,7 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
             cc_dispatch(&g_req, &g_rep);
         }
         if (!vio_serial_write(&g_rep, sizeof(g_rep))) {
+            if (g_control.close_pending) continue;
             /*
              * The operation may already have changed state. Save the exact
              * request/reply pair before resetting the poisoned TX queue.

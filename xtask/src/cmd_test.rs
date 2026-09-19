@@ -2672,7 +2672,7 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("-device")
                 .arg("virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0")
                 .arg("-device")
-                .arg("virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0")
+                .arg("virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0,nr=1")
                 .arg("-device")
                 .arg(format!("loader,file={},cpu-num=0", loader.display()))
                 .arg("-device")
@@ -2857,7 +2857,7 @@ pub(crate) fn spawn_qemu_with_guest(
                     .arg("-device")
                     .arg("virtio-serial-pci,id=cc_serial,addr=07.0,disable-legacy=on")
                     .arg("-device")
-                    .arg("virtconsole,bus=cc_serial.0,chardev=cc_pd_char,name=cc.0");
+                    .arg("virtserialport,bus=cc_serial.0,chardev=cc_pd_char,name=cc.0,nr=1");
             } else {
                 c.arg("-chardev")
                     .arg(format!(

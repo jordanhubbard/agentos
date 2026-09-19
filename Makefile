@@ -271,7 +271,7 @@ ifeq ($(NATIVE_ARCH),aarch64)
                         -serial chardev:char0 \
                         -chardev socket,id=cc_pd_char,path=$(ROOT_DIR)build/cc_pd.sock,server=on,wait=off \
                         -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0 \
-                        -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0 \
+                        -device virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0,nr=1 \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
                         -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.16 \

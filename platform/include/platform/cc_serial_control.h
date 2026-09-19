@@ -6,8 +6,9 @@
 #include <stdint.h>
 
 /* VirtIO console control messages are little-endian, independent of CC's
- * data-frame ABI. The deployment must explicitly bind CC to port zero.
- * Queues 2/3 carry control RX/TX; port zero retains data queues 0/1. */
+ * data-frame ABI. The deployment must explicitly bind CC to port one.
+ * Queues 2/3 carry control RX/TX; port one uses data queues 4/5. */
+#define CC_SERIAL_PORT_ID 1u
 enum {
     CC_SERIAL_DEVICE_READY = 0,
     CC_SERIAL_PORT_ADD = 1,
@@ -30,7 +31,7 @@ typedef struct {
 
 bool cc_serial_control_receive(cc_serial_control_t *state,
                                const uint8_t *packet, size_t length);
-/* Encode a guest-origin control message; fixed CC port zero. */
+/* Encode a guest-origin control message; fixed CC port one. */
 bool cc_serial_control_encode(uint16_t event, uint8_t packet[8]);
 /* Transport reset loses connection identity. Retain any close obligation
  * through reset; the initialization path must repeat DEVICE_READY. */

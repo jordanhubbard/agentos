@@ -46,14 +46,21 @@ across a full queue. `make gate` checks canonical guest I/O for regressions;
 `make test-guest-input` separately checks live guest input delivery. Neither
 is an abrupt-disconnect proof without the transport changes below.
 
-Connection-loss detection remains to be connected to this operation. CC-PD
-currently negotiates only VirtIO VERSION_1 and its QEMU device is a
-`virtconsole`. QEMU's [console frontend](https://github.com/qemu/qemu/blob/v10.2.0/hw/char/virtio-console.c)
-installs host connection callbacks for serial ports, but not consoles. The
+CC-PD now negotiates VERSION_1 and MULTIPORT, with control queues 2/3 in its
+existing DMA page. Make and xtask launch `virtserialport,nr=1`; port zero is
+reserved by QEMU for consoles, so CC data uses queues 4/5. QEMU's
 [serial control protocol](https://github.com/qemu/qemu/blob/v10.2.0/hw/char/virtio-serial-bus.c)
-provides PORT_OPEN notifications with MULTIPORT negotiation. Supporting those
-control queues and a serial port, then qualifying abrupt GUI termination with
-guest-observed releases, is required before claiming disconnect cleanup.
+provides PORT_OPEN notifications. A close invalidates cached replies and
+partial frames, reconstructs the transport, and submits release operations
+for client/device pairs that accepted input. A later open cannot cancel the
+pending close; the input virtualizer retains accepted releases through queue
+backpressure and rejects new batches until their releases are queued.
+
+The full Spark gate passes with this transport. Live input regression and
+abrupt GUI termination with guest-observed key/button releases remain
+required before claiming disconnect cleanup. The legacy shell timeout
+harness still describes the old console transport and must be replaced or
+updated through the supported Rust test interface before release.
 The GUI remains a direct binary CC-PD consumer; no HTTP bridge is involved.
 
 ## Spark qualification

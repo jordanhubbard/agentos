@@ -8,7 +8,7 @@ bool cc_serial_control_receive(cc_serial_control_t *s,
                     (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
     uint16_t event = (uint16_t)p[4] | (uint16_t)p[5] << 8;
     uint16_t value = (uint16_t)p[6] | (uint16_t)p[7] << 8;
-    if (port != 0u) return false;
+    if (port != CC_SERIAL_PORT_ID) return false;
     switch (event) {
     case CC_SERIAL_PORT_ADD:
         if (length != 8u || value != 1u) return false;
@@ -46,6 +46,7 @@ bool cc_serial_control_encode(uint16_t event, uint8_t packet[8])
     if (!packet || (event != CC_SERIAL_DEVICE_READY &&
         event != CC_SERIAL_PORT_READY && event != CC_SERIAL_PORT_OPEN)) return false;
     for (unsigned i = 0; i < 8u; ++i) packet[i] = 0u;
+    if (event != CC_SERIAL_DEVICE_READY) packet[0] = CC_SERIAL_PORT_ID;
     packet[4] = (uint8_t)event;
     packet[5] = (uint8_t)(event >> 8);
     packet[6] = 1u;

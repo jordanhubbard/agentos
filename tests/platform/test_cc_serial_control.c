@@ -5,7 +5,7 @@
 
 static bool receive(cc_serial_control_t *s, uint16_t event, uint16_t value)
 {
-    uint8_t packet[8] = {0, 0, 0, 0, event, event >> 8, value, value >> 8};
+    uint8_t packet[8] = {CC_SERIAL_PORT_ID, 0, 0, 0, event, event >> 8, value, value >> 8};
     return cc_serial_control_receive(s, packet, sizeof(packet));
 }
 
@@ -37,9 +37,9 @@ int main(void)
         assert(!receive(&s, invalid_events[i], 1));
         assert(!memcmp(&s, &before, sizeof(s)));
     }
-    uint8_t packet[8] = {1, 0, 0, 0, CC_SERIAL_PORT_ADD, 0, 1, 0};
+    uint8_t packet[8] = {0, 0, 0, 0, CC_SERIAL_PORT_ADD, 0, 1, 0};
     assert(!cc_serial_control_receive(&s, packet, sizeof(packet)));
-    packet[0] = 0;
+    packet[0] = CC_SERIAL_PORT_ID;
     for (size_t n = 0; n < 8u; ++n)
         assert(!cc_serial_control_receive(&s, packet, n));
     assert(!memcmp(&s, &before, sizeof(s)));
@@ -52,7 +52,7 @@ int main(void)
     before = s;
     assert(!receive(&s, CC_SERIAL_PORT_OPEN, 2));
     assert(!memcmp(&s, &before, sizeof(s)));
-    const uint8_t name[] = {0,0,0,0,CC_SERIAL_PORT_NAME,0,1,0,'c','c','.','0',0};
+    const uint8_t name[] = {CC_SERIAL_PORT_ID,0,0,0,CC_SERIAL_PORT_NAME,0,1,0,'c','c','.','0',0};
     assert(cc_serial_control_receive(&s, name, sizeof(name)));
     assert(!memcmp(&s, &before, sizeof(s)));
     s = (cc_serial_control_t){0};
@@ -68,7 +68,8 @@ int main(void)
     for (unsigned i = 0; i < sizeof(outbound)/sizeof(*outbound); ++i) {
         memset(packet, 0xff, sizeof(packet));
         assert(cc_serial_control_encode(outbound[i], packet));
-        const uint8_t expected[8] = {0,0,0,0,outbound[i],0,1,0};
+        const uint8_t expected[8] = {outbound[i] == CC_SERIAL_DEVICE_READY ? 0 : CC_SERIAL_PORT_ID,
+                                    0,0,0,outbound[i],0,1,0};
         assert(!memcmp(packet, expected, sizeof(packet)));
     }
     puts("PASS: CC control handshake, close retention, reset and rejected events");
