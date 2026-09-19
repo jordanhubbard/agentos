@@ -1,0 +1,39 @@
+{
+  "status": "partial; reboot durability remains unqualified",
+  "spark": {
+    "source_revision": "c262ede",
+    "source_clean": true,
+    "command": "make test-debian-nocloud-auto QEMU_TEST_SSH_PORT=12238 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+    "exit_status": 0,
+    "result": "Automatic fresh Debian provisioning passed console-pinned SSH, aarch64 and sync, and canonical host-backed net/block/console assertions.",
+    "log_sha256": "32a83c3de1087afe56babd8ab4803416e29cd4fb5b30992c9fdb90a21f057663",
+    "log": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/c262ede-arm-nocloud-auto.log",
+    "seed_directory": "build/evidence/profile-seed-LzhYMh",
+    "boot_to_authenticated_ssh_ms": 716612,
+    "agentos_image_sha256": "c06fcd77c514e0d1353f37aabede22c0be3de4cc2aa96ab5f527d214d58d1f1c"
+  },
+  "intel": {
+    "os_image_source_revision": "85ff327",
+    "seed_source_revision": "b4f0802",
+    "qemu_pid": 1427798,
+    "sequence": "Fresh secondary booted alone, then fresh primary booted alongside it; both remained independently SSH-reachable.",
+    "addresses": {"primary": "10.0.2.15", "secondary": "10.0.2.16"},
+    "handles": {"primary": 2, "secondary": 1},
+    "payload_path": "/home/debian/agentos-storage-payload",
+    "payload_bytes_each": 2097152,
+    "primary_sha256": "5f898587808fcbe9b2409bf42a16b834b91117be14f942101d22c9d66b2fe13f",
+    "secondary_sha256": "fc52f4d49013484257d49864fa047abb1c0595fcf71431fe92120f85e1aa2045",
+    "isolation": "Primary marker path was absent after the secondary wrote its marker. Secondary retained its own marker and had no payload file after the primary wrote its payload. Distinct synced payloads matched independently generated expected hashes. Primary data stayed unchanged after secondary writes.",
+    "reboot": "Secondary sudo systemctl reboot completed orderly filesystem/block shutdown and reached machine restart. No new boot was observed in the retained console capture. Primary stayed SSH-reachable with its original hash. This is not a successful reboot or durability proof.",
+    "reset_investigation": "Current config model ignores byte writes in the PCI address range, including CF9, and does not implement guest reset. The exact reset path used by this guest is not yet confirmed.",
+    "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/dual-storage-and-reboot-attempt.tar.gz",
+    "archive_sha256": "3ae08761168de5577b24fed4847a930f17230a8f026856d11acf212415640572"
+  },
+  "host_recovery": {
+    "observation": "Intel SSH recovered after global host OOM events. The kernel logged OOM kills, including a viewer with about 45 GiB resident memory. This does not establish the cause of earlier guest boot failures.",
+    "health_archive_sha256": "1df03a0c5917a0c117a64dbb826052ef2ad82c59378a41f3870c1a0244d20944",
+    "obsolete_experiments": "Archived then terminated known-failed QEMUs 1127667, 1159822 and 1206066. Their disk files remain. Available memory rose from 47 to 64 GiB.",
+    "obsolete_archive_sha256": "ecdbe6a55221dd8b9a78371c20546de2131c5512c224b3c4b797dff728154fee"
+  },
+  "limits": "Not simultaneous fresh first boot, successful guest reboot, full storage isolation, teardown acceptance, or complete v0.4 qualification. Earlier failed concurrent first boot remains recorded. Private SSH keys and disks are excluded from archives."
+}
