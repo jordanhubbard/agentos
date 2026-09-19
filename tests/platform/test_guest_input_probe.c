@@ -5,6 +5,35 @@
 #include <assert.h>
 int main(void)
 {
+    for (unsigned first=0;first<2;++first) {
+        unsigned positions[2]={0,0};
+        bool held=false;
+        struct input_event syn={.type=EV_SYN,.code=SYN_REPORT};
+        struct input_event down[2]={{.type=EV_KEY,.code=KEY_F12,.value=1},
+                                   {.type=EV_KEY,.code=BTN_LEFT,.value=1}};
+        for (unsigned order=0;order<2;++order) {
+            unsigned device=first^order;
+            assert(accept_disconnect_event(device,positions,&held,&down[device]));
+            assert(!held);
+            assert(accept_disconnect_event(device,positions,&held,&syn));
+            assert(held==(order==1));
+            if (!held) {
+                struct input_event early=down[device]; early.value=0;
+                assert(!accept_disconnect_event(device,positions,&held,&early));
+                assert(positions[device]==2);
+            }
+        }
+        for (unsigned device=0;device<2;++device) {
+            struct input_event repeat=down[device]; repeat.value=2;
+            assert(!accept_disconnect_event(device,positions,&held,&repeat));
+            struct input_event up=down[device]; up.value=0;
+            assert(accept_disconnect_event(device,positions,&held,&up));
+            assert(accept_disconnect_event(device,positions,&held,&syn));
+            assert(positions[device]==4);
+            assert(!accept_disconnect_event(device,positions,&held,&up));
+        }
+        assert(!accept_disconnect_event(2,positions,&held,&syn));
+    }
     unsigned latency_position=0;
     for (unsigned i=0;i<40;++i) {
         struct input_event e={.type=(i&1) ? EV_SYN : EV_KEY,

@@ -77,6 +77,21 @@ harness still describes the old console transport and must be replaced or
 updated through the supported Rust test interface before release.
 The GUI remains a direct binary CC-PD consumer; no HTTP bridge is involved.
 
+For abrupt native GUI termination, `make guest-input-probe` also builds the
+`--gui-disconnect` recipe. Start it over pinned-key SSH after focusing the
+rendered display and capturing the pointer. Send a stationary F12 down and
+left-button down through the native GUI. The probe prints
+`AGENTOS_GUI_HELD keyboard=F12 pointer=left` only after both complete down/SYN
+packets arrive; an early release, repeat or pointer motion fails the recipe.
+Only after observing that milestone, terminate the exact owned GUI process
+without sending keyup, mouseup, a release RPC or a protocol goodbye. Require
+`AGENTOS_GUI_DISCONNECT_PASS` and SSH exit zero, then release the host input
+state for cleanup. The probe requires exact up/SYN packets on both guest
+devices and a quiet period with no extra events. Its output alone does not
+prove process termination: retain the host action order, PID/command identity,
+process exit, and guest transcript together. This recipe does not establish
+peer isolation, paused disconnect, physical device ownership, or GUI latency.
+
 ## Spark qualification
 
 At runtime revision `d10620b8eaa5ee13b5c4fe5c79f6e3cd4b100795`,
