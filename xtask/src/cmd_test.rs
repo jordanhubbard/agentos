@@ -613,6 +613,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         let path = cmd_guest_profile::resolve_alias(&profile_root, &args.guest_os)?;
         Some(cmd_guest_profile::host_profile_plan(&profile_root, &path)?)
     };
+    anyhow::ensure!(
+        !args.assert_scenario_recreation
+            || (args.board == "qemu_virt_aarch64" && args.guest_os == "both"),
+        "scenario recreation requires the ARM dual-guest scenario"
+    );
     if let Some(profile) = &mut profile_plan {
         apply_profile_ssh_port(profile, args.ssh_port);
     }
@@ -1349,6 +1354,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 &mut qemu,
                 ssh_key.as_ref().context("dual SSH key was not generated")?,
                 args.keep_running,
+                args.assert_scenario_recreation,
             )
         } else if let Some(key) = &args.seeded_ssh_key {
             wait_for_all_markers(
@@ -6452,6 +6458,7 @@ fn wait_for_dual_guest_consoles_via_cc(
     qemu: &mut Child,
     ssh_key: &SshTestKey,
     keep_running: bool,
+    recreate: bool,
 ) -> anyhow::Result<String> {
     let start = Instant::now();
     let ssh_evidence = cc_sock.with_extension("ssh-evidence");
@@ -6487,7 +6494,7 @@ fn wait_for_dual_guest_consoles_via_cc(
     )
     .with_context(|| format!("failed to create {} through vm_manager", lead.profile.id))?;
 
-    let deferred_handle = create_guest_via_cc_wait(
+    let mut deferred_handle = create_guest_via_cc_wait(
         &mut boot_cc,
         deferred.profile.control_type as u8,
         VIBEOS_ARCH_AARCH64,
@@ -6625,6 +6632,70 @@ fn wait_for_dual_guest_consoles_via_cc(
         qemu,
         &ssh_evidence.join("concurrent"),
     )?;
+
+    if recreate {
+        let retired = deferred_handle;
+        destroy_guest_via_cc(&mut boot_cc, retired, Some(&deferred.profile))?;
+        wait_for_scenario_guest_ssh(
+            lead,
+            ssh_key,
+            Duration::from_secs(180),
+            qemu,
+            &ssh_evidence.join("peer-after-destroy"),
+        )?;
+        deferred_handle = create_guest_via_cc_wait(
+            &mut boot_cc,
+            deferred.profile.control_type as u8,
+            VIBEOS_ARCH_AARCH64,
+            deferred.ram_mb,
+            &deferred.profile.id,
+            timeout.saturating_sub(start.elapsed()),
+            qemu,
+        )?;
+        anyhow::ensure!(
+            deferred_handle != retired && deferred_handle != lead_handle,
+            "scenario recreation reused a retired or peer handle"
+        );
+        // Never suspend the peer during reconstruction or replacement boot.
+        wait_for_guest_console_login_on_cc(
+            cc_sock,
+            &mut boot_cc,
+            deferred_handle,
+            &deferred.profile.id,
+            Some(&deferred.profile),
+            timeout.saturating_sub(start.elapsed()),
+            qemu,
+            None,
+        )?;
+        run_guest_console_commands(
+            cc_sock,
+            &mut boot_cc,
+            deferred_handle,
+            &deferred.profile.id,
+            Some(&deferred.profile),
+            &deferred_provision,
+            Duration::from_secs(600),
+            qemu,
+        )?;
+        wait_for_scenario_ssh(
+            scenario,
+            ssh_key,
+            Duration::from_secs(600),
+            qemu,
+            &ssh_evidence.join("concurrent-after-recreation"),
+        )?;
+        for opcode in [
+            MSG_CC_GUEST_STATUS,
+            MSG_CC_RESUME_GUEST,
+            MSG_CC_SUSPEND_GUEST,
+        ] {
+            anyhow::ensure!(
+                boot_cc.call(opcode, retired, 0, 0, &[])?.mr[0] == CC_ERR_BAD_HANDLE,
+                "retired scenario handle became usable after recreation"
+            );
+        }
+        println!("[xtask:test] scenario guest recreated: retired={retired} fresh={deferred_handle} peer={lead_handle}; concurrent authenticated SSH and stale-handle rejection passed");
+    }
 
     if !keep_running {
         destroy_guest_via_cc(&mut boot_cc, deferred_handle, Some(&deferred.profile))

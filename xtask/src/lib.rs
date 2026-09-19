@@ -37,6 +37,9 @@ pub use guest_scenario::GuestScenarioArgs;
 
 #[derive(Clone, clap::Args)]
 pub struct TestArgs {
+    /// Recreate the deferred scenario guest while its peer remains running.
+    #[arg(long, conflicts_with_all = ["keep_running", "seed_profile", "assert_seeded_recreation"])]
+    pub assert_scenario_recreation: bool,
     /// Prove a disk witness survives two fresh QEMU boots of one live profile.
     #[arg(long, requires = "assert_live", conflicts_with_all = ["no_build", "keep_running", "assert_desktop"])]
     pub assert_persistent_boots: bool,

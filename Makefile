@@ -2136,6 +2136,10 @@ e2e-contract:
 e2e-dual-os:
 	@cargo xtask qemu-test --board $(BOARD) --guest-os both --timeout-secs $(DUAL_OS_TEST_TIMEOUT)
 
+.PHONY: test-dual-guest-recreation
+test-dual-guest-recreation:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os both --assert-scenario-recreation --timeout-secs $(DUAL_OS_TEST_TIMEOUT)
+
 # Run the dual authenticated-SSH gate, retain both guests, and print commands
 # for manual sessions. Press Enter in this terminal to stop QEMU cleanly.
 run-dual-ssh:
