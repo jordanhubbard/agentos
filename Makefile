@@ -857,6 +857,16 @@ test-x86-secondary-firmware-build:
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
 test-host: test-x86-composition-host
+test-host: test-vm-manager-identity-host
+
+.PHONY: test-vm-manager-identity-host
+test-vm-manager-identity-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
+		-DAGENTOS_TEST_HOST -ffunction-sections -fdata-sections \
+		-iquote kernel/agentos-root-task/include -I tests/platform/loop-stubs -I platform/include -I libvmm/include \
+		tests/platform/test_vm_manager_guest_identity.c -Wl,--gc-sections -o $(BUILD_TMP_DIR)/test_vm_manager_guest_identity
+	$(BUILD_TMP_DIR)/test_vm_manager_guest_identity
 
 .PHONY: test-x86-composition-host
 test-x86-composition-host:

@@ -20,6 +20,12 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+VM manager now binds the guest ID returned by a successful coordinator CREATE
+reply to that dedicated slot and endpoint. Later lifecycle, input and console
+requests use that binding, rather than assuming guest ID zero. A malformed
+CREATE reply prevents BOOT; failed creation and successful teardown clear the
+binding. This does not change public handle allocation or grant new authority.
+
 The opt-in `X86_DUAL_GUEST=1` managed Linux composition now adds a secondary
 coordinator and a separate bootstrap/AP runner pair. Root provisions them
 through the existing per-owner guest RAM, EPT, TCB and queue paths. The
