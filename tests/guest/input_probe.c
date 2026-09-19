@@ -24,10 +24,14 @@ static const expected_event_t pointer[] = {
     {EV_KEY,BTN_LEFT,1},{EV_SYN,SYN_REPORT,0},
     {EV_KEY,BTN_LEFT,0},{EV_SYN,SYN_REPORT,0}
 };
-static bool accept_event(unsigned device,unsigned *position,const struct input_event *event)
+static const expected_event_t pointer_backpressure[] = {
+    {EV_KEY,BTN_LEFT,1},{EV_SYN,SYN_REPORT,0},
+    {EV_KEY,BTN_LEFT,0},{EV_SYN,SYN_REPORT,0}
+};
+static bool accept_event(bool backpressure,unsigned device,unsigned *position,const struct input_event *event)
 {
-    const expected_event_t *expected=device ? pointer : keyboard;
-    const unsigned count=device ? sizeof(pointer)/sizeof(*pointer) : sizeof(keyboard)/sizeof(*keyboard);
+    const expected_event_t *expected=device ? (backpressure ? pointer_backpressure : pointer) : keyboard;
+    const unsigned count=device && !backpressure ? sizeof(pointer)/sizeof(*pointer) : sizeof(keyboard)/sizeof(*keyboard);
     if (*position>=count) return false;
     const expected_event_t *e=&expected[*position];
     /* Linux defines SYN values as unspecified; packet boundaries and all
@@ -49,8 +53,10 @@ static bool supports(int fd,unsigned type,unsigned code)
     return code<sizeof(bits)*8 && ioctl(fd,EVIOCGBIT(type,sizeof(bits)),bits)>=0 &&
         (bits[code/8] & (1u<<(code%8)));
 }
-int main(void)
+int main(int argc,char **argv)
 {
+    bool backpressure=argc==2 && !strcmp(argv[1],"--backpressure");
+    if (argc!=1 && !backpressure) { fprintf(stderr,"usage: input-probe [--backpressure]\n"); return 2; }
     int devices[2]={-1,-1};
     for (unsigned i=0;i<64;++i) {
         char path[64],name[128]={0};
@@ -74,7 +80,7 @@ int main(void)
     int64_t start=milliseconds();
     if (start<0) return 1;
     unsigned positions[2]={0,0};
-    while (positions[0]<4 || positions[1]<7) {
+    while (positions[0]<4 || positions[1]<(backpressure ? 4u : 7u)) {
         int64_t now=milliseconds();
         if (now<0 || now-start>=120000) { fprintf(stderr,"input deadline expired\n"); return 1; }
         struct pollfd fds[2]={{devices[0],POLLIN,0},{devices[1],POLLIN,0}};
@@ -88,7 +94,7 @@ int main(void)
             if (bytes<0 && (errno==EINTR || errno==EAGAIN)) continue;
             if (bytes<=0 || bytes%(ssize_t)sizeof(*events)) return 1;
             for (unsigned j=0;j<(size_t)bytes/sizeof(*events);++j)
-                if (!accept_event(i,&positions[i],&events[j])) {
+                if (!accept_event(backpressure,i,&positions[i],&events[j])) {
                     fprintf(stderr,"unexpected device %u event %u: %u/%u/%d\n",i,
                             positions[i],events[j].type,events[j].code,events[j].value);
                     return 1;
@@ -98,6 +104,6 @@ int main(void)
     struct pollfd extra[2]={{devices[0],POLLIN,0},{devices[1],POLLIN,0}};
     if (poll(extra,2,200)!=0) { fprintf(stderr,"unexpected trailing input\n"); return 1; }
     close(devices[0]); close(devices[1]);
-    puts("AGENTOS_INPUT_PASS keyboard=4 pointer=7");
+    puts(backpressure ? "AGENTOS_INPUT_PASS keyboard=4 pointer=4" : "AGENTOS_INPUT_PASS keyboard=4 pointer=7");
     return 0;
 }

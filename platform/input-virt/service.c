@@ -63,17 +63,63 @@ static int valid_batch(const aos_input_request_t *q)
 }
 static uint32_t deliver(aos_input_service_t *s, const aos_input_request_t *q)
 {
-    if (!valid_batch(q)) return AOS_INPUT_BAD_REQUEST;
+    int release=q->version==AOS_INPUT_RELEASE_VERSION && q->count==0 &&
+        q->device<AOS_INPUT_DEVICES && !q->reserved[0] && !q->reserved[1] && !q->reserved[2];
+    if (!release && !valid_batch(q)) return AOS_INPUT_BAD_REQUEST;
     if (q->client>=AOS_INPUT_CLIENTS || !(s->allowed_mask & (1u<<q->client)))
         return AOS_INPUT_DENIED;
+    if (release) {
+        s->releasing[q->client] |= 1u<<q->device;
+        return AOS_INPUT_OK;
+    }
+    if (s->releasing[q->client] & (1u<<q->device)) return AOS_INPUT_WOULD_BLOCK;
     aos_input_event_queue_t *out=&s->clients[q->client]->devices[q->device];
     uint32_t head=load(&out->head), tail=load(&out->tail), occupied=tail-head;
     if (occupied>AOS_INPUT_EVENT_CAPACITY || q->count>AOS_INPUT_EVENT_CAPACITY-occupied)
         return AOS_INPUT_WOULD_BLOCK;
     for (unsigned i=0; i<q->count; ++i)
         out->events[(tail+i)%AOS_INPUT_EVENT_CAPACITY]=q->events[i];
+    for (unsigned i=0;i<q->count;i++) {
+        const aos_input_event_t *e=&q->events[i];
+        if (e->type!=1 || e->value==2) continue;
+        unsigned index=q->device==AOS_INPUT_KEYBOARD ? e->code : e->code-0x110u;
+        uint32_t *word=&s->held[q->client][q->device][index/32u], bit=1u<<(index%32u);
+        if (e->value) *word |= bit;
+        else *word &= ~bit;
+    }
     publish(&out->tail, tail+q->count);
     return AOS_INPUT_OK;
+}
+
+static unsigned release_pending(aos_input_service_t *s, uint32_t *ready)
+{
+    unsigned progress=0;
+    for (unsigned client=0;client<AOS_INPUT_CLIENTS;client++) {
+        for (unsigned device=0;device<AOS_INPUT_DEVICES;device++) {
+            if (!(s->releasing[client] & (1u<<device))) continue;
+            aos_input_event_queue_t *out=&s->clients[client]->devices[device];
+            uint32_t tail=load(&out->tail), occupied=tail-load(&out->head), count=0;
+            if (occupied>AOS_INPUT_EVENT_CAPACITY) continue;
+            uint32_t room=AOS_INPUT_EVENT_CAPACITY-occupied;
+            unsigned left=0;
+            for (unsigned index=0;index<256;index++) {
+                uint32_t *word=&s->held[client][device][index/32u], bit=1u<<(index%32u);
+                if (!(*word & bit)) continue;
+                if (count+1u>=room || count>=AOS_INPUT_BATCH_EVENTS-1u) { left++; continue; }
+                uint16_t code=(uint16_t)(device==AOS_INPUT_KEYBOARD ? index : index+0x110u);
+                out->events[(tail+count++)%AOS_INPUT_EVENT_CAPACITY]=(aos_input_event_t){1,code,0};
+                *word &= ~bit;
+            }
+            if (count) {
+                out->events[(tail+count++)%AOS_INPUT_EVENT_CAPACITY]=(aos_input_event_t){0,0,0};
+                publish(&out->tail,tail+count);
+                if (ready) *ready |= 1u<<client;
+                progress++;
+            }
+            if (!left) { s->releasing[client] &= ~(1u<<device); progress++; }
+        }
+    }
+    return progress;
 }
 unsigned aos_input_pump(aos_input_service_t *s, uint32_t *ready)
 {
@@ -90,11 +136,12 @@ unsigned aos_input_pump(aos_input_service_t *s, uint32_t *ready)
         aos_input_request_t q=f->requests[head%AOS_INPUT_REQUEST_CAPACITY];
         uint32_t status=deliver(s,&q);
         f->responses[out%AOS_INPUT_REQUEST_CAPACITY]=(aos_input_response_t){
-            AOS_INPUT_VERSION,q.id,status,status==AOS_INPUT_OK ? q.count : 0};
-        if (status==AOS_INPUT_OK && ready) *ready |= 1u<<q.client;
+            q.version==AOS_INPUT_RELEASE_VERSION && !q.count ? AOS_INPUT_RELEASE_VERSION : AOS_INPUT_VERSION,
+            q.id,status,status==AOS_INPUT_OK ? q.count : 0};
+        if (status==AOS_INPUT_OK && q.count && ready) *ready |= 1u<<q.client;
         publish(&f->resp_tail,out+1u);
         publish(&f->req_head,++head);
         ++processed;
     }
-    return processed;
+    return processed+release_pending(s,ready);
 }

@@ -63,6 +63,7 @@ static void usage(FILE *out)
             "  fb-attach GUEST_HANDLE FB_HANDLE\n"
             "  frame-capture GUEST_HANDLE OUTPUT.ppm\n"
             "  input-batch GUEST_HANDLE keyboard|pointer TYPE CODE VALUE [TYPE CODE VALUE ...]\n"
+            "  input-release GUEST_HANDLE keyboard|pointer\n"
             "  send-input GUEST_HANDLE KEYCODE\n"
             "  suspend GUEST_HANDLE\n"
             "  resume GUEST_HANDLE\n"
@@ -409,10 +410,11 @@ static int cmd_simple(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3)
     return r.mr[0] == CC_OK ? 0 : 1;
 }
 
-static int cmd_input_batch(int argc,char **argv)
+static int cmd_input(int argc,char **argv,bool release)
 {
-    if (argc<5 || (argc-2)%3 || (unsigned)(argc-2)/3>=AOS_INPUT_BATCH_EVENTS) return 2;
-    aos_input_request_t query={.version=AOS_INPUT_VERSION};
+    if (release ? argc!=2 : (argc<5 || (argc-2)%3 ||
+        (unsigned)(argc-2)/3>=AOS_INPUT_BATCH_EVENTS)) return 2;
+    aos_input_request_t query={.version=release ? AOS_INPUT_RELEASE_VERSION : AOS_INPUT_VERSION};
     uint32_t handle=parse_u32(argv[0],"guest_handle");
     if (!strcmp(argv[1],"keyboard")) query.device=AOS_INPUT_KEYBOARD;
     else if (!strcmp(argv[1],"pointer")) query.device=AOS_INPUT_POINTER;
@@ -426,13 +428,13 @@ static int cmd_input_batch(int argc,char **argv)
             type>UINT16_MAX || code>UINT16_MAX || !type) return 2;
         query.events[query.count++]=(aos_input_event_t){(uint16_t)type,(uint16_t)code,(int32_t)value};
     }
-    ++query.count; /* zero-initialized final SYN_REPORT completes the batch */
+    if (!release) ++query.count; /* zero-initialized final SYN_REPORT completes the batch */
     cc_reply_wire_t reply;
     if (!cc_call(MSG_CC_INPUT_SUBMIT,handle,0,0,&query,sizeof(query),&reply)) return 1;
     aos_input_response_t response;
     memcpy(&response,reply.shmem,sizeof(response));
     if (reply.mr[0]!=CC_OK || reply.mr[1]!=sizeof(response) ||
-        reply.mr[3]!=AOS_INPUT_VERSION || response.version!=AOS_INPUT_VERSION ||
+        reply.mr[3]!=query.version || response.version!=query.version ||
         response.id || response.status>AOS_INPUT_WOULD_BLOCK ||
         reply.mr[2]!=response.status ||
         response.accepted!=(response.status==AOS_INPUT_OK ? query.count : 0u)) {
@@ -443,6 +445,9 @@ static int cmd_input_batch(int argc,char **argv)
     /* No implicit retries: a transport failure gives no delivery guarantee. */
     return response.status==AOS_INPUT_OK ? 0 : 1;
 }
+
+static int cmd_input_batch(int argc,char **argv) { return cmd_input(argc,argv,false); }
+static int cmd_input_release(int argc,char **argv) { return cmd_input(argc,argv,true); }
 
 static int cmd_send_input(int argc, char **argv)
 {
@@ -523,6 +528,7 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "frame-capture") == 0)
         return n == 2 ? cmd_frame_capture(parse_u32(args[0], "guest_handle"), args[1]) : 2;
     if (strcmp(cmd,"input-batch")==0) return cmd_input_batch(n,args);
+    if (strcmp(cmd,"input-release")==0) return cmd_input_release(n,args);
     if (strcmp(cmd, "session-inspect") == 0) return n == 0 ? cmd_session_inspect() : 2;
     if (strcmp(cmd, "connect") == 0) return cmd_connect();
     if (strcmp(cmd, "status") == 0) return cmd_status(n, args);

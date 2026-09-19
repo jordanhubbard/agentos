@@ -5,6 +5,10 @@
 #include <stdint.h>
 
 #define AOS_INPUT_VERSION 1u
+/* Version 2 with count=0 requests asynchronous release of all held state for
+ * one client/device. Reserved words remain zero; response accepted is zero.
+ * Version 1 batches and their wire sizes remain unchanged. */
+#define AOS_INPUT_RELEASE_VERSION 2u
 #define AOS_INPUT_CLIENTS 2u
 #define AOS_INPUT_DEVICES 2u
 #define AOS_INPUT_BATCH_EVENTS 64u
@@ -48,6 +52,8 @@ typedef struct {
     aos_input_frontend_t *frontend;
     aos_input_client_region_t *clients[AOS_INPUT_CLIENTS];
     uint32_t allowed_mask;
+    uint32_t held[AOS_INPUT_CLIENTS][AOS_INPUT_DEVICES][8];
+    uint32_t releasing[AOS_INPUT_CLIENTS];
 } aos_input_service_t;
 
 int aos_input_service_init(aos_input_service_t *, aos_input_frontend_t *,
@@ -55,11 +61,14 @@ int aos_input_service_init(aos_input_service_t *, aos_input_frontend_t *,
 int aos_input_submit(aos_input_frontend_t *, const aos_input_request_t *);
 int aos_input_receive(aos_input_frontend_t *, aos_input_response_t *);
 int aos_input_event_receive(aos_input_event_queue_t *, aos_input_event_t *);
-/* One bounded pass. Return response count and a bitmask of clients receiving
+/* One bounded pass. Return activity count and a bitmask of clients receiving
  * events. Signal frontend after responses, corresponding VMMs after events,
  * and service after submitting requests or draining responses/events.
  * A full event queue accepts none of the batch (WOULD_BLOCK); no partial
  * keyboard/pointer state is published. Full response queues defer work.
+ * Accepted releases persist privately across backpressure and reject new
+ * batches for that client/device until every release is queued. Queues are
+ * never reset or overwritten. Completion requires the guest to drain them.
  * Attach never clears queues. Lifecycle reset requires coordinated quiescence. */
 unsigned aos_input_pump(aos_input_service_t *, uint32_t *clients_ready);
 
