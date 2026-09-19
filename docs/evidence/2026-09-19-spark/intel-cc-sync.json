@@ -1,0 +1,18 @@
+{
+  "status": "passed Intel CC Linux create/destroy/recreate qualification",
+  "source_revision": "1ea78cdd1bccd2f51a3ca2737960ed2d5b4ff76a",
+  "source_tree_clean": true,
+  "host": "madmax, Intel Linux nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "root_task_sha256": "cdbab1f2b5a067ff4bb4512f5504a097906ae2a411f2d6b167b1c294f21e26fd",
+  "command": "make gate-x86_64-cc-linux with debian-amd64.toml, isolated writable snapshot copy, port 12246, existing SSH identity and pinned Ed25519 host key",
+  "make_exit": 0,
+  "exit_evidence": "Detached launcher wrote qualification-rerun.exit after Make returned; launcher PID 1963333 and QEMU PID 1966023 absent afterward.",
+  "proof": "Both boots authenticated with the pinned key, reported x86_64 and completed sync. Binary CC CREATE, console input echo, DESTROY, recreate, second boot and stale-handle rejection passed.",
+  "initial_disk_sha256": "fa1a9dd968a0d03736d06b1cab643fa99a2f6a22b2c5fa1dc6d9d66b2fc2a24b",
+  "log_sha256": "bf9b52f861c9d63d7a34df30d3d2302aa1839c7a93c7b8a1dbfe05246664e3ce",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/1ea78cd-intel-cc-sync-pass.tar.gz",
+  "archive_sha256": "79d31098c69a8396bbdb8cda2fe97a5843edd583c9da3cd2662c9db4577ed079",
+  "earlier_attempts": "First build ended with a linker SIGBUS before QEMU; moving its artifact cache off tmpfs allowed the build. A subsequent run printed all PASS assertions but its outer SSH wrapper returned 143; it is retained separately and is not used as clean-exit evidence. This repeat independently recorded Make exit 0.",
+  "limits": "One guest recreated sequentially, not simultaneous fresh guests, SMP or full storage requalification, guest graphics/input, abrupt GUI termination, or final v0.4 acceptance. Original preserved dual VM/disks untouched. Archive excludes private identities and disk contents."
+}
