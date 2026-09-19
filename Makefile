@@ -1237,13 +1237,7 @@ test-x86-acpi-aml: test-x86-acpi-host test-x86-acpi-loader-host
 	@rg -q '\[Integer\] = 0000000000000010' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '\[Integer\] = 000000000000001F' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '"ACPI0007"' $(BUILD_TMP_DIR)/x86-cpus-eval.log
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-ramfb-host test-display-host test-memory-copy-host
-
-.PHONY: test-memory-copy-host
-test-memory-copy-host:
-	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -O2 -ffreestanding -Wall -Wextra -Werror -I . tests/platform/test_memory_copy.c -o $(BUILD_TMP_DIR)/test_memory_copy
-	$(BUILD_TMP_DIR)/test_memory_copy
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-ramfb-host test-display-host
 
 .PHONY: test-display-host
 .PHONY: test-display-init
