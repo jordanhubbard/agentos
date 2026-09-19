@@ -1,0 +1,22 @@
+{
+  "status": "passed native GUI SIGKILL with guest-observed held-input releases",
+  "runtime_revision": "7828a4eb02bb3ddd9cc2048b235273a09f26b690",
+  "probe_revision": "454fadb",
+  "probe_sha256": "ec27b8f037679bf94d098ae6c86a620c3395428d0bc47f437981c04a8bf1ef69",
+  "gui_runtime_revision": "c748c74",
+  "gui_binary_sha256": "6bda035523d29bf2b31e36d6686f775ff7e61d27fe2c1c6a4c7a30577ab8dbd8",
+  "platform": "Spark aarch64; combined Debian graphics/input guest; native GUI on isolated Xvfb :0",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "actions": "20:16:21Z F12 down and stationary left-button down; guest acknowledged both complete down packets; 20:16:33Z verified GUI executable identity and sent SIGKILL to PID1593866; no keyup, mouseup, release RPC or goodbye before guest PASS; host inputs cleaned afterward",
+  "guest_result": "AGENTOS_GUI_DISCONNECT_PASS keyboard=4 pointer=4 held_before_release=true",
+  "complete_repeat_packets": 243,
+  "ssh_exit": 0,
+  "gui_process_absent": true,
+  "gui_make_wrapper_exit": 2,
+  "guest_log_sha256": "bb4a633b0d3015bfd933bf5cd281527f30295eeaa04911bf99ec7857b0767073",
+  "host_actions_sha256": "e85cd15de1bf98a6e6bdff824a60d5c1a4fa2c670fac7bd00e7094770f928b3f",
+  "archive_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/gui-disconnect",
+  "earlier_attempts": "Original probe rejected normal F12 repeat; next probe required one repeat per packet and rejected batched repeats. Diagnostic batch demonstrated four F12 repeats followed by one SYN. GUI was not killed in those attempts; host inputs were released for cleanup. Tests now accept complete repeat packets without advancing the press/release sequence.",
+  "validation": "make test-input-host guest-input-probe and make test-host passed at probe revision",
+  "limits": "One live guest on Spark. Does not prove paused disconnect, peer isolation, physical input ownership, GUI status-label accuracy, latency, x86 graphics/input or complete v0.4 readiness. SSH host key initially enrolled accept-new at verified QEMU-owned loopback listener and strictly checked thereafter."
+}
