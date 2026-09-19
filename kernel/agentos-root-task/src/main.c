@@ -4005,6 +4005,21 @@ void root_task_main(const seL4_BootInfo *bi)
              * lifecycle calls on its service endpoint. The reporter gets
              * send authority only, without receive or capability transfer. */
             seL4_CPtr report_endpoint = seL4_CapNull;
+#ifdef AGENTOS_X86_DUAL_GUEST
+            /* One root-owned receiver observes either coordinator's startup
+             * failure. Each sender has a root-assigned identity and no receive
+             * or grant rights. Separate unconsumed receivers hide failures. */
+            if (g_x86_vtx_proof_endpoint == seL4_CapNull)
+                vm_err = ut_alloc_cap(seL4_EndpointObject, 0u,
+                                      &g_x86_vtx_proof_endpoint);
+            report_endpoint = g_x86_vtx_proof_endpoint;
+            if (vm_err == seL4_NoError) {
+                vm_err = seL4_CNode_Mint(pd_cnode, AOS_X86_VTX_REPORT_CAP,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    report_endpoint, 64u, seL4_CapRights_new(0u, 0u, 0u, 1u),
+                    pd->self_svc_id);
+            }
+#else
             vm_err = ut_alloc_cap(seL4_EndpointObject, 0u, &report_endpoint);
             if (!pd_is_secondary_guest_vmm(pd))
                 g_x86_vtx_proof_endpoint = report_endpoint;
@@ -4014,6 +4029,7 @@ void root_task_main(const seL4_BootInfo *bi)
                     report_endpoint, 64u,
                     seL4_CapRights_new(0u, 0u, 0u, 1u));
             }
+#endif
             if (vm_err != seL4_NoError) {
                 dbg_puts("[rt] private VMX report endpoint setup failed; stopping boot\n");
                 return;
@@ -4212,6 +4228,11 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word badge = 0u;
         seL4_MessageInfo_t tag =
             seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
+#ifdef AGENTOS_X86_DUAL_GUEST
+        dbg_puts("[rt] x86 coordinator report service=");
+        dbg_hex(badge);
+        dbg_puts("\n");
+#endif
 #ifdef AGENTOS_X86_USERSPACE_PROOF
         unsigned lifecycle_traces = 0u;
         while (badge == 0u && seL4_MessageInfo_get_label(tag) == AOS_X86_LIFECYCLE_TRACE_LABEL &&

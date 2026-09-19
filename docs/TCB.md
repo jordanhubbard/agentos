@@ -26,9 +26,11 @@ through the existing per-owner guest RAM, EPT, TCB and queue paths. The
 secondary coordinator and adapters are compiled in their own build directory,
 with a distinct verified manifest and client/media one. VM manager and queue
 virtualizers are compiled with both routes enabled; only driver PDs receive
-hardware mappings. Qualification report endpoints are allocated per guest,
-and the legacy root report consumer retains the primary endpoint. It is not
-a combined two-guest success reporter. The image and topology checks pass;
+hardware mappings. In the dual composition, root receives diagnostic reports
+from either coordinator on a root-owned endpoint. Each coordinator gets only
+send authority with its immutable service identity as a badge; neither can
+receive reports or transfer capabilities through it. The first report names
+its coordinator. This is not a combined two-guest success reporter. The image and topology checks pass;
 concurrent boot, independent lifecycle and persistent storage remain unqualified.
 
 The x86 coordinator now selects runner ownership and queue revocation pools
