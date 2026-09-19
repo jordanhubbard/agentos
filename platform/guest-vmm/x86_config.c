@@ -42,7 +42,9 @@ bool aos_x86_config_boot(aos_x86_config_t *s, const aos_x86_boot_blobs_t *b)
 
 bool aos_x86_config_acpi(aos_x86_config_t *s, const aos_x86_acpi_bundle_t *acpi)
 {
-    if (!s || !s->ram_bytes || !acpi || s->acpi || s->fw_reads) return false;
+    if (!s || !s->ram_bytes || !acpi || s->acpi || s->fw_reads ||
+        !acpi->cpu_count || acpi->cpu_count>AOS_X86_ACPI_MAX_CPUS ||
+        acpi->table_bytes!=846u+37u*(acpi->cpu_count-1u)) return false;
     s->acpi=acpi;
     /* ACPI-only mode: no SMI handler or legacy-to-ACPI transition. */
     s->pm_control=1;
@@ -61,7 +63,7 @@ static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
     case 0x11u: data=s->boot.kernel; size=s->boot.kernel_size; break;
     case 0x12u: data=s->boot.initrd; size=s->boot.initrd_size; break;
     case 0x15u: data=s->boot.cmdline; size=s->boot.cmdline_size; break;
-    case 0x21u: if (s->acpi) { data=s->acpi->tables; size=sizeof(s->acpi->tables); } break;
+    case 0x21u: if (s->acpi) { data=s->acpi->tables; size=s->acpi->table_bytes; } break;
     case 0x22u: if (s->acpi) { data=s->acpi->rsdp; size=sizeof(s->acpi->rsdp); } break;
     case 0x23u: if (s->acpi) { data=s->acpi->loader; size=sizeof(s->acpi->loader); } break;
     default: break;
@@ -75,12 +77,14 @@ static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
     if (s->fw_selector == 1u) return off == 0u ? 1u : 0u; /* traditional PIO, no DMA */
     if (s->fw_selector == 3u)
         return off < 4u ? (uint8_t)(s->ram_bytes >> (8u*off)) : 0;
-    if (s->fw_selector == 5u || s->fw_selector == 0xfu) return off == 0u ? 1u : 0u;
+    if (s->fw_selector == 5u || s->fw_selector == 0xfu)
+        return off == 0u ? (s->acpi ? s->acpi->cpu_count : 1u) : 0u;
     if (s->fw_selector == 0x19u) {
         /* Directory fields are big-endian, unlike the table contents. */
         static const char names[4][56]={"etc/e820","etc/acpi/tables",
                                        "etc/acpi/rsdp","etc/table-loader"};
-        const uint32_t sizes[]={80,AOS_X86_ACPI_TABLE_BYTES,36,AOS_X86_ACPI_LOADER_BYTES};
+        const uint32_t sizes[]={80,s->acpi ? s->acpi->table_bytes : 0u,
+                               36,AOS_X86_ACPI_LOADER_BYTES};
         unsigned count=s->acpi ? 4u : 1u;
         if (off<4u) return off==3u ? (uint8_t)count : 0;
         unsigned entry=(off-4u)/64u, col=(off-4u)%64u;
@@ -270,14 +274,22 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
         else *value=0xffu;
         return true;
     }
-    if (port == 0x71u && width == 1u && write && s->cmos_index == 0x0fu)
-        return (*value & 0xffu) == 0; /* acknowledge cold boot; no S3 resume */
+    if (port == 0x71u && width == 1u && s->cmos_index == 0x0fu) {
+        /* Linux brackets AP startup with warm-reset marker 0x0a and zero.
+         * This is guest-private scratch state. CPU execution starts only via
+         * INIT/SIPI; no host reset, persistent CMOS or sleep state is invoked. */
+        if (write) {
+            uint8_t status=(uint8_t)*value;
+            if (status!=0u && status!=0x0au) return false;
+            s->cmos_shutdown=status;
+        } else *value=s->cmos_shutdown;
+        return true;
+    }
     if (port == 0x71u && width == 1u && (s->cmos_index<=0x0du || s->cmos_index==0x32u))
         return aos_x86_rtc_io(&s->rtc,s->cmos_index,write,value,timer_ticks);
     if (port == 0x71u && width == 1u && !write) {
         uint32_t above16 = (s->ram_bytes - 0x1000000u) >> 16;
-        if (s->cmos_index == 0x0fu) *value = 0; /* cold boot; no S3 resume state */
-        else if (s->cmos_index == 0x34u) *value = above16 & 0xffu;
+        if (s->cmos_index == 0x34u) *value = above16 & 0xffu;
         else if (s->cmos_index == 0x35u) *value = above16 >> 8;
         else if (s->cmos_index >= 0x5bu && s->cmos_index <= 0x5du) *value = 0;
         else return false; /* no pretend RTC clock */

@@ -19,6 +19,7 @@ typedef struct {
     uint32_t pci_address, ram_bytes, fw_offset;
     uint16_t fw_selector;
     uint8_t host[256], pm[256], cmos_index;
+    uint8_t cmos_shutdown; /* private cold/warm CPU-start marker, no S3 state */
     uint32_t pci_reads, timer_reads, fw_reads;
     uint32_t cpu_selector;
     uint8_t cpu_command;
@@ -40,7 +41,7 @@ bool aos_x86_config_init(aos_x86_config_t *s, uint32_t ram_bytes);
  * and printable ASCII command line (size includes final NUL). Rejects all
  * invalid descriptors without changing state. This does not prove EFI entry. */
 bool aos_x86_config_boot(aos_x86_config_t *s, const aos_x86_boot_blobs_t *boot);
-/* Bind a bundle produced by aos_x86_acpi_bundle_init before fw_cfg reads.
+/* Bind a bundle produced by an aos_x86_acpi_bundle initializer before fw_cfg reads.
  * Storage remains immutable and alive until guest teardown. */
 bool aos_x86_config_acpi(aos_x86_config_t *s, const aos_x86_acpi_bundle_t *acpi);
 bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,

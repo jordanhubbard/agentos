@@ -5,6 +5,7 @@
 #define CONFIG_VTX 1
 #define CONFIG_X86_64_VTX_64BIT_GUESTS 1
 #include <platform/x86_vmenter.h>
+#include <platform/x86_runner_native.h>
 
 static seL4_Word result, badge, registers[SEL4_VMENTER_RESULT_FAULT_LEN];
 static unsigned reads, limit, enters, writes;
@@ -81,5 +82,31 @@ int main(void)
                entry.interruption_info == 0x80000031);
     }
     assert(enters == 6);
+    aos_x86_runner_t runner;
+    aos_x86_runner_init(&runner);
+    aos_x86_runner_request_t request={.version=AOS_X86_RUNNER_VERSION,
+        .sequence=1,.entry={entry.ip,entry.controls,entry.interruption_info}};
+    for (unsigned notification_exit=0; notification_exit<2; notification_exit++) {
+        writes=reads=0;
+        result=notification_exit ? SEL4_VMENTER_RESULT_NOTIF : SEL4_VMENTER_RESULT_FAULT;
+        limit=notification_exit ? SEL4_VMENTER_RESULT_NOTIF_LEN : SEL4_VMENTER_RESULT_FAULT_LEN;
+        badge=notification_exit ? 0x40 : 0;
+        memset(registers,0xa5,sizeof(registers));
+        aos_x86_runner_reply_t reply;
+        assert(aos_x86_runner_step(&runner,AOS_X86_RUNNER_ENTER,&request,
+            AOS_X86_RUNNER_REQUEST_WORDS,aos_x86_runner_native_enter,NULL,&reply));
+        assert(reads==limit && writes==3 && reply.count==limit);
+        memset(registers,0xa5,sizeof(registers)); /* reply IPC clobbers MRs */
+        assert(aos_x86_runner_reply_valid(&reply,
+            AOS_X86_RUNNER_REPLY_HEADER_WORDS+limit,request.sequence));
+        for (unsigned i=0; i<AOS_X86_RUNNER_FAULT_WORDS; i++)
+            assert(reply.words[i]==(i<limit ? 0xdef000+i : 0));
+        unsigned before=enters;
+        assert(!aos_x86_runner_step(&runner,AOS_X86_RUNNER_ENTER,&request,
+            AOS_X86_RUNNER_REQUEST_WORDS,aos_x86_runner_native_enter,NULL,&reply));
+        assert(enters==before);
+        request.sequence++;
+    }
+    assert(enters==8);
     puts("PASS: entry inputs survive startup IPC; fault/notification snapshots and re-entry");
 }

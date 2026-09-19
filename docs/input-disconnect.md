@@ -25,11 +25,20 @@ exposes it as `agentctl input-release GUEST_HANDLE keyboard|pointer`. Its
 zero accepted-event count acknowledges retained work, not completion in the
 guest. Existing GUI version-1 requests remain unchanged.
 
-`make test-guest-input QEMU_TEST_TIMEOUT=1800` runs the evdev checker twice:
+`make test-guest-input QEMU_TEST_TIMEOUT=1800` runs the evdev checker three times:
 first with explicit release events, then with zero-event server release
 requests. Both passes require identical key, button, motion and SYN packets.
 Separate `.input.json` and `.input-release.json` receipts distinguish the two
-proofs. This does not simulate a lost connection.
+proofs. The third pass suspends the guest and fills both device paths until
+the CLI returns validated WOULD_BLOCK responses, first for full batches and
+then for a single press plus SYN. Duplicate presses occupy transport queues
+but Linux filters them to one down event, avoiding an evdev-buffer overflow
+when the guest resumes. Each device accepts repeated release requests while
+full and rejects new input. After resume, the checker requires exactly one
+down/SYN and one up/SYN for each device, with no extra events. The
+`.input-backpressure.json` receipt records accepted batches and actual guest
+events. A timeout or malformed reply cannot count as backpressure. This does
+not simulate a lost connection; target results must be recorded separately.
 
 `make test-input-host` checks exact release events, unchanged queues under
 backpressure, keyboard/pointer isolation, repeats, and all 255 supported keys
@@ -109,3 +118,55 @@ The verifier-runtime repair is tracked by
 `task_c66efe1c0eb44ee5926250ebcd38e5e3`; declaring prerequisites does not install
 them or turn that rejected review into a pass. Policy and profile checks remain
 part of the unchanged `make test-host` contract.
+
+The first three-pass attempt at `55fd91e` passed the host suite and full OS
+gate, but the explicit-events checker ended its output before its READY
+marker. No input was injected. Debian had reported udev and network-service
+startup failures before eventually reaching the shell and authenticated SSH.
+The checker stderr was empty, and its SSH process exit status was not retained.
+The [failed-attempt receipt](evidence/2026-09-19-spark/input-backpressure-first-run.json)
+preserves the logs and limits. The harness now includes phase, SSH process
+status and bounded stderr in such failures; no cause or target backpressure
+pass is inferred from this attempt.
+
+The diagnostic revision `bc785e9ffd9065c7d2d8ad5efd3ee89563f49b58` then
+passed all three target input passes on Spark with SDK 2.3. The
+[paused-guest receipt](evidence/2026-09-19-spark/input-backpressure-paused.json)
+records four accepted full batches per device before saturation, validated
+WOULD_BLOCK responses, retained repeated releases and rejection of new input.
+After resume, Linux observed exactly four keyboard and four pointer events
+(down/SYN, up/SYN). The
+[explicit-events](evidence/2026-09-19-spark/input-backpressure-events.json) and
+[server-release](evidence/2026-09-19-spark/input-backpressure-held.json)
+passes also succeeded. All receipts identify a clean source tree.
+
+[Boot through authenticated SSH](evidence/2026-09-19-spark/input-backpressure-timing.json)
+took 461,181 ms. The image SHA-256 is
+`fbea8d2404fb4eeb013527172d8f50ef6b952a9b42298f9397c637aa872b1885`;
+the live log is
+`355b0d18b431f48a49d2007c95ed804437679218609f726db1a36146fb1335d0`.
+The retained local archive
+`/home/jkh/.local/share/agentos-evidence/2026-09-19-input-backpressure/bc785e9-pass.tar.gz`
+has SHA-256 `b81056be9586233aae64ee5d514c01570c23dfec6fbc7f262e4d587b2b49d5a8`.
+The prior early exit did not recur, but no cause or fix is established for it.
+Debian baseline task `task_26e8b1157ffe449483d2fe1c44f2a8be` retains that
+reliability concern. Abrupt socket loss remains unqualified.
+
+### Integrated input qualification
+
+Clean integration revision `94f88afaed7de7fa8b03d8b6026b0e6b85a45efe`
+passed the full Spark `make gate` and all three `make test-guest-input` passes
+with SDK 2.3 and SSH port 12269. The retained
+[explicit input](evidence/2026-09-19-spark/input-integration-events.json),
+[held-input release](evidence/2026-09-19-spark/input-integration-held.json),
+[paused-input release](evidence/2026-09-19-spark/input-integration-paused.json)
+and [boot timing](evidence/2026-09-19-spark/input-integration-timing.json)
+receipts bind that run separately from the earlier input-branch qualification.
+The image SHA-256 is
+`0bb135d8b1d99c8090c7b19c71d21dea6db49215b96124b2581a6d762fd6f55e`.
+The local archive
+`/home/jkh/.local/share/agentos-evidence/2026-09-19-input-backpressure/94f88af-integration.tar.gz`
+has SHA-256 `4df249946e20ce2cd2e983cc5bba901ee52841549748314d9b95fa437f503328`.
+These integration receipts were absent from the branch after its earlier
+documentation update and have now been restored from that verified archive.
+They qualify ARM input behavior, not abrupt transport loss or x86 SMP.

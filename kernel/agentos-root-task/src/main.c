@@ -925,6 +925,12 @@ static seL4_CPtr g_serial_virt_frames[AOS_SERIAL_FRAMES];
 static seL4_CPtr g_pd_notifications[SYSTEM_MAX_PDS];
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
 static seL4_CPtr g_x86_vtx_proof_endpoint = seL4_CapNull;
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+static seL4_CPtr g_x86_runner_tcb = seL4_CapNull;
+static uint32_t g_x86_runner_index;
+static seL4_CPtr g_x86_ap_runner_tcb=seL4_CapNull;
+static uint32_t g_x86_ap_runner_index;
+#endif
 #endif
 #ifdef AGENTOS_LOG_RINGS
 static seL4_CPtr g_log_frames[AOS_LOG_CLIENTS];
@@ -1759,6 +1765,7 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
  * mappings have no host-device capability or guest I/O authority.
  */
 #ifdef AGENTOS_X86_FIRMWARE_RESET
+#include "contracts/x86_runner.h"
 extern const uint8_t _binary_x86_firmware_bin_start[];
 extern const uint8_t _binary_x86_firmware_bin_end[];
 
@@ -1766,6 +1773,23 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
                                     seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb,
                                     seL4_CPtr vmm_vspace)
 {
+    /* The runner is provisioned first with its own native address space and
+     * IPC buffer. Only its owning coordinator receives this invocation cap. */
+    if (g_x86_runner_tcb == seL4_CapNull || g_x86_ap_runner_tcb==seL4_CapNull)
+        return seL4_InvalidCapability;
+    vmm_tcb = g_x86_runner_tcb;
+    seL4_CPtr runner_ep = ep_alloc_for_service(SVC_ID_X86_RUNNER);
+    if (runner_ep == seL4_CapNull) return seL4_NotEnoughMemory;
+    seL4_Error runner_err = seL4_CNode_Mint(pd_cnode,AOS_X86_RUNNER_ENDPOINT_CAP,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,runner_ep,64u,
+        seL4_CapRights_new(1u,0u,0u,1u),AOS_X86_RUNNER_OWNER_BADGE);
+    if (runner_err != seL4_NoError) return runner_err;
+    runner_ep=ep_alloc_for_service(SVC_ID_X86_AP_RUNNER);
+    if (runner_ep==seL4_CapNull) return seL4_NotEnoughMemory;
+    runner_err=seL4_CNode_Mint(pd_cnode,AOS_X86_AP_RUNNER_ENDPOINT_CAP,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,runner_ep,64u,
+        seL4_CapRights_new(1u,0u,0u,1u),AOS_X86_RUNNER_OWNER_BADGE);
+    if (runner_err!=seL4_NoError) return runner_err;
     if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY ||
         pd->cnode_size_bits != AOS_GUEST_RAM_CNODE_BITS ||
         (uintptr_t)_binary_x86_firmware_bin_end -
@@ -1781,10 +1805,16 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         objects[i] = ut_alloc_slot();
         if (objects[i] == seL4_CapNull) return seL4_NotEnoughMemory;
     }
-    err = aos_x86_guest_objects_retype(object_pool, seL4_CapInitThreadCNode, objects);
+    seL4_CPtr cpu_pool=ut_alloc_slot();
+    if (cpu_pool==seL4_CapNull) return seL4_NotEnoughMemory;
+    seL4_CPtr ap_pool=ut_alloc_slot();
+    if (ap_pool==seL4_CapNull) return seL4_NotEnoughMemory;
+    err = aos_x86_guest_objects_retype(object_pool, seL4_CapInitThreadCNode, objects, cpu_pool, ap_pool);
     if (err != seL4_NoError) return err;
+    (void)cap_acct_record(object_pool,cpu_pool,seL4_UntypedObject,pd_index,pd->name);
+    (void)cap_acct_record(object_pool,ap_pool,seL4_UntypedObject,pd_index,pd->name);
     for (unsigned i = 0u; i < AOS_X86_GUEST_OBJECT_COUNT; i++)
-        (void)cap_acct_record(object_pool, objects[i],
+        (void)cap_acct_record(i==0u ? cpu_pool : i==6u ? ap_pool : object_pool, objects[i],
             aos_x86_guest_object_type(i), pd_index, pd->name);
     const seL4_Word attr = seL4_X86_EPT_Default_VMAttributes;
     seL4_CPtr guest_asid_pool = seL4_CapNull;
@@ -1874,6 +1904,22 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
                           (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
                           objects[0], 64u, seL4_AllRights);
     if (err != seL4_NoError) return err;
+    err = seL4_CNode_Move(pd_cnode,AOS_X86_VCPU_POOL_CAP,
+        (uint8_t)pd->cnode_size_bits,seL4_CapInitThreadCNode,cpu_pool,64u);
+    if (err != seL4_NoError) return err;
+    err=seL4_X86_VCPU_SetTCB(objects[6],g_x86_ap_runner_tcb);
+    if (err!=seL4_NoError) return err;
+    err=seL4_TCB_SetEPTRoot(g_x86_ap_runner_tcb,objects[1]);
+    if (err!=seL4_NoError) return err;
+    err=seL4_CNode_Copy(pd_cnode,AOS_GUEST_VCPU_CAP_BASE+1u,pd->cnode_size_bits,
+        seL4_CapInitThreadCNode,objects[6],64u,seL4_AllRights);
+    if (err!=seL4_NoError) return err;
+    err=seL4_CNode_Copy(pd_cnode,AOS_X86_AP_RUNNER_TCB_CAP,pd->cnode_size_bits,
+        seL4_CapInitThreadCNode,g_x86_ap_runner_tcb,64u,seL4_AllRights);
+    if (err!=seL4_NoError) return err;
+    err=seL4_CNode_Move(pd_cnode,AOS_X86_AP_VCPU_POOL_CAP,pd->cnode_size_bits,
+        seL4_CapInitThreadCNode,ap_pool,64u);
+    if (err!=seL4_NoError) return err;
     err = seL4_CNode_Move(pd_cnode, AOS_X86_GUEST_OBJECT_POOL_CAP,
         (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode, object_pool, 64u);
     if (err != seL4_NoError) return err;
@@ -2762,7 +2808,13 @@ void root_task_main(const seL4_BootInfo *bi)
             const bool frame_service=pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE ||
                                      pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
             const bool cc_service=pd->self_svc_id==SVC_ID_CC_PD;
-            const bool frequent_refills=frame_service || cc_service;
+            const bool execution_runner=pd->self_svc_id==SVC_ID_X86_RUNNER ||
+                                        pd->self_svc_id==SVC_ID_X86_AP_RUNNER;
+            const bool frequent_refills=frame_service || cc_service || execution_runner
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+                || pd_is_guest_vmm(pd)
+#endif
+                ;
             const seL4_Word sc_bits=seL4_MinSchedContextBits+(frequent_refills ? 3u : 0u);
             seL4_Error sc_err = ut_alloc(seL4_SchedContextObject,
                                           sc_bits,
@@ -2778,7 +2830,7 @@ void root_task_main(const seL4_BootInfo *bi)
 
             seL4_Word sc_budget = PD_DEFAULT_SC_BUDGET_US;
             seL4_Word sc_period = PD_DEFAULT_SC_PERIOD_US;
-            if (pd_is_guest_vmm(pd)) {
+            if (pd_is_guest_vmm(pd) || execution_runner) {
                 sc_budget = VMM_SC_BUDGET_US;
                 sc_period = VMM_SC_PERIOD_US;
             } else if (frame_service) {
@@ -3944,7 +3996,11 @@ void root_task_main(const seL4_BootInfo *bi)
                     seL4_CapInitThreadCNode, g_x86_vtx_proof_endpoint, 64u,
                     seL4_AllRights, AOS_X86_LIFECYCLE_FAULT_BADGE) != seL4_NoError ||
                 seL4_TCB_SetSchedParams(tr.tcb_cap, seL4_CapInitThreadTCB,
-                    255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError) {
+                    255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(g_x86_runner_tcb, seL4_CapInitThreadTCB,
+                    255u, 250u, PD_SLOT_SC(g_x86_runner_index), fault_report) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(g_x86_ap_runner_tcb, seL4_CapInitThreadTCB,
+                    255u, 250u, PD_SLOT_SC(g_x86_ap_runner_index), fault_report) != seL4_NoError) {
                 dbg_puts("[rt] lifecycle native fault reporter setup failed\n");
                 return;
             }
@@ -3996,6 +4052,16 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("\n");
             } else {
                 dbg_puts("[rt] pd started ok\n");
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+                if (reg_err == seL4_NoError && pd->self_svc_id == SVC_ID_X86_RUNNER) {
+                    g_x86_runner_tcb = tr.tcb_cap;
+                    g_x86_runner_index = i;
+                }
+                if (reg_err==seL4_NoError && pd->self_svc_id==SVC_ID_X86_AP_RUNNER) {
+                    g_x86_ap_runner_tcb=tr.tcb_cap;
+                    g_x86_ap_runner_index=i;
+                }
+#endif
                 if (reg_err == seL4_NoError && inspect_view.thread_count < AOS_INSPECT_MAX_THREADS) {
                     aos_inspect_thread_t *t = &inspect_view.threads[inspect_view.thread_count++];
                     t->pd_index = i;

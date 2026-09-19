@@ -38,16 +38,24 @@ size_t aos_x86_madt_write(void *output, size_t capacity,
 size_t aos_x86_cpu_ssdt_write(void *output, size_t capacity,
                              const aos_x86_acpi_topology_t *topology);
 
-/* Immutable fw_cfg sources for the provisioned one-CPU firmware profile.
+/* Immutable fw_cfg sources for an already provisioned firmware topology.
  * OVMF allocates guest copies, relocates pointers and installs the tables.
  * The PM register block is the VMM's private PIIX4 model at I/O 0xb000.
  * No sleep state, hotplug, PCI endpoint or host resource is advertised. */
-#define AOS_X86_ACPI_TABLE_BYTES 846u
+#define AOS_X86_ACPI_TABLE_BYTES (846u + 37u * (AOS_X86_ACPI_MAX_CPUS - 1u))
 #define AOS_X86_ACPI_LOADER_BYTES (19u * 128u)
 typedef struct {
     uint8_t tables[AOS_X86_ACPI_TABLE_BYTES];
     uint8_t rsdp[36];
     uint8_t loader[AOS_X86_ACPI_LOADER_BYTES];
+    uint32_t table_bytes;
+    uint8_t cpu_count;
 } aos_x86_acpi_bundle_t;
+/* Fixed platform controller addresses and GSI base zero only. Invalid input
+ * leaves the bundle unchanged. The topology is copied before writing output.
+ * This describes resources; it does not allocate or admit guest CPUs. */
+bool aos_x86_acpi_bundle_topology(aos_x86_acpi_bundle_t *bundle,
+                                 const aos_x86_acpi_topology_t *topology);
+/* Existing single-CPU profile, APIC ID/UID zero and I/O APIC ID one. */
 bool aos_x86_acpi_bundle_init(aos_x86_acpi_bundle_t *bundle);
 #endif

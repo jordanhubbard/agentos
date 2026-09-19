@@ -1,0 +1,56 @@
+{
+  "schema": "agentos.x86.ap-startup-qualification.v1",
+  "date_utc": "2026-09-19",
+  "revision": "92879a3c09ea91ac40cd7dc8947d6396344de255",
+  "pr": "https://github.com/jordanhubbard/agentos/pull/264",
+  "scope": "Native SIPI register configuration on a distinct second VCPU, not AP execution",
+  "host": {
+    "command": "make test-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log": "agentos-smp-startup-host.log",
+    "sha256": "47a9ded7f6fbd9c9e0b8e9c9b7e53e7679f2ff9bc91a0d97f67c1d3a681764c1"
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log": "agentos-smp-startup-spark.log",
+    "sha256": "4c428c97c9c064837f3c9bc48f9c53270ef66d1442b4b92155bb4f8fb0eab461"
+  },
+  "intel": {
+    "command": "cd /tmp/agentos-v04-intel-discovery && if pgrep -f '[q]emu-system-x86_64' >/dev/null; then exit 90; fi && git fetch origin platform/x86-smp && git checkout --detach 92879a3 && make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4 QEMU_TEST_TIMEOUT=120",
+    "exit_code": 0,
+    "log": "agentos-smp-startup-intel.log",
+    "sha256": "194f4b797d690cf86dfba2bf05f15da5d681f9987af142926e0f176a421cf1a7",
+    "root_elf_sha256": "ff1b0d9f9df2e20015e9185d3346298ac9504dc1f5c84e2417d1ca8268e0a56c",
+    "target_log_sha256": "2f30386ea79413d2aafcdb1e139e9d3c8eb7ee3966f01f57a00812c8b357f3c5",
+    "vectors": [
+      0,
+      8,
+      255
+    ],
+    "invalid_vector": 256,
+    "observed": [
+      "Second distinct VCPU retyped from private execution pool",
+      "CS selector/base match SIPI vector; real-mode CS limit/access rights",
+      "CR3/RSP/EFER zero and descriptor-table limits set",
+      "Bootstrap VMCS state unchanged after each AP configuration",
+      "Invalid vector leaves entry and VMCS state unchanged",
+      "Private pool revocation invalidates both VCPUs",
+      "Startup through stale VCPU cap fails without publishing entry",
+      "Linux userspace, block/network, suspend/resume/destroy and zeroed pool reuse regression passed"
+    ],
+    "second_vcpu_bound": false,
+    "second_vcpu_entered": false,
+    "qemu_pid": 1014206,
+    "qemu_gone_after_completion": true
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-startup",
+  "remaining": [
+    "Independent per-vCPU allocation and INIT reconstruction",
+    "Additional native executor provisioning",
+    "Connect IPI/startup state to runtime scheduling",
+    "Matching CPUID/APIC/ACPI topology",
+    "Two online guest CPUs and concurrent workload",
+    "Full v0.4 integration and release qualification"
+  ]
+}

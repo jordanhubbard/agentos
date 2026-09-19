@@ -1,0 +1,37 @@
+{
+  "schema": "agentos.x86.cpu-pool-qualification.v1",
+  "date_utc": "2026-09-19",
+  "revision": "19c611faa2115a4ab8a563ca92de346ecc0e5f2f",
+  "scope": "Selective reconstruction of the stopped bootstrap VCPU through a private child untyped; no multi-vCPU execution",
+  "spark": {
+    "command": "make gate test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log": "agentos-smp-cpu-pool-spark.log",
+    "sha256": "2f56fdbde44a2cdd3b971b68a0506ff2d532924fc1405abd5ee3becf026490ca"
+  },
+  "intel": {
+    "command": "cd /tmp/agentos-v04-intel-discovery && if pgrep -f '[q]emu-system-x86_64' >/dev/null; then exit 90; fi && git fetch origin platform/x86-smp && git checkout --detach 19c611f && make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4 QEMU_TEST_TIMEOUT=120",
+    "exit_code": 0,
+    "log": "agentos-smp-cpu-pool-intel.log",
+    "sha256": "f0c27104dd4d7059cbbbbf453b2f3489a142909573552936b6339ce8c4b8d0f7",
+    "root_elf_sha256": "3618c44af3b2cc3eed69150fd285bd83bc1c9afcf8542c390ceeef032a7dfd86",
+    "target_log_sha256": "ac0ad12e63df7f2a235f35dbb925f32a4be99f1109c2ae8797541ff57dfc5df8",
+    "observed": [
+      "Root delegates 16 KiB VCPU child untyped at slot 507 beneath existing execution pool",
+      "Selective child revoke removes the bootstrap VCPU and its stale alias",
+      "Fresh VCPU retyped from retained child pool and bound to retained EPT/native runner",
+      "Sibling VCPU startup CS base remains 0xff000 after bootstrap reconstruction",
+      "Whole-parent revoke removes both VCPUs and reconstruction child",
+      "Existing Linux ring3, block/network and terminal lifecycle regression passed"
+    ],
+    "qemu_pid": 1041254,
+    "qemu_gone_after_completion": true
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-cpu-pool",
+  "remaining": [
+    "Provision additional native runner and per-vCPU pools",
+    "Enter second vCPU and integrate INIT/SIPI scheduling",
+    "Matching CPU topology and actual two-online-CPU workload",
+    "Full multi-CPU lifecycle acceptance and v0.4 release gates"
+  ]
+}

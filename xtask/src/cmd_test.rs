@@ -479,6 +479,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "Intel SSH proof requires a private-key file and nonzero --ssh-port"
     );
     anyhow::ensure!(
+        args.x86_smp_probe.is_none()
+            || (args.assert_x86_cc
+                && args.x86_ssh_key.is_some()
+                && args.x86_smp_probe.as_ref().is_some_and(|p| p.is_file())),
+        "Intel SMP probe requires managed CC, pinned SSH and a payload file"
+    );
+    anyhow::ensure!(
         args.x86_block_image.is_none() || args.board == "x86_64_generic_vtx",
         "qualification block image requires the Intel VMX board"
     );
@@ -1411,6 +1418,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     args.x86_ssh_key
                         .as_deref()
                         .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
+                    args.x86_smp_probe.as_deref(),
                     &mut qemu,
                 )
             } else if args.assert_x86_linux_login {
@@ -3076,6 +3084,47 @@ fn x86_retained_host_key(path: &Path, port: u16) -> anyhow::Result<String> {
     Ok(format!("ssh-ed25519 {}", fields[2]))
 }
 
+fn seeded_ssh_command(key: &Path, port: u16, known: &Path, account: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("ssh");
+    command
+        .args([
+            "-F",
+            "/dev/null",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "IdentityAgent=none",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "PasswordAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
+            "HostKeyAlgorithms=ssh-ed25519",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=5",
+            "-o",
+            "ServerAliveCountMax=2",
+        ])
+        .arg("-o")
+        .arg(format!("UserKnownHostsFile={}", known.display()))
+        .arg("-i")
+        .arg(key)
+        .arg("-p")
+        .arg(port.to_string())
+        .arg(format!("{account}@127.0.0.1"));
+    command
+}
+
 fn seeded_ssh_proof(
     key: &Path,
     port: u16,
@@ -3096,43 +3145,8 @@ fn seeded_ssh_proof(
         attempt += 1;
         let stdout_path = log.with_extension(format!("ssh-{attempt}.out"));
         let stderr_path = log.with_extension(format!("ssh-{attempt}.err"));
-        let mut command = std::process::Command::new("ssh");
+        let mut command = seeded_ssh_command(key, port, &known, account);
         command
-            .args([
-                "-F",
-                "/dev/null",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "IdentityAgent=none",
-                "-o",
-                "PreferredAuthentications=publickey",
-                "-o",
-                "PasswordAuthentication=no",
-                "-o",
-                "KbdInteractiveAuthentication=no",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "GlobalKnownHostsFile=/dev/null",
-                "-o",
-                "HostKeyAlgorithms=ssh-ed25519",
-                "-o",
-                "ConnectTimeout=10",
-                "-o",
-                "ServerAliveInterval=5",
-                "-o",
-                "ServerAliveCountMax=2",
-            ])
-            .arg("-o")
-            .arg(format!("UserKnownHostsFile={}", known.display()))
-            .arg("-i")
-            .arg(key)
-            .arg("-p")
-            .arg(port.to_string())
-            .arg(format!("{account}@127.0.0.1"))
             .arg("uname -m && sudo -n sync")
             .stdin(Stdio::null())
             .stdout(std::fs::File::create(&stdout_path)?)
@@ -3172,7 +3186,27 @@ fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow:
 }
 
 fn x86_has_login_prompt(text: &str) -> bool {
-    text.lines().any(|line| {
+    // printk records can interrupt getty between the hostname and its prompt.
+    // Remove only complete timestamped records for prompt recognition. The
+    // caller retains and checks the original bytes for guest faults first.
+    let mut getty = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let interruption = line.find('[').filter(|&start| {
+            let Some((timestamp, _)) = line[start + 1..].split_once("] ") else {
+                return false;
+            };
+            let Some((seconds, fraction)) = timestamp.trim_start().split_once('.') else {
+                return false;
+            };
+            line.ends_with('\n')
+                && !seconds.is_empty()
+                && !fraction.is_empty()
+                && seconds.bytes().all(|b| b.is_ascii_digit())
+                && fraction.bytes().all(|b| b.is_ascii_digit())
+        });
+        getty.push_str(interruption.map_or(line, |start| &line[..start]));
+    }
+    getty.lines().any(|line| {
         let Some((hostname, _)) = line.split_once(" login:") else {
             return false;
         };
@@ -3250,6 +3284,9 @@ fn x86_linux_login_reader_with_artifacts(
                 anyhow::ensure!(
                     !text.contains("Kernel panic")
                         && !text.contains("Entering emergency mode")
+                        && !text.contains("segfault at ")
+                        && !text.contains("general protection fault")
+                        && !text.contains("Oops:")
                         && !text.contains("reboot: Restarting system")
                         && !text.contains("reboot: System halted"),
                     "Intel Linux boot failed; see {}",
@@ -3300,11 +3337,56 @@ fn x86_cc_console_bytes(cc: &mut CcClient, handle: u32) -> anyhow::Result<Vec<u8
     Ok(reply.shmem[..len].to_vec())
 }
 
+fn x86_smp_ssh_proof(probe: &Path, key: &Path, port: u16, log: &Path) -> anyhow::Result<String> {
+    let size = std::fs::metadata(probe)?.len();
+    anyhow::ensure!(size > 0 && size <= 1024 * 1024, "invalid SMP payload size");
+    let known = log.with_extension("known_hosts");
+    // The preceding SSH proof created this pinned receipt for this generation.
+    x86_retained_host_key(&known, port)?;
+    let output = log.with_extension("smp.out");
+    let errors = log.with_extension("smp.err");
+    let mut command = seeded_ssh_command(key, port, &known, "debian");
+    command
+        .arg(concat!(
+            "umask 077; d=$(mktemp -d /tmp/agentos-smp.XXXXXX) || exit 1; ",
+            "cat > \"$d/probe\" && chmod 700 \"$d/probe\" && \"$d/probe\"; ",
+            "r=$?; rm -f \"$d/probe\"; rmdir \"$d\"; exit \"$r\""
+        ))
+        .stdin(std::fs::File::open(probe)?)
+        .stdout(std::fs::File::create(&output)?)
+        .stderr(std::fs::File::create(&errors)?);
+    let mut child = ChildGuard::new(command.spawn()?);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "SMP workload timed out; see {}",
+            errors.display()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    anyhow::ensure!(
+        status.success(),
+        "SMP workload failed; see {}",
+        errors.display()
+    );
+    anyhow::ensure!(
+        std::fs::read(&output)? == b"PASS: online=0-1 affinity=0,1 overlapping x87/SSE workers\n",
+        "SMP workload evidence mismatch; see {}",
+        output.display()
+    );
+    Ok("two online CPUs, pinned overlapping workers and x87/SSE state verified".into())
+}
+
 fn x86_cc_linux_probe(
     socket: &Path,
     log_path: &Path,
     timeout: Duration,
     ssh: Option<(&Path, u16, Option<&Path>)>,
+    smp_probe: Option<&Path>,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
@@ -3343,7 +3425,7 @@ fn x86_cc_linux_probe(
             qemu,
         )?;
         anyhow::ensure!(handle != 0, "CREATE returned reserved boot handle");
-        let proof = x86_linux_login_reader_with_artifacts(
+        let mut proof = x86_linux_login_reader_with_artifacts(
             |chunk| {
                 let bytes = x86_cc_console_bytes(&mut cc, handle).map_err(std::io::Error::other)?;
                 if bytes.is_empty() {
@@ -3361,6 +3443,11 @@ fn x86_cc_linux_probe(
             Instant::now() + timeout,
             ssh,
         )?;
+        if let Some(payload) = smp_probe {
+            let (key, port, _) = ssh.context("SMP qualification requires pinned SSH")?;
+            proof.push_str("; ");
+            proof.push_str(&x86_smp_ssh_proof(payload, key, port, &generation_log)?);
+        }
 
         // Exercise real guest input after login readiness, without requiring a
         // password or changing the guest. The terminal must echo these exact bytes.
@@ -5232,6 +5319,46 @@ fn input_probe_line(reader: &mut impl Read) -> anyhow::Result<String> {
     anyhow::bail!("input probe output line exceeds 128 bytes")
 }
 
+fn expect_input_probe_line(
+    receive: &std::sync::mpsc::Receiver<anyhow::Result<String>>,
+    probe: &mut Child,
+    stderr_path: &Path,
+    expected: &str,
+    seconds: u64,
+) -> anyhow::Result<()> {
+    let result = receive
+        .recv_timeout(Duration::from_secs(seconds))
+        .map_err(anyhow::Error::from)
+        .and_then(|line| line);
+    let failure = match result {
+        Ok(line) if line == expected => return Ok(()),
+        Ok(line) => format!("expected {expected:?}, received {line:?}"),
+        Err(error) => format!("waiting for {expected:?}: {error:#}"),
+    };
+    // EOF can reach the reader just before ssh exits. Retain its actual status
+    // before ChildGuard cleanup otherwise replaces the useful failure context.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let status = loop {
+        let status = probe.try_wait()?;
+        if status.is_some() || Instant::now() >= deadline {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = Vec::new();
+    std::fs::File::open(stderr_path)?
+        .take(2048)
+        .read_to_end(&mut stderr)?;
+    let status = status
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "still running".into());
+    anyhow::bail!(
+        "input probe {failure}; ssh process status={status}; stderr prefix={:?}; full stderr: {}",
+        String::from_utf8_lossy(&stderr),
+        stderr_path.display()
+    );
+}
+
 fn prove_profile_input(
     repo: &Path,
     socket: &Path,
@@ -5241,9 +5368,170 @@ fn prove_profile_input(
     key: &SshTestKey,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
-    prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, false)?;
-    prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, true)?;
-    Ok("exact guest input batches and server-generated held-key/button releases passed".into())
+    for mode in [
+        InputProofMode::Events,
+        InputProofMode::Release,
+        InputProofMode::Backpressure,
+    ] {
+        prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, mode)?;
+    }
+    Ok(
+        "exact guest input batches, held-state releases and paused-guest backpressure passed"
+            .into(),
+    )
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum InputProofMode {
+    Events,
+    Release,
+    Backpressure,
+}
+
+impl InputProofMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Events => "explicit-events",
+            Self::Release => "server-held-state",
+            Self::Backpressure => "paused-backpressure",
+        }
+    }
+    fn stem(self) -> &'static str {
+        match self {
+            Self::Events => "input",
+            Self::Release => "input-release",
+            Self::Backpressure => "input-backpressure",
+        }
+    }
+}
+
+// Use the public CLI's no-replay input path and inspect its structured result.
+// A transport error or malformed reply must never count as queue backpressure.
+fn input_cli_result(
+    repo: &Path,
+    socket: &Path,
+    stderr: &std::fs::File,
+    qemu: &mut Child,
+    release: bool,
+    device: &str,
+    events: &[&str],
+) -> anyhow::Result<u32> {
+    let mut child = ChildGuard::new(
+        std::process::Command::new(repo.join("tools/agentctl/agentctl"))
+            .env("CC_PD_SOCK", socket)
+            .args([
+                "--batch",
+                if release {
+                    "input-release"
+                } else {
+                    "input-batch"
+                },
+                "0",
+                device,
+            ])
+            .args(events)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(stderr.try_clone()?))
+            .spawn()?,
+    );
+    let mut output = child.stdout.take().context("input CLI stdout missing")?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let exit = loop {
+        anyhow::ensure!(
+            qemu.try_wait()?.is_none(),
+            "QEMU exited during input backpressure proof"
+        );
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "input CLI deadline expired");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut bytes = Vec::new();
+    output.by_ref().take(1025).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 1024, "input CLI output exceeded limit");
+    let reply: serde_json::Value = serde_json::from_slice(&bytes)
+        .context("input CLI did not return a validated input response")?;
+    let status = reply["status"].as_u64().context("input status missing")?;
+    let accepted = reply["accepted"]
+        .as_u64()
+        .context("input accepted count missing")?;
+    anyhow::ensure!(
+        status == 0 || status == 3,
+        "unexpected input status {status}"
+    );
+    anyhow::ensure!(
+        exit.code() == Some(if status == 0 { 0 } else { 1 }),
+        "input status/exit mismatch"
+    );
+    let expected = if release || status != 0 {
+        0
+    } else {
+        events.len() / 3 + 1
+    };
+    anyhow::ensure!(accepted == expected as u64, "input accepted count mismatch");
+    Ok(status as u32)
+}
+
+fn prove_paused_input_release(
+    repo: &Path,
+    socket: &Path,
+    stderr: &std::fs::File,
+    qemu: &mut Child,
+) -> anyhow::Result<[usize; 2]> {
+    let mut cc = CcClient::connect(socket)?;
+    suspend_guest_via_cc(&mut cc, 0)?;
+    drop(cc);
+    let result = (|| {
+        let mut accepted = [0usize; 2];
+        for (device, (name, code, rejected_code)) in
+            [("keyboard", "183", "184"), ("pointer", "272", "273")]
+                .iter()
+                .enumerate()
+        {
+            // Duplicate presses fill transport queues but Linux filters them
+            // to a single down event. This avoids overflowing evdev itself
+            // when the guest resumes, and leaves one held key/button.
+            for repeats in [63usize, 1] {
+                let events: Vec<&str> = (0..repeats).flat_map(|_| ["1", *code, "1"]).collect();
+                let mut blocked = false;
+                for _ in 0..64 {
+                    if input_cli_result(repo, socket, stderr, qemu, false, name, &events)? == 3 {
+                        blocked = true;
+                        break;
+                    }
+                    accepted[device] += 1;
+                }
+                anyhow::ensure!(blocked, "paused {name} queue never applied backpressure");
+            }
+            anyhow::ensure!(accepted[device] > 0, "{name} accepted no held-state input");
+            for _ in 0..2 {
+                anyhow::ensure!(
+                    input_cli_result(repo, socket, stderr, qemu, true, name, &[])? == 0,
+                    "{name} release was not retained"
+                );
+            }
+            anyhow::ensure!(
+                input_cli_result(
+                    repo,
+                    socket,
+                    stderr,
+                    qemu,
+                    false,
+                    name,
+                    &["1", rejected_code, "1"]
+                )? == 3,
+                "new {name} input bypassed pending release"
+            );
+        }
+        Ok(accepted)
+    })();
+    // Resume even after a failed assertion, before awaiting guest SSH cleanup.
+    let resumed = CcClient::connect(socket).and_then(|mut cc| resume_guest_via_cc(&mut cc, 0));
+    let accepted = result?;
+    resumed?;
+    Ok(accepted)
 }
 
 fn prove_profile_input_pass(
@@ -5254,18 +5542,14 @@ fn prove_profile_input_pass(
     profile: &HostProfilePlan,
     key: &SshTestKey,
     qemu: &mut Child,
-    release: bool,
+    mode: InputProofMode,
 ) -> anyhow::Result<String> {
     let ssh = profile
         .qemu
         .as_ref()
         .and_then(|q| q.ssh.as_ref())
         .context("input proof needs SSH")?;
-    let stderr_path = log.with_extension(if release {
-        "input-release.stderr"
-    } else {
-        "input.stderr"
-    });
+    let stderr_path = log.with_extension(format!("{}.stderr", mode.stem()));
     let stderr = std::fs::File::create(&stderr_path)?;
     let command = |remote: &str| -> anyhow::Result<std::process::Command> {
         let mut cmd = std::process::Command::new("ssh");
@@ -5290,10 +5574,14 @@ fn prove_profile_input_pass(
     )?.stdin(Stdio::from(std::fs::File::open(helper)?)).stdout(Stdio::null()).spawn()?);
     wait_input_child(&mut upload, qemu, 150)?;
     let mut probe = ChildGuard::new(
-        command("timeout 130 /tmp/agentos-input-probe")?
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .spawn()?,
+        command(if mode == InputProofMode::Backpressure {
+            "timeout 240 /tmp/agentos-input-probe --backpressure"
+        } else {
+            "timeout 130 /tmp/agentos-input-probe"
+        })?
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()?,
     );
     let mut output = probe.stdout.take().context("input probe stdout missing")?;
     let (send, receive) = std::sync::mpsc::sync_channel(2);
@@ -5306,10 +5594,13 @@ fn prove_profile_input_pass(
             }
         }
     });
-    anyhow::ensure!(
-        receive.recv_timeout(Duration::from_secs(60))?? == "AGENTOS_INPUT_READY",
-        "input probe did not become ready"
-    );
+    expect_input_probe_line(
+        &receive,
+        &mut probe,
+        &stderr_path,
+        "AGENTOS_INPUT_READY",
+        60,
+    )?;
     let batches: &[&[&str]] = &[
         &["keyboard", "1", "183", "1"],
         &["keyboard", "1", "183", "0"],
@@ -5318,10 +5609,19 @@ fn prove_profile_input_pass(
         ],
         &["pointer", "1", "272", "0"],
     ];
-    for (index, batch) in batches.iter().enumerate() {
+    let accepted_while_paused = if mode == InputProofMode::Backpressure {
+        Some(prove_paused_input_release(repo, socket, &stderr, qemu)?)
+    } else {
+        None
+    };
+    for (index, batch) in batches
+        .iter()
+        .enumerate()
+        .filter(|_| mode != InputProofMode::Backpressure)
+    {
         // The same guest checker requires identical evdev output. In the
         // release pass only the server knows which key/button must be released.
-        let releasing = release && (index == 1 || index == 3);
+        let releasing = mode == InputProofMode::Release && (index == 1 || index == 3);
         let args = if releasing { &batch[..1] } else { *batch };
         let mut submit = ChildGuard::new(
             std::process::Command::new(repo.join("tools/agentctl/agentctl"))
@@ -5344,28 +5644,31 @@ fn prove_profile_input_pass(
         // agentctl validates the exact response and never retries input batches.
         wait_input_child(&mut submit, qemu, 30)?;
     }
-    anyhow::ensure!(
-        receive.recv_timeout(Duration::from_secs(120))??
-            == "AGENTOS_INPUT_PASS keyboard=4 pointer=7",
-        "guest input event mismatch"
-    );
+    expect_input_probe_line(
+        &receive,
+        &mut probe,
+        &stderr_path,
+        if mode == InputProofMode::Backpressure {
+            "AGENTOS_INPUT_PASS keyboard=4 pointer=4"
+        } else {
+            "AGENTOS_INPUT_PASS keyboard=4 pointer=7"
+        },
+        120,
+    )?;
     wait_input_child(&mut probe, qemu, 15)?;
     let receipt = serde_json::json!({
         "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
         "agentos_revision": agentos_revision(repo)?, "source_tree_clean": agentos_worktree_clean(repo)?,
         "helper_sha256": sha256_bytes(&std::fs::read(helper)?),
-        "keyboard_events": 4, "pointer_events": 7, "batches": 4,
+        "keyboard_events": 4, "pointer_events": if mode == InputProofMode::Backpressure { 4 } else { 7 },
+        "accepted_batches_while_paused": accepted_while_paused,
         "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
-        "release_mode": if release { "server-held-state" } else { "explicit-events" },
-        "excludes": ["physical input devices", "peer guest isolation", "guest recreation"],
+        "release_mode": mode.name(),
+        "excludes": ["physical input devices", "peer guest isolation", "guest recreation", "abrupt disconnect"],
         "stderr": stderr_path,
     });
     std::fs::write(
-        log.with_extension(if release {
-            "input-release.json"
-        } else {
-            "input.json"
-        }),
+        log.with_extension(format!("{}.json", mode.stem())),
         serde_json::to_vec_pretty(&receipt)?,
     )?;
     Ok("exact guest keyboard, pointer, button and packet-boundary delivery passed".into())
@@ -6258,6 +6561,18 @@ mod tests {
             "agentos-debian login: ci-info: Authorized keys\r\n"
         ));
         assert!(super::x86_has_login_prompt("debian login:"));
+        assert!(super::x86_has_login_prompt(
+            "agentos-debian[  335.085526] cloud-init[494]: running 'modules:final'\r\n login: [  336.226354] cloud-init[494]: finished\r\n"
+        ));
+        for text in [
+            "agentos-debian\n login:",
+            "agentos-debian[cloud-init] finished\n login:",
+            "agentos-debian[  335.085526] incomplete login:",
+            "agentos-debian[  335.x] malformed\n login:",
+            "[  335.085526] cloud-init: finished\n login:",
+        ] {
+            assert!(!super::x86_has_login_prompt(text), "{text:?}");
+        }
         assert!(!super::x86_has_login_prompt(
             "[1.0] service awaiting login:"
         ));
@@ -6314,6 +6629,8 @@ mod tests {
                 true,
             ),
             (b"Debian GNU/Linux 13\r\ndebian log".as_slice(), false),
+            (b"agentos-debian[  335.085526] cloud-init[494]: running\r\n login: ".as_slice(), true),
+            (b"agentos-debian[  335.085526] worker: segfault at 7f1234\r\n login: ".as_slice(), false),
             (
                 b"Kernel panic - not syncing\r\ndebian login: ".as_slice(),
                 false,
@@ -6324,6 +6641,9 @@ mod tests {
             ),
             (b"reboot: Restarting system\r\n".as_slice(), false),
             (b"reboot: System halted\r\n".as_slice(), false),
+            (b"[ 324.2] (udev-worker)[581]: segfault at 7f1234 likely on CPU 1\nagentos-debian login: ".as_slice(), false),
+            (b"general protection fault\nagentos-debian login: ".as_slice(), false),
+            (b"Oops: kernel fault\nagentos-debian login: ".as_slice(), false),
         ] {
             let temp = tempfile::tempdir().unwrap();
             let socket = temp.path().join("console.sock");

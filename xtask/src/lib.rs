@@ -209,6 +209,9 @@ pub struct TestArgs {
     /// Reuse a first-boot gate's known_hosts receipt for a cold-boot identity check.
     #[arg(long, requires = "x86_ssh_key")]
     pub x86_ssh_known_hosts: Option<std::path::PathBuf>,
+    /// Run the bounded two-CPU register-state payload in both managed generations.
+    #[arg(long, requires_all = ["assert_x86_cc", "x86_ssh_key"])]
+    pub x86_smp_probe: Option<std::path::PathBuf>,
     /// Reuse a root or qualification disk; writable only with --x86-block-write.
     #[arg(long, requires = "assert_firmware_reset")]
     pub x86_block_image: Option<std::path::PathBuf>,

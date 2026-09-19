@@ -255,37 +255,37 @@ static seL4_Error write_vmcs_guest_state(seL4_CPtr vcpu,
 
 /* Read back each mode-changing field before permitting entry. Errors return
  * to the lifecycle caller so it can revoke partial reconstruction. */
-static seL4_Error mode_field(seL4_Word field, seL4_Word value, seL4_Word mask)
+static seL4_Error mode_field(seL4_CPtr vcpu, seL4_Word field, seL4_Word value, seL4_Word mask)
 {
-    seL4_Error err = vmcs_write(AOS_GUEST_VCPU_CAP_BASE, field, value);
+    seL4_Error err = vmcs_write(vcpu, field, value);
     if (err != seL4_NoError) return err;
     seL4_X86_VCPU_ReadVMCS_t read =
-        seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, field);
+        seL4_X86_VCPU_ReadVMCS(vcpu, field);
     if (read.error != seL4_NoError) return (seL4_Error)read.error;
     return (read.value & mask) == (value & mask)
         ? seL4_NoError : seL4_IllegalOperation;
 }
 
-static seL4_Error configure_firmware_mode(unsigned mode, bool reset,
+static seL4_Error configure_firmware_mode(seL4_CPtr vcpu, unsigned mode, bool reset,
                                           seL4_Word *failed_field)
 {
-    seL4_Error err = write_vmcs_guest_state(AOS_GUEST_VCPU_CAP_BASE, failed_field);
+    seL4_Error err = write_vmcs_guest_state(vcpu, failed_field);
     if (err != seL4_NoError) return err;
     seL4_X86_VCPU_ReadVMCS_t secondary =
-        seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, VMX_CONTROL_SECONDARY);
+        seL4_X86_VCPU_ReadVMCS(vcpu, VMX_CONTROL_SECONDARY);
     if (secondary.error != seL4_NoError) {
         *failed_field = VMX_CONTROL_SECONDARY;
         return (seL4_Error)secondary.error;
     }
     seL4_X86_VCPU_ReadVMCS_t entry =
-        seL4_X86_VCPU_ReadVMCS(AOS_GUEST_VCPU_CAP_BASE, VMX_CONTROL_ENTRY);
+        seL4_X86_VCPU_ReadVMCS(vcpu, VMX_CONTROL_ENTRY);
     if (entry.error != seL4_NoError) {
         *failed_field = VMX_CONTROL_ENTRY;
         return (seL4_Error)entry.error;
     }
 #define FIELD(field, value, mask) do { \
     *failed_field = (field); \
-    err = mode_field((field), (value), (mask)); \
+    err = mode_field(vcpu, (field), (value), (mask)); \
     if (err != seL4_NoError) return err; \
 } while (0)
     FIELD(VMX_CONTROL_SECONDARY,
@@ -357,13 +357,47 @@ static seL4_Error configure_firmware_mode(unsigned mode, bool reset,
 seL4_Error aos_x86_firmware_reset(aos_x86_vmenter_entry_t *reset_entry,
                                   seL4_Word *failed_field)
 {
-    if (!reset_entry || !failed_field) return seL4_InvalidArgument;
-    seL4_Error err = configure_firmware_mode(0u, true, failed_field);
+    return aos_x86_firmware_reset_cpu(AOS_GUEST_VCPU_CAP_BASE,reset_entry,failed_field);
+}
+
+seL4_Error aos_x86_firmware_reset_cpu(seL4_CPtr vcpu,
+    aos_x86_vmenter_entry_t *reset_entry, seL4_Word *failed_field)
+{
+    if (!vcpu || !reset_entry || !failed_field) return seL4_InvalidArgument;
+    seL4_Error err = configure_firmware_mode(vcpu, 0u, true, failed_field);
     if (err != seL4_NoError) return err;
     *reset_entry = (aos_x86_vmenter_entry_t){
         .ip = 0xfff0u, .controls = VMX_CONTROL_PPC_HLT_EXITING,
         .interruption_info = 0u,
     };
+    return seL4_NoError;
+}
+
+seL4_Error aos_x86_firmware_startup_cpu(seL4_CPtr vcpu, unsigned vector,
+    aos_x86_vmenter_entry_t *entry, seL4_Word *failed_field)
+{
+    if (!vcpu || vector>255u || !entry || !failed_field) return seL4_InvalidArgument;
+    aos_x86_vmenter_entry_t next;
+    seL4_Error err=aos_x86_firmware_reset_cpu(vcpu,&next,failed_field);
+    if (err!=seL4_NoError) return err;
+    /* A SIPI supplies the 4 KiB real-mode startup page, not the special
+     * high reset-vector CS cache used by the bootstrap firmware. */
+    const struct { seL4_Word field,value,mask; } fields[]={
+        {VMX_GUEST_CS_SELECTOR,(seL4_Word)vector<<8,0xffffu},
+        {VMX_GUEST_CS_BASE,(seL4_Word)vector<<12,0xffffffffu},
+        {VMX_GUEST_CR3,0u,UINT64_MAX},
+        {VMX_GUEST_RSP,0u,UINT64_MAX},
+        {VMX_GUEST_GDTR_LIMIT,0xffffu,0xffffffffu},
+        {VMX_GUEST_IDTR_LIMIT,0xffffu,0xffffffffu},
+    };
+    for (unsigned i=0; i<sizeof(fields)/sizeof(fields[0]); i++) {
+        *failed_field=fields[i].field;
+        err=mode_field(vcpu,fields[i].field,fields[i].value,fields[i].mask);
+        if (err!=seL4_NoError) return err;
+    }
+    next.ip=0;
+    *failed_field=0;
+    *entry=next;
     return seL4_NoError;
 }
 #endif
@@ -381,7 +415,7 @@ static void qualify_firmware_modes(seL4_CPtr endpoint)
     /* VMM-selected modes on the same EPT-owned HLT instruction. */
     for (unsigned mode = 0u; mode < 3u; mode++) {
         seL4_Word failed_field = 0u;
-        seL4_Error err = configure_firmware_mode(mode, false, &failed_field);
+        seL4_Error err = configure_firmware_mode(AOS_GUEST_VCPU_CAP_BASE, mode, false, &failed_field);
         if (err != seL4_NoError)
             report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, failed_field, err, mode);
         seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, AOS_X86_VTX_GUEST_RIP);

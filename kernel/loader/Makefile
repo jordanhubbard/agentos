@@ -82,7 +82,7 @@ $(LOADER_ELF): $(OBJS) $(LOADER_LD)
 	$(LD) -T$(LOADER_LD) $(OBJS) -o $@
 	@echo "[loader] built $@"
 
-$(BUILD_DIR)/loader_%.o: $(LOADER_DIR)/%.c
+$(BUILD_DIR)/loader_%.o: $(LOADER_DIR)/%.c $(LOADER_DIR)/page_tables.h
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 

@@ -1,0 +1,50 @@
+{
+  "schema": "agentos.upstream-sdk-qualification.v1",
+  "date_utc": "2026-09-19",
+  "base_revision": "979ec65db0165726febb226cdb8d5d15335596e5",
+  "source_changes": "ARM ELF-derived loader mappings and host translation test in the commit containing this receipt",
+  "candidate_version": "2.3.1-agentos-e60776ac",
+  "sources": {
+    "microkit": "ec86afdcd662b5976d11d4994acf1b11a2979882",
+    "sel4": "e60776acc31097ca063806c257f07a3ec05eacf8",
+    "locally_modified": false
+  },
+  "build_workspace": "/home/jkh/.cache/agentos/sdk-candidate-e60776ac",
+  "build": {
+    "configuration": "release",
+    "compiler": "GNU GCC 13.3.0, Ubuntu 13.3.0-6ubuntu2~24.04.1",
+    "aarch64_prefix": "aarch64-linux-gnu",
+    "python": "3.12.3; sel4-deps 0.9.0; full dependency freeze retained in python-requirements.txt",
+    "logs": ["build-x86-release.log", "build-spark-boards-release.log", "build-clean-repeat.log"],
+    "reproducibility": "All three kernels and SDK headers match a clean second-directory build. Whole-SDK reproducibility not established; auxiliary runtime artifacts differ."
+  },
+  "kernel_sha256": {
+    "qemu_virt_aarch64": "a9248cc642afa357d2ef8dfdd73d4fec31afec513581685ce219141824eeaaa1",
+    "x86_64_generic": "1bd69383ad5cdd52fa292ff1466bf6bc184f3d8ed429a7c3f4a0695de86a94a4",
+    "x86_64_generic_vtx": "ded10a09b9820bdd5256085b3a38f89d308d3a0b19316104828efa536e9a4108"
+  },
+  "intel_teardown": {
+    "host": "madmax, Intel i9-14900KF, nested KVM enabled",
+    "revision": "979ec65db0165726febb226cdb8d5d15335596e5",
+    "target": "make gate-x86_64-teardown",
+    "exit_code": 0,
+    "log_sha256": "5ff4d203c7ec398332b4f855f33d87a4b14e280724c245099beed9cd1a6e9a44",
+    "target_log_sha256": "69cd4e95ccfc2a3232bb33d8b2220333d36d3d8b9f8120b7e99b38fb0b8c5362"
+  },
+  "spark_gate": {
+    "command": "make gate SEL4_SDK=/home/jkh/.cache/agentos/sdk-candidate-e60776ac/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac SEL4_SDK_VERSION=2.3.1-agentos-e60776ac",
+    "exit_code": 0,
+    "log_sha256": "aa22d3438584834d482d092cd474e00f68b895889fa12b5fb35880fe5afa6a5e"
+  },
+  "installed_sdk_regression": {
+    "command": "make gate-aarch64 SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log_sha256": "da66ebccb88e53dcc1ec2d78482c9106a0caf6a86fa0d106602f69f06bd60fdb"
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-upstream-sdk",
+  "remaining": [
+    "Managed one-CPU Debian qualification with the baseline disk's verified host key",
+    "Strict two-CPU workload and both managed generations",
+    "Same integrated revision acceptance, canonical integration and complete v0.4 release scope"
+  ]
+}

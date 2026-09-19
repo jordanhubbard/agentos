@@ -1,0 +1,77 @@
+diff --git a/include/arch/x86/arch/32/mode/machine/cpu_registers.h b/include/arch/x86/arch/32/mode/machine/cpu_registers.h
+index 46e2e9e..921d2ab 100644
+--- a/include/arch/x86/arch/32/mode/machine/cpu_registers.h
++++ b/include/arch/x86/arch/32/mode/machine/cpu_registers.h
+@@ -38,6 +38,11 @@ static inline unsigned long read_cr2(void)
+     return val;
+ }
+ 
++static inline void write_cr2(unsigned long val)
++{
++    asm volatile("movl %0, %%cr2" :: "r"(val), "m"(control_reg_order));
++}
++
+ static inline unsigned long read_cr4(void)
+ {
+     unsigned long val;
+diff --git a/include/arch/x86/arch/64/mode/machine/cpu_registers.h b/include/arch/x86/arch/64/mode/machine/cpu_registers.h
+index df50ec6..849852b 100644
+--- a/include/arch/x86/arch/64/mode/machine/cpu_registers.h
++++ b/include/arch/x86/arch/64/mode/machine/cpu_registers.h
+@@ -37,6 +37,11 @@ static inline unsigned long read_cr2(void)
+     return val;
+ }
+ 
++static inline void write_cr2(unsigned long val)
++{
++    asm volatile("movq %0, %%cr2" :: "r"(val), "m"(control_reg_order));
++}
++
+ static inline unsigned long read_cr4(void)
+ {
+     unsigned long val;
+diff --git a/include/arch/x86/arch/object/vcpu.h b/include/arch/x86/arch/object/vcpu.h
+index e97af45..0588118 100644
+--- a/include/arch/x86/arch/object/vcpu.h
++++ b/include/arch/x86/arch/object/vcpu.h
+@@ -321,6 +321,9 @@ struct vcpu {
+      * the cr0 shadow/mask */
+     word_t cr0;
+ 
++    /* CR2 is guest architectural state, but is not saved in the VMCS. */
++    word_t cr2;
++
+     /* These are the values for the shadow and mask that the VCPU owner has requested.
+      * Like cr0, they actual values set may be slightly different but semantics will
+      * be preserved */
+diff --git a/src/arch/x86/object/vcpu.c b/src/arch/x86/object/vcpu.c
+index f1bdf0c..94764f4 100644
+--- a/src/arch/x86/object/vcpu.c
++++ b/src/arch/x86/object/vcpu.c
+@@ -448,6 +448,7 @@ void vcpu_init(vcpu_t *vcpu)
+     memcpy(vcpu->vmcs, &vmcs_revision, 4);
+ 
+     vcpu->cr0 = cr0_high & cr0_low;
++    vcpu->cr2 = 0;
+     vcpu->cr0_shadow = 0;
+     vcpu->cr0_mask = 0;
+     vcpu->exception_bitmap = 0;
+@@ -1303,6 +1304,8 @@ static inline void finishVmexitSaving(void)
+ {
+     vcpu_t *vcpu = ARCH_NODE_STATE(x86KSCurrentVCPU);
+     assert(vcpu == NODE_STATE(ksCurThread)->tcbArch.tcbVCPU);
++    /* Save before interrupt handling or scheduling can run another context. */
++    vcpu->cr2 = read_cr2();
+     vcpu->launched = true;
+     /* Update our cache of what is in the vmcs. This is the only value
+      * that we cache that can be modified by the guest during execution */
+@@ -1586,6 +1589,9 @@ void restoreVMCS(void)
+         }
+     }
+     setEPTRoot(TCB_PTR_CTE_PTR(cur_thread, tcbArchEPTRoot)->cap, expected_vmcs);
++    /* VM entry does not restore CR2. Native faults or another VCPU may have
++     * changed it even when this VCPU's VMCS is still current. */
++    write_cr2(expected_vmcs->cr2);
+ }
+ 
+ void invept(ept_pml4e_t *ept_pml4)

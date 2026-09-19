@@ -1,0 +1,8 @@
+schema = 2
+id = "debian-stable-x86-64-2cpu"
+status = "runtime"
+extends = "debian-amd64-2g.toml"
+aliases = ["debian-amd64-2cpu"]
+
+[target]
+vcpus = 2

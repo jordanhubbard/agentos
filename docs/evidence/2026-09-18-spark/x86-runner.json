@@ -1,0 +1,66 @@
+{
+  "schema": "agentos.x86.runner-qualification.v1",
+  "date": "2026-09-18",
+  "runtime_revision": "c9100fc44d8e99610301c585496279d1ed29008b",
+  "pr": "https://github.com/jordanhubbard/agentos/pull/264",
+  "scope": "Bootstrap CPU executed by a private native runner over sequenced synchronous IPC; not multi-vCPU qualification",
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log": "agentos-smp-runner-spark-final.log",
+    "sha256": "8ff861524561e24ba07ec2ed6fd632e4a47abc587d94e21001774644456d4749"
+  },
+  "intel_teardown": {
+    "command": "cd /tmp/agentos-v04-intel-discovery && if pgrep -f '[q]emu-system-x86_64' >/dev/null; then exit 90; fi && git fetch origin platform/x86-smp && git checkout --detach c9100fc && make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4 QEMU_TEST_TIMEOUT=120",
+    "exit_code": 0,
+    "log": "agentos-smp-runner-intel-scheduling.log",
+    "sha256": "559a06e8b8407ee7bd9d33ebac5b489a08312f89353305149fe676d0a933ea67",
+    "root_elf_sha256": "8b8702d8c68e59f74e752970139eab98c60778f811df6a66607b82e2036835bb",
+    "target_log_sha256": "706d12ca8c4087ee72607a74405be53d9b5bdbe2da941c0d23afc380b70be694",
+    "observed": [
+      "Linux ring3 syscall proof",
+      "suspend/resume/destroy",
+      "terminal teardown and zeroed pool reuse"
+    ]
+  },
+  "intel_managed": {
+    "command": "cd /tmp/agentos-v04-intel-discovery && if pgrep -f '[q]emu-system-x86_64' >/dev/null; then exit 90; fi && make gate-x86_64-cc-linux SEL4_SDK_VERSION=2.3.0 X86_BOOT_PROFILE=debian-amd64-2g.toml X86_ROOT_DISK=/tmp/agentos-debian-amd64/recreate-3ea3554.raw X86_SSH_KEY=/tmp/agentos-debian-amd64/ssh-seed-19/identity X86_SSH_PORT=12224 X86_SSH_KNOWN_HOSTS=/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-LxAV1n.known_hosts X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=600",
+    "exit_code": 0,
+    "log": "agentos-smp-runner-managed.log",
+    "sha256": "eeedeaed5318ad97fa528dea4f6156145029464260f5a82a593662f4fdbe7b11",
+    "root_elf_sha256": "06dedfba438e4443d8bac7993f5ffb7e1e32f04333bc8686e56459d545a63cb1",
+    "target_log_sha256": "6888a2ae24d325c6af51eba7ae774c2443b46701b70c3ee98f0bf01abf2f3399",
+    "first_console_sha256": "6c2f03e3978bd303c06dc89af0c4b8eb3ceea7da18547b01f2554c2e2b446a78",
+    "second_console_sha256": "0d7acd3705a0d30bdf43d5f3b5d36939ef886ba803e78ee396905547227e8b15",
+    "observed": [
+      "two Debian login generations",
+      "pinned Ed25519 SSH in both generations",
+      "uname x86_64 and sync",
+      "binary CC CREATE, input echo, DESTROY, recreate",
+      "stale handle rejection"
+    ],
+    "qemu_pid": 968142,
+    "qemu_gone_after_completion": true
+  },
+  "ipi_helper": {
+    "revision": "686280237160f7ccc0db47a057641ed90d1eb42a",
+    "command": "make test-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log": "agentos-smp-ipi-host.log",
+    "sha256": "a33a6032a8a7d66d680db3dbad6a80330fc70bfb57a76d0cad99e068633a344f",
+    "runtime_connected": false
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-18-x86-runner",
+  "earlier_failures": [
+    "f888422 and a9b5a7e failed console readiness; native runner had generic 10ms/1s budget",
+    "c9100fc uses bounded guest execution budget and larger IPC refill storage"
+  ],
+  "remaining": [
+    "Additional admitted native vCPU contexts",
+    "Native INIT/SIPI setup and scheduler integration",
+    "Matching CPUID/APIC/ACPI topology",
+    "Multi-vCPU quiescence and reconstruction",
+    "Two online guest CPUs with concurrent workload",
+    "Canonical integration and complete v0.4 release gates"
+  ]
+}

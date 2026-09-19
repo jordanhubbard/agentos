@@ -94,6 +94,22 @@ A successful run demonstrates the following behavior in one live system:
 It does not prove unfinished operations such as guest snapshot, restore, or
 live migration.
 
+## Integrated Spark checkpoint, 2026-09-19
+
+At clean revision `ff47898c9d12af9f6eae9748cf5247a8e804deb4`,
+`make demo-test SEL4_SDK_VERSION=2.3.0` passed with its existing 7200-second
+timeout. FreeBSD passed authenticated SSH before and after immediate
+suspend/resume, remained suspended while Ubuntu booted, and then passed the
+concurrent authenticated SSH check alongside Ubuntu. Both guest handles were
+destroyed and rejected afterward. The harness and QEMU exited successfully.
+
+The [receipt](evidence/2026-09-19-spark/dual-guest.json) binds the target image,
+logs and packet capture. It also retains the FreeBSD GPT/clock warnings and
+Ubuntu udev, hostname and stream-fd diagnostics observed before successful
+acceptance. These are not explained or repaired by a passing gate. The result
+does not qualify concurrent writable disks, snapshots, x86 SMP, or a final
+release; required hosted checks and canonical integration remain separate.
+
 ## Troubleshooting
 
 - Run `make demo-check` for a concise missing-tool or SDK diagnosis.

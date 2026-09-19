@@ -409,6 +409,8 @@ endif
 # setup/demo: two-command first-run path and one-command repeatable showcase
 # =============================================================================
 .PHONY: sdk-check
+include tools/sdk/candidate.mk
+
 sdk-check:
 	@test -d "$(SEL4_SDK)/board" || \
 		(echo "ERROR: Microkit SDK missing at $(SEL4_SDK); run 'make sdk'." && exit 1)
@@ -753,11 +755,22 @@ gate-x86_64-linux-login:
 .PHONY: gate-x86_64-storage
 .PHONY: gate-x86_64-debian-ssh
 .PHONY: gate-x86_64-cc-linux
+.PHONY: x86-smp-probe gate-x86_64-smp
+x86-smp-probe:
+	@mkdir -p $(BUILD_TMP_DIR)
+	clang -target x86_64-linux-gnu -fuse-ld=lld -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pie -nostdlib -static \
+		-Wl,-e,_start -Wl,--build-id=none tests/platform/x86_smp_probe.c \
+		tests/platform/x86_smp_probe_start.S -o $(BUILD_TMP_DIR)/x86-smp-probe
+gate-x86_64-smp: x86-smp-probe
+	$(MAKE) gate-x86_64-cc-linux X86_BOOT_PROFILE=debian-amd64-2cpu.toml \
+		X86_SMP_PROBE=$(BUILD_TMP_DIR)/x86-smp-probe
 gate-x86_64-cc-linux:
 	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login --assert-x86-cc \
 		--x86-boot-profile $(if $(X86_BOOT_PROFILE),$(X86_BOOT_PROFILE),debian-amd64.toml) --x86-ssh-key "$(X86_SSH_KEY)" \
+		$(if $(X86_SMP_PROBE),--x86-smp-probe "$(X86_SMP_PROBE)",) \
 		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
 		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
 		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
@@ -806,6 +819,7 @@ test-x86-firmware-build:
 		SEL4_SDK=$(SEL4_SDK) SEL4_SDK_VERSION=$(SEL4_SDK_VERSION) \
 		X86_FIRMWARE_RESET=1 \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/x86_runner.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/blk_virt.elf \
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/net_virt.elf \
@@ -827,6 +841,14 @@ test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-pag
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
 test-host: test-untyped-host
+test-host: test-loader-page-tables-host
+.PHONY: test-loader-page-tables-host
+test-loader-page-tables-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I kernel/loader \
+		tests/platform/test_loader_page_tables.c -o $(BUILD_TMP_DIR)/test_loader_page_tables
+	$(BUILD_TMP_DIR)/test_loader_page_tables
+
 .PHONY: test-untyped-host
 test-untyped-host:
 	@mkdir -p $(BUILD_TMP_DIR)
@@ -971,6 +993,42 @@ test-virtio-host-transport:
 
 test-host: test-x86-config-host
 test-host: test-x86-apic-host
+test-host: test-x86-smp-host
+.PHONY: test-x86-smp-host
+test-x86-smp-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-Iplatform/include tests/platform/test_x86_smp.c \
+		platform/guest-vmm/x86_smp.c platform/guest-vmm/x86_apic.c \
+		-o $(BUILD_TMP_DIR)/test_x86_smp
+	$(BUILD_TMP_DIR)/test_x86_smp
+test-host: test-x86-runner-host
+.PHONY: test-x86-runner-host
+test-x86-runner-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_runner.c \
+		platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner
+	$(BUILD_TMP_DIR)/test_x86_runner
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-DCONFIG_VTX -DCONFIG_X86_64_VTX_64BIT_GUESTS \
+		-Itests/platform/runner-stubs -Iplatform/include \
+		-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+		-idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_runner_client.c platform/guest-vmm/x86_runner_client.c \
+		platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner_client
+	$(BUILD_TMP_DIR)/test_x86_runner_client
+	@set -e; for mode in classic mcs; do \
+		flags=; if test "$$mode" = mcs; then flags=-DCONFIG_KERNEL_MCS; fi; \
+		$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+			-DCONFIG_VTX -DCONFIG_X86_64_VTX_64BIT_GUESTS $$flags \
+			-Itests/platform/runner-stubs -Iplatform/include \
+			-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+			-idirafter kernel/agentos-root-task/include \
+			tests/platform/test_x86_runner_pd.c platform/guest-vmm/x86_runner_pd.c \
+			platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner_$$mode; \
+		$(BUILD_TMP_DIR)/test_x86_runner_$$mode; \
+	done
 test-host: test-x86-string-host
 test-host: test-x86-rtc-host
 
@@ -1144,7 +1202,9 @@ test-x86-vmenter-host:
 	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
 		-Itests/platform/virtio-stubs -Iplatform/include \
 		-I$(SEL4_SDK)/board/x86_64_generic/release/include \
-		tests/platform/test_x86_vmenter.c -o $(BUILD_TMP_DIR)/test_x86_vmenter
+		-idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_vmenter.c platform/guest-vmm/x86_runner.c \
+		-o $(BUILD_TMP_DIR)/test_x86_vmenter
 	$(BUILD_TMP_DIR)/test_x86_vmenter
 
 .PHONY: test-x86-event-host

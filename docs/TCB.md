@@ -20,6 +20,138 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+`make gate-x86_64-smp` now requires two online Linux CPUs and overlapping
+CPU-affined x87/SSE workers in both managed lifecycle generations. The
+freestanding C/Assembly payload runs only inside the guest, over the existing
+pinned SSH qualification path, and adds no target authority. Its result and
+errors are retained per generation. See [x86 SMP qualification](x86-smp.md).
+Host compilation and tests pass. The approved CR2 dependency candidate passed
+both native workload generations at `de1458c`; its
+[receipt](evidence/2026-09-19-spark/cr2-intel-smp.json) does not establish default
+SDK adoption or final release qualification.
+
+The firmware coordinator now retains a separate native runner sequence,
+entry/exit snapshot, timer-initialization state and LAPIC/startup record for
+each of its two provisioned CPU contexts. VMCS and register operations use
+the selected context's VCPU capability. Selection rejects an outstanding
+runner call, and control transitions require both runners to be quiescent.
+Destroy retires both contexts' saved guest state; reconstruction initializes
+fresh startup state while preserving the persistent executors' IPC sequences.
+The second-runner target qualification uses this same selection and entry
+path and checks bootstrap-context preservation and AP snapshot retirement.
+At `b69a7a7`, the full Spark gate, Intel teardown, and two managed single-CPU
+Debian generations passed; the [context receipt](evidence/2026-09-18-spark/x86-context.json)
+retains exact commands and artifacts.
+The coordinator now applies guest INIT by replacing the selected CPU's VCPU
+through its private child pool, then applies the first SIPI before marking
+that CPU runnable. Round-robin selection skips CPUs awaiting reset or startup.
+Every entry arms a bounded VMX timer, including the first AP entry. If no CPU
+is runnable, the coordinator continues servicing lifecycle IPC. Shared device
+handling remains serialized between entries, and I/O APIC routes address all
+admitted runnable contexts. Host and target profile binding admit one or two
+provisioned CPUs; the explicit `debian-amd64-2cpu` profile selects two with
+matching ACPI and CPUID identities and I/O APIC ID 15. The new scheduling path
+still requires Intel multi-CPU qualification; profile admission is not proof
+of Linux SMP or workload isolation.
+
+The first two-CPU Debian attempt at `073f890` reached Linux AP startup and
+failed on CMOS shutdown-status write `0x0a` to index `0x0f`. The config model
+now retains cold/warm CPU-start values zero and `0x0a` in guest-private state,
+reset to zero on reconstruction. Other shutdown codes remain rejected.
+This matches Linux's warm-reset marker around INIT/SIPI and does not grant
+host RTC, reset, persistent CMOS or sleep authority. Native continuation
+past this point still requires qualification.
+
+The x86 ACPI bundle builder now derives MADT/SSDT lengths, root-table
+relocations and fw_cfg file sizes from an explicitly supplied topology.
+The firmware CPU-count fields use that same bundle. CPUID now has a bounded
+topology interface for one package with one thread per core and contiguous
+APIC IDs; the coordinator supplies its current LAPIC identity and ACPI count.
+Host tests relocate every supported ACPI count at three guest addresses,
+check CPU identities and checksums, and reject invalid configurations without
+mutation. CPUID tests decode unique core/package identities for every supported
+count and check termination leaves. These interfaces can describe up to 32
+CPUs; they do not allocate them. Default admission and the installed default
+bundle remain one CPU, preserving its original guest-visible bytes. The full
+Spark gate and Intel teardown regression passed at `e91cfba`; the
+[topology receipt](evidence/2026-09-18-spark/x86-topology.json) records the
+commands and retained artifacts. Native multi-CPU startup and workload
+acceptance remain outstanding.
+
+The x86 firmware composition now reserves two private execution runners.
+Each has its own native TCB, VSpace, IPC buffer, scheduling context and
+16 KiB VCPU child pool. Their endpoint grants are coordinator-only; both
+VCPUs use the guest's shared EPT. Whole-guest reconstruction binds both fresh
+VCPUs, while per-CPU reconstruction can revoke either child independently.
+The default profile still admits one guest CPU. The Intel teardown
+qualification passed a real-mode HLT through the second runner in
+each reconstruction pass and checked that the bootstrap RIP was unchanged.
+The full Spark gate also passed at `1951d52`. The
+[second-runner receipt](evidence/2026-09-18-spark/x86-second-runner.json)
+records retained images, logs and hashes. Linux AP startup,
+matching topology and multi-CPU workload acceptance remain unfinished.
+
+LAPIC state now carries an immutable physical APIC ID and bootstrap flag.
+APIC ID reads, physical interrupt routing, self-IPIs and the APIC-base MSR
+use that context rather than assuming CPU zero. Host tests cover all usable
+xAPIC IDs, broadcast-ID rejection and isolation between destination contexts.
+The second native execution context is provisioned and separately qualified
+above; guest-driven INIT/SIPI and multi-CPU lifecycle acceptance remain pending.
+These LAPIC host checks do
+not establish multi-CPU guest execution.
+
+The private x86 execution runner is a VMM component with a
+versioned IPC contract in `contracts/x86_runner.h`. Its server executes one
+VMEnter per accepted sequence, snapshots the returned registers before reply
+IPC, rejects duplicate commands, and latches ambiguous execution failures.
+The firmware manifests now start `x86_runner.elf` before the coordinator.
+Root binds the existing bootstrap VCPU and EPT to this runner's native TCB,
+and grants only the coordinator a send/grant-reply endpoint cap with a fixed
+owner badge. The runner has its own native TCB, VSpace and IPC buffer, with
+no device frames, IRQs or guest RAM aliases. The coordinator retains the
+runner TCB capability for EPT/VCPU reconstruction. It makes synchronous entry
+calls and handles devices and lifecycle changes after their replies; runner
+sequence state persists across guest recreation. Additional CPUs and AP startup
+remain pending. At `c9100fc`, the full Spark gate and Intel Linux userspace
+teardown qualification passed through runner IPC. Two managed Debian login,
+pinned SSH, console-input and destroy/recreate generations also passed, with
+stale handles rejected. The [runner receipt](evidence/2026-09-18-spark/x86-runner.json)
+records exact commands and artifact hashes. This qualifies the private runner
+for the existing bootstrap CPU; it does not establish multi-vCPU execution.
+
+The bootstrap VCPU is now allocated below a private 16 KiB child untyped at
+cap slot 507, itself below the guest execution pool. Revoking the child can
+remove that CPU and all its aliases without revoking EPT or sibling objects.
+The coordinator must exclude VM entry and retire the old exit snapshot before
+reconstruction, then bind and initialize the replacement before it is runnable.
+Whole-guest teardown still revokes the parent pool and therefore removes the
+child as well. At `19c611f`, the full Spark gate and Intel teardown gate
+passed. The native check invalidated the old CPU alias, rebound a fresh CPU
+to the retained EPT, and verified that the sibling VCPU's startup state
+remained intact. The [CPU pool receipt](evidence/2026-09-18-spark/x86-cpu-pool.json)
+records these bounded checks; executing multiple CPUs remains unqualified.
+
+The bounded `x86_smp` controller helper handles fixed edge IPIs, INIT and
+SIPI across up to 32 already-admitted contexts. It resolves physical, flat
+logical, cluster logical and shorthand destinations before mutation; invalid
+commands or topology leave all contexts unchanged. INIT records native reset
+work, and the first accepted SIPI records startup work without executing it.
+The coordinator must apply that work to the native VCPU before marking it
+runnable. This helper is host-tested but not yet connected to firmware ICR
+handling. INIT/reset behavior follows Intel SDM Volume 3A sections 10.4 and
+12.4.7; no runtime CPU creation or multi-CPU execution is established here.
+
+Firmware reset and SIPI setup now accept an explicit admitted VCPU capability.
+SIPI setup requires a fresh, stopped VCPU, installs its real-mode startup page
+and publishes entry inputs only after checked VMCS writes succeed. The Intel
+teardown qualification additionally allocates a separate second VCPU from
+the private execution pool, checks startup vectors 0, 8 and 255, checks that
+bootstrap state is unchanged, rejects vector 256, and verifies revocation.
+This additional vCPU is not bound or entered by that test. At `92879a3`, these
+checks passed on Intel, along with the full Spark gate. The
+[AP startup receipt](evidence/2026-09-18-spark/x86-ap-startup.json) records the
+commands and artifact hashes. Normal guest admission remains one CPU.
+
 The x86 firmware profile binder enforces CPU-feature requests against the
 synthetic CPUID model before VM entry. Its fixed baseline exposes x87 (FP)
 and SSE/SSE2 (SIMD); crypto (AES/PCLMUL), RNG (RDRAND/RDSEED), AVX-family

@@ -51,4 +51,5 @@ SECTIONS {
 
     . = ALIGN(0x1000);
     _end = .;
+    ASSERT(_end <= 0x4400c000, "loader must leave at least 16 KiB for stack")
 }

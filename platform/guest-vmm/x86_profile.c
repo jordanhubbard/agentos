@@ -22,7 +22,7 @@ bool aos_x86_profile_bind(const void *manifest, size_t manifest_bytes,
         p->kernel_format != AOS_GUEST_KERNEL_UEFI ||
         p->flags != (AOS_GUEST_PROFILE_AUTOSTART | AOS_GUEST_PROFILE_HAS_INITRD |
                      AOS_GUEST_PROFILE_HASHED_ARTIFACTS) ||
-        p->guest_id != 0 || p->control_type != 1 || p->vcpu_count != 1 ||
+        p->guest_id != 0 || p->control_type != 1 || !p->vcpu_count || p->vcpu_count > 2 ||
         p->device_flags != (AOS_GUEST_DEVICE_NET | AOS_GUEST_DEVICE_BLOCK | AOS_GUEST_DEVICE_CONSOLE) ||
         p->network_client != 0 || p->block_media != 0 ||
         (p->cpu_features.required & ~AOS_X86_CPU_PROFILE_FEATURES) != 0 ||

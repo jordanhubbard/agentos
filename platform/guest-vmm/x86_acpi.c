@@ -134,16 +134,23 @@ static void io_gas(uint8_t *p, unsigned width, unsigned access, unsigned port)
 {
     p[0]=1; p[1]=(uint8_t)width; p[3]=(uint8_t)access; le32(p+4,port);
 }
-bool aos_x86_acpi_bundle_init(aos_x86_acpi_bundle_t *bundle)
+bool aos_x86_acpi_bundle_topology(aos_x86_acpi_bundle_t *bundle,
+                                 const aos_x86_acpi_topology_t *topology)
 {
-    if (!bundle) return false;
+    if (!bundle || !topology) return false;
+    const aos_x86_acpi_topology_t t=*topology;
+    if (!topology_valid(&t) || t.lapic_gpa!=AOS_X86_APIC_BASE ||
+        t.ioapic_gpa!=AOS_X86_IOAPIC_BASE || t.gsi_base) return false;
     enum { FACS=0, DSDT=64, DSDT_BYTES=261, FADT=DSDT+DSDT_BYTES,
-           MADT=FADT+276, SSDT=MADT+64, RSDT=SSDT+73, XSDT=RSDT+48 };
-    _Static_assert(XSDT + 60 == AOS_X86_ACPI_TABLE_BYTES, "ACPI bundle size");
-    const aos_x86_acpi_topology_t t={.lapic_gpa=AOS_X86_APIC_BASE,
-        .ioapic_gpa=AOS_X86_IOAPIC_BASE,.ioapic_id=1,.cpu_count=1,
-        .cpus={{.uid=0,.apic_id=0}}};
+           MADT=FADT+276 };
+    const unsigned madt_bytes=56u+8u*t.cpu_count;
+    const unsigned ssdt_bytes=44u+29u*t.cpu_count;
+    const unsigned SSDT=MADT+madt_bytes, RSDT=SSDT+ssdt_bytes, XSDT=RSDT+48;
+    _Static_assert(MADT+AOS_X86_MADT_MAX_BYTES+AOS_X86_CPU_SSDT_MAX_BYTES+108u
+                   == AOS_X86_ACPI_TABLE_BYTES, "ACPI bundle capacity");
     memset(bundle,0,sizeof(*bundle));
+    bundle->table_bytes=XSDT+60u;
+    bundle->cpu_count=t.cpu_count;
     uint8_t *b=bundle->tables;
     memcpy(b+FACS,"FACS",4); le32(b+FACS+4,64); b[FACS+32]=2;
     /* Scope(_SB) Device(VCON/VBLK/VNET): LNRO0005, unique UID, coherent DMA, and a
@@ -184,8 +191,8 @@ bool aos_x86_acpi_bundle_init(aos_x86_acpi_bundle_t *bundle)
     le32(b+FADT+132,FACS); le32(b+FADT+140,DSDT);
     io_gas(b+FADT+148,32,2,0xb000); io_gas(b+FADT+172,16,2,0xb004);
     io_gas(b+FADT+208,32,3,0xb008);
-    if (aos_x86_madt_write(b+MADT,64,&t)!=64 ||
-        aos_x86_cpu_ssdt_write(b+SSDT,73,&t)!=73) return false;
+    if (aos_x86_madt_write(b+MADT,madt_bytes,&t)!=madt_bytes ||
+        aos_x86_cpu_ssdt_write(b+SSDT,ssdt_bytes,&t)!=ssdt_bytes) return false;
     header(b+RSDT,48,"RSDT",1,"AOSROOT ");
     header(b+XSDT,60,"XSDT",1,"AOSROOT ");
     const unsigned entries[]={FADT,MADT,SSDT};
@@ -210,4 +217,12 @@ bool aos_x86_acpi_bundle_init(aos_x86_acpi_bundle_t *bundle)
     p=sum_command(p,rsdp_file,8,0,20);
     p=sum_command(p,rsdp_file,32,0,36);
     return p==bundle->loader+sizeof(bundle->loader);
+}
+
+bool aos_x86_acpi_bundle_init(aos_x86_acpi_bundle_t *bundle)
+{
+    const aos_x86_acpi_topology_t t={.lapic_gpa=AOS_X86_APIC_BASE,
+        .ioapic_gpa=AOS_X86_IOAPIC_BASE,.ioapic_id=1,.cpu_count=1,
+        .cpus={{.uid=0,.apic_id=0}}};
+    return aos_x86_acpi_bundle_topology(bundle,&t);
 }
