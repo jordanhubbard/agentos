@@ -89,3 +89,17 @@ initialization of both PCI media and their separate queues. This proves host
 device initialization only. The current descriptor still starts one guest;
 secondary guest I/O, concurrent disk isolation and persistence remain separate
 v0.4 requirements. The receipt must not describe this mode as a dual-guest pass.
+
+## Preparing a secondary coordinator
+
+`make prepare-x86-profile X86_BOOT_PROFILE=debian-amd64-secondary.toml
+X86_VMM_SLOT=secondary` verifies the pinned kernel/initrd and emits build
+arguments as a JSON array after acquisition diagnostics. These are argument
+values, not shell source. Primary and secondary manifests and command lines
+are written under separate `build/tmp/x86-boot-profile/<slot>/` directories.
+Build each coordinator in a separate build directory.
+
+The selected slot must agree with all four profile identities: guest ID,
+control type, network client and block media. The default runtime path still
+requires the primary slot. Preparing a secondary manifest does not spawn its
+coordinator or runner pair, attach its disk, or qualify concurrent storage.

@@ -57,6 +57,31 @@ pub struct GuestProfileArgs {
     /// Print the profile's target control type without emitting.
     #[arg(long)]
     pub print_control_type: bool,
+    /// Prepare verified x86 artifacts for an explicitly selected VMM build slot.
+    #[arg(long, value_enum, conflicts_with_all = ["resolve_alias", "check_all", "output", "prepare_dir", "print_ram_size", "print_control_type"])]
+    pub prepare_x86_slot: Option<X86BuildSlot>,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum X86BuildSlot {
+    Primary,
+    Secondary,
+}
+
+impl X86BuildSlot {
+    fn owner(self) -> u32 {
+        match self {
+            Self::Primary => 0,
+            Self::Secondary => 1,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Secondary => "secondary",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -451,7 +476,12 @@ pub(crate) fn resolve_alias(root: &Path, alias: &str) -> Result<PathBuf> {
     matched.with_context(|| format!("unknown guest profile alias {alias:?}"))
 }
 
+#[cfg(test)]
 fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
+    validate_x86_slot_profile(profile, X86BuildSlot::Primary)
+}
+
+fn validate_x86_slot_profile(profile: &Profile, slot: X86BuildSlot) -> Result<()> {
     validate(profile, Some("default"))?;
     ensure!(
         profile.status == Some(Status::Runtime),
@@ -466,10 +496,10 @@ fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
     );
     ensure!(
         matches!(target.vcpus, Some(1 | 2))
-            && target.guest_id == Some(0)
-            && target.control_type == Some(1)
+            && target.guest_id == Some(slot.owner())
+            && target.control_type == Some(slot.owner() + 1)
             && target.autostart == Some(true),
-        "x86 boot supports one autostart primary guest with one or two provisioned vCPUs"
+        "x86 boot profile must match the selected build slot and have one or two provisioned vCPUs"
     );
     if let Some(features) = &target.cpu_features {
         // Keep admission aligned with the synthetic target CPUID model.
@@ -487,9 +517,9 @@ fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
             && ["net", "block", "console"]
                 .iter()
                 .all(|d| devices.iter().any(|v| v == d))
-            && target.network_client == Some(0)
-            && target.block_media == Some(0),
-        "x86 boot requires primary canonical net, block and console devices"
+            && target.network_client == Some(slot.owner() as u16)
+            && target.block_media == Some(slot.owner() as u16),
+        "x86 boot requires canonical net, block and console devices owned by the selected slot"
     );
     ensure!(
         !profile.artifacts.contains_key("dtb")
@@ -522,8 +552,25 @@ fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
 
 pub(crate) fn prepare_x86_boot_profile(repo: &Path, path: &Path) -> Result<Vec<String>> {
     let root = repo.join("guest-profiles");
-    let (profile, canonical) = resolve(&root, path, &mut Vec::new())?;
-    validate_x86_boot_profile(&profile)?;
+    prepare_x86_slot_profile(repo, &root, path, X86BuildSlot::Primary)
+}
+
+fn prepare_x86_slot_profile(
+    repo: &Path,
+    root: &Path,
+    path: &Path,
+    slot: X86BuildSlot,
+) -> Result<Vec<String>> {
+    let absolute_repo = fs::canonicalize(repo).context("resolve x86 artifact repository")?;
+    let repo = absolute_repo.as_path();
+    let (profile, canonical) = resolve(root, path, &mut Vec::new())?;
+    validate_x86_slot_profile(&profile, slot)?;
+    if let Some(selected) = std::env::var_os("X86_VMM_SLOT") {
+        ensure!(
+            selected == slot.name(),
+            "X86_VMM_SLOT conflicts with selected build slot"
+        );
+    }
     for name in [
         "X86_BOOT_KERNEL",
         "X86_BOOT_KERNEL_SHA256",
@@ -542,11 +589,11 @@ pub(crate) fn prepare_x86_boot_profile(repo: &Path, path: &Path) -> Result<Vec<S
     }
     crate::cmd_fetch_guest::run(&crate::FetchGuestArgs {
         profile: path.to_path_buf(),
-        profile_root: root,
+        profile_root: root.to_path_buf(),
         output_dir: None,
     })?;
     verify_artifacts(&profile, "default", repo)?;
-    let directory = repo.join("build/tmp/x86-boot-profile");
+    let directory = repo.join("build/tmp/x86-boot-profile").join(slot.name());
     fs::create_dir_all(&directory)?;
     let mut command_line = profile
         .boot
@@ -564,6 +611,7 @@ pub(crate) fn prepare_x86_boot_profile(repo: &Path, path: &Path) -> Result<Vec<S
     let manifest_path = directory.join("profile.bin");
     fs::write(&manifest_path, &manifest)?;
     let mut args = vec![
+        format!("X86_VMM_SLOT={}", slot.name()),
         format!("X86_BOOT_PROFILE_BIN={}", manifest_path.display()),
         format!("X86_BOOT_PROFILE_SHA256={:x}", Sha256::digest(&manifest)),
         format!(
@@ -769,6 +817,17 @@ pub fn run(args: &GuestProfileArgs) -> Result<()> {
         .profile
         .as_ref()
         .context("--profile is required unless --check-all is used")?;
+    if let Some(slot) = args.prepare_x86_slot {
+        ensure!(
+            args.placement == "default",
+            "x86 boot requires default placement"
+        );
+        let build_args = prepare_x86_slot_profile(&args.repo_root, &args.root, profile_path, slot)?;
+        // Structured output preserves paths with spaces; these are argv entries,
+        // not shell code to evaluate.
+        println!("{}", serde_json::to_string(&build_args)?);
+        return Ok(());
+    }
     if args.print_ram_size || args.print_control_type {
         ensure!(
             !(args.print_ram_size && args.print_control_type)
@@ -2396,6 +2455,38 @@ fn push_text(out: &mut Vec<u8>, value: &str, width: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn x86_secondary_manifest_requires_independent_slot_identity() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (primary, _) = resolve(&root, Path::new("debian-amd64.toml"), &mut Vec::new()).unwrap();
+        let (secondary, canonical) = resolve(
+            &root,
+            Path::new("debian-amd64-secondary.toml"),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        validate_x86_slot_profile(&secondary, X86BuildSlot::Secondary).unwrap();
+        assert!(validate_x86_slot_profile(&secondary, X86BuildSlot::Primary).is_err());
+        assert!(validate_x86_slot_profile(&primary, X86BuildSlot::Secondary).is_err());
+        for field in 0..4 {
+            let mut mixed = secondary.clone();
+            let target = mixed.target.as_mut().unwrap();
+            match field {
+                0 => target.guest_id = Some(0),
+                1 => target.control_type = Some(1),
+                2 => target.network_client = Some(0),
+                _ => target.block_media = Some(0),
+            }
+            assert!(validate_x86_slot_profile(&mixed, X86BuildSlot::Secondary).is_err());
+        }
+        let manifest = compile(&secondary, &canonical, "default").unwrap();
+        assert_eq!(manifest.len(), MANIFEST_SIZE);
+        assert_eq!(&manifest[16..20], &1u32.to_le_bytes());
+        assert_eq!(&manifest[28..30], &1u16.to_le_bytes());
+        assert_eq!(&manifest[30..32], &1u16.to_le_bytes());
+        assert_eq!(&manifest[244..248], &2u32.to_le_bytes());
+    }
 
     #[test]
     fn x86_boot_selection_rejects_unsupported_resource_requests() {

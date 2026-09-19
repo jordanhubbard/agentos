@@ -833,6 +833,12 @@ test-x86-firmware-build:
 	@echo "PASS: x86 firmware VMM, serial/block drivers and block/network virtualizer link checks"
 
 .PHONY: test-x86-secondary-firmware-build
+.PHONY: prepare-x86-profile
+prepare-x86-profile:
+	@test -n "$(X86_BOOT_PROFILE)" || { echo 'X86_BOOT_PROFILE is required'; exit 1; }
+	cargo xtask guest-profile --profile "$(X86_BOOT_PROFILE)" \
+		--prepare-x86-slot "$(if $(X86_VMM_SLOT),$(X86_VMM_SLOT),primary)"
+
 test-x86-secondary-firmware-build:
 	$(MAKE) test-x86-firmware-build GUEST_OS=none X86_VMM_SLOT=secondary BUILD_TMP_DIR=$(abspath $(BUILD_TMP_DIR)/secondary)
 	$(MAKE) -C kernel/agentos-root-task \
