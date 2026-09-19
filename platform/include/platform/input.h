@@ -66,6 +66,7 @@ typedef struct {
     uint32_t allowed_mask;
     uint32_t held[AOS_INPUT_CLIENTS][AOS_INPUT_DEVICES][8];
     uint32_t releasing[AOS_INPUT_CLIENTS];
+    uint32_t retired_mask, generation[AOS_INPUT_CLIENTS];
 } aos_input_service_t;
 
 int aos_input_service_init(aos_input_service_t *, aos_input_frontend_t *,

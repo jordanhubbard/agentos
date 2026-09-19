@@ -130,6 +130,7 @@ static unsigned detach_pending(aos_input_service_t *s, uint32_t *ready)
         if (load(&region->detach.request)!=1u ||
             load(&region->detach.version)!=AOS_INPUT_DETACH_VERSION) continue;
         s->allowed_mask &= ~(1u<<i);
+        s->retired_mask |= 1u<<i;
         s->releasing[i]=0;
         for (unsigned device=0; device<AOS_INPUT_DEVICES; device++)
             for (unsigned word=0; word<8; word++) s->held[i][device][word]=0;
