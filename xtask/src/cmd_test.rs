@@ -7169,11 +7169,18 @@ fn destroy_guest_via_cc(
         // This also separates retries from CC's identical-request replay cache.
         let console = cc_log_stream_reply(cc, guest_handle, profile)?;
         // Serial detach can finish before input/graphics teardown. The boot
-        // console then rejects reads with RELAY_FAULT. This is not successful
-        // destruction: keep requiring an explicit DESTROY acknowledgement
-        // within the original deadline. Ordinary console reads remain strict.
+        // console then rejects reads with RELAY_FAULT. Handle-addressed console
+        // reads map the same drain failure to BAD_HANDLE. Neither is successful
+        // destruction: require an explicit DESTROY acknowledgement within the
+        // original deadline. Ordinary console reads remain strict.
         anyhow::ensure!(
-            console.mr[0] == CC_OK || (guest_handle == 0 && console.mr[0] == CC_ERR_RELAY_FAULT),
+            console.mr[0] == CC_OK
+                || console.mr[0]
+                    == if guest_handle == 0 {
+                        CC_ERR_RELAY_FAULT
+                    } else {
+                        CC_ERR_BAD_HANDLE
+                    },
             "MSG_CC_LOG_STREAM during destroy returned ok={}",
             console.mr[0]
         );
@@ -7258,13 +7265,23 @@ mod tests {
         assert_eq!(std::fs::read(&primary).unwrap(), vec![0x11; 512]);
     }
     #[test]
-    fn boot_destroy_retries_detached_console_but_requires_destroy_acknowledgement() {
+    fn destroy_retries_detached_console_but_requires_destroy_acknowledgement() {
         use std::os::unix::net::UnixListener;
-        for (console_status, final_destroy, succeeds) in [
-            (CC_OK, CC_OK, true),
-            (CC_ERR_RELAY_FAULT, CC_OK, true),
-            (CC_ERR_RELAY_FAULT, CC_ERR_BAD_HANDLE, false),
-            (CC_ERR_BAD_HANDLE, CC_OK, false),
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let profile = cmd_guest_profile::host_profile_plan(
+            &repo.join("guest-profiles"),
+            Path::new("debian-arm64-nocloud.toml"),
+        )
+        .unwrap();
+        for (handle, console_status, final_destroy, retries, succeeds) in [
+            (0, CC_OK, CC_OK, true, true),
+            (0, CC_ERR_RELAY_FAULT, CC_OK, true, true),
+            (0, CC_ERR_RELAY_FAULT, CC_ERR_BAD_HANDLE, true, false),
+            (0, CC_ERR_BAD_HANDLE, CC_OK, false, false),
+            (17, CC_OK, CC_OK, true, true),
+            (17, CC_ERR_BAD_HANDLE, CC_OK, true, true),
+            (17, CC_ERR_BAD_HANDLE, CC_ERR_BAD_HANDLE, true, false),
+            (17, CC_ERR_RELAY_FAULT, CC_OK, false, false),
         ] {
             let directory = tempfile::tempdir().unwrap();
             let socket = directory.path().join("cc.sock");
@@ -7276,21 +7293,24 @@ mod tests {
                     (MSG_CC_DESTROY_GUEST, CC_ERR_RELAY_FAULT),
                     (MSG_CC_LOG_STREAM, console_status),
                 ];
-                if console_status != CC_ERR_BAD_HANDLE {
+                if retries {
                     exchanges.push((MSG_CC_DESTROY_GUEST, final_destroy));
                 }
                 for (opcode, status) in exchanges {
                     let mut request = [0u8; CC_REQ_SIZE];
                     stream.read_exact(&mut request).unwrap();
                     assert_eq!(rd32(&request, 0), opcode);
-                    assert_eq!(rd32(&request, 4), 0);
+                    assert_eq!(rd32(&request, 4), handle);
                     let mut reply = [0u8; CC_REPLY_SIZE];
                     wr32(&mut reply, 0, status);
                     stream.write_all(&reply).unwrap();
                 }
             });
             let mut cc = CcClient::connect(&socket).unwrap();
-            assert_eq!(destroy_guest_via_cc(&mut cc, 0, None).is_ok(), succeeds);
+            assert_eq!(
+                destroy_guest_via_cc(&mut cc, handle, (handle != 0).then_some(&profile)).is_ok(),
+                succeeds
+            );
             server.join().unwrap();
         }
     }

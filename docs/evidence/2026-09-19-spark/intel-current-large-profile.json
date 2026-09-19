@@ -1,0 +1,14 @@
+{
+  "status": "passed managed recreation with the two-GiB Debian profile",
+  "source_revision": "cd9efb957fa3ce632cb5dc2c49c1ff082a5a580a",
+  "host": "madmax Intel Linux with nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "command": "make gate-x86_64-cc-linux X86_BOOT_PROFILE=debian-amd64-2g.toml QEMU_TEST_TIMEOUT=1800 with private disk, pinned original host key and port 12250; full launcher archived",
+  "make_exit": 0,
+  "proof": "Both managed Debian boots authenticated against the original Ed25519 host key, reported x86_64 and synced. Binary CC create, console input echo, destroy, fresh-handle recreation and stale-handle rejection passed.",
+  "image_sha256": "6cbec2835ca8f97a3d8b1999ead87e62d6f36c3ce30db14a4cff1e816e505abb",
+  "log_sha256": "0e993a87b9004f78cd1d9da67ac91280af99810897f061342a082e6d22e5d3a3",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-large-cd9efb9.tar.gz",
+  "archive_sha256": "3a62f44d3f5b9a618429db005f6e6966fcdc8f04da742409114453242f892178",
+  "limits": "Qualifies the configured two-GiB profile, not a measured Linux MemTotal or a two-GiB memory stress workload. An additional read-only meminfo query arrived after QEMU exited and returned connection refused; its failed receipt is retained. Does not establish concurrent storage isolation, all resource limits, final integrated revision or v0.4 completion. No private keys or disks archived."
+}
