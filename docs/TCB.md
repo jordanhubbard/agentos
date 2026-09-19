@@ -28,6 +28,16 @@ only the primary guest and its runner pair. Secondary compilation and profile
 admission tests do not establish concurrent guest provisioning or storage
 isolation; those remain v0.4 acceptance requirements.
 
+The host block driver accepts a bounded PCI media set in shared DMA metadata
+version 3, retaining support for the earlier MMIO and single-PCI versions.
+Root maps each disk's registers at a distinct driver-only address range;
+the existing per-media DMA and queue areas stay separate. An opt-in
+`X86_SECONDARY_BLOCK=1` build expects a second modern virtio-blk function at
+00:08.0 and refuses startup if its discovery or mapping fails. This extends
+the existing block-driver authority, not VMM hardware access. Host layout and
+firmware compile checks do not establish native two-disk or concurrent guest
+acceptance.
+
 `make gate-x86_64-smp` now requires two online Linux CPUs and overlapping
 CPU-affined x87/SSE workers in both managed lifecycle generations. The
 freestanding C/Assembly payload runs only inside the guest, over the existing

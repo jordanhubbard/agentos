@@ -19,6 +19,10 @@ static bool device_config(aos_x86_host_device_t device, uint32_t *select,
         *select = UINT32_C(0x80003800); /* 00:07.0 */
         *expected = UINT32_C(0x10431af4);
         return true;
+    case AOS_X86_HOST_SECONDARY_BLOCK:
+        *select = UINT32_C(0x80004000); /* 00:08.0 */
+        *expected = UINT32_C(0x10421af4);
+        return true;
     default:
         return false;
     }

@@ -1015,6 +1015,12 @@ test-x86-smp-host:
 	$(BUILD_TMP_DIR)/test_x86_smp
 test-host: test-x86-runner-host
 test-host: test-x86-runner-ownership-host
+test-host: test-blk-pci-media-host
+.PHONY: test-blk-pci-media-host
+test-blk-pci-media-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iplatform/include tests/platform/test_blk_pci_media.c -o $(BUILD_TMP_DIR)/test-blk-pci-media
+	$(BUILD_TMP_DIR)/test-blk-pci-media
 .PHONY: test-x86-runner-ownership-host
 test-x86-runner-ownership-host:
 	@mkdir -p $(BUILD_TMP_DIR)

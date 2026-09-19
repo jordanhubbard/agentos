@@ -9,6 +9,7 @@
 #define AOS_PLATFORM_BLK_HOST_LAYOUT_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #define AGENTOS_HOST_BLK_MMIO_PA         0x0A001000UL
 #define AGENTOS_HOST_BLK_MMIO_VA         0x06000000UL
@@ -50,6 +51,8 @@ typedef struct __attribute__((packed)) {
 #define AOS_BLK_PCI_INFO_OFF             0x40u
 #define AOS_BLK_PCI_INFO_MAGIC           0x50424f41u
 #define AOS_BLK_PCI_REGION_VA(index)     (0x06000000UL + (index) * 0x1000UL)
+#define AOS_BLK_PCI_MEDIA_REGION_VA(media, index) \
+    (AOS_BLK_PCI_REGION_VA(index) + (media) * 0x4000UL)
 typedef struct {
     uint32_t magic;
     uint32_t version;
@@ -58,6 +61,31 @@ typedef struct {
     uint32_t notify_multiplier;
     uint32_t reserved;
 } aos_blk_pci_info_t;
+/* Shared metadata version 3 carries one or two independent PCI media. The
+ * count describes mapped hardware, not a guest-selected media identifier. */
+typedef struct {
+    uint32_t magic, version, count, reserved;
+    aos_blk_pci_info_t media[2];
+} aos_blk_pci_set_t;
+static inline bool aos_blk_pci_info_valid(const aos_blk_pci_info_t *info)
+{
+    if (!info || info->magic != AOS_BLK_PCI_INFO_MAGIC ||
+        info->version != 1u || info->reserved) return false;
+    for (unsigned r = 0; r < 3; r++)
+        if (info->offset[r] >= 4096u || !info->length[r] ||
+            info->length[r] > 4096u - info->offset[r]) return false;
+    return true;
+}
+static inline bool aos_blk_pci_set_valid(const aos_blk_pci_set_t *set)
+{
+    if (!set || set->magic != AOS_BLK_PCI_INFO_MAGIC || set->version != 2u ||
+        !set->count || set->count > 2u || set->reserved) return false;
+    for (unsigned i = 0; i < set->count; i++)
+        if (!aos_blk_pci_info_valid(&set->media[i])) return false;
+    return true;
+}
+_Static_assert(AOS_BLK_PCI_INFO_OFF + sizeof(aos_blk_pci_set_t) < 0x1000u,
+               "PCI media descriptions precede queue memory");
 _Static_assert(AOS_BLK_PCI_INFO_OFF + sizeof(aos_blk_pci_info_t) < 0x1000u,
                "PCI boot description precedes queue memory");
 

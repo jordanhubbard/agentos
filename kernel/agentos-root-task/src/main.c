@@ -842,7 +842,12 @@ static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
-static seL4_CPtr g_x86_blk_frames[AOS_VIRTIO_PCI_REGIONS];
+#ifdef AGENTOS_X86_SECONDARY_BLOCK
+#define X86_HOST_BLOCK_COUNT 2u
+#else
+#define X86_HOST_BLOCK_COUNT 1u
+#endif
+static seL4_CPtr g_x86_blk_frames[X86_HOST_BLOCK_COUNT][AOS_VIRTIO_PCI_REGIONS];
 static seL4_CPtr g_x86_net_frames[AOS_VIRTIO_PCI_REGIONS];
 #ifdef AGENTOS_X86_CC_PCI
 static seL4_CPtr g_x86_cc_frames[AOS_VIRTIO_PCI_REGIONS];
@@ -898,7 +903,7 @@ static bool provision_x86_cc(seL4_CPtr vspace)
 #endif
 #endif
 
-static seL4_Error allocate_block_dma(const aos_blk_pci_info_t *pci)
+static seL4_Error allocate_block_dma(const aos_blk_pci_set_t *pci)
 {
     _Static_assert(AGENTOS_BLK_SHARED_SIZE == (1UL << seL4_ARCH_LargePageBits),
                    "host block DMA layout must match the SDK large frame");
@@ -911,10 +916,10 @@ static seL4_Error allocate_block_dma(const aos_blk_pci_info_t *pci)
     if (err != seL4_NoError) return err;
     agentos_blk_shared_meta_t *meta = (agentos_blk_shared_meta_t *)RT_BLK_SCRATCH_VA;
     *meta = (agentos_blk_shared_meta_t){
-        .magic = AGENTOS_BLK_SHARED_MAGIC, .version = pci ? 2u : 1u,
+        .magic = AGENTOS_BLK_SHARED_MAGIC, .version = pci ? 3u : 1u,
         .paddr = address.paddr, .size = AGENTOS_BLK_SHARED_SIZE,
     };
-    if (pci) *(aos_blk_pci_info_t *)(RT_BLK_SCRATCH_VA + AOS_BLK_PCI_INFO_OFF) = *pci;
+    if (pci) *(aos_blk_pci_set_t *)(RT_BLK_SCRATCH_VA + AOS_BLK_PCI_INFO_OFF) = *pci;
     AGENTOS_MEMORY_FENCE();
     return seL4_ARCH_Page_Unmap(g_blk_shared_frame_cap);
 }
@@ -2348,30 +2353,33 @@ void root_task_main(const seL4_BootInfo *bi)
         }
     }
     dbg_puts("[rt] x86 host network PCI discovery verified\n");
-    aos_virtio_pci_layout_t host_block_layout;
-    unsigned host_block_stage = aos_x86_host_pci_discover(AOS_X86_HOST_BLOCK, &host_block_layout);
-    if (host_block_stage) {
-        dbg_puts("[rt] x86 host block PCI discovery failed stage=");
-        dbg_hex(host_block_stage);
-        dbg_puts("\n");
-        return;
-    }
-    aos_blk_pci_info_t block_pci = {
-        .magic = AOS_BLK_PCI_INFO_MAGIC, .version = 1u,
-        .notify_multiplier = host_block_layout.notify_multiplier,
+    aos_virtio_pci_layout_t host_block_layout[X86_HOST_BLOCK_COUNT];
+    aos_blk_pci_set_t block_pci = {
+        .magic = AOS_BLK_PCI_INFO_MAGIC, .version = 2u,
+        .count = X86_HOST_BLOCK_COUNT,
     };
-    for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
-        dbg_puts("[rt] x86 host block region pa=");
-        dbg_hex(host_block_layout.region[r].paddr);
-        dbg_puts(" length=");
-        dbg_hex(host_block_layout.region[r].length);
-        dbg_puts("\n");
-        block_pci.offset[r] = (uint32_t)(host_block_layout.region[r].paddr & 4095u);
-        block_pci.length[r] = host_block_layout.region[r].length;
-        if (block_pci.length[r] > 4096u - block_pci.offset[r]) {
-            dbg_puts("[rt] block PCI capability exceeds mapped page; refusing startup\n");
+    for (unsigned media = 0; media < X86_HOST_BLOCK_COUNT; media++) {
+        unsigned stage = aos_x86_host_pci_discover(media ?
+            AOS_X86_HOST_SECONDARY_BLOCK : AOS_X86_HOST_BLOCK, &host_block_layout[media]);
+        if (stage) {
+            dbg_puts("[rt] x86 host block PCI discovery failed media=");
+            dbg_hex(media);
+            dbg_puts(" stage=");
+            dbg_hex(stage);
+            dbg_puts("\n");
             return;
         }
+        aos_blk_pci_info_t *info = &block_pci.media[media];
+        *info = (aos_blk_pci_info_t){.magic = AOS_BLK_PCI_INFO_MAGIC, .version = 1u,
+            .notify_multiplier = host_block_layout[media].notify_multiplier};
+        for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+            info->offset[r] = (uint32_t)(host_block_layout[media].region[r].paddr & 4095u);
+            info->length[r] = host_block_layout[media].region[r].length;
+        }
+    }
+    if (!aos_blk_pci_set_valid(&block_pci)) {
+        dbg_puts("[rt] block PCI capability exceeds mapped page; refusing startup\n");
+        return;
     }
     /* Device watermarks advance monotonically. Order all device pages across
      * both drivers, while refusing any page shared between device classes. */
@@ -2389,12 +2397,18 @@ void root_task_main(const seL4_BootInfo *bi)
         g_x86_cc_startup.length[r] = host_cc_layout.region[r].length;
     }
 #endif
-    const aos_virtio_pci_layout_t *layouts[] = {&host_block_layout, &host_net_layout,
+    const aos_virtio_pci_layout_t *layouts[] = {&host_block_layout[0], &host_net_layout,
+#ifdef AGENTOS_X86_SECONDARY_BLOCK
+        &host_block_layout[1],
+#endif
 #ifdef AGENTOS_X86_CC_PCI
         &host_cc_layout,
 #endif
     };
-    seL4_CPtr *frames[] = {g_x86_blk_frames, g_x86_net_frames,
+    seL4_CPtr *frames[] = {g_x86_blk_frames[0], g_x86_net_frames,
+#ifdef AGENTOS_X86_SECONDARY_BLOCK
+        g_x86_blk_frames[1],
+#endif
 #ifdef AGENTOS_X86_CC_PCI
         g_x86_cc_frames,
 #endif
@@ -3510,17 +3524,24 @@ void root_task_main(const seL4_BootInfo *bi)
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
         if (pd->self_svc_id == SVC_ID_VIRTIO_BLK) {
             seL4_Error err = seL4_NoError;
-            for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS && err == seL4_NoError; r++) {
-                seL4_CPtr copy = ut_alloc_slot();
-                err = seL4_NotEnoughMemory;
-                if (copy) {
-                    err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
-                        seL4_CapInitThreadCNode, g_x86_blk_frames[r], 64u, seL4_AllRights);
-                    if (err == seL4_NoError)
-                        err = pd_vspace_map_uncached_device_frame(vspace, copy, AOS_BLK_PCI_REGION_VA(r));
+            for (unsigned media = 0; media < X86_HOST_BLOCK_COUNT && err == seL4_NoError; media++) {
+                for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS && err == seL4_NoError; r++) {
+                    seL4_CPtr copy = ut_alloc_slot();
+                    err = seL4_NotEnoughMemory;
+                    if (copy) {
+                        err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                            seL4_CapInitThreadCNode, g_x86_blk_frames[media][r], 64u, seL4_AllRights);
+                        if (err == seL4_NoError)
+                            err = pd_vspace_map_uncached_device_frame(vspace, copy,
+                                AOS_BLK_PCI_MEDIA_REGION_VA(media, r));
+                    }
                 }
             }
-            if (err != seL4_NoError || !aos_x86_host_pci_enable(AOS_X86_HOST_BLOCK)) {
+            bool enabled = err == seL4_NoError;
+            for (unsigned media = 0; media < X86_HOST_BLOCK_COUNT && enabled; media++)
+                enabled = aos_x86_host_pci_enable(media ?
+                    AOS_X86_HOST_SECONDARY_BLOCK : AOS_X86_HOST_BLOCK);
+            if (!enabled) {
                 dbg_puts("[rt] block PCI mapping/enable failed; refusing driver start\n");
                 continue;
             }
