@@ -104,8 +104,10 @@ endif
 VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(VMM_SLOT).stamp
 ifdef GUEST_INPUT
 VMM_CFLAGS += -DAGENTOS_GUEST_INPUT=1
-GUEST_INPUT_OBJS := $(BUILD_DIR)/vmm_virtio_input.$(VMM_SLOT).o $(BUILD_DIR)/input_queue.$(VMM_SLOT).o
+GUEST_INPUT_OBJS := $(BUILD_DIR)/vmm_virtio_input.$(VMM_SLOT).o $(BUILD_DIR)/input_queue.$(VMM_SLOT).o $(BUILD_DIR)/input_rebind.$(VMM_SLOT).o
 endif
+$(BUILD_DIR)/input_rebind.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/input-virt/rebind_client.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
 $(BUILD_DIR)/vmm_virtio_input.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/input-virt/vmm_virtio_input.c $(VMM_CONFIG_STAMP)
 	clang $(VMM_CFLAGS) -c $< -o $@
 $(BUILD_DIR)/input_queue.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/input-virt/service.c $(VMM_CONFIG_STAMP)

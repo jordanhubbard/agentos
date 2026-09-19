@@ -7,6 +7,17 @@
 
 int main(void)
 {
+    input_virt_rebind_reply_t reply={AOS_INPUT_OK,INPUT_VIRT_REBIND_VERSION,1};
+    assert(aos_input_rebind_reply_valid(&reply,sizeof(reply),1));
+    assert(!aos_input_rebind_reply_valid(NULL,sizeof(reply),1));
+    assert(!aos_input_rebind_reply_valid(&reply,sizeof(reply)-1,1));
+    assert(!aos_input_rebind_reply_valid(&reply,sizeof(reply),0));
+    assert(!aos_input_rebind_reply_valid(&reply,sizeof(reply),2));
+    reply.status=AOS_INPUT_DENIED;
+    assert(!aos_input_rebind_reply_valid(&reply,sizeof(reply),1));
+    reply.status=AOS_INPUT_OK;
+    reply.version++;
+    assert(!aos_input_rebind_reply_valid(&reply,sizeof(reply),1));
     aos_input_frontend_t frontend={0};
     aos_input_client_region_t old={0}, peer={0}, fresh={0};
     aos_input_client_region_t *clients[]={&old,&peer};

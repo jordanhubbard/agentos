@@ -1372,6 +1372,8 @@ test-host: policy-check guest-profile-check lint-source test-integration test-op
 .PHONY: test-input-host
 test-input-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -iquote kernel/agentos-root-task/include tests/platform/test_input_adopt.c platform/input-virt/vmm_virtio_input.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_input_adopt
+	$(BUILD_TMP_DIR)/test_input_adopt
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_input_rebind.c platform/input-virt/service.c platform/input-virt/rebind_service.c -o $(BUILD_TMP_DIR)/test_input_rebind
 	$(BUILD_TMP_DIR)/test_input_rebind
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_input_queue.c platform/input-virt/service.c -o $(ROOT_DIR)build/tmp/test_input_queue
