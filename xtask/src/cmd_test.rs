@@ -602,7 +602,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         args.scenario.is_none() || args.guest_os == "both",
         "a test scenario requires --guest-os both"
     );
-    let scenario_plan = if args.guest_os == "both" {
+    let mut scenario_plan = if args.guest_os == "both" {
         Some(guest_scenario::resolve_alias(
             &repo_root.join("guest-scenarios"),
             &profile_root,
@@ -1095,7 +1095,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         };
         std::fs::write(directory.join(name), format!("{}\n", log_path.display()))?;
     }
-    let ssh_key = if let Some(key) = &args.seeded_ssh_key {
+    let mut ssh_key = if let Some(key) = &args.seeded_ssh_key {
         Some(SshTestKey {
             _temporary_dir: None,
             private_key: key.clone(),
@@ -1107,6 +1107,29 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     } else {
         None
     };
+
+    if let Some(scenario) = &mut scenario_plan {
+        let seeded = scenario
+            .guests
+            .iter()
+            .filter(|guest| guest.profile.seed.is_some())
+            .count();
+        anyhow::ensure!(
+            seeded <= 1,
+            "scenario executor supports one seeded guest identity"
+        );
+        if seeded == 1 {
+            let key = ssh_key
+                .as_mut()
+                .context("scenario seed requires SSH identity")?;
+            key.known_hosts = Some(log_path.with_extension("scenario.known_hosts"));
+            for guest in &mut scenario.guests {
+                if guest.profile.seed.is_some() {
+                    prepare_scenario_seed(&repo_root, guest, key)?;
+                }
+            }
+        }
+    }
 
     // Every runtime profile reaches its emulated NIC through net_virt and
     // net_pd. Stimulate RX even for the focused "emulated" assertion;
@@ -5684,7 +5707,7 @@ fn wait_for_profile_ssh(
     let mut last = String::from("no SSH attempt completed");
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for profile SSH")?;
-        let probe = spawn_ssh_probe(&ssh_key.private_key, ssh.host_port, account)?;
+        let probe = spawn_ssh_probe(&ssh_key.private_key, ssh.host_port, account, None)?;
         let output = probe
             .wait_with_output()
             .context("failed to wait for profile SSH probe")?;
@@ -6302,8 +6325,18 @@ fn spawn_ssh_probe(
     private_key: &Path,
     port: u16,
     user: &str,
+    known: Option<&Path>,
 ) -> anyhow::Result<std::process::Child> {
-    std::process::Command::new("ssh")
+    let mut command = std::process::Command::new("ssh");
+    let identity = SshTestKey {
+        _temporary_dir: None,
+        private_key: private_key.to_path_buf(),
+        public_key: String::new(),
+        known_hosts: known.map(Path::to_path_buf),
+    };
+    apply_test_ssh_identity(&mut command, &identity);
+    command
+        .args(["-o", "ConnectTimeout=30", "-o", "ConnectionAttempts=1"])
         .args([
             "-i",
             private_key
@@ -6312,7 +6345,6 @@ fn spawn_ssh_probe(
             "-p",
             &port.to_string(),
         ])
-        .args(SSH_AUTH_OPTIONS)
         .args(SSH_PROBE_LIVENESS_OPTIONS)
         .args([&format!("{user}@127.0.0.1"), "uname -s"])
         .stdout(Stdio::piped())
@@ -6377,7 +6409,17 @@ fn wait_for_scenario_guest_ssh(
     let mut attempt = 0;
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for profile authenticated SSH")?;
-        let probe = spawn_ssh_probe(&ssh_key.private_key, guest.ssh_host_port, account)?;
+        let known = if guest.profile.seed.is_some() {
+            Some(
+                ssh_key
+                    .known_hosts
+                    .as_deref()
+                    .context("seeded scenario SSH requires pinned identity")?,
+            )
+        } else {
+            None
+        };
+        let probe = spawn_ssh_probe(&ssh_key.private_key, guest.ssh_host_port, account, known)?;
         let output = probe
             .wait_with_output()
             .with_context(|| format!("failed to wait for {} SSH probe", guest.profile.id))?;
@@ -6456,6 +6498,122 @@ fn wait_for_scenario_ssh(
         scenario.id,
         failures.join("; ")
     )
+}
+
+fn prepare_scenario_seed(
+    repo: &Path,
+    guest: &mut ScenarioGuestPlan,
+    key: &SshTestKey,
+) -> anyhow::Result<()> {
+    let seed = guest
+        .profile
+        .seed
+        .as_ref()
+        .context("missing scenario seed contract")?;
+    let qemu = guest
+        .profile
+        .qemu
+        .as_mut()
+        .context("seed requires QEMU profile")?;
+    anyhow::ensure!(
+        qemu.media.iter().filter(|disk| disk.writable).count() == 1,
+        "scenario seed requires exactly one writable disk"
+    );
+    let disk = qemu.media.iter_mut().find(|disk| disk.writable).unwrap();
+    anyhow::ensure!(
+        disk.override_env
+            .iter()
+            .all(|name| std::env::var_os(name).is_none()),
+        "scenario seed rejects writable media overrides"
+    );
+    let parent = repo.join("build/evidence");
+    std::fs::create_dir_all(&parent)?;
+    let directory = tempfile::Builder::new()
+        .prefix("scenario-seed-")
+        .tempdir_in(parent)?
+        .keep();
+    let output = directory.join("seeded.raw");
+    crate::cmd_seed_guest::run(&crate::cmd_seed_guest::SeedGuestArgs {
+        root_ext4: repo.join(&seed.root_ext4),
+        public_key: key.private_key.with_extension("pub"),
+        output: output.clone(),
+        guest_address: guest.ssh_guest_address.parse()?,
+        instance_id: directory
+            .file_name()
+            .unwrap()
+            .to_str()
+            .context("seed directory is not UTF-8")?
+            .into(),
+        disk_raw: Some(repo.join(&seed.disk_raw)),
+        partition_offset: Some(seed.partition_offset),
+    })?;
+    disk.path = output.to_str().context("seed output is not UTF-8")?.into();
+    disk.managed_persistent = true;
+    println!(
+        "[xtask:test] scenario seed for {}: {}",
+        guest.profile.id,
+        directory.display()
+    );
+    Ok(())
+}
+
+fn provision_scenario_guest(
+    socket: &Path,
+    cc: &mut CcClient,
+    guest: &ScenarioGuestPlan,
+    handle: u32,
+    key: &SshTestKey,
+    log: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    if guest.profile.seed.is_some() {
+        // The seed provisions key-only SSH; there is no console shell to send
+        // commands to. Release the single-client CC socket for its boot proof.
+        drop(cc.stream.take());
+        let known = key
+            .known_hosts
+            .as_ref()
+            .context("seeded scenario lacks host-key receipt")?;
+        let proof = seeded_ssh_via_cc(
+            socket,
+            log,
+            &guest.profile,
+            &key.private_key,
+            known.exists().then_some(known.as_path()),
+            guest.ssh_host_port,
+            timeout,
+            qemu,
+            handle,
+        )?;
+        if !known.exists() {
+            std::fs::copy(log.with_extension("known_hosts"), known)?;
+        }
+        *cc = connect_cc_client(socket, Duration::from_secs(30), qemu)?;
+        return Ok(proof);
+    }
+    let console = wait_for_guest_console_login_on_cc(
+        socket,
+        cc,
+        handle,
+        &guest.profile.id,
+        Some(&guest.profile),
+        timeout,
+        qemu,
+        None,
+    )?;
+    let commands = profile_provision_commands(&guest.profile, &key.public_key)?;
+    run_guest_console_commands(
+        socket,
+        cc,
+        handle,
+        &guest.profile.id,
+        Some(&guest.profile),
+        &commands,
+        Duration::from_secs(600),
+        qemu,
+    )?;
+    Ok(console)
 }
 
 fn wait_for_dual_guest_consoles_via_cc(
@@ -6543,25 +6701,14 @@ fn wait_for_dual_guest_consoles_via_cc(
         deferred.profile.id, deferred_handle, deferred_boot_suspend, lead.profile.id
     );
 
-    let lead_console = wait_for_guest_console_login_on_cc(
+    let lead_console = provision_scenario_guest(
         cc_sock,
         &mut boot_cc,
+        lead,
         lead_handle,
-        &lead.profile.id,
-        Some(&lead.profile),
+        ssh_key,
+        &ssh_evidence.join("lead-first.log"),
         timeout.saturating_sub(start.elapsed()),
-        qemu,
-        None,
-    )?;
-    let lead_provision = profile_provision_commands(&lead.profile, &ssh_key.public_key)?;
-    run_guest_console_commands(
-        cc_sock,
-        &mut boot_cc,
-        lead_handle,
-        &lead.profile.id,
-        Some(&lead.profile),
-        &lead_provision,
-        Duration::from_secs(600),
         qemu,
     )?;
     wait_for_scenario_guest_ssh(
@@ -6609,25 +6756,14 @@ fn wait_for_dual_guest_consoles_via_cc(
         deferred.profile.id, deferred_handle, deferred_boot_resume
     );
 
-    let deferred_console = wait_for_guest_console_login_on_cc(
+    let deferred_console = provision_scenario_guest(
         cc_sock,
         &mut boot_cc,
+        deferred,
         deferred_handle,
-        &deferred.profile.id,
-        Some(&deferred.profile),
+        ssh_key,
+        &ssh_evidence.join("deferred-first.log"),
         timeout.saturating_sub(start.elapsed()),
-        qemu,
-        None,
-    )?;
-    let deferred_provision = profile_provision_commands(&deferred.profile, &ssh_key.public_key)?;
-    run_guest_console_commands(
-        cc_sock,
-        &mut boot_cc,
-        deferred_handle,
-        &deferred.profile.id,
-        Some(&deferred.profile),
-        &deferred_provision,
-        Duration::from_secs(600),
         qemu,
     )?;
     resume_guest_via_cc(&mut boot_cc, lead_handle)
@@ -6664,24 +6800,14 @@ fn wait_for_dual_guest_consoles_via_cc(
             "scenario recreation reused a retired or peer handle"
         );
         // Never suspend the peer during reconstruction or replacement boot.
-        wait_for_guest_console_login_on_cc(
+        provision_scenario_guest(
             cc_sock,
             &mut boot_cc,
+            deferred,
             deferred_handle,
-            &deferred.profile.id,
-            Some(&deferred.profile),
+            ssh_key,
+            &ssh_evidence.join("deferred-recreated.log"),
             timeout.saturating_sub(start.elapsed()),
-            qemu,
-            None,
-        )?;
-        run_guest_console_commands(
-            cc_sock,
-            &mut boot_cc,
-            deferred_handle,
-            &deferred.profile.id,
-            Some(&deferred.profile),
-            &deferred_provision,
-            Duration::from_secs(600),
             qemu,
         )?;
         wait_for_scenario_ssh(

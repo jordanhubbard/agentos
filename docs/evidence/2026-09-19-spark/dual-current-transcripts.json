@@ -1,0 +1,16 @@
+{
+  "status": "passed concurrent SSH transcript qualification and full gate",
+  "source_revision": "07d20cc",
+  "source_tree_clean": true,
+  "host": "Spark aarch64 Linux",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "command": "make demo-test gate QEMU_TEST_TIMEOUT=1800; dual scenario timeout 7200 seconds",
+  "make_exit": 0,
+  "proof": "FreeBSD authenticated before and after immediate suspend/resume. Both FreeBSD and Ubuntu authenticated while running concurrently, with exact retained uname outputs FreeBSD and Linux. Both guests were destroyed and retired handles rejected. Full make gate then passed.",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/dual-07d20cc",
+  "full_gate_log_sha256": "82d77d83b8e7a1aa3af7a16a5e6778b2edd3473d421614d281cabeaf4ba93a39",
+  "serial_log_sha256": "395aaa83f899cb2bacb512964275d009c1339d1ff6b7144770283a85032e4e62",
+  "freebsd_stdout_sha256": "44a770f818b497715496d1384b8e35f4a7e75700ed314eaad0e18664ee945563",
+  "linux_stdout_sha256": "533e1007b450ba293f5e2cb35b768cf963d0a74c6943558059086eda254939c2",
+  "limits": "Ubuntu and FreeBSD compatibility proof, not Debian promotion or peer survival across guest recreation. Successful and failed SSH attempts retained with exit status and hashes; no private keys. Does not qualify later source revisions or establish v0.4 completion."
+}

@@ -1,0 +1,17 @@
+schema = 2
+id = "debian-scenario-aarch64"
+status = "runtime"
+extends = "debian-arm64-nocloud.toml"
+aliases = ["debian-scenario"]
+
+[placements.dual-primary]
+ram_size = 0x40000000
+dtb_load_address = 0x7f000000
+
+[[host.test]]
+action = "wait-console"
+args = { marker = "login:" }
+
+[[host.test]]
+action = "wait-ssh"
+args = { account = "debian", marker = "Linux" }
