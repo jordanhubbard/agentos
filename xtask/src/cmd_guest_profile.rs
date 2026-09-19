@@ -1706,9 +1706,15 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
         );
         let ssh = qemu.ssh.as_ref().context("seed requires host.qemu.ssh")?;
         ensure!(
-            ssh.account == "debian" && ssh.guest_address.as_deref() == Some("10.0.2.15"),
-            "NoCloud adapter requires the Debian account and seeded network address"
+            ssh.account == "debian",
+            "NoCloud adapter requires the Debian account"
         );
+        crate::cmd_seed_guest::validate_guest_address(
+            ssh.guest_address
+                .as_deref()
+                .context("NoCloud seed requires a guest address")?
+                .parse()?,
+        )?;
         ensure!(
             host.provision.is_empty(),
             "NoCloud seed cannot also use console provisioning"
@@ -2968,6 +2974,42 @@ mod tests {
             .iter()
             .any(|step| step.action == "build-initramfs-file"));
         assert_eq!(acquire.last().unwrap().action, "extract-arm64-linux-image");
+    }
+
+    #[test]
+    fn nocloud_accepts_a_distinct_guest_address_and_rejects_service_addresses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) = resolve(
+            &root,
+            Path::new("debian-arm64-nocloud.toml"),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let host = profile.host.as_mut().unwrap();
+        host.qemu
+            .as_mut()
+            .unwrap()
+            .ssh
+            .as_mut()
+            .unwrap()
+            .guest_address = Some("10.0.2.16".into());
+        assert!(validate_host(Some(host)).is_ok());
+        host.qemu
+            .as_mut()
+            .unwrap()
+            .ssh
+            .as_mut()
+            .unwrap()
+            .guest_address = Some("10.0.2.2".into());
+        assert!(validate_host(Some(host)).is_err());
+        host.qemu
+            .as_mut()
+            .unwrap()
+            .ssh
+            .as_mut()
+            .unwrap()
+            .guest_address = None;
+        assert!(validate_host(Some(host)).is_err());
     }
 
     #[test]

@@ -550,7 +550,7 @@ build-tools:
 # =============================================================================
 .PHONY: seed-guest-root
 seed-guest-root:
-	@cargo xtask seed-guest --root-ext4 "$(SEED_ROOT_EXT4)" --public-key "$(SEED_PUBLIC_KEY)" --output "$(SEED_OUTPUT)" --instance-id "$(SEED_INSTANCE_ID)" $(if $(SEED_DISK_RAW),--disk-raw "$(SEED_DISK_RAW)" --partition-offset "$(SEED_PARTITION_OFFSET)",)
+	@cargo xtask seed-guest --root-ext4 "$(SEED_ROOT_EXT4)" --public-key "$(SEED_PUBLIC_KEY)" --output "$(SEED_OUTPUT)" --instance-id "$(SEED_INSTANCE_ID)" $(if $(SEED_GUEST_ADDRESS),--guest-address "$(SEED_GUEST_ADDRESS)",) $(if $(SEED_DISK_RAW),--disk-raw "$(SEED_DISK_RAW)" --partition-offset "$(SEED_PARTITION_OFFSET)",)
 
 fetch-guest:
 ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)

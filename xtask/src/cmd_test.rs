@@ -886,6 +886,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             root_ext4: repo_root.join(&seed.root_ext4),
             public_key: key.with_extension("pub"),
             output: output.clone(),
+            guest_address: profile
+                .qemu
+                .as_ref()
+                .context("seed requires QEMU")?
+                .ssh
+                .as_ref()
+                .context("seed requires SSH")?
+                .guest_address
+                .as_deref()
+                .context("seed requires a guest address")?
+                .parse()?,
             instance_id: directory
                 .file_name()
                 .unwrap()
