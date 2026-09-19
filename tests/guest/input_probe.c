@@ -91,11 +91,23 @@ static bool supports(int fd,unsigned type,unsigned code)
 }
 int main(int argc,char **argv)
 {
+    /* Measurement-channel control: no evdev access or injected input. */
+    if (argc==2 && !strcmp(argv[1],"--ssh-control")) {
+        puts("AGENTOS_INPUT_READY"); fflush(stdout);
+        for (unsigned sequence=1;sequence<=20;++sequence) {
+            char line[64],expected[64];
+            snprintf(expected,sizeof(expected),"AGENTOS_INPUT_PING %u\n",sequence);
+            if (!fgets(line,sizeof(line),stdin) || strcmp(line,expected)) return 1;
+            printf("AGENTOS_INPUT_ACK %u\n",sequence); fflush(stdout);
+        }
+        puts("AGENTOS_SSH_CONTROL_PASS receipts=20");
+        return 0;
+    }
     bool backpressure=argc==2 && !strcmp(argv[1],"--backpressure");
     bool gui=argc==2 && !strcmp(argv[1],"--gui");
     bool motion=argc==2 && !strcmp(argv[1],"--gui-pointer");
     bool latency=argc==2 && !strcmp(argv[1],"--gui-latency");
-    if (argc!=1 && !backpressure && !gui && !motion && !latency) { fprintf(stderr,"usage: input-probe [--backpressure|--gui|--gui-pointer|--gui-latency]\n"); return 2; }
+    if (argc!=1 && !backpressure && !gui && !motion && !latency) { fprintf(stderr,"usage: input-probe [--backpressure|--gui|--gui-pointer|--gui-latency|--ssh-control]\n"); return 2; }
     gui=gui || motion || latency;
     /* Native GUI qualification uses its supported F12 physical key and a
      * stationary captured click. The CLI/backpressure recipes retain F13. */
