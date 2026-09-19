@@ -1738,6 +1738,14 @@ test-debian-nocloud-auto:
 		--seed-profile --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: test-debian-managed-recreation
+.PHONY: test-debian-managed-graphics-recreation
+test-debian-managed-graphics-recreation: QEMU_TEST_TIMEOUT = 1800
+test-debian-managed-graphics-recreation: QEMU_TEST_SSH_PORT = 12266
+test-debian-managed-graphics-recreation:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
+		--seed-profile --assert-seeded-recreation --assert-agentos-virtio \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 test-debian-managed-recreation: QEMU_TEST_TIMEOUT = 1800
 test-debian-managed-recreation: QEMU_TEST_SSH_PORT = 12264
 test-debian-managed-recreation:

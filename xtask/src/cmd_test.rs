@@ -621,12 +621,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "automatic seed requires a host.seed profile contract"
     );
     anyhow::ensure!(
-        !args.assert_seeded_recreation
-            || (args.board == "qemu_virt_aarch64"
-                && profile_plan
-                    .as_ref()
-                    .is_some_and(|p| !p.devices.iter().any(|d| d == "gpu" || d == "input"))),
-        "seeded recreation currently requires an ARM profile without graphics/input"
+        !args.assert_seeded_recreation || args.board == "qemu_virt_aarch64",
+        "seeded recreation requires ARM"
     );
     anyhow::ensure!(
         !profile_plan
@@ -1363,6 +1359,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )?;
             if args.assert_seeded_recreation {
                 seeded_recreation_via_cc(
+                    &repo_root,
+                    input_helper.as_deref(),
                     &cc_sock,
                     &log_path,
                     profile_plan.as_ref().context("seeded profile missing")?,
@@ -1690,6 +1688,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             ssh_key.as_ref().context("seeded SSH identity missing")?,
             args.assert_guest_display,
             &mut qemu,
+            0,
         )
         .map(|()| result.as_ref().unwrap().clone());
     }
@@ -1705,7 +1704,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         let mut cc = connect_cc_client(&cc_sock, Duration::from_secs(30), &mut qemu)?;
         cc_send_raw_byte(&mut cc, 0, b'\r')?;
     }
-    if result.is_ok() {
+    if result.is_ok() && !args.assert_seeded_recreation {
         if let Some(helper) = &input_helper {
             result = prove_profile_input(
                 &repo_root,
@@ -1715,6 +1714,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 profile_plan.as_ref().context("input profile missing")?,
                 ssh_key.as_ref().context("input SSH key missing")?,
                 &mut qemu,
+                0,
             );
         }
     }
@@ -3007,6 +3007,8 @@ fn x86_console_host_key(text: &str) -> anyhow::Result<Option<String>> {
 }
 
 fn seeded_recreation_via_cc(
+    repo: &Path,
+    input_helper: Option<&Path>,
     socket: &Path,
     log: &Path,
     profile: &HostProfilePlan,
@@ -3048,6 +3050,9 @@ fn seeded_recreation_via_cc(
             handle != 0 && Some(handle) != retired,
             "reused managed guest handle"
         );
+        // QEMU's CC chardev accepts one client. Each proof owns its connection;
+        // never leave the lifecycle connection open while a proof reconnects.
+        drop(cc);
         seeded_ssh_via_cc(
             socket,
             &round_log,
@@ -3059,7 +3064,10 @@ fn seeded_recreation_via_cc(
             qemu,
             handle,
         )?;
-        cc_send_raw_byte(&mut cc, handle, b'\r')?;
+        {
+            let mut console = connect_cc_client(socket, Duration::from_secs(30), qemu)?;
+            cc_send_raw_byte(&mut console, handle, b'\r')?;
+        }
         let known = round_log.with_extension("known_hosts");
         let identity = SshTestKey {
             _temporary_dir: None,
@@ -3067,7 +3075,27 @@ fn seeded_recreation_via_cc(
             public_key: String::new(),
             known_hosts: Some(known.clone()),
         };
-        prove_seeded_profile_steps(socket, &round_log, profile, &identity, false, qemu)?;
+        prove_seeded_profile_steps(socket, &round_log, profile, &identity, false, qemu, handle)?;
+        if profile.devices.iter().any(|d| d == "gpu") {
+            for extension in ["frame.ppm", "frame.json"] {
+                std::fs::copy(
+                    socket.with_extension(extension),
+                    round_log.with_extension(extension),
+                )?;
+            }
+        }
+        if profile.devices.iter().any(|d| d == "input") {
+            prove_profile_input(
+                repo,
+                socket,
+                &round_log,
+                input_helper.context("managed input helper missing")?,
+                profile,
+                &identity,
+                qemu,
+                handle,
+            )?;
+        }
         let stdout = round_log.with_extension("witness.stdout");
         let stderr = round_log.with_extension("witness.stderr");
         let mut command = seeded_ssh_command(key, port, &known, &ssh.account);
@@ -3088,6 +3116,7 @@ fn seeded_recreation_via_cc(
             "managed disk witness mismatch; see {}",
             stdout.display()
         );
+        cc = connect_cc_client(socket, Duration::from_secs(30), qemu)?;
         if let Some(old) = retired {
             for opcode in [
                 MSG_CC_GUEST_STATUS,
@@ -3243,6 +3272,7 @@ fn prove_seeded_profile_steps(
     key: &SshTestKey,
     display: bool,
     qemu: &mut Child,
+    handle: u32,
 ) -> anyhow::Result<()> {
     let ssh = profile
         .qemu
@@ -3303,12 +3333,12 @@ fn prove_seeded_profile_steps(
         );
         let mut cc = connect_cc_client(socket, Duration::from_secs(30), qemu)?;
         if display {
-            suspend_guest_via_cc(&mut cc, 0)?;
+            suspend_guest_via_cc(&mut cc, handle)?;
         }
         let proof = (|| -> anyhow::Result<()> {
             println!(
                 "[xtask:test] {}",
-                capture_guest_frame(&mut cc, 0, socket, Some(profile))?
+                capture_guest_frame(&mut cc, handle, socket, Some(profile))?
             );
             if display {
                 let expected = std::fs::read(socket.with_extension("frame.ppm"))?;
@@ -3327,7 +3357,7 @@ fn prove_seeded_profile_steps(
             Ok(())
         })();
         let resumed = if display {
-            resume_guest_via_cc(&mut cc, 0).map(|_| ())
+            resume_guest_via_cc(&mut cc, handle).map(|_| ())
         } else {
             Ok(())
         };
@@ -5776,6 +5806,7 @@ fn prove_profile_input(
     profile: &HostProfilePlan,
     key: &SshTestKey,
     qemu: &mut Child,
+    handle: u32,
 ) -> anyhow::Result<String> {
     for mode in [
         InputProofMode::Events,
@@ -5784,7 +5815,7 @@ fn prove_profile_input(
         InputProofMode::Disconnect,
         InputProofMode::PausedDisconnect,
     ] {
-        prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, mode)?;
+        prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, mode, handle)?;
     }
     Ok(
         "exact guest input batches, held-state releases and paused-guest backpressure passed"
@@ -5833,10 +5864,11 @@ fn input_session_result(
     release: bool,
     device: &str,
     events: &[&str],
+    handle: u32,
 ) -> anyhow::Result<u32> {
     ensure_qemu_running(qemu, "submitting guest input")?;
     let query = input_session_request(release, device, events)?;
-    let reply = cc.call(0x261e, 0, 0, 0, &query)?;
+    let reply = cc.call(0x261e, handle, 0, 0, &query)?;
     validate_input_session_reply(&reply, &query)
 }
 
@@ -5910,9 +5942,10 @@ fn prove_paused_input_release(
     socket: &Path,
     qemu: &mut Child,
     disconnect: bool,
+    handle: u32,
 ) -> anyhow::Result<[usize; 2]> {
     let mut cc = CcClient::connect(socket)?;
-    suspend_guest_via_cc(&mut cc, 0)?;
+    suspend_guest_via_cc(&mut cc, handle)?;
     let result = (|| {
         let mut accepted = [0usize; 2];
         for (device, (name, code, rejected_code)) in
@@ -5927,7 +5960,7 @@ fn prove_paused_input_release(
                 let events: Vec<&str> = (0..repeats).flat_map(|_| ["1", *code, "1"]).collect();
                 let mut blocked = false;
                 for _ in 0..64 {
-                    if input_session_result(&mut cc, qemu, false, name, &events)? == 3 {
+                    if input_session_result(&mut cc, qemu, false, name, &events, handle)? == 3 {
                         blocked = true;
                         break;
                     }
@@ -5938,12 +5971,19 @@ fn prove_paused_input_release(
             anyhow::ensure!(accepted[device] > 0, "{name} accepted no held-state input");
             for _ in 0..if disconnect { 0 } else { 2 } {
                 anyhow::ensure!(
-                    input_session_result(&mut cc, qemu, true, name, &[])? == 0,
+                    input_session_result(&mut cc, qemu, true, name, &[], handle)? == 0,
                     "{name} release was not retained"
                 );
             }
             anyhow::ensure!(
-                input_session_result(&mut cc, qemu, false, name, &["1", rejected_code, "1"])? == 3,
+                input_session_result(
+                    &mut cc,
+                    qemu,
+                    false,
+                    name,
+                    &["1", rejected_code, "1"],
+                    handle
+                )? == 3,
                 "new {name} input bypassed pending release"
             );
         }
@@ -5954,7 +5994,8 @@ fn prove_paused_input_release(
             cc = CcClient::connect(socket)?;
             for (name, code) in [("keyboard", "184"), ("pointer", "273")] {
                 anyhow::ensure!(
-                    input_session_result(&mut cc, qemu, false, name, &["1", code, "1"])? == 3,
+                    input_session_result(&mut cc, qemu, false, name, &["1", code, "1"], handle)?
+                        == 3,
                     "reconnect bypassed pending {name} release"
                 );
             }
@@ -5966,7 +6007,7 @@ fn prove_paused_input_release(
         if cc.stream.is_none() {
             cc = CcClient::connect(socket)?;
         }
-        resume_guest_via_cc(&mut cc, 0)
+        resume_guest_via_cc(&mut cc, handle)
     })();
     if let Err(error) = &resumed {
         eprintln!("[xtask:test] paused input cleanup could not resume guest: {error:#}");
@@ -5985,6 +6026,7 @@ fn prove_profile_input_pass(
     key: &SshTestKey,
     qemu: &mut Child,
     mode: InputProofMode,
+    handle: u32,
 ) -> anyhow::Result<String> {
     let ssh = profile
         .qemu
@@ -6057,6 +6099,7 @@ fn prove_profile_input_pass(
             socket,
             qemu,
             mode == InputProofMode::PausedDisconnect,
+            handle,
         )?)
     } else {
         None
@@ -6083,6 +6126,7 @@ fn prove_profile_input_pass(
                 releasing,
                 batch[0],
                 if releasing { &[] } else { &batch[1..] },
+                handle,
             )? == 0,
             "guest input was not accepted"
         );
@@ -6102,6 +6146,7 @@ fn prove_profile_input_pass(
         .with_context(|| format!("input probe failed; see {}", stderr_path.display()))?;
     let receipt = serde_json::json!({
         "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
+        "guest_handle": handle,
         "agentos_revision": agentos_revision(repo)?, "source_tree_clean": agentos_worktree_clean(repo)?,
         "helper_sha256": sha256_bytes(&std::fs::read(helper)?),
         "keyboard_events": 4, "pointer_events": if mode.paused() { 4 } else { 7 },
