@@ -1003,6 +1003,12 @@ test-x86-smp-host:
 		-o $(BUILD_TMP_DIR)/test_x86_smp
 	$(BUILD_TMP_DIR)/test_x86_smp
 test-host: test-x86-runner-host
+test-host: test-x86-runner-ownership-host
+.PHONY: test-x86-runner-ownership-host
+test-x86-runner-ownership-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iplatform/include tests/platform/test_x86_runner_ownership.c -o $(BUILD_TMP_DIR)/test-x86-runner-ownership
+	$(BUILD_TMP_DIR)/test-x86-runner-ownership
 .PHONY: test-x86-runner-host
 test-x86-runner-host:
 	@mkdir -p $(BUILD_TMP_DIR)

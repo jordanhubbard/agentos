@@ -926,10 +926,14 @@ static seL4_CPtr g_pd_notifications[SYSTEM_MAX_PDS];
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
 static seL4_CPtr g_x86_vtx_proof_endpoint = seL4_CapNull;
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-static seL4_CPtr g_x86_runner_tcb = seL4_CapNull;
-static uint32_t g_x86_runner_index;
-static seL4_CPtr g_x86_ap_runner_tcb=seL4_CapNull;
-static uint32_t g_x86_ap_runner_index;
+#include <platform/x86_runner_ownership.h>
+static aos_x86_runner_owner_t g_x86_runner_owners[] = {
+    {.coordinator = SVC_ID_GUEST_VMM_PRIMARY,
+     .service = {SVC_ID_X86_RUNNER, SVC_ID_X86_AP_RUNNER}},
+    {.coordinator = SVC_ID_GUEST_VMM_SECONDARY,
+     .service = {SVC_ID_X86_SECONDARY_RUNNER, SVC_ID_X86_SECONDARY_AP_RUNNER}},
+};
+#define X86_RUNNER_OWNER_COUNT (sizeof(g_x86_runner_owners) / sizeof(g_x86_runner_owners[0]))
 #endif
 #endif
 #ifdef AGENTOS_LOG_RINGS
@@ -1775,22 +1779,24 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
 {
     /* The runner is provisioned first with its own native address space and
      * IPC buffer. Only its owning coordinator receives this invocation cap. */
-    if (g_x86_runner_tcb == seL4_CapNull || g_x86_ap_runner_tcb==seL4_CapNull)
+    aos_x86_runner_owner_t *runners = aos_x86_runner_owner(
+        g_x86_runner_owners, X86_RUNNER_OWNER_COUNT, pd->self_svc_id);
+    if (!runners || !runners->tcb[0] || !runners->tcb[1])
         return seL4_InvalidCapability;
-    vmm_tcb = g_x86_runner_tcb;
-    seL4_CPtr runner_ep = ep_alloc_for_service(SVC_ID_X86_RUNNER);
+    vmm_tcb = runners->tcb[0];
+    seL4_CPtr runner_ep = ep_alloc_for_service(runners->service[0]);
     if (runner_ep == seL4_CapNull) return seL4_NotEnoughMemory;
     seL4_Error runner_err = seL4_CNode_Mint(pd_cnode,AOS_X86_RUNNER_ENDPOINT_CAP,
         pd->cnode_size_bits,seL4_CapInitThreadCNode,runner_ep,64u,
         seL4_CapRights_new(1u,0u,0u,1u),AOS_X86_RUNNER_OWNER_BADGE);
     if (runner_err != seL4_NoError) return runner_err;
-    runner_ep=ep_alloc_for_service(SVC_ID_X86_AP_RUNNER);
+    runner_ep=ep_alloc_for_service(runners->service[1]);
     if (runner_ep==seL4_CapNull) return seL4_NotEnoughMemory;
     runner_err=seL4_CNode_Mint(pd_cnode,AOS_X86_AP_RUNNER_ENDPOINT_CAP,
         pd->cnode_size_bits,seL4_CapInitThreadCNode,runner_ep,64u,
         seL4_CapRights_new(1u,0u,0u,1u),AOS_X86_RUNNER_OWNER_BADGE);
     if (runner_err!=seL4_NoError) return runner_err;
-    if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY ||
+    if (!pd_is_guest_vmm(pd) ||
         pd->cnode_size_bits != AOS_GUEST_RAM_CNODE_BITS ||
         (uintptr_t)_binary_x86_firmware_bin_end -
         (uintptr_t)_binary_x86_firmware_bin_start != AOS_X86_FIRMWARE_BYTES) {
@@ -1907,15 +1913,15 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
     err = seL4_CNode_Move(pd_cnode,AOS_X86_VCPU_POOL_CAP,
         (uint8_t)pd->cnode_size_bits,seL4_CapInitThreadCNode,cpu_pool,64u);
     if (err != seL4_NoError) return err;
-    err=seL4_X86_VCPU_SetTCB(objects[6],g_x86_ap_runner_tcb);
+    err=seL4_X86_VCPU_SetTCB(objects[6],runners->tcb[1]);
     if (err!=seL4_NoError) return err;
-    err=seL4_TCB_SetEPTRoot(g_x86_ap_runner_tcb,objects[1]);
+    err=seL4_TCB_SetEPTRoot(runners->tcb[1],objects[1]);
     if (err!=seL4_NoError) return err;
     err=seL4_CNode_Copy(pd_cnode,AOS_GUEST_VCPU_CAP_BASE+1u,pd->cnode_size_bits,
         seL4_CapInitThreadCNode,objects[6],64u,seL4_AllRights);
     if (err!=seL4_NoError) return err;
     err=seL4_CNode_Copy(pd_cnode,AOS_X86_AP_RUNNER_TCB_CAP,pd->cnode_size_bits,
-        seL4_CapInitThreadCNode,g_x86_ap_runner_tcb,64u,seL4_AllRights);
+        seL4_CapInitThreadCNode,runners->tcb[1],64u,seL4_AllRights);
     if (err!=seL4_NoError) return err;
     err=seL4_CNode_Move(pd_cnode,AOS_X86_AP_VCPU_POOL_CAP,pd->cnode_size_bits,
         seL4_CapInitThreadCNode,ap_pool,64u);
@@ -2809,7 +2815,9 @@ void root_task_main(const seL4_BootInfo *bi)
                                      pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
             const bool cc_service=pd->self_svc_id==SVC_ID_CC_PD;
             const bool execution_runner=pd->self_svc_id==SVC_ID_X86_RUNNER ||
-                                        pd->self_svc_id==SVC_ID_X86_AP_RUNNER;
+                                        pd->self_svc_id==SVC_ID_X86_AP_RUNNER ||
+                                        pd->self_svc_id==SVC_ID_X86_SECONDARY_RUNNER ||
+                                        pd->self_svc_id==SVC_ID_X86_SECONDARY_AP_RUNNER;
             const bool frequent_refills=frame_service || cc_service || execution_runner
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
                 || pd_is_guest_vmm(pd)
@@ -3991,16 +3999,19 @@ void root_task_main(const seL4_BootInfo *bi)
              * normal fault endpoint. Fail immediately on a native VMM fault
              * instead of silently blocking both the VMM and test client. */
             seL4_CPtr fault_report = ut_alloc_slot();
-            if (fault_report == seL4_CapNull ||
+            aos_x86_runner_owner_t *runners = aos_x86_runner_owner(
+                g_x86_runner_owners, X86_RUNNER_OWNER_COUNT, pd->self_svc_id);
+            if (!runners || !runners->tcb[0] || !runners->tcb[1] ||
+                fault_report == seL4_CapNull ||
                 seL4_CNode_Mint(seL4_CapInitThreadCNode, fault_report, 64u,
                     seL4_CapInitThreadCNode, g_x86_vtx_proof_endpoint, 64u,
                     seL4_AllRights, AOS_X86_LIFECYCLE_FAULT_BADGE) != seL4_NoError ||
                 seL4_TCB_SetSchedParams(tr.tcb_cap, seL4_CapInitThreadTCB,
                     255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError ||
-                seL4_TCB_SetSchedParams(g_x86_runner_tcb, seL4_CapInitThreadTCB,
-                    255u, 250u, PD_SLOT_SC(g_x86_runner_index), fault_report) != seL4_NoError ||
-                seL4_TCB_SetSchedParams(g_x86_ap_runner_tcb, seL4_CapInitThreadTCB,
-                    255u, 250u, PD_SLOT_SC(g_x86_ap_runner_index), fault_report) != seL4_NoError) {
+                seL4_TCB_SetSchedParams(runners->tcb[0], seL4_CapInitThreadTCB,
+                    255u, 250u, PD_SLOT_SC(runners->pd_index[0]), fault_report) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(runners->tcb[1], seL4_CapInitThreadTCB,
+                    255u, 250u, PD_SLOT_SC(runners->pd_index[1]), fault_report) != seL4_NoError) {
                 dbg_puts("[rt] lifecycle native fault reporter setup failed\n");
                 return;
             }
@@ -4053,13 +4064,15 @@ void root_task_main(const seL4_BootInfo *bi)
             } else {
                 dbg_puts("[rt] pd started ok\n");
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
-                if (reg_err == seL4_NoError && pd->self_svc_id == SVC_ID_X86_RUNNER) {
-                    g_x86_runner_tcb = tr.tcb_cap;
-                    g_x86_runner_index = i;
-                }
-                if (reg_err==seL4_NoError && pd->self_svc_id==SVC_ID_X86_AP_RUNNER) {
-                    g_x86_ap_runner_tcb=tr.tcb_cap;
-                    g_x86_ap_runner_index=i;
+                if (reg_err == seL4_NoError &&
+                    (pd->self_svc_id == SVC_ID_X86_RUNNER ||
+                     pd->self_svc_id == SVC_ID_X86_AP_RUNNER ||
+                     pd->self_svc_id == SVC_ID_X86_SECONDARY_RUNNER ||
+                     pd->self_svc_id == SVC_ID_X86_SECONDARY_AP_RUNNER) &&
+                    !aos_x86_runner_register(g_x86_runner_owners,
+                        X86_RUNNER_OWNER_COUNT, pd->self_svc_id, tr.tcb_cap, i)) {
+                    dbg_puts("[rt] x86 runner ownership registration failed; stopping boot\n");
+                    return;
                 }
 #endif
                 if (reg_err == seL4_NoError && inspect_view.thread_count < AOS_INSPECT_MAX_THREADS) {
