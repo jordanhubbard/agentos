@@ -20,6 +20,18 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+The firmware coordinator now retains a separate native runner sequence,
+entry/exit snapshot, timer-initialization state and LAPIC/startup record for
+each of its two provisioned CPU contexts. VMCS and register operations use
+the selected context's VCPU capability. Selection rejects an outstanding
+runner call, and control transitions require both runners to be quiescent.
+Destroy retires both contexts' saved guest state; reconstruction initializes
+fresh startup state while preserving the persistent executors' IPC sequences.
+The second-runner target qualification uses this same selection and entry
+path and checks bootstrap-context preservation and AP snapshot retirement.
+Normal scheduling still selects only the bootstrap CPU; INIT/SIPI and
+multi-CPU scheduling integration remain pending.
+
 The x86 ACPI bundle builder now derives MADT/SSDT lengths, root-table
 relocations and fw_cfg file sizes from an explicitly supplied topology.
 The firmware CPU-count fields use that same bundle. CPUID now has a bounded
