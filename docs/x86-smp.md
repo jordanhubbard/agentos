@@ -43,6 +43,14 @@ segfault, general-protection and kernel-oops reports even if a login prompt
 follows. The initial two-generation bring-up at `1f5fbe1` passed the earlier
 login/SSH checks but reported a `udev-worker` segfault on CPU 1 in the second
 generation; that result is not accepted as healthy SMP qualification.
+The strict gate at `4a7c8b0` also rejected a CPU-1 userspace segfault, in the
+dynamic loader during first-generation boot. The workload was not reached.
+The [failure receipt](evidence/2026-09-18-spark/x86-smp-failure.json) records
+the executable image and console hashes. Loader, libc and systemd-generator
+files match the earlier seeded disk; this does not establish runtime memory
+correctness. A journal-recovered copy of that earlier disk is the next
+controlled qualification input. The failure's cause remains unconfirmed.
+
 Native workload acceptance is pending;
 the first two-CPU bring-up exposed the private CMOS warm-start marker, which
 is now emulated.
