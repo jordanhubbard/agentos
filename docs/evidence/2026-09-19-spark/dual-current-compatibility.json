@@ -1,0 +1,16 @@
+{
+  "status": "passed canonical dual-guest test",
+  "source_revision": "6df47ad94e9385f5eb406cc7cc604edd6b20be88",
+  "source_tree_clean": true,
+  "host": "Spark aarch64 Linux",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "command": "make demo-test",
+  "effective_timeout_seconds": 7200,
+  "make_exit": 0,
+  "scenario": "dual-release-aarch64",
+  "proof": "Manager created FreeBSD handle 1 and Ubuntu handle 2. Both consoles completed exact probes and provisioning. FreeBSD authenticated before and after immediate suspend/resume. Both guests then answered concurrent public-key SSH uname probes with their profile-required kernel names in the same running agentOS image. Both guests were destroyed successfully.",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/dual-6df47ad",
+  "test_log_sha256": "8d6da458b4b1c4e3778601a8a514cab0acc086539460e0edddce9a74148a2458",
+  "serial_log_sha256": "f29c1b385fdb3e088ca408407c0bd6fae0400eaf375e509e4ad8d1d4cb9397e4",
+  "limits": "Canonical Ubuntu/FreeBSD regression proof; not Debian baseline promotion, concurrent persistent writable disks, peer graphics/input reconstruction, final release revision or v0.4 completion. Harness assertions and serial log are retained, but this harness revision does not retain raw successful SSH stdout required for final release transcripts."
+}
