@@ -1007,6 +1007,15 @@ test-x86-profile-host:
 test-host: test-virtio-host-transport
 test-host: test-virtio-pci-caps
 test-host: test-cc-transport-host
+test-host: test-cc-serial-control-host
+
+.PHONY: test-cc-serial-control-host
+test-cc-serial-control-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-I platform/include tests/platform/test_cc_serial_control.c \
+		services/command-console/cc_serial_control.c -o $(BUILD_TMP_DIR)/test_cc_serial_control
+	$(BUILD_TMP_DIR)/test_cc_serial_control
 
 .PHONY: test-cc-transport-host
 test-cc-transport-host:
