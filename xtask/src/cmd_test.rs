@@ -3003,7 +3003,13 @@ fn prove_seeded_profile_steps(
             .stdout(std::fs::File::create(&stdout)?)
             .stderr(std::fs::File::create(&stderr)?);
         let mut child = ChildGuard::new(command.spawn()?);
-        wait_input_child(&mut child, qemu, 200)?;
+        wait_qualification_child(&mut child, qemu, 200).with_context(|| {
+            format!(
+                "profile SSH step {index} failed; stdout: {}; stderr: {}",
+                stdout.display(),
+                stderr.display()
+            )
+        })?;
         anyhow::ensure!(
             std::fs::metadata(&stdout)?.len() <= 4096,
             "profile SSH output exceeds 4096 bytes; see {}",
@@ -5398,17 +5404,24 @@ fn prove_profile_ssh(
     )
 }
 
-fn wait_input_child(child: &mut Child, qemu: &mut Child, seconds: u64) -> anyhow::Result<()> {
+fn wait_qualification_child(
+    child: &mut Child,
+    qemu: &mut Child,
+    seconds: u64,
+) -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
-        anyhow::ensure!(qemu.try_wait()?.is_none(), "QEMU exited during input proof");
+        anyhow::ensure!(
+            qemu.try_wait()?.is_none(),
+            "QEMU exited during qualification"
+        );
         if let Some(status) = child.try_wait()? {
-            anyhow::ensure!(status.success(), "input proof process failed: {status}");
+            anyhow::ensure!(status.success(), "qualification process failed: {status}");
             return Ok(());
         }
         anyhow::ensure!(
             Instant::now() < deadline,
-            "input proof process deadline expired"
+            "qualification process deadline expired"
         );
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -5683,7 +5696,8 @@ fn prove_profile_input_pass(
     let mut upload = ChildGuard::new(command(
         "timeout 120 sh -c 'umask 077; rm -f /tmp/agentos-input-probe && cat > /tmp/agentos-input-probe && chmod 700 /tmp/agentos-input-probe'"
     )?.stdin(Stdio::from(std::fs::File::open(helper)?)).stdout(Stdio::null()).spawn()?);
-    wait_input_child(&mut upload, qemu, 150)?;
+    wait_qualification_child(&mut upload, qemu, 150)
+        .with_context(|| format!("input probe upload failed; see {}", stderr_path.display()))?;
     let mut probe = ChildGuard::new(
         command(if mode == InputProofMode::Backpressure {
             "timeout 240 /tmp/agentos-input-probe --backpressure"
@@ -5753,7 +5767,12 @@ fn prove_profile_input_pass(
                 .spawn()?,
         );
         // agentctl validates the exact response and never retries input batches.
-        wait_input_child(&mut submit, qemu, 30)?;
+        wait_qualification_child(&mut submit, qemu, 30).with_context(|| {
+            format!(
+                "input batch submission failed; see {}",
+                stderr_path.display()
+            )
+        })?;
     }
     expect_input_probe_line(
         &receive,
@@ -5766,7 +5785,8 @@ fn prove_profile_input_pass(
         },
         120,
     )?;
-    wait_input_child(&mut probe, qemu, 15)?;
+    wait_qualification_child(&mut probe, qemu, 15)
+        .with_context(|| format!("input probe failed; see {}", stderr_path.display()))?;
     let receipt = serde_json::json!({
         "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
         "agentos_revision": agentos_revision(repo)?, "source_tree_clean": agentos_worktree_clean(repo)?,
