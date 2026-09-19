@@ -1,0 +1,18 @@
+{
+  "schema": "agentos.x86_secondary_harness.v1",
+  "date": "2026-09-19",
+  "code_revision": "1b4094d4f45fd083be45eba49032ac8475223aea",
+  "source_tree_clean": true,
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "gate_command": "make gate",
+  "gate_exit": 0,
+  "gate_log_sha256": "8e8f1ca36679a85d4e303ee9da7d61b13e62866e91c0b17b4c8a3450f6222b18",
+  "host_tests": "116 Rust unit tests and two integration tests passed",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership",
+  "limitations": [
+    "Local gate does not exercise native Intel two-disk initialization",
+    "Second disk initialization does not prove second guest I/O",
+    "Concurrent guests and independent persistent storage remain unqualified",
+    "This is not final frozen release qualification"
+  ]
+}
