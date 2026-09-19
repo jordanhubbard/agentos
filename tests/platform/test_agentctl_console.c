@@ -1,0 +1,73 @@
+/* Console bytes must survive the public CLI, including non-text data. */
+#define main agentctl_main
+#include "../../tools/agentctl/agentctl.c"
+#undef main
+#include <assert.h>
+#include <sys/wait.h>
+
+static void serve(int fd, unsigned mode)
+{
+    cc_req_wire_t req;
+    assert(read_full(fd, &req, sizeof(req)));
+    assert(req.opcode == MSG_CC_LOG_STREAM && req.mr[0] == 7 &&
+           req.mr[1] == 19 && req.mr[2] == 0);
+    cc_reply_wire_t reply = {.mr = {CC_OK, 4096, 0, 0}};
+    for (unsigned i = 0; i < sizeof(reply.shmem); ++i) reply.shmem[i] = (uint8_t)i;
+    if (mode == 1) reply.mr[1] = 0;
+    if (mode == 2) reply.mr[1] = 4097;
+    if (mode == 3) reply.mr[0] = CC_ERR_RELAY_FAULT;
+    assert(write_full(fd, &reply, mode == 4 ? 20 : sizeof(reply)));
+    close(fd);
+}
+
+int main(void)
+{
+    for (unsigned mode = 0; mode < 5; ++mode) {
+        int fds[2];
+        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+        fflush(stdout);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (!child) { close(fds[0]); serve(fds[1], mode); _exit(0); }
+        close(fds[1]);
+        FILE *capture = tmpfile();
+        assert(capture);
+        int saved = dup(STDOUT_FILENO);
+        assert(saved >= 0 && dup2(fileno(capture), STDOUT_FILENO) >= 0);
+        g_stream_fd = fds[0];
+        char *args[] = {"agentctl", "log-stream", "7", "19"};
+        assert(agentctl_main(4, args) == (mode < 2 ? 0 : 1));
+        assert(fflush(stdout) == 0);
+        assert(dup2(saved, STDOUT_FILENO) >= 0);
+        close(saved);
+        close(fds[0]);
+        g_stream_fd = -1;
+        rewind(capture);
+        char output[8300] = {0};
+        size_t length = fread(output, 1, sizeof(output) - 1, capture);
+        assert(!ferror(capture) && feof(capture));
+        fclose(capture);
+        if (mode == 0) {
+            const char *prefix = "{\"mr\":[0,4096,0,0],\"data_hex\":\"";
+            size_t start = strlen(prefix);
+            assert(!strncmp(output, prefix, start));
+            const char *hex = "0123456789abcdef";
+            for (unsigned i = 0; i < 4096; ++i) {
+                assert(output[start + 2*i] == hex[(i & 255) >> 4]);
+                assert(output[start + 2*i + 1] == hex[i & 15]);
+            }
+            assert(!strcmp(output + start + 8192, "\"}\n"));
+        } else if (mode == 1) {
+            assert(!strcmp(output, "{\"mr\":[0,0,0,0],\"data_hex\":\"\"}\n"));
+        } else if (mode == 3) {
+            char expected[80];
+            snprintf(expected, sizeof(expected), "{\"mr\":[%u,4096,0,0]}\n", CC_ERR_RELAY_FAULT);
+            assert(!strcmp(output, expected));
+        } else {
+            assert(length == 0);
+        }
+        int status;
+        assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && !WEXITSTATUS(status));
+    }
+    puts("PASS: console CLI preserves every byte and rejects invalid replies");
+}

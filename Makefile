@@ -1247,7 +1247,7 @@ test-x86-acpi-aml: test-x86-acpi-host test-x86-acpi-loader-host
 	@rg -q '\[Integer\] = 0000000000000010' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '\[Integer\] = 000000000000001F' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '"ACPI0007"' $(BUILD_TMP_DIR)/x86-cpus-eval.log
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-ramfb-host test-display-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-agentctl-console-host test-ramfb-host test-display-host
 
 .PHONY: test-display-host
 .PHONY: test-display-init
@@ -1315,6 +1315,12 @@ guest-frame-pattern:
 host-frame-pattern:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -O2 -std=c11 -Wall -Wextra -Werror tests/guest/frame_pattern.c -o $(BUILD_TMP_DIR)/host-frame-pattern
+
+.PHONY: test-agentctl-console-host
+test-agentctl-console-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_console
+	$(BUILD_TMP_DIR)/test_agentctl_console
 
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
