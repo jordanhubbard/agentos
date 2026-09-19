@@ -1,0 +1,17 @@
+{
+  "status": "passed managed Debian recreation and persistence proof",
+  "source_revision": "6df47ad94e9385f5eb406cc7cc604edd6b20be88",
+  "source_tree_clean": true,
+  "host": "Spark aarch64 Linux",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "command": "make test-debian-managed-recreation gate QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12264",
+  "scope": "Focused managed Debian test succeeded; Make advanced to the broader gate, still running when this receipt was written",
+  "profile": "debian-arm64-nocloud.toml",
+  "proof": "Handle 1 authenticated with its console-enrolled Ed25519 host key, reported aarch64, synced an exact unique disk witness and was destroyed. Fresh handle 2 authenticated against the original pinned host identity, reported aarch64, read the identical witness without rewriting it, rejected the retired handle and was destroyed. Canonical host-backed VirtIO net, block and console assertions passed.",
+  "witness": "managed-agentos-qemu-NsCJq1",
+  "host_identity_check": "First and second known_hosts receipts byte-identical; second SSH explicitly pinned the first receipt's key",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/arm-debian-managed-6df47ad",
+  "managed_test_log_sha256": "fb11e01f4340fe175e86eae8cf13d797a4cbb462f6966489a44e4081da49b58c",
+  "serial_log_sha256": "215f23304a635f37574b5d94ca72f91e6d3fbf675272556cdf4e3fac00987a4a",
+  "limits": "One ARM Debian guest recreated sequentially. Does not prove graphics/input reconstruction, peer isolation, concurrent writable storage, orderly guest shutdown, final integrated release revision or v0.4 completion. Archive includes raw console, SSH and witness outputs and public host-key receipts, not private keys or disk contents."
+}
