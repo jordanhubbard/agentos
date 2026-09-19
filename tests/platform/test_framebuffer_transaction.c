@@ -61,6 +61,7 @@ int main(void)
         if (prefix<FB_REBIND_FRAMES)
             assert(aos_fb_rebind_commit(&c,&stage,badge,&q,queue,arena)==FB_REBIND_BAD_STATE);
         assert(aos_fb_rebind_aborted(&c,&stage,badge,&q)==FB_REBIND_OK);
+        assert(aos_fb_rebind_aborted(&c,&stage,badge,&q)==FB_REBIND_OK);
         assert(!stage.next_frame && !stage.generation && c.generation==prefix && !c.region);
         assert(aos_fb_rebind_staged(&c,&stage,badge,&q)==FB_REBIND_BAD_STATE);
     }
@@ -79,5 +80,10 @@ int main(void)
     assert(aos_fb_rebind_staged(&c,&stage,badge,&q)==FB_REBIND_BAD_STATE);
     free(queue);
     free(arena);
+    c=(aos_fb_client_t){.retired=1,.next_handle=1};
+    stage=(aos_fb_rebind_t){0};
+    q=(fb_rebind_req_t){FB_REBIND_VERSION,0,1,0};
+    assert(aos_fb_rebind_aborted(&c,&stage,badge,&q)==FB_REBIND_OK);
+    assert(c.generation==1 && c.retired && !c.region);
     puts("PASS: graphics transactions reject partial commits, wrong owners, out-of-order stages and replay");
 }

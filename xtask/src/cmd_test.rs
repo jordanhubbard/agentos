@@ -1424,7 +1424,42 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                         "destroyed managed guest opcode {opcode:#x} returned {}, expected bad handle", reply.mr[0]
                     );
                 }
-                Ok(format!("{proof}; explicit manager CREATE/BOOT, console I/O, destruction and stale handle rejection passed"))
+                let recreated = create_guest_via_cc_wait(
+                    &mut cc,
+                    profile.control_type as u8,
+                    VIBEOS_ARCH_AARCH64,
+                    64,
+                    &profile.id,
+                    timeout,
+                    &mut qemu,
+                )?;
+                anyhow::ensure!(
+                    recreated != 0 && recreated != handle,
+                    "recreation reused the retired public handle"
+                );
+                let second_proof = wait_for_guest_console_login_on_cc(
+                    &cc_sock,
+                    &mut cc,
+                    recreated,
+                    args.guest_os.as_str(),
+                    Some(profile),
+                    timeout,
+                    &mut qemu,
+                    None,
+                )?;
+                for opcode in [
+                    MSG_CC_GUEST_STATUS,
+                    MSG_CC_RESUME_GUEST,
+                    MSG_CC_SUSPEND_GUEST,
+                ] {
+                    let reply = cc.call(opcode, handle, 0, 0, &[])?;
+                    anyhow::ensure!(
+                        reply.mr[0] == CC_ERR_BAD_HANDLE,
+                        "retired handle became usable after recreation"
+                    );
+                }
+                destroy_guest_via_cc(&mut cc, recreated, Some(profile))?;
+                Ok(format!("{proof}; {second_proof}; explicit manager CREATE/BOOT, destroy/recreate, second console proof and stale handle rejection passed"))
             } else {
                 wait_for_guest_console_login_via_cc(
                     &cc_sock,

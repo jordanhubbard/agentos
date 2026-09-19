@@ -419,16 +419,27 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <platform/guest_vmm_loop.h>
 #include <platform/guest_vmm_runtime.h>
 #include <platform/guest_teardown.h>
+#include <platform/arm_recreate.h>
+#include <platform/guest_execution.h>
+#include <platform/guest_paging.h>
+#include <platform/net_rebind.h>
+#include <platform/blk_rebind.h>
+#include <platform/serial_rebind.h>
+#include "contracts/guest_ram_caps.h"
+#include "contracts/guest_queue_caps.h"
+#include "contracts/guest_graphics_caps.h"
 #include <platform/vmm_virtio_net.h>
 #include <platform/net_layout.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
 #ifdef AGENTOS_GUEST_GRAPHICS
 #include <platform/vmm_virtio_gpu.h>
+#include <platform/framebuffer_rebind_client.h>
 #endif
 #ifdef AGENTOS_GUEST_INPUT
 #include <platform/vmm_virtio_input.h>
 #include <platform/input.h>
+#include <platform/input_rebind.h>
 #endif
 
 #ifndef AGENTOS_GUEST_INITRD_TOTAL_BYTES
@@ -602,6 +613,10 @@ static vcpu_time_state_t g_guest_time_state;
 static bool     g_guest_startable  = false;
 static uintptr_t g_guest_kernel_pc = 0u;
 static bool     gpu_shmem_ready    = false;
+static aos_arm_recreate_t reconstruction;
+static bool reconstruction_active;
+static bool guest_vmm_reset(void);
+static void guest_vmm_reset_cleanup(void);
 
 /* ─── Guest binding state (guest_contract.h compliance) ─────────────── */
 
@@ -1339,6 +1354,7 @@ static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
         .resume = guest_vmm_resume_guest_tcb,
         .quiesce_timer = guest_vmm_quiesce_timer,
         .teardown = guest_vmm_teardown,
+        .reset = guest_vmm_reset,
         .push_input = guest_vmm_push_input,
         .drain_console = guest_vmm_drain_console,
     };
@@ -1370,6 +1386,10 @@ static seL4_CPtr g_vmm_listen_ep;
  */
 static void guest_vmm_wait_blk_event(void)
 {
+    /* CREATE owns the lifecycle reply object during reconstruction. A nested
+     * receive could overwrite it. Yield to the block service instead; the
+     * media loader polls its completion queue on return. */
+    if (reconstruction_active) { seL4_Yield(); return; }
     seL4_Word badge = 0u;
 #ifdef CONFIG_KERNEL_MCS
     seL4_MessageInfo_t info =
@@ -1631,6 +1651,233 @@ static bool guest_vmm_stage_media(void)
     return true;
 }
 
+#ifdef AGENTOS_GUEST_SECONDARY
+#define ARM_GUEST_OWNER 1u
+#else
+#define ARM_GUEST_OWNER 0u
+#endif
+static net_virt_rebind_reply_t reset_net;
+static blk_virt_rebind_reply_t reset_block;
+static uint32_t reset_adopted;
+#ifdef AGENTOS_GUEST_GRAPHICS
+static bool reset_graphics_mapped, reset_graphics_commit_attempted;
+static bool reset_graphics_exchange(uint32_t op,uint32_t index,fb_rebind_reply_t *reply)
+{
+    fb_rebind_req_t q={FB_REBIND_VERSION,ARM_GUEST_OWNER,reconstruction.generation,index};
+    return aos_fb_virt_rebind_exchange(op,&q,reply);
+}
+#endif
+static bool reset_direct_detach(seL4_CPtr ep,uint32_t op,uint32_t version,
+                                uint32_t request_bytes,uint32_t reply_bytes)
+{
+    uint32_t args[4]={version,ARM_GUEST_OWNER,
+        op==SERIAL_VIRT_OP_DETACH ? SERIAL_VIRT_ROLE_VMM : ARM_GUEST_OWNER,ARM_GUEST_OWNER};
+    sel4_msg_t request={.opcode=op,.length=request_bytes},reply={0};
+    __builtin_memcpy(request.data,args,request_bytes);
+    sel4_call(ep,&request,&reply);
+    return reply.opcode==SEL4_ERR_OK && reply.length==reply_bytes &&
+        msg_u32(&reply,0)==0 && msg_u32(&reply,4)==version;
+}
+static void reset_retire(void *context)
+{
+    (void)context;
+    g_guest_startable=false;
+    guest_started=false;
+    serial_attached=false;
+    /* No guest has run. Leave RAM/queues intact for backend drain/retirement. */
+}
+static bool reset_detach(void *context,unsigned backend)
+{
+    (void)context;
+    switch (backend) {
+    case AOS_ARM_RECREATE_NET:
+        if (reset_adopted & (1u<<backend)) aos_vmm_virtio_net_quiesce();
+        return reset_direct_detach(PD_CNODE_SLOT_NET_VIRT_EP,NET_VIRT_OP_DETACH,
+            NET_VIRT_CONTRACT_VERSION,sizeof(net_virt_attach_req_t),sizeof(net_virt_attach_reply_t));
+    case AOS_ARM_RECREATE_BLK:
+        if ((reset_adopted & (1u<<backend)) && !aos_vmm_virtio_blk_quiesce()) return false;
+        return reset_direct_detach(PD_CNODE_SLOT_BLK_VIRT_EP,BLK_VIRT_OP_DETACH,
+            BLK_VIRT_CONTRACT_VERSION,sizeof(blk_virt_attach_req_t),sizeof(blk_virt_attach_reply_t));
+    case AOS_ARM_RECREATE_SERIAL:
+        if ((reset_adopted & (1u<<backend)) && !aos_vmm_virtio_console_quiesce()) return false;
+        return reset_direct_detach(PD_CNODE_SLOT_SERIAL_VIRT_EP,SERIAL_VIRT_OP_DETACH,
+            SERIAL_VIRT_CONTRACT_VERSION,sizeof(serial_virt_attach_req_t),sizeof(serial_virt_attach_reply_t));
+#ifdef AGENTOS_GUEST_INPUT
+    case AOS_ARM_RECREATE_INPUT:
+        if (reset_adopted & (1u<<backend)) aos_vmm_virtio_input_quiesce();
+        return aos_input_virt_retire(ARM_GUEST_OWNER,reconstruction.generation);
+#endif
+#ifdef AGENTOS_GUEST_GRAPHICS
+    case AOS_ARM_RECREATE_GRAPHICS: {
+        if ((reset_adopted & (1u<<backend)) && !aos_vmm_virtio_gpu_quiesce()) return false;
+        fb_rebind_reply_t reply;
+        if (!reset_graphics_exchange(FB_REBIND_ABORT,0,&reply)) return false;
+        if (reply.status==FB_REBIND_OK) return true;
+        if (reply.status!=FB_REBIND_BAD_STATE || !reset_graphics_mapped ||
+            !reset_graphics_commit_attempted) return false;
+        /* COMMIT may have succeeded before an invalid reply. The mapped
+         * queue permits retirement without assuming adapter adoption. */
+        aos_fb_region_t *r=(void *)(AOS_FB_SHMEM_VA+ARM_GUEST_OWNER*AOS_FB_CLIENT_STRIDE);
+        __atomic_store_n(&r->detach.version,AOS_FB_DETACH_VERSION,__ATOMIC_RELAXED);
+        __atomic_store_n(&r->detach.request,1u,__ATOMIC_RELEASE);
+        seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY);
+        return __atomic_load_n(&r->detach.ack,__ATOMIC_ACQUIRE)==1u;
+    }
+#endif
+    default: return false;
+    }
+}
+static bool reset_release(void *context,unsigned resource)
+{
+    (void)context;
+    if (resource==AOS_ARM_RELEASE_QUEUES) {
+        unsigned count=AOS_GUEST_QUEUE_INPUT;
+#ifdef AGENTOS_GUEST_INPUT
+        count=AOS_GUEST_QUEUE_POOL_COUNT;
+#endif
+        for (unsigned i=0;i<count;i++)
+            if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,AOS_GUEST_QUEUE_POOL_BASE+i,
+                AOS_GUEST_RAM_CNODE_BITS)!=seL4_NoError) return false;
+        return true;
+    }
+    if (resource==AOS_ARM_RELEASE_GRAPHICS) {
+#ifdef AGENTOS_GUEST_GRAPHICS
+        for (unsigned i=0;i<AOS_GUEST_GRAPHICS_POOL_COUNT;i++)
+            if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,AOS_GUEST_GRAPHICS_POOL_BASE+i,
+                AOS_GUEST_RAM_CNODE_BITS)!=seL4_NoError) return false;
+#endif
+        return true;
+    }
+    if (resource==AOS_ARM_RELEASE_EXECUTION) return aos_vmm_guest_execution_release();
+    if (resource==AOS_ARM_RELEASE_RAM) {
+        aos_vmm_guest_ram_bind(0,0,0);
+        return aos_vmm_guest_ram_release(g_guest_profile->ram_size);
+    }
+    if (resource==AOS_ARM_RELEASE_PAGING) {
+        if (!aos_vmm_guest_paging_release()) return false;
+        fault_reset_vm_exception_handlers();
+        return true;
+    }
+    return false;
+}
+static bool reset_step(void *context,aos_arm_recreate_step_t step,uint32_t generation)
+{
+    (void)context;
+    switch (step) {
+    case AOS_ARM_RECREATE_PAGING: return aos_vmm_guest_paging_rebuild();
+    case AOS_ARM_RECREATE_RAM:
+        return aos_vmm_guest_ram_rebuild(g_guest_profile->guest_gpa_base,
+            guest_ram_vaddr,g_guest_profile->ram_size);
+    case AOS_ARM_RECREATE_EXECUTION: return aos_vmm_guest_execution_rebuild();
+    case AOS_ARM_RECREATE_IMAGES: return guest_vmm_prepare_images(false);
+    case AOS_ARM_RECREATE_NATIVE_STATE:
+        console_tx_head=console_tx_tail=console_tx_count=0;
+        console_rx_head=console_rx_tail=console_rx_count=0;
+        pl011_rsr_ecr=pl011_ilpr=pl011_ibrd=pl011_fbrd=pl011_lcrh=pl011_imsc=pl011_dmacr=0;
+        pl011_cr=PL011_CR_TXE|PL011_CR_RXE; pl011_ifls=0x12u;
+        g_guest_time_state=(vcpu_time_state_t){0};
+        vmm_register_vcpu(GUEST_BOOT_VCPU_ID,AGENTOS_VMM_VCPU_CAP_BASE+GUEST_BOOT_VCPU_ID,
+            AGENTOS_VMM_TCB_CAP_BASE+GUEST_BOOT_VCPU_ID);
+        aos_vmm_guest_ram_bind(g_guest_profile->guest_gpa_base,guest_ram_vaddr,g_guest_profile->ram_size);
+        return guest_vmm_prepare_interrupts();
+    case AOS_ARM_RECREATE_NET_REBIND:
+        return aos_net_virt_rebind_with_info(ARM_GUEST_OWNER,generation,&reset_net);
+    case AOS_ARM_RECREATE_NET_ADOPT:
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_NET;
+        return aos_vmm_virtio_net_adopt(ARM_GUEST_OWNER,(void *)AOS_NET_SHMEM_VA,&reset_net);
+    case AOS_ARM_RECREATE_BLK_REBIND:
+        return aos_blk_virt_rebind_with_info(ARM_GUEST_OWNER,generation,&reset_block);
+    case AOS_ARM_RECREATE_BLK_ADOPT:
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_BLK;
+        return aos_vmm_virtio_blk_adopt(ARM_GUEST_OWNER,(void *)AOS_BLK_SHMEM_VA,&reset_block);
+    case AOS_ARM_RECREATE_SERIAL_REBIND:
+        return aos_serial_virt_rebind(ARM_GUEST_OWNER,generation);
+    case AOS_ARM_RECREATE_CONSOLE:
+        serial_endpoint=(aos_serial_endpoint_t){.channel=aos_serial_channel_at(
+            AOS_SERIAL_SHMEM_VA+ARM_GUEST_OWNER*AOS_SERIAL_FRAME_SIZE)};
+        if (!(g_guest_profile->device_flags & AOS_GUEST_DEVICE_CONSOLE)) return true;
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_SERIAL;
+        return aos_vmm_virtio_console_recreate();
+#ifdef AGENTOS_GUEST_INPUT
+    case AOS_ARM_RECREATE_INPUT_REBIND: return aos_input_virt_rebind(ARM_GUEST_OWNER,generation);
+    case AOS_ARM_RECREATE_INPUT_ADOPT:
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_INPUT;
+        return aos_vmm_virtio_input_adopt(ARM_GUEST_OWNER,generation,
+            (void *)(AOS_INPUT_SHMEM_VA+ARM_GUEST_OWNER*AOS_INPUT_FRAME_SIZE));
+#endif
+#ifdef AGENTOS_GUEST_GRAPHICS
+    case AOS_ARM_RECREATE_GRAPHICS_STAGE: {
+        fb_rebind_reply_t reply;
+        for (uint32_t i=0;i<FB_REBIND_FRAMES;i++) {
+            if (!reset_graphics_exchange(FB_REBIND_STAGE,i,&reply) || reply.status!=FB_REBIND_OK) return false;
+            if (!i) {
+                if (!aos_fb_virt_map_queue(ARM_GUEST_OWNER)) return false;
+                reset_graphics_mapped=true;
+            }
+        }
+        return true;
+    }
+    case AOS_ARM_RECREATE_GRAPHICS_COMMIT: {
+        fb_rebind_reply_t reply;
+        reset_graphics_commit_attempted=true;
+        return reset_graphics_exchange(FB_REBIND_COMMIT,0,&reply) && reply.status==FB_REBIND_OK;
+    }
+    case AOS_ARM_RECREATE_GRAPHICS_ADOPT:
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_GRAPHICS;
+        return aos_vmm_virtio_gpu_adopt(ARM_GUEST_OWNER,generation,
+            (void *)(AOS_FB_SHMEM_VA+ARM_GUEST_OWNER*AOS_FB_CLIENT_STRIDE));
+#endif
+    case AOS_ARM_RECREATE_MEDIA: return guest_vmm_stage_media();
+    default: return false;
+    }
+}
+static void reset_publish(void *context)
+{
+    (void)context;
+    guest_teardown=(aos_guest_teardown_t){0};
+    serial_attached=true;
+    guest_started=false;
+    g_guest_startable=true;
+    microkit_dbg_puts("guest recreation: fresh ARM objects, images and devices ready\n");
+}
+static const aos_arm_recreate_ops_t reset_ops={reset_step,reset_publish,reset_retire,reset_detach,reset_release};
+static void guest_vmm_reset_cleanup(void)
+{
+    (void)aos_arm_recreate_cleanup(&reconstruction,&reset_ops,NULL);
+}
+static bool guest_vmm_reset(void)
+{
+    if (reconstruction.failed) { guest_vmm_reset_cleanup(); return false; }
+    if (!guest_teardown.execution_released || !guest_teardown.ram_released ||
+        !guest_teardown.paging_released || guest_started) return false;
+    uint32_t flags=g_guest_profile->device_flags,enabled=1u<<AOS_ARM_RECREATE_SERIAL;
+#ifndef AGENTOS_GUEST_INPUT
+    if (flags & AOS_GUEST_DEVICE_INPUT) return false;
+#endif
+#ifndef AGENTOS_GUEST_GRAPHICS
+    if (flags & AOS_GUEST_DEVICE_GPU) return false;
+#endif
+    if (flags & AOS_GUEST_DEVICE_NET) {
+        if (g_guest_profile->network_client!=ARM_GUEST_OWNER) return false;
+        enabled |= 1u<<AOS_ARM_RECREATE_NET;
+    }
+    if (flags & AOS_GUEST_DEVICE_BLOCK) {
+        if (g_guest_profile->block_media!=ARM_GUEST_OWNER) return false;
+        enabled |= 1u<<AOS_ARM_RECREATE_BLK;
+    }
+    if (flags & AOS_GUEST_DEVICE_INPUT) enabled |= 1u<<AOS_ARM_RECREATE_INPUT;
+    if (flags & AOS_GUEST_DEVICE_GPU) enabled |= 1u<<AOS_ARM_RECREATE_GRAPHICS;
+    reset_adopted=0;
+#ifdef AGENTOS_GUEST_GRAPHICS
+    reset_graphics_mapped=reset_graphics_commit_attempted=false;
+#endif
+    g_guest_startable=false;
+    guest_initializing=reconstruction_active=true;
+    bool success=aos_arm_recreate_run(&reconstruction,&reset_ops,NULL,enabled);
+    guest_initializing=reconstruction_active=false;
+    return success;
+}
+
 void init(void)
 {
     const uint32_t serial_slot =
@@ -1766,6 +2013,7 @@ void init(void)
  */
 static void guest_vmm_notified(seL4_Word badge)
 {
+    if (reconstruction.failed) { guest_vmm_reset_cleanup(); return; }
     if (badge & NET_VIRT_VMM_WAKE_BADGE) {
         if (g_guest_state == GUEST_STATE_RUNNING) aos_vmm_virtio_net_rx_ready();
         badge &= ~NET_VIRT_VMM_WAKE_BADGE;
