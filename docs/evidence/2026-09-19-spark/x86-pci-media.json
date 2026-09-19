@@ -1,0 +1,17 @@
+{
+  "schema": "agentos.x86_pci_media.v1",
+  "date": "2026-09-19",
+  "code_revision": "388364c",
+  "task": "task_4090f05598f74a9cafbb571a6271b6e5",
+  "status": "local_gate_and_two_disk_build_pass_native_pending",
+  "source_state": "Gate started at clean 388364c. Evidence-only commit 8daa49c landed during the gate; target and host implementation files were unchanged. This is not a frozen final-release revision qualification.",
+  "gate_exit": 0,
+  "gate_log_sha256": "b5cf7f547b00ae23aebcd0d9dee7103ed9a9da79c47b07f94e04d4a8d138c27a",
+  "two_disk_build_command": "make test-x86-firmware-build X86_SECONDARY_BLOCK=1",
+  "two_disk_build_exit": 0,
+  "two_disk_build_log_sha256": "2dac6d5db897016007fd4932c0c70595520b8d848915cc02fb0ea9d8077c873c",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "host_test": "make test-blk-pci-media-host passed: bounded metadata, separate register ranges and existing non-overlapping DMA regions",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership",
+  "limitations": ["Native default one-disk regression running separately", "No native two-disk qualification", "No concurrent guest provisioning or storage acceptance", "No canonical merge or release acceptance"]
+}
