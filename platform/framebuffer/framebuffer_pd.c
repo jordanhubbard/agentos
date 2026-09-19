@@ -2,6 +2,7 @@
 #include <platform/framebuffer_observer.h>
 #include "system_desc.h"
 #include <sel4/sel4.h>
+#include "rebind_endpoint.h"
 
 static aos_fb_client_t clients[AOS_FB_CLIENTS];
 static aos_fb_observer_t observer;
@@ -54,7 +55,6 @@ static aos_display_producer_t display={
 
 void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
 {
-    (void)endpoint;
     (void)nameserver;
     for (unsigned i = 0; i < AOS_FB_CLIENTS; ++i)
         if (aos_fb_client_init(&clients[i], (void *)(AOS_FB_SHMEM_VA +
@@ -86,6 +86,6 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
          * Yield on a periodic MCS context forfeits its remaining budget and
          * would delay every GPU row until the next scheduling period. The
          * kernel still enforces the service's configured CPU budget. */
-        if (!progress) { seL4_Word badge; seL4_Wait(PD_CNODE_SLOT_FB_WAIT, &badge); }
+        if (!progress) aos_fb_rebind_receive(clients,endpoint);
     }
 }

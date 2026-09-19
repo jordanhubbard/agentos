@@ -539,7 +539,7 @@ const system_desc_t system_desc_aarch64 = {
             .name = "framebuffer_queue",
             .elf_path = "framebuffer_queue.elf",
             .stack_size = 0x4000u,
-            .cnode_size_bits = 8u,
+            .cnode_size_bits = 10u,
             .priority = 215u,
             .self_svc_id = SVC_ID_FRAMEBUFFER_QUEUE,
 #ifdef AGENTOS_DISPLAY_RAMFB

@@ -1,0 +1,8 @@
+{
+  "status": "passed",
+  "revision": "6c7c832",
+  "command": "make gate QEMU_TEST_SSH_PORT=12258 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+  "make_exit": 0,
+  "log_sha256": "b5257332b3d21b65ddf060a77241f8f857e102bed52844e0a46d8dcf0974e4b4",
+  "limits": "Canonical regression gate for framebuffer generation bookkeeping. No graphics rebind endpoint exercise, managed recreation or final release acceptance."
+}

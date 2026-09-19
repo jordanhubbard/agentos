@@ -1415,6 +1415,8 @@ test-agentctl-frame-host:
 
 test-framebuffer-host:
 	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_framebuffer_transaction.c platform/framebuffer/rebind.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_framebuffer_transaction
+	$(BUILD_TMP_DIR)/test_framebuffer_transaction
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_rebind.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_framebuffer_rebind
 	$(BUILD_TMP_DIR)/test_framebuffer_rebind
 	@mkdir -p $(ROOT_DIR)build/tmp
