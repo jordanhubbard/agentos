@@ -3,7 +3,7 @@
   "date": "2026-09-19",
   "revision": "ecc389d",
   "source_tree_clean": true,
-  "status": "host_gate_and_firmware_compile_pass_native_pending",
+  "status": "runner_revision_native_pass_later_device_and_media_changes_pending_native",
   "task": "task_4090f05598f74a9cafbb571a6271b6e5",
   "sdk": "2.3.1-agentos-e60776ac-cr2",
   "tests": [
@@ -19,7 +19,7 @@
   "limitations": [
     "No secondary guest provisioned by the default descriptor",
     "No concurrent storage proof",
-    "Intel regression pending",
+    "Native device-identity and PCI-media regression pending",
     "No canonical integration or release acceptance"
   ],
   "device_identity_qualification": {
@@ -30,5 +30,19 @@
     "firmware_build_exit": 0,
     "firmware_build_log_sha256": "cc0d3285a917f95d73b78d8eb1648f63471bf320337db092448286c77773867f",
     "scope": "Full local gate; primary and secondary firmware link; secondary managed reset compile. No concurrent guest or native runtime proof."
+  },
+  "intel_runner_qualification": {
+    "revision": "ecc389d",
+    "source_tree_clean": true,
+    "command": "make gate-x86_64-smp",
+    "exit_code": 0,
+    "generations": [
+      1,
+      2
+    ],
+    "result": "Pinned SSH, two CPUs with overlapping x87/SSE workers, CC input, teardown, recreation and stale-handle rejection passed",
+    "artifact": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/ecc389d-intel-smp.tar.gz",
+    "artifact_sha256": "44c594f11047676035d1d91965e33cd4317145cc2faf988897010466c6ce1f2f",
+    "scope": "Runner-only revision; does not qualify later device identity or PCI media changes"
   }
 }
