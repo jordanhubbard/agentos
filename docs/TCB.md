@@ -36,6 +36,9 @@ Destroy retires both contexts' saved guest state; reconstruction initializes
 fresh startup state while preserving the persistent executors' IPC sequences.
 The second-runner target qualification uses this same selection and entry
 path and checks bootstrap-context preservation and AP snapshot retirement.
+At `b69a7a7`, the full Spark gate, Intel teardown, and two managed single-CPU
+Debian generations passed; the [context receipt](evidence/2026-09-18-spark/x86-context.json)
+retains exact commands and artifacts.
 The coordinator now applies guest INIT by replacing the selected CPU's VCPU
 through its private child pool, then applies the first SIPI before marking
 that CPU runnable. Round-robin selection skips CPUs awaiting reset or startup.
