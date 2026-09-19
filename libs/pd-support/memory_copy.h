@@ -18,6 +18,9 @@ static inline void *aos_copy_nonoverlap(void *dst, const void *src, size_t n)
             *d++ = *s++;
             --n;
         }
+        /* A short prefix may exhaust the range before reaching alignment.
+         * Do not even form word pointers unless both addresses are aligned. */
+        if (!n) return dst;
         aos_copy_word_t *dw = (aos_copy_word_t *)d;
         const aos_copy_word_t *sw = (const aos_copy_word_t *)s;
         /* Under -mstrict-align, vectorising an arbitrary byte loop expands
