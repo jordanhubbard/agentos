@@ -1297,6 +1297,15 @@ guest-input-probe:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(GUEST_LINUX_CC) -static -O2 -std=c11 -Wall -Wextra -Werror tests/guest/input_probe.c -o $(BUILD_TMP_DIR)/guest-input-probe-aarch64
 
+.PHONY: guest-frame-pattern host-frame-pattern
+guest-frame-pattern:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(GUEST_LINUX_CC) -static -O2 -std=c11 -Wall -Wextra -Werror tests/guest/frame_pattern.c -o $(BUILD_TMP_DIR)/guest-frame-pattern-aarch64
+
+host-frame-pattern:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -O2 -std=c11 -Wall -Wextra -Werror tests/guest/frame_pattern.c -o $(BUILD_TMP_DIR)/host-frame-pattern
+
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
