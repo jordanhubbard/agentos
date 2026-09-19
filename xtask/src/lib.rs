@@ -136,6 +136,10 @@ pub struct TestArgs {
     /// keep QEMU running until Enter is pressed.
     #[arg(long)]
     pub keep_running: bool,
+
+    /// Retain a failed guest for interactive diagnosis; the test still fails on exit
+    #[arg(long, requires = "keep_running")]
+    pub retain_failed_guest: bool,
     /// Require emulated virtio-net probe + DRIVER_OK + a pumped frame.
     /// Host tests are not this proof. GUEST_OS=none is a stub VMM.
     #[arg(long)]

@@ -1624,6 +1624,7 @@ demo-debian-nocloud-graphics: QEMU_TEST_SSH_PORT = 12223
 demo-debian-nocloud-graphics:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
 		--seed-profile --assert-agentos-virtio --assert-guest-display --keep-running \
+		$(if $(filter 1,$(QEMU_RETAIN_FAILED)),--retain-failed-guest,) \
 		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 test-debian-nocloud-auto: QEMU_TEST_TIMEOUT = 1200

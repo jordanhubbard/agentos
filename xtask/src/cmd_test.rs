@@ -3,7 +3,7 @@ use crate::guest_scenario::{self, HostScenarioPlan, ScenarioGuestPlan};
 use crate::{rfb, QemuLaunchArgs, TestArgs};
 use anyhow::Context;
 use sha2::{Digest, Sha256};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::net::UnixStream;
@@ -446,6 +446,10 @@ fn run_seeded_cold_boots(args: &TestArgs) -> anyhow::Result<()> {
 }
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !args.retain_failed_guest || (args.keep_running && std::io::stdin().is_terminal()),
+        "--retain-failed-guest requires --keep-running and an interactive stdin"
+    );
     if args.assert_seeded_cold_boots {
         return run_seeded_cold_boots(args);
     }
@@ -1816,6 +1820,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             ))
         });
     }
+    if args.retain_failed_guest {
+        if let Err(failure) = &result {
+            eprintln!("[xtask:test] Qualification FAILED; retaining for diagnosis: {failure:#}");
+            if let Err(error) = wait_for_manual_cc_client(&cc_sock, &mut qemu, false) {
+                eprintln!("[xtask:test] Failed-guest retention ended: {error:#}");
+            }
+            // Preserve the qualification error, even if the manual session
+            // succeeds or subsequent inspection restores guest responsiveness.
+        }
+    }
     if args.keep_running && result.is_ok() {
         let key = ssh_key
             .as_ref()
@@ -1833,7 +1847,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             wait_for_manual_dual_ssh(key, scenario, &mut qemu)
                 .map(|()| String::from("manual dual SSH session completed"))
         } else {
-            wait_for_manual_cc_client(&cc_sock, &mut qemu).map(|()| {
+            wait_for_manual_cc_client(&cc_sock, &mut qemu, true).map(|()| {
                 String::from("qualified live guest retained for manual CC client session")
             })
         };
@@ -2079,9 +2093,19 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn wait_for_manual_cc_client(socket: &Path, qemu: &mut Child) -> anyhow::Result<()> {
+fn wait_for_manual_cc_client(
+    socket: &Path,
+    qemu: &mut Child,
+    qualified: bool,
+) -> anyhow::Result<()> {
     ensure_qemu_running(qemu, "entering manual CC client mode")?;
-    println!("\n[xtask:test] Qualified guest retained for native CC clients");
+    if qualified {
+        println!("\n[xtask:test] Qualified guest retained for native CC clients");
+    } else {
+        println!(
+            "\n[xtask:test] FAILED guest retained for diagnosis; qualification remains failed"
+        );
+    }
     println!("CC_PD_SOCK={}", socket.display());
     println!("Close the external client, then press Enter here to stop QEMU.");
     let mut line = String::new();
