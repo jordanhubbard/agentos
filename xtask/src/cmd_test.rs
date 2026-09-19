@@ -3264,6 +3264,9 @@ fn x86_linux_login_reader_with_artifacts(
                 anyhow::ensure!(
                     !text.contains("Kernel panic")
                         && !text.contains("Entering emergency mode")
+                        && !text.contains("segfault at ")
+                        && !text.contains("general protection fault")
+                        && !text.contains("Oops:")
                         && !text.contains("reboot: Restarting system")
                         && !text.contains("reboot: System halted"),
                     "Intel Linux boot failed; see {}",
@@ -6388,6 +6391,9 @@ mod tests {
             ),
             (b"reboot: Restarting system\r\n".as_slice(), false),
             (b"reboot: System halted\r\n".as_slice(), false),
+            (b"[ 324.2] (udev-worker)[581]: segfault at 7f1234 likely on CPU 1\nagentos-debian login: ".as_slice(), false),
+            (b"general protection fault\nagentos-debian login: ".as_slice(), false),
+            (b"Oops: kernel fault\nagentos-debian login: ".as_slice(), false),
         ] {
             let temp = tempfile::tempdir().unwrap();
             let socket = temp.path().join("console.sock");

@@ -38,6 +38,11 @@ The harness retains `.smp.out` and `.smp.err` alongside each generation's
 console and SSH artifacts. It then checks console input, destroys the guest,
 rejects stale handles and repeats the entire boot/workload sequence after
 reconstruction. Compilation, a two-CPU manifest, login alone or a single
-generation does not satisfy this gate. Native workload acceptance is pending;
+generation does not satisfy this gate. The login reader also rejects guest
+segfault, general-protection and kernel-oops reports even if a login prompt
+follows. The initial two-generation bring-up at `1f5fbe1` passed the earlier
+login/SSH checks but reported a `udev-worker` segfault on CPU 1 in the second
+generation; that result is not accepted as healthy SMP qualification.
+Native workload acceptance is pending;
 the first two-CPU bring-up exposed the private CMOS warm-start marker, which
 is now emulated.
