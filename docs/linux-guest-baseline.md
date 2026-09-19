@@ -80,12 +80,13 @@ overlap with the private VMM ROM mapping. This check records the canonical
 virtio-console stream and requires a login prompt, rejecting panic and
 emergency-mode output. It does not assert authenticated access.
 
-The initial Debian attempts remain unsuccessful. After removing the small
+The initial September 17 Debian attempts were unsuccessful. After removing the small
 fixture's exit budget from this mode and handling discovery of an absent
 PS/2 controller, both 256 MiB and 1 GiB attempts timed out without console
 output. See the [retained attempt record](evidence/2026-09-17-spark/x86-debian-login-attempts.json).
-Execution-state diagnostics and a successful Debian boot are still required;
-neither the larger RAM setting nor the gate's existence closes that work.
+Those failures remain retained rather than being rewritten by later passes.
+The September 19 managed Intel results below establish subsequent successful
+Debian boots; they do not turn the original attempts into successful runs.
 
 The acquisition recipe also retains and pins the complete `SHA512SUMS`
 manifest from `cdimage.debian.org`. On 2026-09-14, the cloud download alias
@@ -245,3 +246,25 @@ hash manifest, are retained under
 `/home/jkh/.local/share/agentos-evidence/2026-09-19-debian-cold-boots/`.
 This checkpoint does not promote Debian into every required gate or establish
 x86 parity, concurrent storage isolation, or final release acceptance.
+
+### Managed recreation and peer qualification, 2026-09-19
+
+The following later checks use the isolated
+`2.3.1-agentos-e60776ac-cr2` SDK. Each receipt identifies its exact source
+revision; these results are not one final release qualification.
+
+| Check | Revision | Retained result |
+| --- | --- | --- |
+| Spark managed Debian recreation | `6df47ad` | [Pinned host identity, persistent disk witness, fresh handle, stale-handle rejection and full gate](evidence/2026-09-19-spark/debian-managed-recreation.json) |
+| Spark Debian with running FreeBSD peer | `cd9efb9` | [Peer SSH after Debian destruction, Debian recreation, concurrent SSH afterward and full gate](evidence/2026-09-19-spark/debian-peer-recreation.json) |
+| Spark Ubuntu compatibility with running FreeBSD peer | `d3bd0ea` | [Deferred ISO initrd reconstruction, concurrent SSH after recreation and full gate](evidence/2026-09-19-spark/ubuntu-peer-recreation.json) |
+| Intel two-vCPU Debian | `6df47ad` | [Authenticated boots across recreation and overlapping x87/SSE workers](evidence/2026-09-19-spark/intel-current-smp.json) |
+| Intel 2 GiB Debian profile | `cd9efb9` | [Authenticated managed recreation and stale-handle rejection](evidence/2026-09-19-spark/intel-current-large-profile.json) |
+| Intel storage and guest faults | `cd9efb9` | [Flushed storage across cold boots and VMX guest-fault recovery](evidence/2026-09-19-spark/intel-current-storage.json) |
+
+The 2 GiB result qualifies the configured profile, not a measured Linux
+`MemTotal` or memory stress workload. Peer recreation asserts authenticated
+availability at explicit checkpoints; it does not measure uninterrupted peer
+throughput or concurrent writable-storage isolation. Final promotion still
+requires the full parity suite at one immutable revision, including the
+current cold-boot comparison and architecture-specific storage acceptance.
