@@ -621,6 +621,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "automatic seed requires a host.seed profile contract"
     );
     anyhow::ensure!(
+        !args.assert_seeded_recreation
+            || (args.board == "qemu_virt_aarch64"
+                && profile_plan
+                    .as_ref()
+                    .is_some_and(|p| !p.devices.iter().any(|d| d == "gpu" || d == "input"))),
+        "seeded recreation currently requires an ARM profile without graphics/input"
+    );
+    anyhow::ensure!(
         !profile_plan
             .as_ref()
             .is_some_and(|p| p.test.iter().any(|s| s.action == "assert-ssh-output"))
@@ -796,7 +804,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_guest_queue_recycle {
             make_args.push(String::from("GUEST_QUEUE_RECYCLE_TEST=1"));
         }
-        if args.assert_managed_guest {
+        if args.assert_managed_guest || args.assert_seeded_recreation {
             make_args.push(String::from("GUEST_MANAGED_BOOT=1"));
         }
         if args.assert_guest_block_drain {
@@ -1353,18 +1361,31 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 Duration::from_secs(args.timeout_secs),
                 &mut qemu,
             )?;
-            seeded_ssh_via_cc(
-                &cc_sock,
-                &log_path,
-                profile_plan
-                    .as_ref()
-                    .context("seeded SSH requires a runtime profile")?,
-                key,
-                args.seeded_ssh_known_hosts.as_deref(),
-                ssh_port,
-                Duration::from_secs(args.timeout_secs),
-                &mut qemu,
-            )
+            if args.assert_seeded_recreation {
+                seeded_recreation_via_cc(
+                    &cc_sock,
+                    &log_path,
+                    profile_plan.as_ref().context("seeded profile missing")?,
+                    key,
+                    ssh_port,
+                    Duration::from_secs(args.timeout_secs),
+                    &mut qemu,
+                )
+            } else {
+                seeded_ssh_via_cc(
+                    &cc_sock,
+                    &log_path,
+                    profile_plan
+                        .as_ref()
+                        .context("seeded SSH requires a runtime profile")?,
+                    key,
+                    args.seeded_ssh_known_hosts.as_deref(),
+                    ssh_port,
+                    Duration::from_secs(args.timeout_secs),
+                    &mut qemu,
+                    0,
+                )
+            }
         } else if args.assert_emulated_console
             || profile_plan
                 .as_ref()
@@ -1661,7 +1682,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     }
 
-    if result.is_ok() && args.seeded_ssh_key.is_some() {
+    if result.is_ok() && args.seeded_ssh_key.is_some() && !args.assert_seeded_recreation {
         result = prove_seeded_profile_steps(
             &cc_sock,
             &log_path,
@@ -1674,6 +1695,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
     if result.is_ok()
         && args.seeded_ssh_key.is_some()
+        && !args.assert_seeded_recreation
         && virtio_assertion
             .as_ref()
             .is_some_and(|proof| proof.bidirectional_console)
@@ -2984,6 +3006,107 @@ fn x86_console_host_key(text: &str) -> anyhow::Result<Option<String>> {
     Ok(found)
 }
 
+fn seeded_recreation_via_cc(
+    socket: &Path,
+    log: &Path,
+    profile: &HostProfilePlan,
+    key: &Path,
+    port: u16,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let ssh = profile
+        .qemu
+        .as_ref()
+        .and_then(|q| q.ssh.as_ref())
+        .context("seeded recreation requires SSH")?;
+    let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
+    anyhow::ensure!(
+        cc.call(MSG_CC_GUEST_STATUS, 0, 0, 0, &[])?.mr[0] == CC_ERR_BAD_HANDLE,
+        "managed seeded image exposed an automatic guest"
+    );
+    let token = format!(
+        "managed-{}",
+        log.file_stem()
+            .context("missing log stem")?
+            .to_string_lossy()
+    );
+    let mut retired = None;
+    let original_known = log.with_extension("first.known_hosts");
+    for second in [false, true] {
+        let round_log = log.with_extension(if second { "second.log" } else { "first.log" });
+        let handle = create_guest_via_cc_wait(
+            &mut cc,
+            profile.control_type as u8,
+            VIBEOS_ARCH_AARCH64,
+            64,
+            &profile.id,
+            timeout,
+            qemu,
+        )?;
+        anyhow::ensure!(
+            handle != 0 && Some(handle) != retired,
+            "reused managed guest handle"
+        );
+        seeded_ssh_via_cc(
+            socket,
+            &round_log,
+            profile,
+            key,
+            second.then_some(original_known.as_path()),
+            port,
+            timeout,
+            qemu,
+            handle,
+        )?;
+        cc_send_raw_byte(&mut cc, handle, b'\r')?;
+        let known = round_log.with_extension("known_hosts");
+        let identity = SshTestKey {
+            _temporary_dir: None,
+            private_key: key.to_path_buf(),
+            public_key: String::new(),
+            known_hosts: Some(known.clone()),
+        };
+        prove_seeded_profile_steps(socket, &round_log, profile, &identity, false, qemu)?;
+        let stdout = round_log.with_extension("witness.stdout");
+        let stderr = round_log.with_extension("witness.stderr");
+        let mut command = seeded_ssh_command(key, port, &known, &ssh.account);
+        command
+            .arg("sudo -n timeout 60 sh -s")
+            .stdin(Stdio::piped())
+            .stdout(std::fs::File::create(&stdout)?)
+            .stderr(std::fs::File::create(&stderr)?);
+        let mut child = ChildGuard::new(command.spawn()?);
+        child
+            .stdin
+            .take()
+            .context("witness stdin missing")?
+            .write_all(persistence_script(&token, second)?.as_bytes())?;
+        wait_qualification_child(&mut child, qemu, 90)?;
+        anyhow::ensure!(
+            std::fs::read(&stdout)? == format!("{token}\n").as_bytes(),
+            "managed disk witness mismatch; see {}",
+            stdout.display()
+        );
+        if let Some(old) = retired {
+            for opcode in [
+                MSG_CC_GUEST_STATUS,
+                MSG_CC_RESUME_GUEST,
+                MSG_CC_SUSPEND_GUEST,
+            ] {
+                anyhow::ensure!(
+                    cc.call(opcode, old, 0, 0, &[])?.mr[0] == CC_ERR_BAD_HANDLE,
+                    "retired handle became usable after reconstruction"
+                );
+            }
+        }
+        destroy_guest_via_cc(&mut cc, handle, Some(profile))?;
+        println!("[xtask:test] managed seeded round second={second} handle={handle}: pinned SSH, profile assertions, disk witness and destroy passed");
+        retired = Some(handle);
+    }
+    Ok("Managed seeded guest recreated with fresh handle, pinned SSH identity, persistent disk witness and stale-handle rejection".into())
+}
+
 fn seeded_ssh_via_cc(
     socket: &Path,
     log: &Path,
@@ -2993,6 +3116,7 @@ fn seeded_ssh_via_cc(
     port: u16,
     timeout: Duration,
     qemu: &mut Child,
+    handle: u32,
 ) -> anyhow::Result<String> {
     anyhow::ensure!(
         profile.architecture == "aarch64"
@@ -3020,7 +3144,7 @@ fn seeded_ssh_via_cc(
     );
     while Instant::now() < deadline {
         ensure_qemu_running(qemu, "waiting for seeded guest console identity")?;
-        let chunk = match cc_log_stream_for_handle(&mut cc, 0, Some(profile)) {
+        let chunk = match cc_log_stream_for_handle(&mut cc, handle, Some(profile)) {
             Ok(chunk) => chunk,
             Err(error) if cc.is_closed() => {
                 return Err(error).context("seeded CC transport closed")
@@ -6934,6 +7058,38 @@ mod tests {
             std::fs::read_to_string(directory.path().join("seeded-profile.txt")).unwrap(),
             "resolved profile"
         );
+    }
+
+    #[test]
+    fn seeded_recreation_requires_fresh_seed_and_excludes_other_lifecycle_modes() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            test: crate::TestArgs,
+        }
+        assert!(Args::try_parse_from(["test", "--assert-seeded-recreation"]).is_err());
+        assert!(
+            Args::try_parse_from(["test", "--seed-profile", "--assert-seeded-recreation"]).is_ok()
+        );
+        for incompatible in [
+            "--assert-seeded-cold-boots",
+            "--assert-guest-teardown",
+            "--keep-running",
+            "--no-build",
+            "--assert-guest-display",
+        ] {
+            assert!(
+                Args::try_parse_from([
+                    "test",
+                    "--seed-profile",
+                    "--assert-seeded-recreation",
+                    incompatible
+                ])
+                .is_err(),
+                "accepted {incompatible}"
+            );
+        }
     }
 
     #[test]

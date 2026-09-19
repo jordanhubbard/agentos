@@ -1737,6 +1737,14 @@ test-debian-nocloud-auto:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
 		--seed-profile --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: test-debian-managed-recreation
+test-debian-managed-recreation: QEMU_TEST_TIMEOUT = 1800
+test-debian-managed-recreation: QEMU_TEST_SSH_PORT = 12264
+test-debian-managed-recreation:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--seed-profile --assert-seeded-recreation --assert-agentos-virtio \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 .PHONY: test-debian-nocloud-cold-boots
 test-debian-nocloud-cold-boots: QEMU_TEST_TIMEOUT = 1200
 test-debian-nocloud-cold-boots: QEMU_TEST_SSH_PORT = 12222

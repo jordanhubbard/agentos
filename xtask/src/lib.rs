@@ -120,6 +120,9 @@ pub struct TestArgs {
     /// Seed once, then authenticate two cold boots with the same disk and host key.
     #[arg(long, requires = "seed_profile")]
     pub assert_seeded_cold_boots: bool,
+    /// Recreate a managed seeded ARM guest and verify pinned SSH and disk persistence.
+    #[arg(long, requires = "seed_profile", conflicts_with_all = ["assert_seeded_cold_boots", "assert_managed_guest", "assert_guest_teardown", "keep_running", "no_build", "assert_guest_display"])]
+    pub assert_seeded_recreation: bool,
     #[arg(skip)]
     pub seeded_source: Option<std::path::PathBuf>,
     /// Pin the original host identity on a subsequent boot of the seeded disk.

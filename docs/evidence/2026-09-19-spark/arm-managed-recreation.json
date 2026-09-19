@@ -5,11 +5,12 @@
   "host": "Spark aarch64 Linux",
   "sdk": "2.3.1-agentos-e60776ac-cr2",
   "command": "make test-guest-scheduling gate QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12262",
-  "scope": "test-guest-scheduling completed successfully and Make advanced to gate; overall gate still running when this receipt was written",
+  "scope": "test-guest-scheduling and full make gate completed successfully; combined Make exit 0",
+  "full_gate_log_sha256": "4898a9c58a27e2a7611cf6e26c4acb26a989c1d75040a737ff57c33014219991",
   "proof": "Explicit CREATE returned handle 1; console login and agentos-linux-proof passed. Complete teardown revoked execution, RAM, paging and queues. Reconstruction restored fresh objects, images and canonical devices. Second CREATE returned handle 2; second console proof passed; retired handle status, resume and suspend were rejected; second guest was destroyed.",
   "fix": "Create intermediate page tables at the manager's GIC IPA using the fresh IPC frame, unmap it, then map it at the IPC address before publishing the replacement VSpace. Device mapping authority stays with the manager.",
   "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/arm-managed-ce92e1b",
   "managed_test_log_sha256": "16ddbe4c1b3ecce5fd9aeb6ba7bc12441901137ca0ab6353bee86729c85f57a8",
   "serial_log_sha256": "cc5dc6a6145b41f26ca04643c53775abd1ae70d9adb51c118a61382bf4f9dbd6",
-  "limits": "Deterministic Ubuntu console profile only. Does not prove authenticated Debian SSH, persistent disk witness, graphics/input reconstruction, peer isolation, full gate completion or final v0.4 acceptance. Archived managed-test.log ends at the focused PASS before the subsequent gate output."
+  "limits": "Managed recreation uses the deterministic Ubuntu console profile. Does not prove authenticated Debian SSH, persistent disk witness, graphics/input reconstruction, peer isolation or final v0.4 acceptance. Archived managed-test.log ends at the focused PASS; full-gate.log contains the subsequent complete gate."
 }
