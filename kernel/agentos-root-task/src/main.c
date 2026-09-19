@@ -1796,10 +1796,13 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         objects[i] = ut_alloc_slot();
         if (objects[i] == seL4_CapNull) return seL4_NotEnoughMemory;
     }
-    err = aos_x86_guest_objects_retype(object_pool, seL4_CapInitThreadCNode, objects);
+    seL4_CPtr cpu_pool=ut_alloc_slot();
+    if (cpu_pool==seL4_CapNull) return seL4_NotEnoughMemory;
+    err = aos_x86_guest_objects_retype(object_pool, seL4_CapInitThreadCNode, objects, cpu_pool);
     if (err != seL4_NoError) return err;
+    (void)cap_acct_record(object_pool,cpu_pool,seL4_UntypedObject,pd_index,pd->name);
     for (unsigned i = 0u; i < AOS_X86_GUEST_OBJECT_COUNT; i++)
-        (void)cap_acct_record(object_pool, objects[i],
+        (void)cap_acct_record(i==0u ? cpu_pool : object_pool, objects[i],
             aos_x86_guest_object_type(i), pd_index, pd->name);
     const seL4_Word attr = seL4_X86_EPT_Default_VMAttributes;
     seL4_CPtr guest_asid_pool = seL4_CapNull;
@@ -1888,6 +1891,9 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
     err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_VCPU_CAP_BASE,
                           (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
                           objects[0], 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+    err = seL4_CNode_Move(pd_cnode,AOS_X86_VCPU_POOL_CAP,
+        (uint8_t)pd->cnode_size_bits,seL4_CapInitThreadCNode,cpu_pool,64u);
     if (err != seL4_NoError) return err;
     err = seL4_CNode_Move(pd_cnode, AOS_X86_GUEST_OBJECT_POOL_CAP,
         (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode, object_pool, 64u);

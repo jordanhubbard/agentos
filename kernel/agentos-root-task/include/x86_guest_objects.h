@@ -30,7 +30,11 @@ _Static_assert(AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP >=
                    AOS_X86_GUEST_ROM_ALIAS_BASE + AOS_X86_GUEST_ROM_FRAMES &&
                AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP < AOS_GUEST_RAM_POOL_BASE,
                "second RAM directory must exclude ROM aliases and RAM pools");
-_Static_assert((1u << seL4_X86_VCPUBits) +
+_Static_assert(AOS_X86_VCPU_POOL_CAP > AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP &&
+               AOS_X86_VCPU_POOL_CAP < AOS_GUEST_RAM_POOL_BASE &&
+               seL4_X86_VCPUBits <= AOS_X86_VCPU_POOL_BITS,
+               "private VCPU pool must fit and exclude EPT and RAM caps");
+_Static_assert((1u << AOS_X86_VCPU_POOL_BITS) +
                (1u << seL4_X86_EPTPML4Bits) + (1u << seL4_X86_EPTPDPTBits) +
                3u * (1u << seL4_X86_EPTPDBits) <= (1u << AOS_X86_GUEST_OBJECT_POOL_BITS),
                "all execution and EPT objects must fit the private pool");
@@ -49,10 +53,13 @@ static inline seL4_Word aos_x86_guest_object_type(unsigned index)
  * caller must refuse guest start; partial objects remain below this pool
  * and must be revoked before any retry. */
 static inline seL4_Error aos_x86_guest_objects_retype(seL4_CPtr pool,
-    seL4_CPtr root, const seL4_CPtr slots[AOS_X86_GUEST_OBJECT_COUNT])
+    seL4_CPtr root, const seL4_CPtr slots[AOS_X86_GUEST_OBJECT_COUNT], seL4_CPtr cpu_pool)
 {
+    seL4_Error err=seL4_Untyped_Retype(pool,seL4_UntypedObject,AOS_X86_VCPU_POOL_BITS,
+        root,0u,0u,cpu_pool,1u);
+    if (err!=seL4_NoError) return err;
     for (unsigned i = 0; i < AOS_X86_GUEST_OBJECT_COUNT; i++) {
-        seL4_Error err = seL4_Untyped_Retype(pool, aos_x86_guest_object_type(i),
+        err = seL4_Untyped_Retype(i==0u ? cpu_pool : pool, aos_x86_guest_object_type(i),
             0u, root, 0u, 0u, slots[i], 1u);
         if (err != seL4_NoError) return err;
     }
@@ -88,9 +95,23 @@ static inline seL4_Error aos_x86_guest_objects_rebuild(void)
         AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP,
     };
     seL4_Error err = aos_x86_guest_objects_retype(AOS_X86_GUEST_OBJECT_POOL_CAP,
-        AOS_GUEST_RAM_SELF_CNODE, slots);
+        AOS_GUEST_RAM_SELF_CNODE, slots, AOS_X86_VCPU_POOL_CAP);
     if (err != seL4_NoError) return err;
     return aos_x86_guest_objects_map(AOS_X86_GUEST_ASID_POOL_CAP, slots);
+}
+
+/* Caller excludes all VM entries on this CPU and retires its old exit state.
+ * Revoke removes every alias to this VCPU; EPT and sibling objects remain.
+ * A failed retype leaves the CPU absent. Binding and architectural startup
+ * must succeed before publishing it as runnable. The child pool is retained
+ * so failed reconstruction can be retried without root allocation authority. */
+static inline seL4_Error aos_x86_guest_vcpu_rebuild(seL4_CPtr pool, seL4_CPtr vcpu)
+{
+    if (!pool || !vcpu || pool==vcpu) return seL4_InvalidArgument;
+    seL4_Error err=seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,pool,AOS_GUEST_RAM_CNODE_BITS);
+    if (err!=seL4_NoError) return err;
+    return seL4_Untyped_Retype(pool,seL4_X86_VCPUObject,0u,
+        AOS_GUEST_RAM_SELF_CNODE,0u,0u,vcpu,1u);
 }
 
 /* Only call while guest execution is stopped. Configure firmware/VMCS before

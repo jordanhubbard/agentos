@@ -840,6 +840,21 @@ static bool terminal_teardown_proof(void)
             refused_entry.interruption_info!=0x33u || failed_field!=0x123u) return false;
         seL4_X86_VCPU_ReadVMCS_t last_base=seL4_X86_VCPU_ReadVMCS(ap_vcpu,0x6808u);
         if (last_base.error || last_base.value!=0xff000u) return false;
+        /* Reconstruct only the bootstrap VCPU. Its stale alias disappears,
+         * but the sibling VCPU and EPT must remain usable. */
+        teardown_proof_stage=156u+pass*100u;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS,AOS_GUEST_RAM_SELF_CNODE,VCPU,
+                AOS_GUEST_RAM_CNODE_BITS,seL4_AllRights)!=seL4_NoError) return false;
+        if (aos_x86_guest_vcpu_rebuild(AOS_X86_VCPU_POOL_CAP,VCPU)!=seL4_NoError)
+            return false;
+        seL4_X86_VCPU_ReadVMCS_t stale_cpu=seL4_X86_VCPU_ReadVMCS(AOS_GUEST_QUEUE_TEST_COPY,0x6808u);
+        if (stale_cpu.error==seL4_NoError) return false;
+        if (aos_x86_guest_objects_bind()!=seL4_NoError ||
+            aos_x86_firmware_reset(&reset_entry,&failed_field)!=seL4_NoError ||
+            failed_field || reset_entry.ip!=0xfff0u) return false;
+        last_base=seL4_X86_VCPU_ReadVMCS(ap_vcpu,0x6808u);
+        if (last_base.error || last_base.value!=0xff000u) return false;
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
                 AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
                 != seL4_NoError) return false;

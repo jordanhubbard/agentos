@@ -11,6 +11,8 @@ static inline seL4_CapRights_t seL4_CapRights_new(unsigned grant_reply,
     unsigned grant, unsigned read, unsigned write)
 { (void)grant_reply; (void)grant; return read | (write << 1u); }
 #define seL4_NoError 0
+#define seL4_InvalidArgument 2
+#define seL4_UntypedObject 1u
 #define seL4_X86_VCPUBits 14u
 #define seL4_X86_EPTPML4Bits 12u
 #define seL4_X86_EPTPDPTBits 12u
@@ -33,4 +35,5 @@ seL4_Error seL4_X86_Page_MapEPT(seL4_CPtr, seL4_CPtr, seL4_Word, seL4_CapRights_
 seL4_Error seL4_X86_Page_Unmap(seL4_CPtr);
 seL4_Error seL4_TCB_SetEPTRoot(seL4_CPtr, seL4_CPtr);
 seL4_Error seL4_X86_VCPU_SetTCB(seL4_CPtr, seL4_CPtr);
+seL4_Error seL4_CNode_Revoke(seL4_CPtr,seL4_Word,uint8_t);
 #endif

@@ -48,6 +48,14 @@ stale handles rejected. The [runner receipt](evidence/2026-09-18-spark/x86-runne
 records exact commands and artifact hashes. This qualifies the private runner
 for the existing bootstrap CPU; it does not establish multi-vCPU execution.
 
+The bootstrap VCPU is now allocated below a private 16 KiB child untyped at
+cap slot 507, itself below the guest execution pool. Revoking the child can
+remove that CPU and all its aliases without revoking EPT or sibling objects.
+The coordinator must exclude VM entry and retire the old exit snapshot before
+reconstruction, then bind and initialize the replacement before it is runnable.
+Whole-guest teardown still revokes the parent pool and therefore removes the
+child as well. Native selective-reconstruction qualification is pending.
+
 The bounded `x86_smp` controller helper handles fixed edge IPIs, INIT and
 SIPI across up to 32 already-admitted contexts. It resolves physical, flat
 logical, cluster logical and shorthand destinations before mutation; invalid

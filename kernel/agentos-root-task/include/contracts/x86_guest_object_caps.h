@@ -24,5 +24,9 @@
 #define AOS_X86_VMM_SELF_TCB_CAP 501u
 /* Second RAM GiB; disjoint from ROM frame/alias slots 502..505. */
 #define AOS_X86_GUEST_EPT_SECOND_RAM_PD_CAP 506u
+/* Child of the execution pool, retaining allocation authority for exactly
+ * one VCPU. INIT may revoke this child without destroying shared EPT. */
+#define AOS_X86_VCPU_POOL_CAP 507u
+#define AOS_X86_VCPU_POOL_BITS 14u
 
 #endif
