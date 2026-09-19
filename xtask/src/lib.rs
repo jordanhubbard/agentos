@@ -221,6 +221,12 @@ pub struct TestArgs {
     pub x86_block_image: Option<std::path::PathBuf>,
     #[arg(long, requires = "x86_block_image")]
     pub x86_block_write: bool,
+    /// Attach a distinct second raw disk at the canonical PCI media-one slot.
+    #[arg(long, requires_all = ["x86_block_image", "assert_firmware_reset"], conflicts_with = "no_build")]
+    pub x86_secondary_block_image: Option<std::path::PathBuf>,
+    /// Allow writes to the second disk; independent of primary write policy.
+    #[arg(long, requires = "x86_secondary_block_image")]
+    pub x86_secondary_block_write: bool,
     /// Start the profile-defined desktop and verify one raw RFB frame
     /// through a key-authenticated SSH tunnel.
     #[arg(long)]

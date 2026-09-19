@@ -49,6 +49,7 @@ pub fn run(args: &FaultInjectArgs) -> Result<()> {
         false,
         None,
         false,
+        None,
         false,
         false,
     )?;

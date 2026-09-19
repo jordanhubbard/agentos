@@ -66,3 +66,26 @@ their cause is not established by this pass.
 
 The first two-CPU bring-up exposed the private CMOS warm-start marker, which
 is now emulated.
+
+### Optional second host disk
+
+The managed gate accepts `X86_SECONDARY_DISK=/absolute/path/to/secondary.raw`.
+It rebuilds root with the second PCI block function at 00:08.0 and attaches
+that raw disk read-only by default. `X86_SECONDARY_WRITABLE=1` enables writes
+to it independently of the primary root disk. The two paths must identify
+different regular files, including through symbolic or hard links, and their
+sizes must be nonzero multiples of 512 bytes. Use disposable copies for gates
+that enable writes.
+
+For example, append these selectors to the SDK, firmware, SSH and root-disk
+arguments of `make gate-x86_64-smp`:
+
+```sh
+X86_SECONDARY_DISK=/absolute/path/to/secondary.raw X86_SECONDARY_WRITABLE=1
+```
+
+The second-disk gate additionally requires the driver to report successful
+initialization of both PCI media and their separate queues. This proves host
+device initialization only. The current descriptor still starts one guest;
+secondary guest I/O, concurrent disk isolation and persistence remain separate
+v0.4 requirements. The receipt must not describe this mode as a dual-guest pass.

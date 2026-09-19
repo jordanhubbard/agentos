@@ -460,6 +460,12 @@ static void virtio_blk_pd_init(void)
         AGENTOS_HOST_SECONDARY_BLK_PAGE_VA +
             AGENTOS_HOST_SECONDARY_BLK_PAGE_OFF, NULL);
 
+    if (secondary_pci && dev[AOS_HOST_BLK_MEDIA_PRIMARY].initialized &&
+        dev[AOS_HOST_BLK_MEDIA_SECONDARY].initialized &&
+        dev[AOS_HOST_BLK_MEDIA_PRIMARY].capacity &&
+        dev[AOS_HOST_BLK_MEDIA_SECONDARY].capacity) {
+        log_drain_write(17, 17, "[virtio_blk] two PCI media initialized with independent queues\n");
+    }
     if (dev[AOS_HOST_BLK_MEDIA_PRIMARY].initialized ||
         dev[AOS_HOST_BLK_MEDIA_SECONDARY].initialized) {
         log_drain_write(17, 17, "[virtio_blk] READY\n");
