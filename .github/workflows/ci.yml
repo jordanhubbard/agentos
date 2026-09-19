@@ -24,11 +24,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install guest image conversion tools
+      - name: Install guest image and native helper tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y qemu-utils
+          sudo apt-get install -y qemu-utils clang lld llvm
           qemu-img --version
+          llvm-objcopy --version
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
@@ -758,11 +759,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install guest image conversion tools
+      - name: Install guest image and native helper tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y qemu-utils
+          sudo apt-get install -y qemu-utils clang lld llvm
           qemu-img --version
+          llvm-objcopy --version
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
