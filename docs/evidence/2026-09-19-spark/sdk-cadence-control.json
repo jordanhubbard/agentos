@@ -36,5 +36,19 @@
     }
   },
   "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
+  "intel_short_cadence_repeat": {
+    "revision": "d31d4446062b43af43d74632942b1b9a92363aa7",
+    "budget_us": 100,
+    "period_us": 1000,
+    "command": "make gate-x86_64-smp QEMU_TEST_TIMEOUT=600",
+    "make_exit_code": 2,
+    "result": "Login prompt reached, but seeded SSH proof exhausted the shared 600-second deadline. One SSH attempt was retained with empty stdout/stderr. The SMP workload was not reached",
+    "baseline_disk_sha256": "fdcdd0dc1a4384cc01d3bfce4a7dd232de4001d01380e06b58b728f24c1daaf3",
+    "root_task_sha256": "5d31b3d347d84b343297a9ae3b4fb414f51d84cddf70f631226e7371e869d63e",
+    "log_sha256": "899956c5ae66f6bbd3df88bb170e3c1ab12ac0d541a8a1b80b431f3fd8c65445",
+    "archive": "intel-100us-repeat-failure.tar.gz",
+    "archive_sha256": "f2b9d148c994af783626ec26dfc117061e3198b7a7f0cea9b96b6b8907d4c4a1",
+    "interpretation": "Second short-cadence failure, now after login rather than before login; root ELF matches the first failed run. The longer-cadence control passed both generations. Shared host load limits causal inference; the short cadence remains unqualified"
+  },
   "limitations": "Diagnostic branch only. No cadence fix acceptance, native GUI rendering or input latency claim, canonical integration, or release qualification. Earlier combined runtime failures remain valid."
 }
