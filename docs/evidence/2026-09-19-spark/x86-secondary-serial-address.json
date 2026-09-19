@@ -1,0 +1,24 @@
+{
+  "schema": "agentos.x86_secondary_serial_address.v1",
+  "date": "2026-09-19",
+  "code_revision": "3e1fd11",
+  "gate_exit": 0,
+  "gate_log_sha256": "d9609959815ab8a1fa053072242191b93c70fffdb543a44950f37c2e5497c306",
+  "source_tree_clean": true,
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "observed_fault": {
+    "revision": "5d1f8b4",
+    "service": 17,
+    "instruction": "0x41277d",
+    "address": "0x2a001004",
+    "source": "platform/guest-vmm/x86_firmware.c:1266",
+    "owned_serial_base": "0x2a200000",
+    "archive": "5d1f8b4-secondary-serial-fault.tar.gz",
+    "archive_sha256": "92077cb4ca54f8c73832211b44f1a2372d7b250d7dfa91b1667154ac2d06b368"
+  },
+  "corrected_native_image_sha256": "15f24b0b08915e1148df9406bc36805e58a4ba83bd9adfe3dc8df933f72da1af",
+  "corrected_observation": "13 PDs booted; secondary CREATE returned CC error 8 instead of timing out. No serial startup fault report observed. This is not guest boot acceptance.",
+  "next_defect": "VM manager ignores the CREATE reply guest ID and sends guest ID 0 in lifecycle, input and console drain requests. Secondary runtime requires guest ID 1.",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership",
+  "release_accepted": false
+}
