@@ -65,7 +65,23 @@ payloads cannot be overwritten before consumption. Host tests cover a complete
 client selection. The graphics image maps a separate observer page into CC
 and the service, with a private snapshot arena mapped only into the service.
 `MSG_CC_FRAME_CAPTURE` resolves public guest handles and relays capture/read/
-release operations over that page. This is not yet a target capture proof.
+release operations over that page.
+
+At `1aee4b8`, the framebuffer service also pumps one observer request during
+each display-response wait iteration. Guest client queues remain quiescent
+during forwarding, so neither surface mutation nor detach can invalidate the
+committed source. The observer continues using its separate immutable snapshot
+and existing response backpressure.
+
+The [September 19 Spark receipt](evidence/2026-09-19-spark/frame-observer-progress.json)
+records the full OS gate, native display test, and qualified Debian graphics
+guest. All 786,432 guest-frame pixels matched QEMU scanout. Alternating the
+unchanged GUI client's 128-region-read benchmark between two retained guests
+took 3.57/3.41 seconds on the candidate and 5.79 seconds on its baseline.
+Sequential full-frame `agentctl` exports took 18.68 and 36.68 seconds,
+respectively. These measurements show a partial throughput improvement;
+170–180 ms p95 region-read delays persist. They do not establish interactive
+desktop, native GUI rendering, or input-response acceptance.
 
 `agentctl frame-capture GUEST_HANDLE OUTPUT.ppm` exports one coherent PPM
 image over the existing privileged CC socket and prints JSON metadata. It
