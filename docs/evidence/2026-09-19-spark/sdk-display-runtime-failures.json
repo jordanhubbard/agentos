@@ -1,0 +1,41 @@
+{
+  "schema": "agentos.sdk-display-runtime-qualification.v1",
+  "date_utc": "2026-09-19",
+  "status": "failed",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "spark": {
+    "revision": "a2532622d7ed71a9a58f75309231ec97d20b0a6b",
+    "command": "make test-debian-nocloud-graphics-teardown",
+    "ssh_port": 12283,
+    "make_exit_code": 2,
+    "failure": "SSH liveness timeout, exit 255, in profile step 2 graphics setup after pinned SSH architecture/sync readiness passed",
+    "error_label": "The shared wait helper reports input proof process failed; explicit input-event assertions were not reached",
+    "image_sha256": "4522664ba2e5ccf4b0a6987bc984d24e5fd2aef6473270b6324e686606b86b52",
+    "initial_seeded_disk_sha256": "7b13bdb81cd94203047fd2616864c0b3b31157e906b7fc853b09de7e0b42e3ad",
+    "log_sha256": "52099b8364b7fa5e19472be5b212d45ec5e939d1a4ff452ba65a36cfd087b38b",
+    "archive": "graphics-ssh-failure.tar.gz",
+    "archive_sha256": "56d66ffe1c3b6a0ac352ff0d20591b18109497e0268084e65891b1211aab302b",
+    "not_accepted": "Frame pixels, exact input events, teardown and queue recycling"
+  },
+  "intel": {
+    "revision": "d31d4446062b43af43d74632942b1b9a92363aa7",
+    "command": "make gate-x86_64-smp",
+    "make_exit_code": 2,
+    "failure": "First-generation Linux login timed out at the unchanged 600-second deadline during cloud-init startup; workload was not reached",
+    "kernel_sha256": "0f5e9cf9ed7672fb745371b5f2aa0b20df1a49f24e707b88161c9ee4aefc2f9d",
+    "root_task_sha256": "5d31b3d347d84b343297a9ae3b4fb414f51d84cddf70f631226e7371e869d63e",
+    "initial_disk_sha256": "fdcdd0dc1a4384cc01d3bfce4a7dd232de4001d01380e06b58b728f24c1daaf3",
+    "console_sha256": "0f705dc08eaa79fb8c1502dfd822135bd92b07f0be6ce2887f9b0b563ff55d65",
+    "log_sha256": "d8b6102a3a47d24629fa40db46cb12bc041609b92c93cf409451c2a65933546c",
+    "archive": "intel-smp-timeout.tar.gz",
+    "archive_sha256": "361bec73de5d6626867b511c995590a1b9e7168bddafc734ae64fd33a7e67ab3"
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
+  "comparison": {
+    "revision": "4dc8e9d187f8569e99c4093901c2fe1c25be0e3b",
+    "status": "in progress when recorded",
+    "change": "Only CC budget/period restored from 100us/1000us to 1000us/10000us, retaining the 10 percent CPU ceiling",
+    "unchanged": "Candidate SDK, Intel baseline disk, profile, workload and qualification deadline",
+    "interpretation": "Cadence is a hypothesis; no causation or fix acceptance established"
+  }
+}

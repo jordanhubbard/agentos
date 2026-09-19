@@ -23,7 +23,7 @@
   },
   "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
   "limitations": [
-    "Seeded Debian graphics/input lifecycle qualification is a separate run and is not established by this receipt",
+    "Subsequent seeded Debian graphics and Intel SMP runs failed; see sdk-display-runtime-failures.json. This full-gate pass does not establish their acceptance",
     "No native GUI rendering, interaction-latency or abrupt-disconnect acceptance",
     "This integration branch is not canonical main or a release revision",
     "Required CI, review and complete v0.4 release acceptance remain outstanding"
