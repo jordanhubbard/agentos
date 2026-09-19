@@ -54,7 +54,11 @@ remove that CPU and all its aliases without revoking EPT or sibling objects.
 The coordinator must exclude VM entry and retire the old exit snapshot before
 reconstruction, then bind and initialize the replacement before it is runnable.
 Whole-guest teardown still revokes the parent pool and therefore removes the
-child as well. Native selective-reconstruction qualification is pending.
+child as well. At `19c611f`, the full Spark gate and Intel teardown gate
+passed. The native check invalidated the old CPU alias, rebound a fresh CPU
+to the retained EPT, and verified that the sibling VCPU's startup state
+remained intact. The [CPU pool receipt](evidence/2026-09-18-spark/x86-cpu-pool.json)
+records these bounded checks; executing multiple CPUs remains unqualified.
 
 The bounded `x86_smp` controller helper handles fixed edge IPIs, INIT and
 SIPI across up to 32 already-admitted contexts. It resolves physical, flat
