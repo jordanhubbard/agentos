@@ -1126,15 +1126,20 @@ Host tests verify exact pixels through the real framebuffer queue implementation
 the framebuffer service receives a 1 ms budget per 10 ms period and a 1 KiB
 scheduling context with additional refill records. Short queue exchanges must
 not discard most of the available budget through refill coalescing. The kernel
-retains a 10% CPU ceiling. CC retains its existing 1% ceiling with a 100 us
-budget per 10 ms period and a 1 KiB scheduling context with extra refill
+retains a 10% CPU ceiling. CC uses a 1 ms budget per 10 ms period, also a
+10% CPU ceiling, and a 1 KiB scheduling context with extra refill
 records. Its host VirtIO polling yields must not defer each request or reply
 for the old one-second period. Other PD and guest scheduling parameters are
-unchanged. The shorter period needs target latency and integration qualification;
-it does not grant CC any additional device or guest-memory authority.
-Combined guest graphics/input qualification at this scheduling revision is
-pending. A physical display driver and target peer-input isolation also remain
-required; native observer exports do not establish either property.
+unchanged. The 100 us / 1 ms candidate improved measured transport latency
+on an earlier SDK but failed combined Intel qualification twice. The restored
+cadence passed both Intel SMP generations, Spark's full gate, and graphics,
+input, teardown and pool-recycling checks after correcting the host destroy
+retry's handling of a detached boot console. Exact revisions, hashes and
+shared-host limitations are in the
+[cadence receipt](evidence/2026-09-19-spark/sdk-cadence-control.json).
+This does not establish native GUI latency, physical hardware qualification,
+target peer-input isolation, or final release integration. Scheduling changes
+grant CC no additional device or guest-memory authority.
 
 The graphics and focused framebuffer variants also grant CC a separate observer queue.
 Only CC and `framebuffer_queue` map that page; neither VMM receives it.

@@ -2,7 +2,7 @@
   "schema": "agentos.sdk-display-cadence-control.v1",
   "date_utc": "2026-09-19",
   "revision": "4dc8e9d187f8569e99c4093901c2fe1c25be0e3b",
-  "status": "graphics lifecycle failed",
+  "status": "control qualified after host retry correction; integration pending",
   "sdk": "2.3.1-agentos-e60776ac-cr2",
   "change": "CC budget/period restored from 100us/1000us to 1000us/10000us, preserving the 10 percent CPU ceiling",
   "intel": {
@@ -36,6 +36,20 @@
     }
   },
   "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
+  "spark_graphics_lifecycle_retest": {
+    "revision": "7ee37223d512936921f392720cc9fae2a3a2760c",
+    "command": "make test-debian-nocloud-graphics-teardown QEMU_TEST_SSH_PORT=12283",
+    "make_exit_code": 0,
+    "host_change": "Allow a detached boot-console relay-fault response only during pending destroy retries, still requiring positive destroy acknowledgement and all target markers within unchanged deadlines",
+    "result": "Pinned SSH, exact frame pixels, all scanout pixels, explicit input, held-input release, backpressure, complete teardown, stale lifecycle rejection and queue/paging/execution/graphics pool recycling passed",
+    "frame_capture_seconds": 13,
+    "frame_sha256": "68dcf755e16f71c6de1a6c3ea545c6deb41ce341f13e4353cadc4f5cf311794b",
+    "image_sha256": "c1541fb471c301391bebf10ffb7b3fb1f34f66cad63e37d1b8f361cc144942a5",
+    "log_sha256": "8b877b52a994800170d8d868245f0490397e7d50eb5bd5abfc3a96cb7d206549",
+    "archive": "cadence-graphics-lifecycle-pass.tar.gz",
+    "archive_sha256": "43858f40c67f03bce8b6e35b5776055f07512a6d316d4c42625479c22d3b9d69",
+    "limitation": "Same target image as the preceding failed teardown run; host retry correction only. Pool recycling does not prove a second ARM guest boot or native GUI lifecycle"
+  },
   "intel_short_cadence_repeat": {
     "revision": "d31d4446062b43af43d74632942b1b9a92363aa7",
     "budget_us": 100,
@@ -50,5 +64,6 @@
     "archive_sha256": "f2b9d148c994af783626ec26dfc117061e3198b7a7f0cea9b96b6b8907d4c4a1",
     "interpretation": "Second short-cadence failure, now after login rather than before login; root ELF matches the first failed run. The longer-cadence control passed both generations. Shared host load limits causal inference; the short cadence remains unqualified"
   },
-  "limitations": "Diagnostic branch only. No cadence fix acceptance, native GUI rendering or input latency claim, canonical integration, or release qualification. Earlier combined runtime failures remain valid."
+  "decision": "Restore the longer qualified cadence in the integration candidate; the shorter cadence is not accepted. No definitive causal diagnosis under shared host load",
+  "limitations": "No native GUI rendering or input latency claim, canonical integration, or release qualification. Earlier combined runtime failures remain valid. Default installed SDK is unchanged."
 }
