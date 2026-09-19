@@ -104,7 +104,10 @@ incomplete and malformed records, and a fault interrupting the prompt.
 
 The fresh-cache `make sdk-candidate` build reproduced all three pinned kernel
 hashes and passed the full Spark `make gate`. The updated harness passed
-`make test-host` and its targeted login tests.
+`make test-host`, its targeted login tests, and the full Spark gate at
+`de1458c244258202aaaa63cd890b1c526202b7e5`. The
+[build receipt](evidence/2026-09-19-spark/cr2-sdk-build.json) records the source
+pins, build scope and log hashes.
 
 Patched managed one-CPU Debian qualification, both SMP generations with the
 updated harness, final integrated revision gates,
