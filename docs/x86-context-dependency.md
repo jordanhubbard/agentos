@@ -67,20 +67,15 @@ context hypothesis without claiming that CR2 is the cause.
 ## Proposed change boundary
 
 The constitution says: "seL4 is the only kernel-mode code. Never modify it."
-No kernel source or SDK binary has been changed in this investigation.
-An explicit project exception is required before pursuing a kernel change.
+The candidate uses unmodified upstream source and an isolated SDK directory.
+This dependency qualification is covered by the user's v0.4 implementation,
+test and release request; it requires no exception to the prohibition on
+local kernel patches. The earlier agent-imposed blanket SDK build hold was
+unnecessary and has been corrected in the ledger. Installed release SDKs and
+default pins remain unchanged during qualification.
 
-The earlier proposed exception was limited to upstream-compatible preservation of
-CR2 as native VCPU architectural state, including initialization and separate
-host state where required. It does not extend agentOS device authority or
-replace seL4 with a project fork. An approved change would require a pinned,
-reproducible SDK build and renewed native, single-CPU, two-CPU, lifecycle and
-full Spark qualification. No release may infer Linux SMP success from the
-short native tests or from this source audit. Upstream publication requires
-separate authorization.
-
-That custom-kernel proposal is deferred in favor of qualifying the already
-merged upstream revision above. The ledger currently retains an explicit
-pending-authorization boundary on SDK rebuilding; approval of this concrete
-unmodified-upstream candidate is required before replacing that boundary.
-No custom kernel patch is proposed by this plan.
+The custom CR2 proposal is deferred. No local kernel patch or upstream
+publication is authorized by this plan. Adoption still requires reproducible
+build evidence and renewed native, single-CPU, two-CPU, lifecycle and full
+Spark qualification. No release may infer Linux SMP success from the short
+native tests, a successful build or the upstream source audit.
