@@ -5,6 +5,13 @@
 
 static aos_fb_client_t clients[AOS_FB_CLIENTS];
 static aos_fb_observer_t observer;
+static unsigned pump_observer(void)
+{
+    unsigned count = aos_fb_observer_pump(&observer);
+    if (count)
+        seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY + AOS_FB_OBSERVER_CLIENT);
+    return count;
+}
 #ifdef AGENTOS_DISPLAY_RAMFB
 #include <platform/display_producer.h>
 #include <platform/display_layout.h>
@@ -24,6 +31,13 @@ static int display_exchange(void *context,const aos_display_request_t *q,
     }
     seL4_Signal(PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY);
     for (unsigned attempt=0;attempt<100;++attempt) {
+        /* Forwarding a whole display frame can span many scheduling periods.
+         * Service the bounded observer queue between exchanges and while
+         * waiting, rather than withholding every remote read until PRESENT.
+         * Observer operations copy/read a separate snapshot and never mutate
+         * client surfaces. Do not pump client queues here: their writes or
+         * detach operations could invalidate the source being forwarded. */
+        (void)pump_observer();
         if (aos_display_receive(region,response)==0) {
             seL4_Signal(PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY);
             return 0;
@@ -58,14 +72,11 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
             if (count) seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY + i);
             progress += count;
         }
-        unsigned observed = aos_fb_observer_pump(&observer);
-        if (observed)
-            seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY + AOS_FB_OBSERVER_CLIENT);
-        progress += observed;
+        progress += pump_observer();
 #ifdef AGENTOS_DISPLAY_RAMFB
         /* Fixed primary-client focus. Guests can select only their own
-         * surfaces. No pump runs during forwarding, so committed pixels
-         * remain stable across the bounded sequence of queue exchanges. */
+         * surfaces. Client pumps do not run during forwarding, so committed
+         * pixels remain stable across the bounded queue exchanges. */
         unsigned was_failed=display.failed;
         if (aos_display_forward(&display,&clients[0])>0) ++progress;
         if (!was_failed && display.failed)
