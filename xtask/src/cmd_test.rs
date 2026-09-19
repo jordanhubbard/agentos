@@ -6035,12 +6035,16 @@ fn prove_profile_input_pass(
         .context("input proof needs SSH")?;
     let stderr_path = log.with_extension(format!("{}.stderr", mode.stem()));
     let stderr = std::fs::File::create(&stderr_path)?;
+    // These are bounded upload/evdev sessions, not readiness probes. In
+    // particular, backpressure qualification deliberately pauses the guest.
+    // Let the upload and output deadlines below govern failure, rather than
+    // dropping an otherwise valid session after one short keepalive interval.
     let command = |remote: &str| -> anyhow::Result<std::process::Command> {
         let mut cmd = std::process::Command::new("ssh");
         cmd.arg("-i")
             .arg(&key.private_key)
             .args(["-p", &ssh.host_port.to_string()])
-            .args(SSH_PROBE_LIVENESS_OPTIONS);
+            .args(SSH_SESSION_LIVENESS_OPTIONS);
         apply_test_ssh_identity(&mut cmd, key);
         cmd.arg(format!("{}@127.0.0.1", ssh.account))
             .arg(if ssh.account == "root" {
