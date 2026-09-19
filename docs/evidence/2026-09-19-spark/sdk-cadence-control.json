@@ -2,7 +2,7 @@
   "schema": "agentos.sdk-display-cadence-control.v1",
   "date_utc": "2026-09-19",
   "revision": "4dc8e9d187f8569e99c4093901c2fe1c25be0e3b",
-  "status": "partial",
+  "status": "graphics lifecycle failed",
   "sdk": "2.3.1-agentos-e60776ac-cr2",
   "change": "CC budget/period restored from 100us/1000us to 1000us/10000us, preserving the 10 percent CPU ceiling",
   "intel": {
@@ -22,7 +22,18 @@
     "command": "make gate",
     "make_exit_code": 0,
     "log_sha256": "77295f095db3b98654b0acc81843e51c7e44a0784070018e938a0b677e54ea6c",
-    "graphics_lifecycle": "Still running when recorded; not accepted"
+    "graphics_lifecycle": {
+      "command": "make test-debian-nocloud-graphics-teardown QEMU_TEST_SSH_PORT=12283",
+      "make_exit_code": 2,
+      "passed": ["pinned SSH on third attempt", "graphics setup", "1024x768 frame capture", "all 786432 QEMU scanout pixels match primary framebuffer", "exact keyboard and pointer events", "held input release", "input backpressure"],
+      "frame_capture_seconds": 13,
+      "frame_sha256": "68dcf755e16f71c6de1a6c3ea545c6deb41ce341f13e4353cadc4f5cf311794b",
+      "failure": "During teardown, MSG_CC_LOG_STREAM returned CC_ERR_RELAY_FAULT (8) after network, block and serial detach markers; successful teardown and queue recycling were not established",
+      "log_sha256": "ceffbbd13b7439b73e73e5365f0f34881ffeed6d4bcef7c1fc4acc36d7f466b2",
+      "image_sha256": "c1541fb471c301391bebf10ffb7b3fb1f34f66cad63e37d1b8f361cc144942a5",
+      "archive": "cadence-graphics-teardown-failure.tar.gz",
+      "archive_sha256": "23e561e537ab4f25207e8da494704037d9dde4a8ee63bc64e133c2a32c2249a3"
+    }
   },
   "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
   "limitations": "Diagnostic branch only. No cadence fix acceptance, native GUI rendering or input latency claim, canonical integration, or release qualification. Earlier combined runtime failures remain valid."
