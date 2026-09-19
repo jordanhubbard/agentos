@@ -3741,9 +3741,170 @@ fn prove_profile_input(
     key: &SshTestKey,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
-    prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, false)?;
-    prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, true)?;
-    Ok("exact guest input batches and server-generated held-key/button releases passed".into())
+    for mode in [
+        InputProofMode::Events,
+        InputProofMode::Release,
+        InputProofMode::Backpressure,
+    ] {
+        prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, mode)?;
+    }
+    Ok(
+        "exact guest input batches, held-state releases and paused-guest backpressure passed"
+            .into(),
+    )
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum InputProofMode {
+    Events,
+    Release,
+    Backpressure,
+}
+
+impl InputProofMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Events => "explicit-events",
+            Self::Release => "server-held-state",
+            Self::Backpressure => "paused-backpressure",
+        }
+    }
+    fn stem(self) -> &'static str {
+        match self {
+            Self::Events => "input",
+            Self::Release => "input-release",
+            Self::Backpressure => "input-backpressure",
+        }
+    }
+}
+
+// Use the public CLI's no-replay input path and inspect its structured result.
+// A transport error or malformed reply must never count as queue backpressure.
+fn input_cli_result(
+    repo: &Path,
+    socket: &Path,
+    stderr: &std::fs::File,
+    qemu: &mut Child,
+    release: bool,
+    device: &str,
+    events: &[&str],
+) -> anyhow::Result<u32> {
+    let mut child = ChildGuard::new(
+        std::process::Command::new(repo.join("tools/agentctl/agentctl"))
+            .env("CC_PD_SOCK", socket)
+            .args([
+                "--batch",
+                if release {
+                    "input-release"
+                } else {
+                    "input-batch"
+                },
+                "0",
+                device,
+            ])
+            .args(events)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(stderr.try_clone()?))
+            .spawn()?,
+    );
+    let mut output = child.stdout.take().context("input CLI stdout missing")?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let exit = loop {
+        anyhow::ensure!(
+            qemu.try_wait()?.is_none(),
+            "QEMU exited during input backpressure proof"
+        );
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "input CLI deadline expired");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut bytes = Vec::new();
+    output.by_ref().take(1025).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 1024, "input CLI output exceeded limit");
+    let reply: serde_json::Value = serde_json::from_slice(&bytes)
+        .context("input CLI did not return a validated input response")?;
+    let status = reply["status"].as_u64().context("input status missing")?;
+    let accepted = reply["accepted"]
+        .as_u64()
+        .context("input accepted count missing")?;
+    anyhow::ensure!(
+        status == 0 || status == 3,
+        "unexpected input status {status}"
+    );
+    anyhow::ensure!(
+        exit.code() == Some(if status == 0 { 0 } else { 1 }),
+        "input status/exit mismatch"
+    );
+    let expected = if release || status != 0 {
+        0
+    } else {
+        events.len() / 3 + 1
+    };
+    anyhow::ensure!(accepted == expected as u64, "input accepted count mismatch");
+    Ok(status as u32)
+}
+
+fn prove_paused_input_release(
+    repo: &Path,
+    socket: &Path,
+    stderr: &std::fs::File,
+    qemu: &mut Child,
+) -> anyhow::Result<[usize; 2]> {
+    let mut cc = CcClient::connect(socket)?;
+    suspend_guest_via_cc(&mut cc, 0)?;
+    drop(cc);
+    let result = (|| {
+        let mut accepted = [0usize; 2];
+        for (device, (name, code, rejected_code)) in
+            [("keyboard", "183", "184"), ("pointer", "272", "273")]
+                .iter()
+                .enumerate()
+        {
+            // Duplicate presses fill transport queues but Linux filters them
+            // to a single down event. This avoids overflowing evdev itself
+            // when the guest resumes, and leaves one held key/button.
+            for repeats in [63usize, 1] {
+                let events: Vec<&str> = (0..repeats).flat_map(|_| ["1", *code, "1"]).collect();
+                let mut blocked = false;
+                for _ in 0..64 {
+                    if input_cli_result(repo, socket, stderr, qemu, false, name, &events)? == 3 {
+                        blocked = true;
+                        break;
+                    }
+                    accepted[device] += 1;
+                }
+                anyhow::ensure!(blocked, "paused {name} queue never applied backpressure");
+            }
+            anyhow::ensure!(accepted[device] > 0, "{name} accepted no held-state input");
+            for _ in 0..2 {
+                anyhow::ensure!(
+                    input_cli_result(repo, socket, stderr, qemu, true, name, &[])? == 0,
+                    "{name} release was not retained"
+                );
+            }
+            anyhow::ensure!(
+                input_cli_result(
+                    repo,
+                    socket,
+                    stderr,
+                    qemu,
+                    false,
+                    name,
+                    &["1", rejected_code, "1"]
+                )? == 3,
+                "new {name} input bypassed pending release"
+            );
+        }
+        Ok(accepted)
+    })();
+    // Resume even after a failed assertion, before awaiting guest SSH cleanup.
+    let resumed = CcClient::connect(socket).and_then(|mut cc| resume_guest_via_cc(&mut cc, 0));
+    let accepted = result?;
+    resumed?;
+    Ok(accepted)
 }
 
 fn prove_profile_input_pass(
@@ -3754,7 +3915,7 @@ fn prove_profile_input_pass(
     profile: &HostProfilePlan,
     key: &SshTestKey,
     qemu: &mut Child,
-    release: bool,
+    mode: InputProofMode,
 ) -> anyhow::Result<String> {
     let ssh = profile
         .qemu
@@ -3765,11 +3926,7 @@ fn prove_profile_input_pass(
         ssh.account == "root",
         "input proof currently requires the root test account"
     );
-    let stderr_path = log.with_extension(if release {
-        "input-release.stderr"
-    } else {
-        "input.stderr"
-    });
+    let stderr_path = log.with_extension(format!("{}.stderr", mode.stem()));
     let stderr = std::fs::File::create(&stderr_path)?;
     let command = |remote: &str| -> anyhow::Result<std::process::Command> {
         let mut cmd = std::process::Command::new("ssh");
@@ -3790,10 +3947,14 @@ fn prove_profile_input_pass(
     )?.stdin(Stdio::from(std::fs::File::open(helper)?)).stdout(Stdio::null()).spawn()?);
     wait_input_child(&mut upload, qemu, 150)?;
     let mut probe = ChildGuard::new(
-        command("exec timeout 130 /tmp/agentos-input-probe")?
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .spawn()?,
+        command(if mode == InputProofMode::Backpressure {
+            "exec timeout 240 /tmp/agentos-input-probe --backpressure"
+        } else {
+            "exec timeout 130 /tmp/agentos-input-probe"
+        })?
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()?,
     );
     let mut output = probe.stdout.take().context("input probe stdout missing")?;
     let (send, receive) = std::sync::mpsc::sync_channel(2);
@@ -3818,10 +3979,19 @@ fn prove_profile_input_pass(
         ],
         &["pointer", "1", "272", "0"],
     ];
-    for (index, batch) in batches.iter().enumerate() {
+    let accepted_while_paused = if mode == InputProofMode::Backpressure {
+        Some(prove_paused_input_release(repo, socket, &stderr, qemu)?)
+    } else {
+        None
+    };
+    for (index, batch) in batches
+        .iter()
+        .enumerate()
+        .filter(|_| mode != InputProofMode::Backpressure)
+    {
         // The same guest checker requires identical evdev output. In the
         // release pass only the server knows which key/button must be released.
-        let releasing = release && (index == 1 || index == 3);
+        let releasing = mode == InputProofMode::Release && (index == 1 || index == 3);
         let args = if releasing { &batch[..1] } else { *batch };
         let mut submit = ChildGuard::new(
             std::process::Command::new(repo.join("tools/agentctl/agentctl"))
@@ -3846,7 +4016,11 @@ fn prove_profile_input_pass(
     }
     anyhow::ensure!(
         receive.recv_timeout(Duration::from_secs(120))??
-            == "AGENTOS_INPUT_PASS keyboard=4 pointer=7",
+            == if mode == InputProofMode::Backpressure {
+                "AGENTOS_INPUT_PASS keyboard=4 pointer=4"
+            } else {
+                "AGENTOS_INPUT_PASS keyboard=4 pointer=7"
+            },
         "guest input event mismatch"
     );
     wait_input_child(&mut probe, qemu, 15)?;
@@ -3854,18 +4028,15 @@ fn prove_profile_input_pass(
         "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
         "agentos_revision": agentos_revision(repo)?, "source_tree_clean": agentos_worktree_clean(repo)?,
         "helper_sha256": sha256_bytes(&std::fs::read(helper)?),
-        "keyboard_events": 4, "pointer_events": 7, "batches": 4,
+        "keyboard_events": 4, "pointer_events": if mode == InputProofMode::Backpressure { 4 } else { 7 },
+        "accepted_batches_while_paused": accepted_while_paused,
         "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
-        "release_mode": if release { "server-held-state" } else { "explicit-events" },
-        "excludes": ["physical input devices", "peer guest isolation", "guest recreation"],
+        "release_mode": mode.name(),
+        "excludes": ["physical input devices", "peer guest isolation", "guest recreation", "abrupt disconnect"],
         "stderr": stderr_path,
     });
     std::fs::write(
-        log.with_extension(if release {
-            "input-release.json"
-        } else {
-            "input.json"
-        }),
+        log.with_extension(format!("{}.json", mode.stem())),
         serde_json::to_vec_pretty(&receipt)?,
     )?;
     Ok("exact guest keyboard, pointer, button and packet-boundary delivery passed".into())
