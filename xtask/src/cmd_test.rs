@@ -3186,7 +3186,27 @@ fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow:
 }
 
 fn x86_has_login_prompt(text: &str) -> bool {
-    text.lines().any(|line| {
+    // printk records can interrupt getty between the hostname and its prompt.
+    // Remove only complete timestamped records for prompt recognition. The
+    // caller retains and checks the original bytes for guest faults first.
+    let mut getty = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let interruption = line.find('[').filter(|&start| {
+            let Some((timestamp, _)) = line[start + 1..].split_once("] ") else {
+                return false;
+            };
+            let Some((seconds, fraction)) = timestamp.trim_start().split_once('.') else {
+                return false;
+            };
+            line.ends_with('\n')
+                && !seconds.is_empty()
+                && !fraction.is_empty()
+                && seconds.bytes().all(|b| b.is_ascii_digit())
+                && fraction.bytes().all(|b| b.is_ascii_digit())
+        });
+        getty.push_str(interruption.map_or(line, |start| &line[..start]));
+    }
+    getty.lines().any(|line| {
         let Some((hostname, _)) = line.split_once(" login:") else {
             return false;
         };
@@ -6541,6 +6561,18 @@ mod tests {
             "agentos-debian login: ci-info: Authorized keys\r\n"
         ));
         assert!(super::x86_has_login_prompt("debian login:"));
+        assert!(super::x86_has_login_prompt(
+            "agentos-debian[  335.085526] cloud-init[494]: running 'modules:final'\r\n login: [  336.226354] cloud-init[494]: finished\r\n"
+        ));
+        for text in [
+            "agentos-debian\n login:",
+            "agentos-debian[cloud-init] finished\n login:",
+            "agentos-debian[  335.085526] incomplete login:",
+            "agentos-debian[  335.x] malformed\n login:",
+            "[  335.085526] cloud-init: finished\n login:",
+        ] {
+            assert!(!super::x86_has_login_prompt(text), "{text:?}");
+        }
         assert!(!super::x86_has_login_prompt(
             "[1.0] service awaiting login:"
         ));
@@ -6597,6 +6629,8 @@ mod tests {
                 true,
             ),
             (b"Debian GNU/Linux 13\r\ndebian log".as_slice(), false),
+            (b"agentos-debian[  335.085526] cloud-init[494]: running\r\n login: ".as_slice(), true),
+            (b"agentos-debian[  335.085526] worker: segfault at 7f1234\r\n login: ".as_slice(), false),
             (
                 b"Kernel panic - not syncing\r\ndebian login: ".as_slice(),
                 false,

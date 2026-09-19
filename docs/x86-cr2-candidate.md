@@ -26,17 +26,36 @@ the agentOS repository. The retained build used GNU GCC 13.3.0, binutils 2.42,
 Python 3.12.3 and `sel4-deps==0.9.0`. The dependency freeze and complete build
 logs are retained with the qualification evidence.
 
-Run the upstream builder for `x86_64_generic_vtx`, configuration `release`,
-with candidate version `2.3.1-agentos-e60776ac-cr2`. The target bundle used
-by agentOS needs the kernel and generated headers. `--skip-tool` and
-`--skip-initialiser` avoid building unused Microkit components. Do not use
-`--skip-run-time`: upstream also skips the kernel under that option.
+Use the opt-in Make target with local upstream clones and an external Python
+environment containing the pinned dependencies. The example uses absolute
+paths; the output directory must be fresh and outside the agentOS checkout.
+GNU build tools and the `aarch64-linux-gnu` and `x86_64-linux-gnu` GCC 13.3
+cross toolchains must be on `PATH`.
+
+```sh
+make sdk-candidate \
+  SDK_CANDIDATE_MICROKIT_SOURCE=/path/to/upstream/microkit \
+  SDK_CANDIDATE_SEL4_SOURCE=/path/to/upstream/sel4 \
+  SDK_CANDIDATE_PYTHON=/path/to/sel4-venv/bin/python \
+  SDK_CANDIDATE_DIR=/path/to/fresh-external-build
+```
+
+The target creates private clones at the pinned revisions, applies only the
+recorded patch, and builds all three release boards. It verifies their kernel
+hashes against `tools/sdk/cr2-kernels.sha256` and prints the candidate
+`SEL4_SDK` path. It neither replaces an installed SDK nor changes default
+pins. A differing kernel hash is a failed reproduction, not a new accepted
+candidate. Existing output directories are preserved and rejected.
+
+The target bundle used by agentOS needs the kernel and generated headers.
+`--skip-tool` and `--skip-initialiser` avoid building unused Microkit components.
+Do not use `--skip-run-time`: upstream also skips the kernel under that option.
 
 The upstream release configuration leaves verification/debug defaults
-dependent on CMake cache history. A second configure can disable VMX. After
-the first upstream build creates its board build directory, configure that
-directory with `KernelVerificationBuild=OFF`. Then configure it again with
-all of the following explicit values before rerunning the upstream builder:
+dependent on CMake cache history. A second configure can disable VMX.
+The Make target seeds verification, debug and printing settings in a fresh
+CMake cache before the first configure, so board selection resolves against
+the intended release settings from the outset. The VTX board must produce:
 
 ```text
 KernelVerificationBuild=OFF
@@ -48,9 +67,9 @@ KernelVTX=ON
 KernelX86_64VTX64BitGuests=ON
 ```
 
-The separate configure passes allow upstream's dependent-option cache to
-settle before selecting release values. Inspect `gen_config.h` after the
-final build: VTX and 64-bit guest support must be enabled, while verification,
+Earlier manual builds needed separate configure passes to let upstream's
+dependent-option cache settle; the fresh-cache Make path avoids that history.
+Inspect `gen_config.h` after the final build: VTX and 64-bit guest support must be enabled, while verification,
 debug and printing must be disabled. Reject an unexpected configuration;
 successful compilation alone is insufficient.
 
@@ -75,7 +94,19 @@ At agentOS `4143e1408b924540a1243612c84af8013a88771d`:
   Log SHA-256:
   `39d2aa228d615e696d140a83f2f685e1a5a0773cc8044a23abbccbaeebe01009`.
 
-The strict patched SMP workload is still running. Patched managed one-CPU
-Debian qualification, both SMP generations, final integrated revision gates,
+The first patched SMP generation passed the overlapping CPU-affined x87/SSE
+workload. The replacement guest reached login, but a cloud-init record split
+the hostname from ` login:` and the harness timed out. The raw console is
+retained; this run is not a complete SMP pass. Prompt recognition now removes
+complete numeric-timestamp printk records, while fault checks still inspect
+the unchanged raw transcript. Regression tests cover the observed split,
+incomplete and malformed records, and a fault interrupting the prompt.
+
+The fresh-cache `make sdk-candidate` build reproduced all three pinned kernel
+hashes and passed the full Spark `make gate`. The updated harness passed
+`make test-host` and its targeted login tests.
+
+Patched managed one-CPU Debian qualification, both SMP generations with the
+updated harness, final integrated revision gates,
 required CI/review and the rest of v0.4 remain outstanding. Do not infer crash
 causation or SMP acceptance from this patch, its build or the shorter gates.

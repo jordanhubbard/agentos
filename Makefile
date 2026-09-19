@@ -409,6 +409,8 @@ endif
 # setup/demo: two-command first-run path and one-command repeatable showcase
 # =============================================================================
 .PHONY: sdk-check
+include tools/sdk/candidate.mk
+
 sdk-check:
 	@test -d "$(SEL4_SDK)/board" || \
 		(echo "ERROR: Microkit SDK missing at $(SEL4_SDK); run 'make sdk'." && exit 1)
