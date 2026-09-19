@@ -77,9 +77,10 @@ default pins remain unchanged during qualification.
 The user explicitly approved both this isolated upstream qualification and
 the scoped upstream-compatible CR2 fix with full requalification on
 2026-09-19. This authorizes a narrow exception to the local-kernel-change
-rule if that fix remains necessary. The custom CR2 proposal remains deferred
-while the merged upstream VMX fix is tested; no local kernel patch has been
-made. Upstream publication is not part of this approval. Adoption still requires reproducible
+rule if that fix remains necessary. The unmodified upstream candidate also
+failed Linux SMP; the approved [CR2 candidate](x86-cr2-candidate.md) is now
+under qualification in a separate source tree and SDK directory. Upstream
+publication is not part of this approval. Adoption still requires reproducible
 build evidence and renewed native, single-CPU, two-CPU, lifecycle and full
 Spark qualification. No release may infer Linux SMP success from the short
 native tests, a successful build or the upstream source audit.
@@ -97,8 +98,11 @@ The Intel userspace/teardown gate passed with this candidate at `979ec65`.
 The first managed Debian attempt reached login but used a known-hosts pin
 from a different seeded image; it was aborted and is not accepted. The
 baseline disk's public host key was then read through a read-only loop device
-and matched the observed key. Managed one-CPU and SMP qualification remain
-pending.
+and matched the observed key. Both managed one-CPU generations then passed
+at `4143e14`. The strict SMP gate at that revision failed before the workload:
+`systemd-remount` faulted in the dynamic loader on CPU 0. The unmodified VMX
+fix is therefore insufficient for this workload. The CR2 comparison remains
+pending; the failure alone does not establish its cause.
 
 The first Spark gate stopped at kernel entry: the new ARM kernel's ELF entry
 is `0xffc0000000`, while the loader used a fixed `0x8060000000` branch target
