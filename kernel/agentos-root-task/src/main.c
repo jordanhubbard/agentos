@@ -842,7 +842,12 @@ static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
-static seL4_CPtr g_x86_blk_frames[AOS_VIRTIO_PCI_REGIONS];
+#ifdef AGENTOS_X86_SECONDARY_BLOCK
+#define X86_HOST_BLOCK_COUNT 2u
+#else
+#define X86_HOST_BLOCK_COUNT 1u
+#endif
+static seL4_CPtr g_x86_blk_frames[X86_HOST_BLOCK_COUNT][AOS_VIRTIO_PCI_REGIONS];
 static seL4_CPtr g_x86_net_frames[AOS_VIRTIO_PCI_REGIONS];
 #ifdef AGENTOS_X86_CC_PCI
 static seL4_CPtr g_x86_cc_frames[AOS_VIRTIO_PCI_REGIONS];
@@ -898,7 +903,7 @@ static bool provision_x86_cc(seL4_CPtr vspace)
 #endif
 #endif
 
-static seL4_Error allocate_block_dma(const aos_blk_pci_info_t *pci)
+static seL4_Error allocate_block_dma(const aos_blk_pci_set_t *pci)
 {
     _Static_assert(AGENTOS_BLK_SHARED_SIZE == (1UL << seL4_ARCH_LargePageBits),
                    "host block DMA layout must match the SDK large frame");
@@ -911,10 +916,10 @@ static seL4_Error allocate_block_dma(const aos_blk_pci_info_t *pci)
     if (err != seL4_NoError) return err;
     agentos_blk_shared_meta_t *meta = (agentos_blk_shared_meta_t *)RT_BLK_SCRATCH_VA;
     *meta = (agentos_blk_shared_meta_t){
-        .magic = AGENTOS_BLK_SHARED_MAGIC, .version = pci ? 2u : 1u,
+        .magic = AGENTOS_BLK_SHARED_MAGIC, .version = pci ? 3u : 1u,
         .paddr = address.paddr, .size = AGENTOS_BLK_SHARED_SIZE,
     };
-    if (pci) *(aos_blk_pci_info_t *)(RT_BLK_SCRATCH_VA + AOS_BLK_PCI_INFO_OFF) = *pci;
+    if (pci) *(aos_blk_pci_set_t *)(RT_BLK_SCRATCH_VA + AOS_BLK_PCI_INFO_OFF) = *pci;
     AGENTOS_MEMORY_FENCE();
     return seL4_ARCH_Page_Unmap(g_blk_shared_frame_cap);
 }
@@ -926,10 +931,14 @@ static seL4_CPtr g_pd_notifications[SYSTEM_MAX_PDS];
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
 static seL4_CPtr g_x86_vtx_proof_endpoint = seL4_CapNull;
 #ifdef AGENTOS_X86_FIRMWARE_RESET
-static seL4_CPtr g_x86_runner_tcb = seL4_CapNull;
-static uint32_t g_x86_runner_index;
-static seL4_CPtr g_x86_ap_runner_tcb=seL4_CapNull;
-static uint32_t g_x86_ap_runner_index;
+#include <platform/x86_runner_ownership.h>
+static aos_x86_runner_owner_t g_x86_runner_owners[] = {
+    {.coordinator = SVC_ID_GUEST_VMM_PRIMARY,
+     .service = {SVC_ID_X86_RUNNER, SVC_ID_X86_AP_RUNNER}},
+    {.coordinator = SVC_ID_GUEST_VMM_SECONDARY,
+     .service = {SVC_ID_X86_SECONDARY_RUNNER, SVC_ID_X86_SECONDARY_AP_RUNNER}},
+};
+#define X86_RUNNER_OWNER_COUNT (sizeof(g_x86_runner_owners) / sizeof(g_x86_runner_owners[0]))
 #endif
 #endif
 #ifdef AGENTOS_LOG_RINGS
@@ -1775,22 +1784,24 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
 {
     /* The runner is provisioned first with its own native address space and
      * IPC buffer. Only its owning coordinator receives this invocation cap. */
-    if (g_x86_runner_tcb == seL4_CapNull || g_x86_ap_runner_tcb==seL4_CapNull)
+    aos_x86_runner_owner_t *runners = aos_x86_runner_owner(
+        g_x86_runner_owners, X86_RUNNER_OWNER_COUNT, pd->self_svc_id);
+    if (!runners || !runners->tcb[0] || !runners->tcb[1])
         return seL4_InvalidCapability;
-    vmm_tcb = g_x86_runner_tcb;
-    seL4_CPtr runner_ep = ep_alloc_for_service(SVC_ID_X86_RUNNER);
+    vmm_tcb = runners->tcb[0];
+    seL4_CPtr runner_ep = ep_alloc_for_service(runners->service[0]);
     if (runner_ep == seL4_CapNull) return seL4_NotEnoughMemory;
     seL4_Error runner_err = seL4_CNode_Mint(pd_cnode,AOS_X86_RUNNER_ENDPOINT_CAP,
         pd->cnode_size_bits,seL4_CapInitThreadCNode,runner_ep,64u,
         seL4_CapRights_new(1u,0u,0u,1u),AOS_X86_RUNNER_OWNER_BADGE);
     if (runner_err != seL4_NoError) return runner_err;
-    runner_ep=ep_alloc_for_service(SVC_ID_X86_AP_RUNNER);
+    runner_ep=ep_alloc_for_service(runners->service[1]);
     if (runner_ep==seL4_CapNull) return seL4_NotEnoughMemory;
     runner_err=seL4_CNode_Mint(pd_cnode,AOS_X86_AP_RUNNER_ENDPOINT_CAP,
         pd->cnode_size_bits,seL4_CapInitThreadCNode,runner_ep,64u,
         seL4_CapRights_new(1u,0u,0u,1u),AOS_X86_RUNNER_OWNER_BADGE);
     if (runner_err!=seL4_NoError) return runner_err;
-    if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY ||
+    if (!pd_is_guest_vmm(pd) ||
         pd->cnode_size_bits != AOS_GUEST_RAM_CNODE_BITS ||
         (uintptr_t)_binary_x86_firmware_bin_end -
         (uintptr_t)_binary_x86_firmware_bin_start != AOS_X86_FIRMWARE_BYTES) {
@@ -1884,8 +1895,9 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         if (err != seL4_NoError) return err;
     }
     dbg_puts("[rt] x86 private RAM and ROM pools delegated to owning VMM\n");
+    const unsigned queue_owner = pd_is_secondary_guest_vmm(pd) ? 1u : 0u;
     for (unsigned kind = 0; kind < AOS_GUEST_QUEUE_INPUT; kind++) {
-        seL4_CPtr *pool = &g_guest_queue_pools[0][kind];
+        seL4_CPtr *pool = &g_guest_queue_pools[queue_owner][kind];
         if (*pool == seL4_CapNull) return seL4_InvalidCapability;
         err = seL4_CNode_Move(pd_cnode, AOS_GUEST_QUEUE_POOL_BASE + kind,
             pd->cnode_size_bits, seL4_CapInitThreadCNode, *pool, 64u);
@@ -1907,15 +1919,15 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
     err = seL4_CNode_Move(pd_cnode,AOS_X86_VCPU_POOL_CAP,
         (uint8_t)pd->cnode_size_bits,seL4_CapInitThreadCNode,cpu_pool,64u);
     if (err != seL4_NoError) return err;
-    err=seL4_X86_VCPU_SetTCB(objects[6],g_x86_ap_runner_tcb);
+    err=seL4_X86_VCPU_SetTCB(objects[6],runners->tcb[1]);
     if (err!=seL4_NoError) return err;
-    err=seL4_TCB_SetEPTRoot(g_x86_ap_runner_tcb,objects[1]);
+    err=seL4_TCB_SetEPTRoot(runners->tcb[1],objects[1]);
     if (err!=seL4_NoError) return err;
     err=seL4_CNode_Copy(pd_cnode,AOS_GUEST_VCPU_CAP_BASE+1u,pd->cnode_size_bits,
         seL4_CapInitThreadCNode,objects[6],64u,seL4_AllRights);
     if (err!=seL4_NoError) return err;
     err=seL4_CNode_Copy(pd_cnode,AOS_X86_AP_RUNNER_TCB_CAP,pd->cnode_size_bits,
-        seL4_CapInitThreadCNode,g_x86_ap_runner_tcb,64u,seL4_AllRights);
+        seL4_CapInitThreadCNode,runners->tcb[1],64u,seL4_AllRights);
     if (err!=seL4_NoError) return err;
     err=seL4_CNode_Move(pd_cnode,AOS_X86_AP_VCPU_POOL_CAP,pd->cnode_size_bits,
         seL4_CapInitThreadCNode,ap_pool,64u);
@@ -2341,30 +2353,33 @@ void root_task_main(const seL4_BootInfo *bi)
         }
     }
     dbg_puts("[rt] x86 host network PCI discovery verified\n");
-    aos_virtio_pci_layout_t host_block_layout;
-    unsigned host_block_stage = aos_x86_host_pci_discover(AOS_X86_HOST_BLOCK, &host_block_layout);
-    if (host_block_stage) {
-        dbg_puts("[rt] x86 host block PCI discovery failed stage=");
-        dbg_hex(host_block_stage);
-        dbg_puts("\n");
-        return;
-    }
-    aos_blk_pci_info_t block_pci = {
-        .magic = AOS_BLK_PCI_INFO_MAGIC, .version = 1u,
-        .notify_multiplier = host_block_layout.notify_multiplier,
+    aos_virtio_pci_layout_t host_block_layout[X86_HOST_BLOCK_COUNT];
+    aos_blk_pci_set_t block_pci = {
+        .magic = AOS_BLK_PCI_INFO_MAGIC, .version = 2u,
+        .count = X86_HOST_BLOCK_COUNT,
     };
-    for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
-        dbg_puts("[rt] x86 host block region pa=");
-        dbg_hex(host_block_layout.region[r].paddr);
-        dbg_puts(" length=");
-        dbg_hex(host_block_layout.region[r].length);
-        dbg_puts("\n");
-        block_pci.offset[r] = (uint32_t)(host_block_layout.region[r].paddr & 4095u);
-        block_pci.length[r] = host_block_layout.region[r].length;
-        if (block_pci.length[r] > 4096u - block_pci.offset[r]) {
-            dbg_puts("[rt] block PCI capability exceeds mapped page; refusing startup\n");
+    for (unsigned media = 0; media < X86_HOST_BLOCK_COUNT; media++) {
+        unsigned stage = aos_x86_host_pci_discover(media ?
+            AOS_X86_HOST_SECONDARY_BLOCK : AOS_X86_HOST_BLOCK, &host_block_layout[media]);
+        if (stage) {
+            dbg_puts("[rt] x86 host block PCI discovery failed media=");
+            dbg_hex(media);
+            dbg_puts(" stage=");
+            dbg_hex(stage);
+            dbg_puts("\n");
             return;
         }
+        aos_blk_pci_info_t *info = &block_pci.media[media];
+        *info = (aos_blk_pci_info_t){.magic = AOS_BLK_PCI_INFO_MAGIC, .version = 1u,
+            .notify_multiplier = host_block_layout[media].notify_multiplier};
+        for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+            info->offset[r] = (uint32_t)(host_block_layout[media].region[r].paddr & 4095u);
+            info->length[r] = host_block_layout[media].region[r].length;
+        }
+    }
+    if (!aos_blk_pci_set_valid(&block_pci)) {
+        dbg_puts("[rt] block PCI capability exceeds mapped page; refusing startup\n");
+        return;
     }
     /* Device watermarks advance monotonically. Order all device pages across
      * both drivers, while refusing any page shared between device classes. */
@@ -2382,12 +2397,18 @@ void root_task_main(const seL4_BootInfo *bi)
         g_x86_cc_startup.length[r] = host_cc_layout.region[r].length;
     }
 #endif
-    const aos_virtio_pci_layout_t *layouts[] = {&host_block_layout, &host_net_layout,
+    const aos_virtio_pci_layout_t *layouts[] = {&host_block_layout[0], &host_net_layout,
+#ifdef AGENTOS_X86_SECONDARY_BLOCK
+        &host_block_layout[1],
+#endif
 #ifdef AGENTOS_X86_CC_PCI
         &host_cc_layout,
 #endif
     };
-    seL4_CPtr *frames[] = {g_x86_blk_frames, g_x86_net_frames,
+    seL4_CPtr *frames[] = {g_x86_blk_frames[0], g_x86_net_frames,
+#ifdef AGENTOS_X86_SECONDARY_BLOCK
+        g_x86_blk_frames[1],
+#endif
 #ifdef AGENTOS_X86_CC_PCI
         g_x86_cc_frames,
 #endif
@@ -2809,7 +2830,9 @@ void root_task_main(const seL4_BootInfo *bi)
                                      pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
             const bool cc_service=pd->self_svc_id==SVC_ID_CC_PD;
             const bool execution_runner=pd->self_svc_id==SVC_ID_X86_RUNNER ||
-                                        pd->self_svc_id==SVC_ID_X86_AP_RUNNER;
+                                        pd->self_svc_id==SVC_ID_X86_AP_RUNNER ||
+                                        pd->self_svc_id==SVC_ID_X86_SECONDARY_RUNNER ||
+                                        pd->self_svc_id==SVC_ID_X86_SECONDARY_AP_RUNNER;
             const bool frequent_refills=frame_service || cc_service || execution_runner
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
                 || pd_is_guest_vmm(pd)
@@ -3501,17 +3524,24 @@ void root_task_main(const seL4_BootInfo *bi)
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
         if (pd->self_svc_id == SVC_ID_VIRTIO_BLK) {
             seL4_Error err = seL4_NoError;
-            for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS && err == seL4_NoError; r++) {
-                seL4_CPtr copy = ut_alloc_slot();
-                err = seL4_NotEnoughMemory;
-                if (copy) {
-                    err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
-                        seL4_CapInitThreadCNode, g_x86_blk_frames[r], 64u, seL4_AllRights);
-                    if (err == seL4_NoError)
-                        err = pd_vspace_map_uncached_device_frame(vspace, copy, AOS_BLK_PCI_REGION_VA(r));
+            for (unsigned media = 0; media < X86_HOST_BLOCK_COUNT && err == seL4_NoError; media++) {
+                for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS && err == seL4_NoError; r++) {
+                    seL4_CPtr copy = ut_alloc_slot();
+                    err = seL4_NotEnoughMemory;
+                    if (copy) {
+                        err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                            seL4_CapInitThreadCNode, g_x86_blk_frames[media][r], 64u, seL4_AllRights);
+                        if (err == seL4_NoError)
+                            err = pd_vspace_map_uncached_device_frame(vspace, copy,
+                                AOS_BLK_PCI_MEDIA_REGION_VA(media, r));
+                    }
                 }
             }
-            if (err != seL4_NoError || !aos_x86_host_pci_enable(AOS_X86_HOST_BLOCK)) {
+            bool enabled = err == seL4_NoError;
+            for (unsigned media = 0; media < X86_HOST_BLOCK_COUNT && enabled; media++)
+                enabled = aos_x86_host_pci_enable(media ?
+                    AOS_X86_HOST_SECONDARY_BLOCK : AOS_X86_HOST_BLOCK);
+            if (!enabled) {
                 dbg_puts("[rt] block PCI mapping/enable failed; refusing driver start\n");
                 continue;
             }
@@ -3974,33 +4004,58 @@ void root_task_main(const seL4_BootInfo *bi)
             /* Qualification reports must not compete with the VMM for
              * lifecycle calls on its service endpoint. The reporter gets
              * send authority only, without receive or capability transfer. */
-            vm_err = ut_alloc_cap(seL4_EndpointObject, 0u,
-                                  &g_x86_vtx_proof_endpoint);
+            seL4_CPtr report_endpoint = seL4_CapNull;
+#ifdef AGENTOS_X86_DUAL_GUEST
+            /* One root-owned receiver observes either coordinator's startup
+             * failure. Each sender has a root-assigned identity and no receive
+             * or grant rights. Separate unconsumed receivers hide failures. */
+            if (g_x86_vtx_proof_endpoint == seL4_CapNull)
+                vm_err = ut_alloc_cap(seL4_EndpointObject, 0u,
+                                      &g_x86_vtx_proof_endpoint);
+            report_endpoint = g_x86_vtx_proof_endpoint;
+            if (vm_err == seL4_NoError) {
+                vm_err = seL4_CNode_Mint(pd_cnode, AOS_X86_VTX_REPORT_CAP,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    report_endpoint, 64u, seL4_CapRights_new(0u, 0u, 0u, 1u),
+                    pd->self_svc_id);
+            }
+#else
+            vm_err = ut_alloc_cap(seL4_EndpointObject, 0u, &report_endpoint);
+            if (!pd_is_secondary_guest_vmm(pd))
+                g_x86_vtx_proof_endpoint = report_endpoint;
             if (vm_err == seL4_NoError) {
                 vm_err = seL4_CNode_Copy(pd_cnode, AOS_X86_VTX_REPORT_CAP,
                     pd->cnode_size_bits, seL4_CapInitThreadCNode,
-                    g_x86_vtx_proof_endpoint, 64u,
+                    report_endpoint, 64u,
                     seL4_CapRights_new(0u, 0u, 0u, 1u));
             }
+#endif
             if (vm_err != seL4_NoError) {
                 dbg_puts("[rt] private VMX report endpoint setup failed; stopping boot\n");
                 return;
             }
-#ifdef AGENTOS_X86_USERSPACE_PROOF
+#if defined(AGENTOS_X86_USERSPACE_PROOF) || defined(AGENTOS_X86_DUAL_GUEST)
             /* Root waits here during qualification, rather than on its
              * normal fault endpoint. Fail immediately on a native VMM fault
              * instead of silently blocking both the VMM and test client. */
             seL4_CPtr fault_report = ut_alloc_slot();
-            if (fault_report == seL4_CapNull ||
+            seL4_Word fault_badge = AOS_X86_LIFECYCLE_FAULT_BADGE;
+#ifdef AGENTOS_X86_DUAL_GUEST
+            fault_badge = AOS_X86_DUAL_FAULT_BADGE | pd->self_svc_id;
+#endif
+            aos_x86_runner_owner_t *runners = aos_x86_runner_owner(
+                g_x86_runner_owners, X86_RUNNER_OWNER_COUNT, pd->self_svc_id);
+            if (!runners || !runners->tcb[0] || !runners->tcb[1] ||
+                fault_report == seL4_CapNull ||
                 seL4_CNode_Mint(seL4_CapInitThreadCNode, fault_report, 64u,
                     seL4_CapInitThreadCNode, g_x86_vtx_proof_endpoint, 64u,
-                    seL4_AllRights, AOS_X86_LIFECYCLE_FAULT_BADGE) != seL4_NoError ||
+                    seL4_AllRights, fault_badge) != seL4_NoError ||
                 seL4_TCB_SetSchedParams(tr.tcb_cap, seL4_CapInitThreadTCB,
                     255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError ||
-                seL4_TCB_SetSchedParams(g_x86_runner_tcb, seL4_CapInitThreadTCB,
-                    255u, 250u, PD_SLOT_SC(g_x86_runner_index), fault_report) != seL4_NoError ||
-                seL4_TCB_SetSchedParams(g_x86_ap_runner_tcb, seL4_CapInitThreadTCB,
-                    255u, 250u, PD_SLOT_SC(g_x86_ap_runner_index), fault_report) != seL4_NoError) {
+                seL4_TCB_SetSchedParams(runners->tcb[0], seL4_CapInitThreadTCB,
+                    255u, 250u, PD_SLOT_SC(runners->pd_index[0]), fault_report) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(runners->tcb[1], seL4_CapInitThreadTCB,
+                    255u, 250u, PD_SLOT_SC(runners->pd_index[1]), fault_report) != seL4_NoError) {
                 dbg_puts("[rt] lifecycle native fault reporter setup failed\n");
                 return;
             }
@@ -4053,13 +4108,15 @@ void root_task_main(const seL4_BootInfo *bi)
             } else {
                 dbg_puts("[rt] pd started ok\n");
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
-                if (reg_err == seL4_NoError && pd->self_svc_id == SVC_ID_X86_RUNNER) {
-                    g_x86_runner_tcb = tr.tcb_cap;
-                    g_x86_runner_index = i;
-                }
-                if (reg_err==seL4_NoError && pd->self_svc_id==SVC_ID_X86_AP_RUNNER) {
-                    g_x86_ap_runner_tcb=tr.tcb_cap;
-                    g_x86_ap_runner_index=i;
+                if (reg_err == seL4_NoError &&
+                    (pd->self_svc_id == SVC_ID_X86_RUNNER ||
+                     pd->self_svc_id == SVC_ID_X86_AP_RUNNER ||
+                     pd->self_svc_id == SVC_ID_X86_SECONDARY_RUNNER ||
+                     pd->self_svc_id == SVC_ID_X86_SECONDARY_AP_RUNNER) &&
+                    !aos_x86_runner_register(g_x86_runner_owners,
+                        X86_RUNNER_OWNER_COUNT, pd->self_svc_id, tr.tcb_cap, i)) {
+                    dbg_puts("[rt] x86 runner ownership registration failed; stopping boot\n");
+                    return;
                 }
 #endif
                 if (reg_err == seL4_NoError && inspect_view.thread_count < AOS_INSPECT_MAX_THREADS) {
@@ -4175,6 +4232,11 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word badge = 0u;
         seL4_MessageInfo_t tag =
             seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
+#ifdef AGENTOS_X86_DUAL_GUEST
+        dbg_puts("[rt] x86 coordinator report service=");
+        dbg_hex(badge);
+        dbg_puts("\n");
+#endif
 #ifdef AGENTOS_X86_USERSPACE_PROOF
         unsigned lifecycle_traces = 0u;
         while (badge == 0u && seL4_MessageInfo_get_label(tag) == AOS_X86_LIFECYCLE_TRACE_LABEL &&
@@ -4192,8 +4254,9 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word reason = seL4_GetMR(1);
         seL4_Word rip = seL4_GetMR(2);
         seL4_Word instruction_len = seL4_GetMR(3);
-#ifdef AGENTOS_X86_USERSPACE_PROOF
-        if (badge == AOS_X86_LIFECYCLE_FAULT_BADGE) {
+#if defined(AGENTOS_X86_USERSPACE_PROOF) || defined(AGENTOS_X86_DUAL_GUEST)
+        if (badge == AOS_X86_LIFECYCLE_FAULT_BADGE ||
+            (badge & AOS_X86_DUAL_FAULT_BADGE)) {
             dbg_puts("[rt] x86 native VMM fault label=");
             dbg_hex(seL4_MessageInfo_get_label(tag));
             dbg_puts(" words="); dbg_hex(seL4_MessageInfo_get_length(tag));

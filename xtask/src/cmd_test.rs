@@ -493,6 +493,18 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         args.x86_block_image.is_none() || args.board == "x86_64_generic_vtx",
         "qualification block image requires the Intel VMX board"
     );
+    if let Some(secondary) = &args.x86_secondary_block_image {
+        anyhow::ensure!(
+            args.board == "x86_64_generic_vtx" && args.assert_firmware_reset && !args.no_build,
+            "second Intel disk requires a freshly built firmware composition"
+        );
+        validate_x86_distinct_media(
+            args.x86_block_image
+                .as_deref()
+                .context("second disk requires primary media")?,
+            secondary,
+        )?;
+    }
     if args.assert_persistent_boots {
         return run_persistent_boots(args);
     }
@@ -825,6 +837,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             ));
             make_args.push(format!("X86_CC_PCI={}", u8::from(args.assert_x86_cc)));
             make_args.push(format!(
+                "X86_SECONDARY_BLOCK={}",
+                u8::from(args.x86_secondary_block_image.is_some())
+            ));
+            make_args.push(format!(
                 "X86_FIRMWARE_RESET={}",
                 u8::from(args.assert_firmware_reset)
             ));
@@ -870,6 +886,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             root_ext4: repo_root.join(&seed.root_ext4),
             public_key: key.with_extension("pub"),
             output: output.clone(),
+            guest_address: profile
+                .qemu
+                .as_ref()
+                .context("seed requires QEMU")?
+                .ssh
+                .as_ref()
+                .context("seed requires SSH")?
+                .guest_address
+                .as_deref()
+                .context("seed requires a guest address")?
+                .parse()?,
             instance_id: directory
                 .file_name()
                 .unwrap()
@@ -1121,6 +1148,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         false,
         args.x86_block_image.as_deref(),
         args.x86_block_write,
+        args.x86_secondary_block_image
+            .as_deref()
+            .map(|p| (p, args.x86_secondary_block_write)),
         args.assert_display || args.assert_guest_display,
         args.assert_x86_cc,
     )?);
@@ -1485,6 +1515,18 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )
         }
     };
+
+    if result.is_ok() && args.x86_secondary_block_image.is_some() {
+        result = result.and_then(|previous| {
+            wait_for_all_markers(
+                &log_path,
+                &["[virtio_blk] two PCI media initialized with independent queues"],
+                Duration::from_secs(5),
+                &mut qemu,
+            )?;
+            Ok(format!("{previous}; two host PCI block devices initialized (secondary guest I/O not qualified)"))
+        });
+    }
 
     if result.is_ok() && args.assert_framebuffer {
         result = verify_native_frame_observer(
@@ -2085,6 +2127,7 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
         args.fast,
         args.x86_block_image.as_deref(),
         args.x86_block_write,
+        None,
         false,
         args.x86_cc,
     )?;
@@ -2495,6 +2538,31 @@ fn attach_profile_media(
     }
 }
 
+fn validate_x86_distinct_media(primary: &Path, secondary: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let mut identities = Vec::new();
+    for path in [primary, secondary] {
+        let text = path.to_str().context("Intel disk path must be UTF-8")?;
+        anyhow::ensure!(
+            !text.contains(','),
+            "Intel disk path cannot contain a comma"
+        );
+        let metadata = std::fs::metadata(path)
+            .with_context(|| format!("inspect Intel disk {}", path.display()))?;
+        anyhow::ensure!(
+            metadata.is_file() && metadata.len() > 0 && metadata.len() % 512 == 0,
+            "Intel disk must be a nonempty sector-aligned regular file: {}",
+            path.display()
+        );
+        identities.push((metadata.dev(), metadata.ino()));
+    }
+    anyhow::ensure!(
+        identities[0] != identities[1],
+        "Intel media must be distinct files, including through links"
+    );
+    Ok(())
+}
+
 pub(crate) fn spawn_qemu_with_guest(
     board: &str,
     repo_root: &Path,
@@ -2509,6 +2577,7 @@ pub(crate) fn spawn_qemu_with_guest(
     fast: bool,
     x86_block_image: Option<&Path>,
     x86_block_write: bool,
+    x86_secondary_block: Option<(&Path, bool)>,
     display: bool,
     x86_cc: bool,
 ) -> anyhow::Result<std::process::Child> {
@@ -2755,6 +2824,20 @@ pub(crate) fn spawn_qemu_with_guest(
                 ))
                 .arg("-device")
                 .arg("virtio-blk-pci,drive=agentos_blk,addr=05.0,disable-legacy=on");
+            if let Some((secondary, writable)) = x86_secondary_block {
+                validate_x86_distinct_media(&block_path, secondary)?;
+                println!(
+                    "[xtask:test] Intel secondary block medium: {}",
+                    secondary.display()
+                );
+                c.arg("-drive")
+                    .arg(format!(
+                        "file={},format=raw,id=agentos_blk_secondary,if=none,readonly={},cache=writeback",
+                        secondary.display(), if writable { "off" } else { "on" }
+                    ))
+                    .arg("-device")
+                    .arg("virtio-blk-pci,drive=agentos_blk_secondary,addr=08.0,disable-legacy=on");
+            }
             c.arg("-netdev")
                 .arg(if ssh_port == 0 { "user,id=agentos_net,restrict=on".into() } else { format!("user,id=agentos_net,restrict=on,hostfwd=tcp:127.0.0.1:{ssh_port}-10.0.2.15:22") })
                 .arg("-device")
@@ -6618,6 +6701,30 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn second_intel_media_requires_independent_regular_disks() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("primary.raw");
+        let secondary = dir.path().join("secondary.raw");
+        let hardlink = dir.path().join("hardlink.raw");
+        let link = dir.path().join("symlink.raw");
+        std::fs::write(&primary, [0x11; 512]).unwrap();
+        std::fs::write(&secondary, [0x22; 512]).unwrap();
+        assert!(super::validate_x86_distinct_media(&primary, &secondary).is_ok());
+        assert!(super::validate_x86_distinct_media(&primary, &primary).is_err());
+        std::fs::hard_link(&primary, &hardlink).unwrap();
+        symlink(&primary, &link).unwrap();
+        assert!(super::validate_x86_distinct_media(&primary, &hardlink).is_err());
+        assert!(super::validate_x86_distinct_media(&primary, &link).is_err());
+        assert!(super::validate_x86_distinct_media(&primary, dir.path()).is_err());
+        std::fs::write(&secondary, [0x22; 511]).unwrap();
+        assert!(super::validate_x86_distinct_media(&primary, &secondary).is_err());
+        let comma = dir.path().join("disk,readonly=off");
+        std::fs::write(&comma, [0x22; 512]).unwrap();
+        assert!(super::validate_x86_distinct_media(&primary, &comma).is_err());
+        assert_eq!(std::fs::read(&primary).unwrap(), vec![0x11; 512]);
+    }
     #[test]
     fn boot_destroy_retries_detached_console_but_requires_destroy_acknowledgement() {
         use std::os::unix::net::UnixListener;

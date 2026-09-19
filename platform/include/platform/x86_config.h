@@ -24,6 +24,10 @@ typedef struct {
     uint32_t cpu_selector;
     uint8_t cpu_command;
     uint8_t pit_disable_remaining;
+    uint8_t reset_control;
+    /* Guest-private reset latch. The coordinator must stop re-entry and
+     * drain/reconstruct this guest before consuming another exit. */
+    bool reset_requested;
     aos_x86_rtc_t rtc;
     /* Private ACPI PM1: polled TMR_STS/W1C, no enabled SCI sources; control
      * retains SCI_EN, BM_RLD and SLP_TYP but rejects sleep/SMI requests. */

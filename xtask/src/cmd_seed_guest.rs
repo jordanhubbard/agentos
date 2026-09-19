@@ -3,6 +3,7 @@ use anyhow::{ensure, Context};
 use std::{
     fs,
     io::{Read, Seek, SeekFrom, Write},
+    net::Ipv4Addr,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -17,6 +18,9 @@ pub struct SeedGuestArgs {
     pub output: PathBuf,
     #[arg(long)]
     pub instance_id: String,
+    /// Static guest address on the QEMU user network (10.0.2.0/24).
+    #[arg(long, default_value = "10.0.2.15")]
+    pub guest_address: Ipv4Addr,
     /// Optional source raw disk; output becomes a full disk instead of ext4.
     #[arg(long, requires = "partition_offset")]
     pub disk_raw: Option<PathBuf>,
@@ -80,7 +84,21 @@ fn assemble_disk(
     Ok(())
 }
 
-fn seed_files(key: &str, instance: &str) -> anyhow::Result<[(&'static str, String); 3]> {
+pub(crate) fn validate_guest_address(address: Ipv4Addr) -> anyhow::Result<()> {
+    let [a, b, c, host] = address.octets();
+    ensure!(
+        [a, b, c] == [10, 0, 2] && (15..=254).contains(&host),
+        "seed guest address must be in 10.0.2.15..=10.0.2.254"
+    );
+    Ok(())
+}
+
+fn seed_files(
+    key: &str,
+    instance: &str,
+    address: Ipv4Addr,
+) -> anyhow::Result<[(&'static str, String); 3]> {
+    validate_guest_address(address)?;
     ensure!(
         !instance.is_empty()
             && instance.len() <= 64
@@ -105,7 +123,7 @@ fn seed_files(key: &str, instance: &str) -> anyhow::Result<[(&'static str, Strin
     Ok([
         ("user-data", format!("#cloud-config\nusers:\n  - default\nssh_authorized_keys:\n  - ssh-ed25519 {}\nssh_pwauth: false\ndisable_root: true\nssh_deletekeys: true\nssh_genkeytypes: [ed25519]\n", fields[1])),
         ("meta-data", format!("instance-id: {instance}\nlocal-hostname: agentos-debian\n")),
-        ("network-config", "version: 2\nethernets:\n  eth0:\n    dhcp4: false\n    addresses: [10.0.2.15/24]\n    routes:\n      - to: default\n        via: 10.0.2.2\n    nameservers:\n      addresses: [10.0.2.3]\n".into()),
+        ("network-config", format!("version: 2\nethernets:\n  eth0:\n    dhcp4: false\n    addresses: [{address}/24]\n    routes:\n      - to: default\n        via: 10.0.2.2\n    nameservers:\n      addresses: [10.0.2.3]\n")),
     ])
 }
 
@@ -119,7 +137,11 @@ pub fn run(args: &SeedGuestArgs) -> anyhow::Result<()> {
         fs::metadata(&args.public_key)?.len() <= 4096,
         "public key file too large"
     );
-    let files = seed_files(&fs::read_to_string(&args.public_key)?, &args.instance_id)?;
+    let files = seed_files(
+        &fs::read_to_string(&args.public_key)?,
+        &args.instance_id,
+        args.guest_address,
+    )?;
     let parent = args
         .output
         .parent()
@@ -225,11 +247,35 @@ mod tests {
     }
     #[test]
     fn seed_rejects_yaml_and_multiline_injection() {
-        assert!(seed_files("ssh-ed25519 AAAA\nssh-ed25519 BBBB", "test").is_err());
-        assert!(seed_files("ssh-ed25519 AAAA", "test\nusers: []").is_err());
-        assert!(seed_files("ssh-rsa AAAA", "test").is_err());
-        let files = seed_files("ssh-ed25519 AAAA ignored-comment", "test-1").unwrap();
+        let address = Ipv4Addr::new(10, 0, 2, 15);
+        assert!(seed_files("ssh-ed25519 AAAA\nssh-ed25519 BBBB", "test", address).is_err());
+        assert!(seed_files("ssh-ed25519 AAAA", "test\nusers: []", address).is_err());
+        assert!(seed_files("ssh-rsa AAAA", "test", address).is_err());
+        let files = seed_files("ssh-ed25519 AAAA ignored-comment", "test-1", address).unwrap();
         assert!(files[0].1.contains("ssh_pwauth: false\n"));
         assert!(!files[0].1.contains("ignored-comment"));
+    }
+
+    #[test]
+    fn guests_receive_distinct_addresses_with_the_same_gateway() {
+        for host in [15, 16, 254] {
+            let address = Ipv4Addr::new(10, 0, 2, host);
+            let files = seed_files("ssh-ed25519 AAAA", "test", address).unwrap();
+            assert_eq!(files[2].0, "network-config");
+            assert!(files[2].1.contains(&format!("addresses: [{address}/24]\n")));
+            assert!(files[2].1.contains("via: 10.0.2.2\n"));
+            assert!(files[2].1.contains("addresses: [10.0.2.3]\n"));
+        }
+        for address in [
+            "10.0.2.0",
+            "10.0.2.2",
+            "10.0.2.3",
+            "10.0.2.14",
+            "10.0.2.255",
+            "10.0.3.16",
+            "127.0.0.1",
+        ] {
+            assert!(seed_files("ssh-ed25519 AAAA", "test", address.parse().unwrap()).is_err());
+        }
     }
 }

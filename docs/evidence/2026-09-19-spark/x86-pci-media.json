@@ -1,0 +1,23 @@
+{
+  "schema": "agentos.x86_pci_media.v1",
+  "date": "2026-09-19",
+  "code_revision": "388364c",
+  "task": "task_4090f05598f74a9cafbb571a6271b6e5",
+  "status": "local_gate_two_disk_build_and_native_single_disk_regression_pass",
+  "source_state": "Gate started at clean 388364c. Evidence-only commit 8daa49c landed during the gate; target and host implementation files were unchanged. This is not a frozen final-release revision qualification.",
+  "gate_exit": 0,
+  "gate_log_sha256": "b5cf7f547b00ae23aebcd0d9dee7103ed9a9da79c47b07f94e04d4a8d138c27a",
+  "two_disk_build_command": "make test-x86-firmware-build X86_SECONDARY_BLOCK=1",
+  "two_disk_build_exit": 0,
+  "two_disk_build_log_sha256": "2dac6d5db897016007fd4932c0c70595520b8d848915cc02fb0ea9d8077c873c",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "host_test": "make test-blk-pci-media-host passed: bounded metadata, separate register ranges and existing non-overlapping DMA regions",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership",
+  "native_single_disk": {
+    "code_revision": "388364c",
+    "result": "PASS: both guest generations verified pinned SSH, two online CPUs, overlapping workers, x87/SSE state, CC input and lifecycle with stale handle rejection",
+    "archive": "388364c-intel-smp.tar.gz",
+    "archive_sha256": "8d71c30cb3d79638d197ede03c35723e498722525f459d5062c49f9ee253761c"
+  },
+  "limitations": ["No native two-disk qualification", "No concurrent guest provisioning or storage acceptance", "No canonical merge or release acceptance"]
+}

@@ -1,0 +1,32 @@
+{
+  "status": "passed one disposable-VM interrupted-write recovery",
+  "os_source_revision": "1db6fa1f3d8ba3433bf682743a226afeb5544a36",
+  "root_task_sha256": "3cf2b369296a14e14f3fac9185e6ba04a94f21c3c8430f4a377109802bf6a777",
+  "host": "madmax, Intel Linux KVM",
+  "isolation": "New qcow2 overlay backed by the preserved offline primary snapshot; original two-guest VM and backing image retained.",
+  "interruption": {
+    "qemu_pid": 1718756,
+    "before_boot_id": "c7122592-db00-4328-b951-382cfaaf213b",
+    "workload": "dd if=/dev/zero of=/home/debian/agentos-interrupted-write bs=1M count=512 conv=fsync status=progress",
+    "last_progress_bytes": 461373440,
+    "last_progress_seconds": 24,
+    "action": "Verified exact QEMU image argument and absence of final records-out line, then SIGKILL. Writer SSH exited 255; console capture ended when its socket disappeared.",
+    "retention": "Confirmed old QEMU absent, copied overlay before recovery; qemu-img check found no errors without repair."
+  },
+  "recovery": {
+    "qemu_pid": 1731037,
+    "same_overlay": true,
+    "boot_id": "58091116-f2ff-4e10-ae88-d2b9d0c9e944",
+    "ssh": "Passed using the original console-pinned primary Ed25519 host key.",
+    "filesystem": "EXT4 reported recovery complete and mounted read/write.",
+    "previously_synced_payload_bytes": 2097152,
+    "previously_synced_payload_sha256": "5f898587808fcbe9b2409bf42a16b834b91117be14f942101d22c9d66b2fe13f",
+    "interrupted_file_observed_bytes": 276824064,
+    "new_write": "Created recovery-proof file, sync succeeded, and readback matched recovery-write.",
+    "backing": "Complete backing image hash remained unchanged.",
+    "cleanup": "Guest DESTROY succeeded; inventory empty; recovery QEMU terminated and confirmed absent; offline image check passed. Overlays retained."
+  },
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/1db6fa1-interrupted-write-evidence.tar.gz",
+  "archive_sha256": "5ec96e0a6b8cfe9c8d4d32319015054619ca8d2b9a89863be98648e213ef370b",
+  "limits": "One abrupt outer-QEMU process termination during a guest write workload. Not host power-loss durability, proof of a particular request being in flight at termination, preservation of unflushed bytes, exhaustive crash-boundary coverage, or full v0.4 acceptance. Private keys and disk images excluded from archive."
+}

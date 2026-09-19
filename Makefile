@@ -550,7 +550,7 @@ build-tools:
 # =============================================================================
 .PHONY: seed-guest-root
 seed-guest-root:
-	@cargo xtask seed-guest --root-ext4 "$(SEED_ROOT_EXT4)" --public-key "$(SEED_PUBLIC_KEY)" --output "$(SEED_OUTPUT)" --instance-id "$(SEED_INSTANCE_ID)" $(if $(SEED_DISK_RAW),--disk-raw "$(SEED_DISK_RAW)" --partition-offset "$(SEED_PARTITION_OFFSET)",)
+	@cargo xtask seed-guest --root-ext4 "$(SEED_ROOT_EXT4)" --public-key "$(SEED_PUBLIC_KEY)" --output "$(SEED_OUTPUT)" --instance-id "$(SEED_INSTANCE_ID)" $(if $(SEED_GUEST_ADDRESS),--guest-address "$(SEED_GUEST_ADDRESS)",) $(if $(SEED_DISK_RAW),--disk-raw "$(SEED_DISK_RAW)" --partition-offset "$(SEED_PARTITION_OFFSET)",)
 
 fetch-guest:
 ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
@@ -771,6 +771,8 @@ gate-x86_64-cc-linux:
 		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login --assert-x86-cc \
 		--x86-boot-profile $(if $(X86_BOOT_PROFILE),$(X86_BOOT_PROFILE),debian-amd64.toml) --x86-ssh-key "$(X86_SSH_KEY)" \
 		$(if $(X86_SMP_PROBE),--x86-smp-probe "$(X86_SMP_PROBE)",) \
+		$(if $(X86_SECONDARY_DISK),--x86-secondary-block-image "$(X86_SECONDARY_DISK)",) \
+		$(if $(filter 1,$(X86_SECONDARY_WRITABLE)),--x86-secondary-block-write,) \
 		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
 		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
 		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
@@ -830,6 +832,23 @@ test-x86-firmware-build:
 		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_virtio_pci_caps.o
 	@echo "PASS: x86 firmware VMM, serial/block drivers and block/network virtualizer link checks"
 
+.PHONY: test-x86-secondary-firmware-build
+.PHONY: prepare-x86-profile
+prepare-x86-profile:
+	@test -n "$(X86_BOOT_PROFILE)" || { echo 'X86_BOOT_PROFILE is required'; exit 1; }
+	cargo xtask guest-profile --profile "$(X86_BOOT_PROFILE)" \
+		--prepare-x86-slot "$(if $(X86_VMM_SLOT),$(X86_VMM_SLOT),primary)"
+
+test-x86-secondary-firmware-build:
+	$(MAKE) test-x86-firmware-build GUEST_OS=none X86_VMM_SLOT=secondary BUILD_TMP_DIR=$(abspath $(BUILD_TMP_DIR)/secondary)
+	$(MAKE) -C kernel/agentos-root-task \
+		BUILD_DIR=$(abspath $(BUILD_TMP_DIR)/secondary-managed) \
+		AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic_vtx \
+		SEL4_SDK=$(SEL4_SDK) SEL4_SDK_VERSION=$(SEL4_SDK_VERSION) \
+		X86_FIRMWARE_RESET=1 X86_MANAGED_START=1 X86_VMM_SLOT=secondary \
+		$(abspath $(BUILD_TMP_DIR)/secondary-managed)/x86_firmware_vmm.o
+	@echo "PASS: secondary x86 coordinator and canonical adapters link; managed reset path compiles"
+
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
 # lint-source is a source lint (policy-check's sibling), not a test; it is
@@ -837,6 +856,30 @@ test-x86-firmware-build:
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
 test-host: test-x86-cpu-host
+test-host: test-x86-composition-host
+test-host: test-vm-manager-identity-host
+
+.PHONY: test-vm-manager-identity-host
+test-vm-manager-identity-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
+		-DAGENTOS_TEST_HOST -ffunction-sections -fdata-sections \
+		-iquote kernel/agentos-root-task/include -I tests/platform/loop-stubs -I platform/include -I libvmm/include \
+		tests/platform/test_vm_manager_guest_identity.c -Wl,--gc-sections -o $(BUILD_TMP_DIR)/test_vm_manager_guest_identity
+	$(BUILD_TMP_DIR)/test_vm_manager_guest_identity
+
+.PHONY: test-x86-composition-host
+test-x86-composition-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -iquote kernel/agentos-root-task/include \
+		-DAGENTOS_X86_VTX=1 -DAGENTOS_X86_FIRMWARE_RESET=1 -DAGENTOS_X86_CC_PCI=1 -DAGENTOS_X86_MANAGED_START=1 \
+		tests/platform/test_x86_composition.c kernel/agentos-root-task/src/system_desc_x86_64.c -o $(BUILD_TMP_DIR)/test_x86_composition
+	$(BUILD_TMP_DIR)/test_x86_composition
+	$(CC) -std=c11 -Wall -Wextra -Werror -iquote kernel/agentos-root-task/include \
+		-DAGENTOS_X86_VTX=1 -DAGENTOS_X86_FIRMWARE_RESET=1 -DAGENTOS_X86_CC_PCI=1 -DAGENTOS_X86_MANAGED_START=1 -DAGENTOS_X86_DUAL_GUEST=1 \
+		tests/platform/test_x86_composition.c kernel/agentos-root-task/src/system_desc_x86_64.c -o $(BUILD_TMP_DIR)/test_x86_dual_composition
+	$(BUILD_TMP_DIR)/test_x86_dual_composition
+
 test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
@@ -1003,6 +1046,18 @@ test-x86-smp-host:
 		-o $(BUILD_TMP_DIR)/test_x86_smp
 	$(BUILD_TMP_DIR)/test_x86_smp
 test-host: test-x86-runner-host
+test-host: test-x86-runner-ownership-host
+test-host: test-blk-pci-media-host
+.PHONY: test-blk-pci-media-host
+test-blk-pci-media-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iplatform/include tests/platform/test_blk_pci_media.c -o $(BUILD_TMP_DIR)/test-blk-pci-media
+	$(BUILD_TMP_DIR)/test-blk-pci-media
+.PHONY: test-x86-runner-ownership-host
+test-x86-runner-ownership-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iplatform/include tests/platform/test_x86_runner_ownership.c -o $(BUILD_TMP_DIR)/test-x86-runner-ownership
+	$(BUILD_TMP_DIR)/test-x86-runner-ownership
 .PHONY: test-x86-runner-host
 test-x86-runner-host:
 	@mkdir -p $(BUILD_TMP_DIR)

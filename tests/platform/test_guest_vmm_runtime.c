@@ -415,6 +415,29 @@ int main(void)
                     state == GUEST_STATE_READY && suspends == suspends_before,
                     "SUSPEND cannot detach an unbooted guest context");
 
-    printf("1..31\n");
+    suspend_fails = false;
+    state = GUEST_STATE_RUNNING;
+    started = true;
+    runtime.guest_id = 91u;
+    starts_before = starts;
+    unsigned resets_before = resets;
+    teardown_fails = true;
+    failed += check(aos_guest_vmm_restart_step(&runtime) == AOS_GUEST_RESTART_WAIT &&
+                    state == GUEST_STATE_DESTROYING && starts == starts_before &&
+                    resets == resets_before,
+                    "restart waits for backend drain without reconstruction or entry");
+    teardown_fails = false;
+    failed += check(aos_guest_vmm_restart_step(&runtime) == AOS_GUEST_RESTART_RUNNING &&
+                    state == GUEST_STATE_RUNNING && started &&
+                    starts == starts_before + 1u && resets == resets_before + 1u &&
+                    runtime.guest_id == 91u,
+                    "restart reconstructs and boots with the existing nonzero identity");
+    reset_fails = true;
+    starts_before = starts;
+    failed += check(aos_guest_vmm_restart_step(&runtime) == AOS_GUEST_RESTART_FAILED &&
+                    state == GUEST_STATE_DEAD && !started && starts == starts_before,
+                    "failed restart reconstruction never enters retired execution");
+
+    printf("1..34\n");
     return failed == 0 ? 0 : 1;
 }

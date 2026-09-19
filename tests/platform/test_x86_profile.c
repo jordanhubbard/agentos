@@ -29,10 +29,21 @@ int main(void)
     aos_x86_boot_blobs_t b = {.kernel=(const uint8_t *)"abc", .kernel_size=3,
         .initrd=(const uint8_t *)"abc", .initrd_size=3,
         .cmdline=(const uint8_t *)"console=hvc0", .cmdline_size=13};
-#define BIND() aos_x86_profile_bind(&p,sizeof(p),&b,0x40000000,0x80000000)
+#define BIND_OWNER(owner) aos_x86_profile_bind(&p,sizeof(p),&b,owner,0x40000000,0x80000000)
+#define BIND() BIND_OWNER(0u)
     assert(BIND());
-    assert(!aos_x86_profile_bind(&p,sizeof(p)-1,&b,0x40000000,0x80000000));
-    assert(!aos_x86_profile_bind(&p,sizeof(p),&b,0x20000000,0x80000000));
+    assert(!aos_x86_profile_bind(&p,sizeof(p)-1,&b,0,0x40000000,0x80000000));
+    assert(!aos_x86_profile_bind(&p,sizeof(p),&b,0,0x20000000,0x80000000));
+    assert(!BIND_OWNER(2u));
+    assert(!BIND_OWNER(1u));
+    p.guest_id=1; p.control_type=2; p.network_client=1; p.block_media=1;
+    assert(BIND_OWNER(1u));
+    assert(!BIND());
+    p.block_media=0; assert(!BIND_OWNER(1u)); p.block_media=1;
+    p.network_client=0; assert(!BIND_OWNER(1u)); p.network_client=1;
+    p.control_type=1; assert(!BIND_OWNER(1u)); p.control_type=2;
+    p.guest_id=0; assert(!BIND_OWNER(1u));
+    p.control_type=1; p.network_client=0; p.block_media=0;
     p.vcpu_count=2; assert(BIND());
     p.vcpu_count=3; assert(!BIND());
     p.vcpu_count=0; assert(!BIND()); p.vcpu_count=1;

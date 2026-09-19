@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "source_revision": "2d54056",
+  "source_clean": true,
+  "host": "Spark, aarch64 Linux",
+  "command": "CARGO_TARGET_DIR=/tmp/agentos-gpu-backing-walk/target make gate SEL4_SDK=/home/jkh/.cache/agentos/sdk-make-cr2-20260919/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+  "exit_status": 0,
+  "log": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/2d54056-full-gate.log",
+  "log_sha256": "9237ec185c76810a4fa718fc8416afe480606b79c8935f04ca15f0c7c5eb1b4e",
+  "results": [
+    "Host suite passed, including 119 Rust tests",
+    "AArch64 boot passed",
+    "x86 reduced smoke boot passed",
+    "AArch64 emulated guest network proof passed",
+    "AArch64 emulated guest block proof passed",
+    "AArch64 CC console guest interaction proof passed"
+  ],
+  "intel_control_attempt": {
+    "status": "unconfirmed after SSH connectivity failure",
+    "seed_source_revision": "b4f0802c072a9264531c93beb43647c0e9728d3c",
+    "os_image_source_revision": "85ff327",
+    "intent": "Fresh secondary first boot with primary stopped",
+    "primary_initial_disk_sha256": "db3532077f0364f048a1be29139cb5a59200337308d5c901c8f75435a525c5d4",
+    "secondary_initial_disk_sha256": "e31d93c03b5ad9181dfdf33e0555f51924deaf9bb36c30825a92f81dffa6a4ba",
+    "media_directory": "/var/tmp/agentos-dual-seed-b4f0802-media",
+    "qemu_stem": "/var/tmp/agentos-solo-seed-b4f0802",
+    "observations": "Both seeds completed successfully. A new QEMU launch SSH session remained open without terminal output. Subsequent SSH connections to madmax timed out, so the CREATE command did not reach the host and no guest startup is claimed. Do not restart based on connection timeout; inspect the existing PID and process first. Earlier failed dual run remains preserved."
+  },
+  "limits": "This Spark gate does not qualify native Intel concurrent first boot, independent SSH, persistent disk isolation, or the complete v0.4 release. The fresh concurrent boot failures in x86-fresh-dual-seed.json remain unresolved."
+}

@@ -10,10 +10,10 @@ static bool equal(const uint8_t *a, const uint8_t *b, size_t length)
 }
 
 bool aos_x86_profile_bind(const void *manifest, size_t manifest_bytes,
-                          const aos_x86_boot_blobs_t *boot,
+                          const aos_x86_boot_blobs_t *boot, uint32_t owner,
                           uint64_t ram_bytes, uint64_t ram_hva)
 {
-    if (!manifest || manifest_bytes != sizeof(aos_guest_profile_manifest_t) || !boot)
+    if (!manifest || manifest_bytes != sizeof(aos_guest_profile_manifest_t) || !boot || owner > 1u)
         return false;
     const aos_guest_profile_manifest_t *p = manifest;
     if (aos_guest_profile_validate(p) != AOS_GUEST_PROFILE_OK ||
@@ -22,9 +22,9 @@ bool aos_x86_profile_bind(const void *manifest, size_t manifest_bytes,
         p->kernel_format != AOS_GUEST_KERNEL_UEFI ||
         p->flags != (AOS_GUEST_PROFILE_AUTOSTART | AOS_GUEST_PROFILE_HAS_INITRD |
                      AOS_GUEST_PROFILE_HASHED_ARTIFACTS) ||
-        p->guest_id != 0 || p->control_type != 1 || !p->vcpu_count || p->vcpu_count > 2 ||
+        p->guest_id != owner || p->control_type != owner + 1u || !p->vcpu_count || p->vcpu_count > 2 ||
         p->device_flags != (AOS_GUEST_DEVICE_NET | AOS_GUEST_DEVICE_BLOCK | AOS_GUEST_DEVICE_CONSOLE) ||
-        p->network_client != 0 || p->block_media != 0 ||
+        p->network_client != owner || p->block_media != owner ||
         (p->cpu_features.required & ~AOS_X86_CPU_PROFILE_FEATURES) != 0 ||
         (p->cpu_features.prohibited & AOS_X86_CPU_PROFILE_FEATURES) != 0 ||
         p->guest_gpa_base != 0 || p->ram_size != ram_bytes || p->vmm_hva_base != ram_hva ||

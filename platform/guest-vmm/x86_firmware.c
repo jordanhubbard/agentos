@@ -45,6 +45,18 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include <platform/net_virt_pump.h>
 #include <platform/x86_runner_client.h>
 
+/* Matches the independently compiled canonical device adapters. The guest
+ * manifest must agree with this image-owned identity; it cannot select it. */
+#ifdef AGENTOS_GUEST_SECONDARY
+#define X86_GUEST_OWNER 1u
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+#error "The existing userspace qualification fixture is primary-only"
+#endif
+#else
+#define X86_GUEST_OWNER 0u
+#endif
+#define X86_GUEST_SERIAL_VA (AOS_SERIAL_SHMEM_VA + X86_GUEST_OWNER * AOS_SERIAL_FRAME_SIZE)
+
 /* The executor's native state and sequence survive guest reconstruction. All
  * device/lifecycle handling stays in this coordinator, between synchronous
  * calls, so a completed reply also establishes that VMEnter has returned. */
@@ -180,7 +192,7 @@ static void service_serial(aos_serial_endpoint_t *endpoint)
 bool aos_vmm_serial_detach(void)
 {
     if (!serial_attached) return true;
-    if (!serial_virt_client_detach(0u)) return false;
+    if (!serial_virt_client_detach(X86_GUEST_OWNER)) return false;
     serial_attached = false;
     return true;
 }
@@ -341,7 +353,9 @@ static bool firmware_apply_startup(unsigned count)
 static bool reset_detach(seL4_CPtr ep, uint32_t opcode, uint32_t version,
                           uint32_t request_bytes, uint32_t reply_bytes)
 {
-    const uint32_t args[4] = {version, 0u, 0u, 0u};
+    const uint32_t args[4] = {version, X86_GUEST_OWNER,
+        opcode == SERIAL_VIRT_OP_DETACH ? SERIAL_VIRT_ROLE_VMM : X86_GUEST_OWNER,
+        X86_GUEST_OWNER};
     sel4_msg_t req = {.opcode = opcode, .length = request_bytes}, rep = {0};
     __builtin_memcpy(req.data, args, request_bytes);
     sel4_call(ep, &req, &rep);
@@ -417,20 +431,20 @@ static bool reset_step(void *context, aos_x86_recreate_step_t step, uint32_t gen
             aos_x86_virtio_init(reset_context.ioapic, (void *)AOS_X86_FIRMWARE_RAM_VA,
                 AOS_X86_FIRMWARE_RAM);
     case AOS_X86_RECREATE_NET_REBIND:
-        return aos_net_virt_rebind_with_info(0u, generation, &reset_context.net);
+        return aos_net_virt_rebind_with_info(X86_GUEST_OWNER, generation, &reset_context.net);
     case AOS_X86_RECREATE_NET_ADOPT:
-        return aos_vmm_virtio_net_adopt(0u, (void *)AOS_NET_SHMEM_VA,
+        return aos_vmm_virtio_net_adopt(X86_GUEST_OWNER, (void *)AOS_NET_SHMEM_VA,
             &reset_context.net) && aos_vmm_virtio_net_host_ready();
     case AOS_X86_RECREATE_BLK_REBIND:
-        return aos_blk_virt_rebind_with_info(0u, generation, &reset_context.block);
+        return aos_blk_virt_rebind_with_info(X86_GUEST_OWNER, generation, &reset_context.block);
     case AOS_X86_RECREATE_BLK_ADOPT:
-        return aos_vmm_virtio_blk_adopt(0u, (void *)AOS_BLK_SHMEM_VA, &reset_context.block);
+        return aos_vmm_virtio_blk_adopt(X86_GUEST_OWNER, (void *)AOS_BLK_SHMEM_VA, &reset_context.block);
     case AOS_X86_RECREATE_SERIAL_REBIND:
-        return aos_serial_virt_rebind(0u, generation);
+        return aos_serial_virt_rebind(X86_GUEST_OWNER, generation);
     case AOS_X86_RECREATE_CONSOLE:
         if (!aos_vmm_virtio_console_recreate()) return false;
         *reset_context.serial = (aos_serial_endpoint_t){
-            .channel = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA)};
+            .channel = aos_serial_channel_at(X86_GUEST_SERIAL_VA)};
         return true;
     case AOS_X86_RECREATE_BIND:
         return aos_x86_guest_objects_bind() == seL4_NoError;
@@ -903,7 +917,7 @@ static bool terminal_teardown_proof(void)
                 AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup) return false;
         teardown_proof_stage = 120u + pass * 100u;
         if (!aos_serial_virt_rebind(0u, pass + 1u)) return false;
-        aos_serial_channel_t rebuilt_serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
+        aos_serial_channel_t rebuilt_serial = aos_serial_channel_at(X86_GUEST_SERIAL_VA);
         static const uint8_t message[] = "x86-recreated-serial\n";
         teardown_proof_stage = 121u + pass * 100u;
         if (aos_serial_queue_write(&rebuilt_serial.from_guest, message,
@@ -1243,12 +1257,12 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         serial_virt_client_attach(0u, SERIAL_VIRT_ROLE_FRONTEND))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x534552u, 0, 1u);
 #endif
-    if (!serial_virt_client_attach(0u, SERIAL_VIRT_ROLE_VMM))
+    if (!serial_virt_client_attach(X86_GUEST_OWNER, SERIAL_VIRT_ROLE_VMM))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x534552u, 0, 2u);
     serial_attached = true;
-    /* Root gives this VMM only client zero's page. Check the newly retyped
+    /* Root gives this VMM only its own client page. Check the newly retyped
      * queue state before any producer can publish console bytes. */
-    aos_serial_channel_t serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
+    aos_serial_channel_t serial = aos_serial_channel_at(X86_GUEST_SERIAL_VA);
     aos_serial_endpoint_t serial_endpoint = {.channel=serial};
     if (__atomic_load_n(&serial.to_guest.queue->head, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&serial.to_guest.queue->tail, __ATOMIC_ACQUIRE) ||
@@ -1283,7 +1297,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
 #ifdef AGENTOS_X86_BOOT_PROFILE
     if (!aos_x86_profile_bind(_binary_x86_boot_profile_bin_start,
             (size_t)(_binary_x86_boot_profile_bin_end-_binary_x86_boot_profile_bin_start),
-            &boot, AOS_X86_FIRMWARE_RAM, AOS_X86_FIRMWARE_RAM_VA))
+            &boot, X86_GUEST_OWNER, AOS_X86_FIRMWARE_RAM, AOS_X86_FIRMWARE_RAM_VA))
         stop(ep,AOS_X86_VTX_PROOF_FAIL,0x505246u,0,0);
     cpu_count=((const aos_guest_profile_manifest_t *)_binary_x86_boot_profile_bin_start)->vcpu_count;
 #endif
@@ -1314,11 +1328,11 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x56495254u, 0, AOS_X86_FIRMWARE_RAM);
     if (!aos_vmm_virtio_console_init_at(AOS_X86_VIRTIO_BASE, AOS_X86_VIRTIO_GSI_BASE))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x534552u, 0, 4u);
-    if (!aos_vmm_virtio_blk_init_at(0u, AOS_X86_VIRTIO_BASE + AOS_X86_VIRTIO_STRIDE,
+    if (!aos_vmm_virtio_blk_init_at(X86_GUEST_OWNER, AOS_X86_VIRTIO_BASE + AOS_X86_VIRTIO_STRIDE,
                                    AOS_X86_VIRTIO_GSI_BASE + 1u, (void *)AOS_BLK_SHMEM_VA))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 1u);
     block_proof_ep = ep;
-    if (!aos_vmm_virtio_net_init_at(0u, AOS_X86_VIRTIO_BASE + 2u * AOS_X86_VIRTIO_STRIDE,
+    if (!aos_vmm_virtio_net_init_at(X86_GUEST_OWNER, AOS_X86_VIRTIO_BASE + 2u * AOS_X86_VIRTIO_STRIDE,
                                    AOS_X86_VIRTIO_GSI_BASE + 2u,
                                    (void *)AGENTOS_NET_SHARED_VA) ||
         !aos_vmm_virtio_net_host_ready())
@@ -1356,7 +1370,8 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
     uint32_t lifecycle_state = GUEST_STATE_READY;
     lifecycle_started = false;
     const aos_guest_vmm_runtime_t runtime = {
-        .os_type = VMM_PROFILE_PRIMARY, .guest_id = 0u,
+        .os_type = X86_GUEST_OWNER ? VMM_PROFILE_SECONDARY : VMM_PROFILE_PRIMARY,
+        .guest_id = X86_GUEST_OWNER,
         .state = &lifecycle_state, .started = &lifecycle_started,
         .start = control_start,
         .suspend = control_transition, .resume = control_transition,
@@ -1696,6 +1711,29 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
             seL4_Word linear = read_field(ep, CS_BASE) + rip;
             stop(ep, AOS_X86_VTX_PROOF_FAIL, reason, linear,
                  reason == 31u || reason == 32u ? (uint32_t)regs.ecx : reason == 48u ? fault_gpa : qual);
+        }
+        if (config.reset_requested) {
+#if defined(AGENTOS_X86_MANAGED_START) && !defined(AGENTOS_X86_USERSPACE_PROOF)
+            /* This exit belongs to the retiring context. Never write its
+             * registers back or enter either runner while reset is pending. */
+            have_return = false;
+            enum aos_guest_restart_result result;
+            do {
+                seL4_Word badge = 0;
+                if (!aos_x86_control_poll_initializing(&badge))
+                    stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x525354u, rip, 1u);
+                if (badge) control_wake(badge, &serial_endpoint);
+                result = aos_guest_vmm_restart_step(&runtime);
+                if (result == AOS_GUEST_RESTART_WAIT) seL4_Yield();
+            } while (result == AOS_GUEST_RESTART_WAIT);
+            if (result != AOS_GUEST_RESTART_RUNNING) {
+                if (reset_transaction.cleanup_pending) reset_abort();
+                stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x525354u, rip, lifecycle_state);
+            }
+            continue; /* Consume reset_entry_pending at the loop head. */
+#else
+            stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x525354u, rip, lifecycle_state);
+#endif
         }
         service_serial(&serial_endpoint);
         aos_vmm_virtio_blk_after_fault();

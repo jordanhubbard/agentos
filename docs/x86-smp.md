@@ -66,3 +66,74 @@ their cause is not established by this pass.
 
 The first two-CPU bring-up exposed the private CMOS warm-start marker, which
 is now emulated.
+
+### Optional second host disk
+
+The managed gate accepts `X86_SECONDARY_DISK=/absolute/path/to/secondary.raw`.
+It rebuilds root with the second PCI block function at 00:08.0 and attaches
+that raw disk read-only by default. `X86_SECONDARY_WRITABLE=1` enables writes
+to it independently of the primary root disk. The two paths must identify
+different regular files, including through symbolic or hard links, and their
+sizes must be nonzero multiples of 512 bytes. Use disposable copies for gates
+that enable writes.
+
+For example, append these selectors to the SDK, firmware, SSH and root-disk
+arguments of `make gate-x86_64-smp`:
+
+```sh
+X86_SECONDARY_DISK=/absolute/path/to/secondary.raw X86_SECONDARY_WRITABLE=1
+```
+
+The second-disk gate additionally requires the driver to report successful
+initialization of both PCI media and their separate queues. This proves host
+device initialization only. The current descriptor still starts one guest;
+secondary guest I/O, concurrent disk isolation and persistence remain separate
+v0.4 requirements. The receipt must not describe this mode as a dual-guest pass.
+
+The first native two-disk run at `1b4094d` failed because this marker was
+absent. It uses `log_drain_write`, whose fallback is disabled when the release
+SDK lacks `CONFIG_PRINTING`; the x86 composition has no log-drain PD. This
+failed run is retained and does not establish second-media acceptance.
+Concurrent guest I/O is still required; a missing diagnostic must not be
+treated as a passing device check.
+
+## Preparing a secondary coordinator
+
+`make prepare-x86-profile X86_BOOT_PROFILE=debian-amd64-secondary.toml
+X86_VMM_SLOT=secondary` verifies the pinned kernel/initrd and emits build
+arguments as a JSON array after acquisition diagnostics. These are argument
+values, not shell source. Primary and secondary manifests and command lines
+are written under separate `build/tmp/x86-boot-profile/<slot>/` directories.
+Build each coordinator in a separate build directory.
+
+The selected slot must agree with all four profile identities: guest ID,
+control type, network client and block media. The default runtime path still
+requires the primary slot. Preparing a secondary manifest does not spawn its
+coordinator or runner pair, attach its disk, or qualify concurrent storage.
+
+## Opt-in two-guest image
+
+After preparing both profiles, the existing `make build` interface accepts
+`X86_DUAL_GUEST=1 X86_CC_PCI=1 X86_SECONDARY_BLOCK=1 X86_LINUX_LOGIN=1`
+with the primary profile's emitted arguments and the usual pinned firmware
+and SDK arguments. Supply the secondary manifest using
+`X86_SECONDARY_BOOT_PROFILE_BIN` and `X86_SECONDARY_BOOT_PROFILE_SHA256`.
+The two profiles must agree on kernel, initrd, command line and RAM size;
+the secondary build shares these immutable inputs and verifies its own
+manifest against its compiled slot and resources at admission.
+
+The image has two coordinators, each with its own runner pair. The secondary
+coordinator builds under `<BUILD_DIR>/secondary`; the primary build's objects
+are not reused for its guest adapters. Both guests have public lifecycle
+routes through VM manager. The ordinary composition remains one guest.
+Use two independently seeded disks, not the small blank disk used solely
+for driver initialization qualification. This image build does not prove
+concurrent boot, network routing, peer progress during teardown or persistent
+storage isolation. Those runtime results remain required for v0.4.
+
+The first two-guest image booted all 13 PDs, but secondary CREATE did not
+complete. The native-fault diagnostic build identified secondary service 17
+reading `0x2a001004` in the serial startup check. Root maps that guest's serial
+page at `0x2a200000`; the coordinator still used the primary base. Startup
+and reconstruction now select the serial page by compiled guest slot. The
+observed fault is retained; the corrected guest path requires native retesting.

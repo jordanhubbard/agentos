@@ -16,6 +16,9 @@
 const system_desc_t system_desc_x86_64 = {
 #ifdef AGENTOS_X86_FIRMWARE_RESET
     .pd_count = 9u
+#ifdef AGENTOS_X86_DUAL_GUEST
+        + 3u
+#endif
 #ifdef AGENTOS_X86_USERSPACE_PROOF
         + 1u
 #endif
@@ -152,6 +155,38 @@ const system_desc_t system_desc_x86_64 = {
         },
 #endif
 #ifdef AGENTOS_X86_MANAGED_START
+#ifdef AGENTOS_X86_DUAL_GUEST
+        {
+            .name = "x86_secondary_runner",
+            .elf_path = "x86_secondary_runner.elf",
+            .stack_size = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority = 250u,
+            .self_svc_id = SVC_ID_X86_SECONDARY_RUNNER,
+        },
+        {
+            .name = "x86_secondary_runner_ap",
+            .elf_path = "x86_secondary_runner_ap.elf",
+            .stack_size = 0x8000u,
+            .cnode_size_bits = 10u,
+            .priority = 250u,
+            .self_svc_id = SVC_ID_X86_SECONDARY_AP_RUNNER,
+        },
+        {
+            .name = "guest_vmm_secondary",
+            .elf_path = "guest_vmm_secondary.elf",
+            .stack_size = 0x10000u,
+            .cnode_size_bits = AOS_GUEST_RAM_CNODE_BITS,
+            .priority = 250u,
+            .self_svc_id = SVC_ID_GUEST_VMM_SECONDARY,
+            .init_ep_count = 3u,
+            .init_eps = {
+                { SVC_ID_SERIAL_VIRT, PD_CNODE_SLOT_SERIAL_VIRT_EP },
+                { SVC_ID_BLK_VIRT, PD_CNODE_SLOT_BLK_VIRT_EP },
+                { SVC_ID_NET_VIRT, PD_CNODE_SLOT_NET_VIRT_EP },
+            },
+        },
+#endif
         {
             .name = "vm_manager",
             .elf_path = "vm_manager.elf",
@@ -159,8 +194,16 @@ const system_desc_t system_desc_x86_64 = {
             .cnode_size_bits = 10u,
             .priority = 220u,
             .self_svc_id = SVC_ID_VM_MANAGER,
+#ifdef AGENTOS_X86_DUAL_GUEST
+            .init_ep_count = 2u,
+            .init_eps = {
+                { SVC_ID_GUEST_VMM_PRIMARY, PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP },
+                { SVC_ID_GUEST_VMM_SECONDARY, PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP },
+            },
+#else
             .init_ep_count = 1u,
             .init_eps = {{ SVC_ID_GUEST_VMM_PRIMARY, PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP }},
+#endif
         },
 #endif
 #ifdef AGENTOS_X86_CC_PCI

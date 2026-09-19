@@ -52,9 +52,16 @@ public key, retains the stock default account, disables password authentication,
 and requests guest-generated Ed25519 host keys. It does not read the private
 login key. Use a fresh source image and unique instance ID for each new guest.
 
-The network configuration matches the qualified Intel test composition:
-`eth0`, `10.0.2.15/24`, gateway `10.0.2.2`, DNS `10.0.2.3`. This is a single-guest
-test-network configuration, not a deployment or multi-guest network policy.
+The default network configuration is `eth0`, `10.0.2.15/24`, gateway
+`10.0.2.2`, DNS `10.0.2.3`. Set `SEED_GUEST_ADDRESS=10.0.2.16` when preparing
+a secondary guest's independent disk. Addresses must be in
+`10.0.2.15..=10.0.2.254`; the subnet and service addresses stay fixed.
+Use a distinct address for every concurrently running guest and match each
+QEMU SSH forward to that guest's address. Automatic profile provisioning uses
+`host.qemu.ssh.guest_address` for the seed as well as the SSH forward.
+This supplies test-network configuration; it does not establish network or
+disk isolation. Fresh seeds generate fresh SSH host keys, which must be
+captured from the trusted console and pinned before SSH qualification.
 
 The source stays unchanged. A private temporary directory holds the copy;
 all three seed files must read back exactly through debugfs before the output

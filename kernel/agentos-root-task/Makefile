@@ -126,8 +126,38 @@ ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
 endif
 
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
+  # Build each coordinator and its canonical adapters in a separate directory.
+  # This selector does not add a secondary PD to the system descriptor.
+  X86_VMM_SLOT ?= primary
+  ifeq ($(X86_VMM_SLOT),secondary)
+    CFLAGS += -DAGENTOS_GUEST_SECONDARY=1
+  else ifneq ($(X86_VMM_SLOT),primary)
+    $(error X86_VMM_SLOT must be primary or secondary)
+  endif
   CFLAGS += -DAGENTOS_X86_VTX=1
   CFLAGS_ROOT_TASK += -DAGENTOS_X86_VTX=1
+  ifeq ($(X86_DUAL_GUEST),1)
+    ifneq ($(X86_VMM_SLOT),primary)
+      $(error X86_DUAL_GUEST requires the primary outer build slot)
+    endif
+    ifneq ($(X86_CC_PCI)$(X86_SECONDARY_BLOCK),11)
+      $(error X86_DUAL_GUEST requires X86_CC_PCI=1 and X86_SECONDARY_BLOCK=1)
+    endif
+    ifneq ($(X86_LINUX_LOGIN),1)
+      $(error X86_DUAL_GUEST requires X86_LINUX_LOGIN=1 and prepared Linux profiles)
+    endif
+    ifeq ($(strip $(X86_SECONDARY_BOOT_PROFILE_BIN)),)
+      $(error X86_DUAL_GUEST requires X86_SECONDARY_BOOT_PROFILE_BIN)
+    endif
+    ifeq ($(strip $(X86_SECONDARY_BOOT_PROFILE_SHA256)),)
+      $(error X86_DUAL_GUEST requires X86_SECONDARY_BOOT_PROFILE_SHA256)
+    endif
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_DUAL_GUEST=1
+    $(BUILD_DIR)/vm_manager.o $(BUILD_DIR)/cc_pd.o $(BUILD_DIR)/net_virt.o $(BUILD_DIR)/blk_virt.o $(BUILD_DIR)/serial_virt.pd.o: CFLAGS += -DAGENTOS_GUEST_SECONDARY=1
+  endif
+  ifeq ($(X86_SECONDARY_BLOCK),1)
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_SECONDARY_BLOCK=1
+  endif
   ifeq ($(X86_LINUX_LOGIN),1)
     ifneq ($(X86_FIRMWARE_RESET),1)
       $(error X86_LINUX_LOGIN requires X86_FIRMWARE_RESET=1)
@@ -857,6 +887,9 @@ else ifeq ($(ARCH),x86_64)
   IMAGES += guest_vmm_primary.elf
   ifeq ($(X86_FIRMWARE_RESET),1)
     IMAGES += x86_runner.elf x86_runner_ap.elf
+    ifeq ($(X86_DUAL_GUEST),1)
+      IMAGES += guest_vmm_secondary.elf x86_secondary_runner.elf x86_secondary_runner_ap.elf
+    endif
   endif
   ifeq ($(X86_USERSPACE_PROOF),1)
     IMAGES += x86_lifecycle_probe.elf
@@ -1453,6 +1486,20 @@ $(BUILD_DIR)/x86_runner.elf: $(BUILD_DIR)/x86_runner.pd.o $(BUILD_DIR)/x86_runne
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/x86_runner_ap.elf: $(BUILD_DIR)/x86_runner.elf
 	cp $< $@
+ifeq ($(X86_DUAL_GUEST),1)
+# Each runner ELF is loaded into its own native VSpace/TCB by root.
+$(BUILD_DIR)/x86_secondary_runner.elf $(BUILD_DIR)/x86_secondary_runner_ap.elf: $(BUILD_DIR)/x86_runner.elf
+	cp $< $@
+# Share the immutable guest payload and RAM size, but compile the coordinator
+# and its adapters independently with the secondary identity and manifest.
+$(BUILD_DIR)/guest_vmm_secondary.elf: FORCE
+	$(MAKE) BUILD_DIR=$(abspath $(BUILD_DIR)/secondary) \
+		X86_DUAL_GUEST=0 X86_VMM_SLOT=secondary \
+		X86_BOOT_PROFILE_BIN=$(X86_SECONDARY_BOOT_PROFILE_BIN) \
+		X86_BOOT_PROFILE_SHA256=$(X86_SECONDARY_BOOT_PROFILE_SHA256) \
+		$(abspath $(BUILD_DIR)/secondary)/guest_vmm_primary.elf
+	cp $(abspath $(BUILD_DIR)/secondary)/guest_vmm_primary.elf $@
+endif
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
 $(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c $(GUEST_CONFIG_STAMP) Makefile
 	@mkdir -p $(BUILD_DIR)
@@ -1554,6 +1601,14 @@ endif
 endif
 
 # Kernel ELF: pulled directly from the Microkit SDK release package
+ifeq ($(X86_DUAL_GUEST),1)
+_X86_SINGLE_SYSTEM_TOML := $(SYSTEM_TOML)
+SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-dual.toml)
+$(SYSTEM_TOML): $(_X86_SINGLE_SYSTEM_TOML) Makefile
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "x86_secondary_runner"\npriority = 250\n\n[[pd]]\nname = "x86_secondary_runner_ap"\npriority = 250\n\n[[pd]]\nname = "guest_vmm_secondary"\npriority = 250\n'; } > $@
+endif
+
 KERNEL_ELF  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/elf/sel4.elf
 
 # On AArch64, loader.elf is also a build artifact (needed at QEMU launch time).

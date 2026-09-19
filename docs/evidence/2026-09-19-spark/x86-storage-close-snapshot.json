@@ -1,0 +1,29 @@
+{
+  "status": "passed bounded managed close/recreate and offline disk snapshot checks",
+  "os_source_revision": "1db6fa1f3d8ba3433bf682743a226afeb5544a36",
+  "source_changes_during_qualification": "Evidence documentation only; deployed image unchanged.",
+  "root_task_sha256": "3cf2b369296a14e14f3fac9185e6ba04a94f21c3c8430f4a377109802bf6a777",
+  "managed_close": {
+    "qemu_pid": 1645404,
+    "sequence": "Synced primary while Linux was mounted, successfully destroyed handle 2, verified only secondary handle 1 remained, copied detached disk, recreated primary as handle 3.",
+    "ssh_after_recreate": "passed with original pinned host key",
+    "new_boot_id": "bec1c7c4-7993-4bfd-80fc-a865ef22601f",
+    "payload_bytes": 2097152,
+    "payload_sha256": "5f898587808fcbe9b2409bf42a16b834b91117be14f942101d22c9d66b2fe13f",
+    "filesystem": "EXT4 journal recovery completed before mount and login.",
+    "peer": "Secondary stayed SSH-reachable with unchanged boot ID ea3682cb-bc5b-4eac-9153-800331fa7d0b and unchanged payload hash.",
+    "discard": "Both guests report discard_max_bytes=0; queue ABI v4 has no DISCARD request. No discard functionality claimed."
+  },
+  "offline_snapshot": {
+    "detached_raw_source_and_copy_sha256": "fa1a9dd968a0d03736d06b1cab643fa99a2f6a22b2c5fa1dc6d9d66b2fc2a24b",
+    "conversion": "qemu-img raw to qcow2; check found no errors; compare reported identical logical disk bytes.",
+    "boot": "Separate qcow2 overlay with explicit qcow2 backing format, same agentOS image, fresh outer QEMU 1698841, primary handle 1.",
+    "ssh": "Original primary host key pinned; authenticated SSH passed with boot ID 1a29f596-6447-47c9-ac8c-26f2cf3596bb and unchanged 2 MiB payload hash.",
+    "copy_on_write": "Synced overlay-only file; complete backing-file hash unchanged. Original guest confirmed file absent and original payload unchanged.",
+    "cleanup": "Guest DESTROY succeeded, inventory empty, exact QEMU process terminated and confirmed absent. Offline overlay check found no errors; backing hash still matched. Disks retained.",
+    "capture": "Snapshot console capture ended with a stale-handle response after intentional guest destruction. SSH and final inventory are retained independently."
+  },
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/1db6fa1-close-snapshot-evidence.tar.gz",
+  "archive_sha256": "24d9ef867c80b073ad6fa2d8ae8a4db097e14565989eabd65cd1e59eb90041d9",
+  "limits": "Not live memory/device snapshots, in-flight-write crash injection, outer-host power-loss durability, comprehensive bounds enforcement, simultaneous fresh boot, or full v0.4 acceptance. Private keys and disks excluded from archive."
+}

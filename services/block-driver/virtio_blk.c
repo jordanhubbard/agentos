@@ -284,9 +284,9 @@ static void virtio_blk_device_init(blk_device_t *device, uint32_t media_id,
     bool bound;
     if (pci) {
         bound = aos_virtio_host_pci(transport,
-            AOS_BLK_PCI_REGION_VA(0u) + pci->offset[0], pci->length[0],
-            AOS_BLK_PCI_REGION_VA(2u) + pci->offset[2], pci->length[2],
-            AOS_BLK_PCI_REGION_VA(1u) + pci->offset[1], pci->length[1],
+            AOS_BLK_PCI_MEDIA_REGION_VA(media_id, 0u) + pci->offset[0], pci->length[0],
+            AOS_BLK_PCI_MEDIA_REGION_VA(media_id, 2u) + pci->offset[2], pci->length[2],
+            AOS_BLK_PCI_MEDIA_REGION_VA(media_id, 1u) + pci->offset[1], pci->length[1],
             pci->notify_multiplier);
     } else {
         /* Each ARM virtio-MMIO slot is 512 bytes, including device config. */
@@ -428,33 +428,44 @@ static void virtio_blk_pd_init(void)
             AGENTOS_BLK_SHARED_VA + AGENTOS_BLK_SHARED_DMA_OFF;
 
     if (shared->magic != AGENTOS_BLK_SHARED_MAGIC ||
-        (shared->version != 1u && shared->version != 2u) ||
+        (shared->version != 1u && shared->version != 2u && shared->version != 3u) ||
         shared->size != AGENTOS_BLK_SHARED_SIZE) {
         log_drain_write(17, 17, "[virtio_blk] ERROR: shared DMA metadata invalid\n");
         return;
     }
     g_blk_shared_paddr = shared->paddr;
 
-    const aos_blk_pci_info_t *pci = NULL;
+    const aos_blk_pci_info_t *pci = NULL, *secondary_pci = NULL;
     if (shared->version == 2u) {
         pci = (const aos_blk_pci_info_t *)(AGENTOS_BLK_SHARED_VA + AOS_BLK_PCI_INFO_OFF);
-        if (pci->magic != AOS_BLK_PCI_INFO_MAGIC || pci->version != 1u) return;
-        for (unsigned r = 0; r < 3u; r++) {
-            if (pci->offset[r] >= 4096u || !pci->length[r] ||
-                pci->length[r] > 4096u - pci->offset[r]) return;
-        }
+        if (!aos_blk_pci_info_valid(pci)) return;
+    } else if (shared->version == 3u) {
+        const aos_blk_pci_set_t *set = (const aos_blk_pci_set_t *)(
+            AGENTOS_BLK_SHARED_VA + AOS_BLK_PCI_INFO_OFF);
+        if (!aos_blk_pci_set_valid(set)) return;
+        pci = &set->media[0];
+        if (set->count == 2u) secondary_pci = &set->media[1];
     }
 
     virtio_blk_device_init(
         &dev[AOS_HOST_BLK_MEDIA_PRIMARY],
         AOS_HOST_BLK_MEDIA_PRIMARY,
         blk_mmio_vaddr, pci);
-    if (!pci) virtio_blk_device_init(
+    if (secondary_pci) virtio_blk_device_init(
+        &dev[AOS_HOST_BLK_MEDIA_SECONDARY],
+        AOS_HOST_BLK_MEDIA_SECONDARY, 0u, secondary_pci);
+    else if (!pci) virtio_blk_device_init(
         &dev[AOS_HOST_BLK_MEDIA_SECONDARY],
         AOS_HOST_BLK_MEDIA_SECONDARY,
         AGENTOS_HOST_SECONDARY_BLK_PAGE_VA +
             AGENTOS_HOST_SECONDARY_BLK_PAGE_OFF, NULL);
 
+    if (secondary_pci && dev[AOS_HOST_BLK_MEDIA_PRIMARY].initialized &&
+        dev[AOS_HOST_BLK_MEDIA_SECONDARY].initialized &&
+        dev[AOS_HOST_BLK_MEDIA_PRIMARY].capacity &&
+        dev[AOS_HOST_BLK_MEDIA_SECONDARY].capacity) {
+        log_drain_write(17, 17, "[virtio_blk] two PCI media initialized with independent queues\n");
+    }
     if (dev[AOS_HOST_BLK_MEDIA_PRIMARY].initialized ||
         dev[AOS_HOST_BLK_MEDIA_SECONDARY].initialized) {
         log_drain_write(17, 17, "[virtio_blk] READY\n");
