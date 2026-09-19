@@ -1,0 +1,27 @@
+{
+  "status": "host, native operator reconnect, full Spark gate and GUI build passed; guest disconnect qualification pending",
+  "source_revision": "048ee9c3a1091cbada19a5512997d1c21897d598",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "host": "make test-host passed, including 120 Rust tests",
+  "operator": {
+    "command": "make test-operator-session QEMU_TEST_TIMEOUT=180",
+    "result": "native reconnect, exact inspection, fragmented operator input, error recovery and 128 exact reports after backpressure passed",
+    "log_sha256": "4acac39c35f49ce9b60e68cc0c92b550e87711fc021685c3602f98d1129ca9a2",
+    "source_note": "Implementation matched this revision; contract comments and documentation were finalized after the operator run."
+  },
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12249 with the isolated SDK above",
+    "exit": 0,
+    "log_sha256": "412636efeae7ae4ec548e9d99c1a917dddf584809ab16a1743689104253c3894",
+    "coverage": "Host suite, ARM and x86 smoke, ARM guest network, block and console I/O"
+  },
+  "gui": {
+    "application_revision": "c748c74",
+    "fixture_revision": "14d2d1e",
+    "validation": "make check, 130 browser tests, 16 Rust tests, cargo check and make build passed; console fixture separately cargo checked",
+    "checks_log_sha256": "09a85dcddf89ebe30119b3fd170f25b6f57c75a50298d3eb81ff6bba2ad0cf8e",
+    "build_log_sha256": "ebfba1e38977e7829941f92adc2a0692066110fb89b65b55e1f844f8ae9bb52f"
+  },
+  "old_diagnostic_cleanup": "After retaining evidence and passing the replacement operator test, deliberately terminated only blocked CLI 1310060. Its harness exited 2 and removed QEMU 1310010; both absent afterward. This was diagnostic retirement, not a timeout-based restart.",
+  "limits": "Not Intel VMX requalification, live GUI integration, Linux held-input/disconnect acceptance, or v0.4 release approval. PRs remain unmerged."
+}
