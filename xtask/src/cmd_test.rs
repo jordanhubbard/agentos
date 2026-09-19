@@ -3,7 +3,7 @@ use crate::guest_scenario::{self, HostScenarioPlan, ScenarioGuestPlan};
 use crate::{rfb, QemuLaunchArgs, TestArgs};
 use anyhow::Context;
 use sha2::{Digest, Sha256};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::net::UnixStream;
@@ -446,6 +446,10 @@ fn run_seeded_cold_boots(args: &TestArgs) -> anyhow::Result<()> {
 }
 
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !args.retain_failed_guest || (args.keep_running && std::io::stdin().is_terminal()),
+        "--retain-failed-guest requires --keep-running and an interactive stdin"
+    );
     if args.assert_seeded_cold_boots {
         return run_seeded_cold_boots(args);
     }
@@ -673,7 +677,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 
     anyhow::ensure!(
-        !args.keep_running || args.guest_os == "both" || args.assert_desktop || args.assert_live,
+        !args.keep_running
+            || args.guest_os == "both"
+            || args.assert_desktop
+            || args.assert_live
+            || args.seed_profile
+            || args.seeded_ssh_key.is_some(),
         "--keep-running requires a dual guest, desktop or authenticated live profile"
     );
     if args.assert_emulated_net
@@ -1811,6 +1820,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             ))
         });
     }
+    if args.retain_failed_guest {
+        if let Err(failure) = &result {
+            eprintln!("[xtask:test] Qualification FAILED; retaining for diagnosis: {failure:#}");
+            if let Err(error) = wait_for_manual_cc_client(&cc_sock, &mut qemu, false) {
+                eprintln!("[xtask:test] Failed-guest retention ended: {error:#}");
+            }
+            // Preserve the qualification error, even if the manual session
+            // succeeds or subsequent inspection restores guest responsiveness.
+        }
+    }
     if args.keep_running && result.is_ok() {
         let key = ssh_key
             .as_ref()
@@ -1828,7 +1847,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             wait_for_manual_dual_ssh(key, scenario, &mut qemu)
                 .map(|()| String::from("manual dual SSH session completed"))
         } else {
-            wait_for_manual_cc_client(&cc_sock, &mut qemu).map(|()| {
+            wait_for_manual_cc_client(&cc_sock, &mut qemu, true).map(|()| {
                 String::from("qualified live guest retained for manual CC client session")
             })
         };
@@ -2074,9 +2093,19 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn wait_for_manual_cc_client(socket: &Path, qemu: &mut Child) -> anyhow::Result<()> {
+fn wait_for_manual_cc_client(
+    socket: &Path,
+    qemu: &mut Child,
+    qualified: bool,
+) -> anyhow::Result<()> {
     ensure_qemu_running(qemu, "entering manual CC client mode")?;
-    println!("\n[xtask:test] Qualified guest retained for native CC clients");
+    if qualified {
+        println!("\n[xtask:test] Qualified guest retained for native CC clients");
+    } else {
+        println!(
+            "\n[xtask:test] FAILED guest retained for diagnosis; qualification remains failed"
+        );
+    }
     println!("CC_PD_SOCK={}", socket.display());
     println!("Close the external client, then press Enter here to stop QEMU.");
     let mut line = String::new();
@@ -3003,7 +3032,13 @@ fn prove_seeded_profile_steps(
             .stdout(std::fs::File::create(&stdout)?)
             .stderr(std::fs::File::create(&stderr)?);
         let mut child = ChildGuard::new(command.spawn()?);
-        wait_input_child(&mut child, qemu, 200)?;
+        wait_qualification_child(&mut child, qemu, 200).with_context(|| {
+            format!(
+                "profile SSH step {index} failed; stdout: {}; stderr: {}",
+                stdout.display(),
+                stderr.display()
+            )
+        })?;
         anyhow::ensure!(
             std::fs::metadata(&stdout)?.len() <= 4096,
             "profile SSH output exceeds 4096 bytes; see {}",
@@ -3186,7 +3221,27 @@ fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow:
 }
 
 fn x86_has_login_prompt(text: &str) -> bool {
-    text.lines().any(|line| {
+    // printk records can interrupt getty between the hostname and its prompt.
+    // Remove only complete timestamped records for prompt recognition. The
+    // caller retains and checks the original bytes for guest faults first.
+    let mut getty = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let interruption = line.find('[').filter(|&start| {
+            let Some((timestamp, _)) = line[start + 1..].split_once("] ") else {
+                return false;
+            };
+            let Some((seconds, fraction)) = timestamp.trim_start().split_once('.') else {
+                return false;
+            };
+            line.ends_with('\n')
+                && !seconds.is_empty()
+                && !fraction.is_empty()
+                && seconds.bytes().all(|b| b.is_ascii_digit())
+                && fraction.bytes().all(|b| b.is_ascii_digit())
+        });
+        getty.push_str(interruption.map_or(line, |start| &line[..start]));
+    }
+    getty.lines().any(|line| {
         let Some((hostname, _)) = line.split_once(" login:") else {
             return false;
         };
@@ -5378,17 +5433,24 @@ fn prove_profile_ssh(
     )
 }
 
-fn wait_input_child(child: &mut Child, qemu: &mut Child, seconds: u64) -> anyhow::Result<()> {
+fn wait_qualification_child(
+    child: &mut Child,
+    qemu: &mut Child,
+    seconds: u64,
+) -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
-        anyhow::ensure!(qemu.try_wait()?.is_none(), "QEMU exited during input proof");
+        anyhow::ensure!(
+            qemu.try_wait()?.is_none(),
+            "QEMU exited during qualification"
+        );
         if let Some(status) = child.try_wait()? {
-            anyhow::ensure!(status.success(), "input proof process failed: {status}");
+            anyhow::ensure!(status.success(), "qualification process failed: {status}");
             return Ok(());
         }
         anyhow::ensure!(
             Instant::now() < deadline,
-            "input proof process deadline expired"
+            "qualification process deadline expired"
         );
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -5663,7 +5725,8 @@ fn prove_profile_input_pass(
     let mut upload = ChildGuard::new(command(
         "timeout 120 sh -c 'umask 077; rm -f /tmp/agentos-input-probe && cat > /tmp/agentos-input-probe && chmod 700 /tmp/agentos-input-probe'"
     )?.stdin(Stdio::from(std::fs::File::open(helper)?)).stdout(Stdio::null()).spawn()?);
-    wait_input_child(&mut upload, qemu, 150)?;
+    wait_qualification_child(&mut upload, qemu, 150)
+        .with_context(|| format!("input probe upload failed; see {}", stderr_path.display()))?;
     let mut probe = ChildGuard::new(
         command(if mode == InputProofMode::Backpressure {
             "timeout 240 /tmp/agentos-input-probe --backpressure"
@@ -5733,7 +5796,12 @@ fn prove_profile_input_pass(
                 .spawn()?,
         );
         // agentctl validates the exact response and never retries input batches.
-        wait_input_child(&mut submit, qemu, 30)?;
+        wait_qualification_child(&mut submit, qemu, 30).with_context(|| {
+            format!(
+                "input batch submission failed; see {}",
+                stderr_path.display()
+            )
+        })?;
     }
     expect_input_probe_line(
         &receive,
@@ -5746,7 +5814,8 @@ fn prove_profile_input_pass(
         },
         120,
     )?;
-    wait_input_child(&mut probe, qemu, 15)?;
+    wait_qualification_child(&mut probe, qemu, 15)
+        .with_context(|| format!("input probe failed; see {}", stderr_path.display()))?;
     let receipt = serde_json::json!({
         "schema": "agentos.guest_input.v1", "status": "pass", "profile": profile.id,
         "agentos_revision": agentos_revision(repo)?, "source_tree_clean": agentos_worktree_clean(repo)?,
@@ -6321,6 +6390,21 @@ fn cc_log_stream_for_handle(
     guest_handle: u32,
     profile: Option<&HostProfilePlan>,
 ) -> anyhow::Result<String> {
+    let reply = cc_log_stream_reply(cc, guest_handle, profile)?;
+    anyhow::ensure!(
+        reply.mr[0] == CC_OK,
+        "MSG_CC_LOG_STREAM returned ok={}",
+        reply.mr[0]
+    );
+    let len = (reply.mr[1] as usize).min(reply.shmem.len());
+    Ok(String::from_utf8_lossy(&reply.shmem[..len]).into_owned())
+}
+
+fn cc_log_stream_reply(
+    cc: &mut CcClient,
+    guest_handle: u32,
+    profile: Option<&HostProfilePlan>,
+) -> anyhow::Result<CcReply> {
     let pd_id = if guest_handle == 0 {
         0
     } else {
@@ -6333,16 +6417,8 @@ fn cc_log_stream_for_handle(
             None => anyhow::bail!("dynamic guest log streaming requires a resolved profile"),
         }
     };
-    let reply = cc
-        .call(MSG_CC_LOG_STREAM, guest_handle, pd_id, 0, &[])
-        .context("MSG_CC_LOG_STREAM failed")?;
-    anyhow::ensure!(
-        reply.mr[0] == CC_OK,
-        "MSG_CC_LOG_STREAM returned ok={}",
-        reply.mr[0]
-    );
-    let len = (reply.mr[1] as usize).min(reply.shmem.len());
-    Ok(String::from_utf8_lossy(&reply.shmem[..len]).into_owned())
+    cc.call(MSG_CC_LOG_STREAM, guest_handle, pd_id, 0, &[])
+        .context("MSG_CC_LOG_STREAM failed")
 }
 
 fn cc_send_raw_byte(cc: &mut CcClient, guest_handle: u32, byte: u8) -> anyhow::Result<()> {
@@ -6476,7 +6552,16 @@ fn destroy_guest_via_cc(
         );
         // Consume copied output so a partially drained console can finish.
         // This also separates retries from CC's identical-request replay cache.
-        let _ = cc_log_stream_for_handle(cc, guest_handle, profile)?;
+        let console = cc_log_stream_reply(cc, guest_handle, profile)?;
+        // Serial detach can finish before input/graphics teardown. The boot
+        // console then rejects reads with RELAY_FAULT. This is not successful
+        // destruction: keep requiring an explicit DESTROY acknowledgement
+        // within the original deadline. Ordinary console reads remain strict.
+        anyhow::ensure!(
+            console.mr[0] == CC_OK || (guest_handle == 0 && console.mr[0] == CC_ERR_RELAY_FAULT),
+            "MSG_CC_LOG_STREAM during destroy returned ok={}",
+            console.mr[0]
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -6533,6 +6618,63 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn boot_destroy_retries_detached_console_but_requires_destroy_acknowledgement() {
+        use std::os::unix::net::UnixListener;
+        for (console_status, final_destroy, succeeds) in [
+            (CC_OK, CC_OK, true),
+            (CC_ERR_RELAY_FAULT, CC_OK, true),
+            (CC_ERR_RELAY_FAULT, CC_ERR_BAD_HANDLE, false),
+            (CC_ERR_BAD_HANDLE, CC_OK, false),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("cc.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut exchanges = vec![
+                    (MSG_CC_DESTROY_GUEST, CC_ERR_RELAY_FAULT),
+                    (MSG_CC_LOG_STREAM, console_status),
+                ];
+                if console_status != CC_ERR_BAD_HANDLE {
+                    exchanges.push((MSG_CC_DESTROY_GUEST, final_destroy));
+                }
+                for (opcode, status) in exchanges {
+                    let mut request = [0u8; CC_REQ_SIZE];
+                    stream.read_exact(&mut request).unwrap();
+                    assert_eq!(rd32(&request, 0), opcode);
+                    assert_eq!(rd32(&request, 4), 0);
+                    let mut reply = [0u8; CC_REPLY_SIZE];
+                    wr32(&mut reply, 0, status);
+                    stream.write_all(&reply).unwrap();
+                }
+            });
+            let mut cc = CcClient::connect(&socket).unwrap();
+            assert_eq!(destroy_guest_via_cc(&mut cc, 0, None).is_ok(), succeeds);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn ordinary_boot_console_still_rejects_relay_fault() {
+        use std::os::unix::net::UnixListener;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("cc.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; CC_REQ_SIZE];
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(rd32(&request, 0), MSG_CC_LOG_STREAM);
+            let mut reply = [0u8; CC_REPLY_SIZE];
+            wr32(&mut reply, 0, CC_ERR_RELAY_FAULT);
+            stream.write_all(&reply).unwrap();
+        });
+        let mut cc = CcClient::connect(&socket).unwrap();
+        assert!(cc_log_stream_for_handle(&mut cc, 0, None).is_err());
+        server.join().unwrap();
+    }
+
     #[test]
     fn managed_cc_create_preserves_architecture_and_console_rejects_bad_lengths() {
         use std::os::unix::net::UnixListener;
@@ -6652,6 +6794,18 @@ mod tests {
             "agentos-debian login: ci-info: Authorized keys\r\n"
         ));
         assert!(super::x86_has_login_prompt("debian login:"));
+        assert!(super::x86_has_login_prompt(
+            "agentos-debian[  335.085526] cloud-init[494]: running 'modules:final'\r\n login: [  336.226354] cloud-init[494]: finished\r\n"
+        ));
+        for text in [
+            "agentos-debian\n login:",
+            "agentos-debian[cloud-init] finished\n login:",
+            "agentos-debian[  335.085526] incomplete login:",
+            "agentos-debian[  335.x] malformed\n login:",
+            "[  335.085526] cloud-init: finished\n login:",
+        ] {
+            assert!(!super::x86_has_login_prompt(text), "{text:?}");
+        }
         assert!(!super::x86_has_login_prompt(
             "[1.0] service awaiting login:"
         ));
@@ -6708,6 +6862,8 @@ mod tests {
                 true,
             ),
             (b"Debian GNU/Linux 13\r\ndebian log".as_slice(), false),
+            (b"agentos-debian[  335.085526] cloud-init[494]: running\r\n login: ".as_slice(), true),
+            (b"agentos-debian[  335.085526] worker: segfault at 7f1234\r\n login: ".as_slice(), false),
             (
                 b"Kernel panic - not syncing\r\ndebian login: ".as_slice(),
                 false,

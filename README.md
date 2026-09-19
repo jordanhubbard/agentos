@@ -137,6 +137,15 @@ through a separate native serial client. It uses a single serialized stream:
 `inspect.snapshot` returns `ok N` followed by exactly N report bytes. There is
 no interactive shell or mutation command in this protocol.
 
+`tools/agentctl/agentctl --socket PATH log-stream SLOT PD_ID` consumes one
+bounded console chunk and returns reply registers plus `data_hex` in JSON.
+Hex preserves all bytes, including NULs, escape sequences and non-UTF-8 data.
+An empty `data_hex` is a successful read with no available bytes; a failed
+reply exits nonzero and supplies no data. For the boot guest, use `0 0`.
+Save each response before decoding it (for example, with
+`jq -r .data_hex console.json | xxd -r -p > console.bin`), and avoid competing
+with an active qualification harness for the console stream.
+
 The dual-guest demonstration (`make demo`, `make demo-test`) boots Ubuntu and
 FreeBSD concurrently and proves key-only SSH to both. See
 [`docs/demo.md`](docs/demo.md). It downloads two ISOs of about 4 GB each and

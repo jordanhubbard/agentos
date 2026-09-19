@@ -61,7 +61,7 @@ static void usage(FILE *out)
             "  list-devices TYPE [MAX]\n"
             "  device-status TYPE HANDLE\n"
             "  polecats | list-polecats\n"
-            "  log-stream SLOT PD_ID\n"
+            "  log-stream SLOT PD_ID  (one chunk, JSON data_hex preserves bytes)\n"
             "  fb-attach GUEST_HANDLE FB_HANDLE\n"
             "  frame-capture GUEST_HANDLE OUTPUT.ppm\n"
             "  input-batch GUEST_HANDLE keyboard|pointer TYPE CODE VALUE [TYPE CODE VALUE ...]\n"
@@ -443,6 +443,26 @@ static int cmd_simple(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3)
     return r.mr[0] == CC_OK ? 0 : 1;
 }
 
+static int cmd_log_stream(uint32_t slot, uint32_t pd_id)
+{
+    cc_reply_wire_t r;
+    if (!cc_call(MSG_CC_LOG_STREAM, slot, pd_id, 0, NULL, 0, &r)) return 1;
+    if (r.mr[0] != CC_OK) {
+        print_raw_reply(&r);
+        return 1;
+    }
+    if (r.mr[1] > sizeof(r.shmem)) {
+        fprintf(stderr, "agentctl: invalid console reply length: %u\n", r.mr[1]);
+        return 1;
+    }
+    /* Console data is bytes, not necessarily UTF-8 or safe terminal text. */
+    printf("{\"mr\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+           "],\"data_hex\":\"", r.mr[0], r.mr[1], r.mr[2], r.mr[3]);
+    for (uint32_t i = 0; i < r.mr[1]; ++i) printf("%02x", (unsigned)r.shmem[i]);
+    puts("\"}");
+    return ferror(stdout) ? 1 : 0;
+}
+
 static int cmd_input(int argc,char **argv,bool release)
 {
     if (release ? argc!=2 : (argc<5 || (argc-2)%3 ||
@@ -578,9 +598,8 @@ int main(int argc, char **argv)
         return cmd_simple(MSG_CC_LIST_POLECATS, 0, 0, 0);
     }
     if (strcmp(cmd, "log-stream") == 0 && n >= 2) {
-        return cmd_simple(MSG_CC_LOG_STREAM,
-                          parse_u32(args[0], "slot"),
-                          parse_u32(args[1], "pd_id"), 0);
+        return cmd_log_stream(parse_u32(args[0], "slot"),
+                              parse_u32(args[1], "pd_id"));
     }
     if (strcmp(cmd, "fb-attach") == 0 && n >= 2) {
         return cmd_simple(MSG_CC_ATTACH_FRAMEBUFFER,

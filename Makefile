@@ -409,6 +409,8 @@ endif
 # setup/demo: two-command first-run path and one-command repeatable showcase
 # =============================================================================
 .PHONY: sdk-check
+include tools/sdk/candidate.mk
+
 sdk-check:
 	@test -d "$(SEL4_SDK)/board" || \
 		(echo "ERROR: Microkit SDK missing at $(SEL4_SDK); run 'make sdk'." && exit 1)
@@ -839,6 +841,14 @@ test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-pag
 test-host: test-guest-execution-host
 test-host: test-x86-guest-objects-host
 test-host: test-untyped-host
+test-host: test-loader-page-tables-host
+.PHONY: test-loader-page-tables-host
+test-loader-page-tables-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I kernel/loader \
+		tests/platform/test_loader_page_tables.c -o $(BUILD_TMP_DIR)/test_loader_page_tables
+	$(BUILD_TMP_DIR)/test_loader_page_tables
+
 .PHONY: test-untyped-host
 test-untyped-host:
 	@mkdir -p $(BUILD_TMP_DIR)
@@ -1237,7 +1247,7 @@ test-x86-acpi-aml: test-x86-acpi-host test-x86-acpi-loader-host
 	@rg -q '\[Integer\] = 0000000000000010' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '\[Integer\] = 000000000000001F' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '"ACPI0007"' $(BUILD_TMP_DIR)/x86-cpus-eval.log
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-ramfb-host test-display-host
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-agentctl-console-host test-ramfb-host test-display-host
 
 .PHONY: test-display-host
 .PHONY: test-display-init
@@ -1305,6 +1315,12 @@ guest-frame-pattern:
 host-frame-pattern:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -O2 -std=c11 -Wall -Wextra -Werror tests/guest/frame_pattern.c -o $(BUILD_TMP_DIR)/host-frame-pattern
+
+.PHONY: test-agentctl-console-host
+test-agentctl-console-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_console
+	$(BUILD_TMP_DIR)/test_agentctl_console
 
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
@@ -1605,6 +1621,16 @@ test-debian-nocloud-graphics: QEMU_TEST_SSH_PORT = 12223
 test-debian-nocloud-graphics:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
 		--seed-profile --assert-agentos-virtio --assert-guest-display \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+# Retain the same pinned, seeded graphics guest for external binary-IPC clients.
+.PHONY: demo-debian-nocloud-graphics
+demo-debian-nocloud-graphics: QEMU_TEST_TIMEOUT = 1800
+demo-debian-nocloud-graphics: QEMU_TEST_SSH_PORT = 12223
+demo-debian-nocloud-graphics:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
+		--seed-profile --assert-agentos-virtio --assert-guest-display --keep-running \
+		$(if $(filter 1,$(QEMU_RETAIN_FAILED)),--retain-failed-guest,) \
 		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 test-debian-nocloud-auto: QEMU_TEST_TIMEOUT = 1200

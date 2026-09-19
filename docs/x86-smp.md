@@ -7,9 +7,13 @@ between bounded VM entries; this is virtual SMP, not a claim of simultaneous
 execution on two host cores.
 
 Run the qualification on an Intel Linux host with working nested VMX:
+build the approved [isolated CR2 candidate](x86-cr2-candidate.md) first.
+The unmodified 2.3.0 SDK has not passed this SMP gate.
 
 ```sh
-make gate-x86_64-smp SEL4_SDK_VERSION=2.3.0 \
+make gate-x86_64-smp \
+  SEL4_SDK=/path/to/microkit-sdk-2.3.1-agentos-e60776ac-cr2 \
+  SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 \
   X86_ROOT_DISK=/path/to/disposable-seeded-debian.raw \
   X86_SSH_KEY=/path/to/guest-identity \
   X86_SSH_PORT=12224 \
@@ -53,6 +57,12 @@ that earlier disk also failed, with a userspace instruction-fetch fault on
 CPU 0. The fault is not confined to CPU 1 and reproduces on the baseline
 disk. The failure's cause remains unconfirmed.
 
-Native workload acceptance is pending;
-the first two-CPU bring-up exposed the private CMOS warm-start marker, which
+The approved CR2 candidate passed the strict gate in both managed generations
+at `de1458c` on 2026-09-19. The [Intel receipt](evidence/2026-09-19-spark/cr2-intel-smp.json)
+binds the SDK, root task, workload, console and lifecycle evidence. This is
+acceptance of that candidate run, not default SDK adoption or release
+qualification. Earlier unmodified-kernel failures remain valid observations;
+their cause is not established by this pass.
+
+The first two-CPU bring-up exposed the private CMOS warm-start marker, which
 is now emulated.

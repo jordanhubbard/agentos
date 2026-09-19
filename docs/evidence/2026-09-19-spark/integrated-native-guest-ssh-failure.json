@@ -1,0 +1,20 @@
+{
+  "schema": "agentos.integrated-native-guest-qualification.v1",
+  "date_utc": "2026-09-19",
+  "revision": "d39254dd2e5d4ab0d5a5b8effbedd6ba96ace33c",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "cc_budget_us": 1000,
+  "cc_period_us": 10000,
+  "command": "make demo-debian-nocloud-graphics QEMU_TEST_SSH_PORT=12284 QEMU_TEST_TIMEOUT=1800",
+  "make_exit_code": 2,
+  "status": "failed before native GUI attachment",
+  "passed": ["pinned SSH readiness", "graphics setup", "exact guest frame pixels", "all 786432 QEMU scanout pixels match primary framebuffer"],
+  "failure": "SSH input probe exited255 before AGENTOS_INPUT_READY; stderr reported Connection to 127.0.0.1 port12284 timed out",
+  "image_sha256": "46d80edde5227fe407a176d067528aefc87a3b76071f152eb8d1283e9951f9d5",
+  "log_sha256": "4f0e618649c777cdfcb6faba3d82768533ea10d022e694e6043dd31476730a91",
+  "archive": "native-guest-input-ssh-failure.tar.gz",
+  "archive_sha256": "372829b5d19c142f64435c83e1248e3ee77114b56c9bc32a860d5b8b6cb54ef4",
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
+  "interpretation": "A fresh run with the longer cadence also lost SSH responsiveness after graphics capture. Prior passing controls remain revision-specific evidence, not network stability or release acceptance. The harness stopped QEMU on failure; native GUI was not launched",
+  "next_diagnostic": "Opt-in QEMU_RETAIN_FAILED=1 retains a failed guest for interactive inspection while preserving its failed result and nonzero exit; no deadline or assertion is relaxed"
+}

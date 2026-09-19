@@ -1,0 +1,43 @@
+{
+  "schema": "agentos.intel-smp-qualification.v1",
+  "date_utc": "2026-09-19",
+  "revision": "de1458c244258202aaaa63cd890b1c526202b7e5",
+  "host": "madmax, Intel i9-14900KF, nested VMX and KVM",
+  "target": "make gate-x86_64-smp",
+  "profile": "debian-amd64-2cpu.toml",
+  "timeout_seconds_per_boot": 600,
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "kernel_sha256": "0f5e9cf9ed7672fb745371b5f2aa0b20df1a49f24e707b88161c9ee4aefc2f9d",
+  "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "root_task_sha256": "2a79653404ef023a3d42f73fd6edc41a8706e694b8ef430260ef4924620027bc",
+  "workload_sha256": "be6e590210f21003fe68b3f67a19e434f0b8c872a7dad13f58cb76b84496487a",
+  "initial_disk_sha256": "fdcdd0dc1a4384cc01d3bfce4a7dd232de4001d01380e06b58b728f24c1daaf3",
+  "host_key_fingerprint": "SHA256:untR35+L8Sv+bCtNSxWc6F+CVEz15HXTNOdI165BsC8",
+  "exit_code": 0,
+  "generations": [
+    {
+      "handle": 1,
+      "ssh": "Pinned Ed25519 public-key authentication, x86_64 architecture, sync",
+      "workload": "PASS: online=0-1 affinity=0,1 overlapping x87/SSE workers",
+      "console_sha256": "b6ed8b45a8673381a40a1c685bf2bd744c738d50d48329fc6bb651ea3a6e75ec",
+      "input_transcript_sha256": "8d2e54057c0fff81bf7cea6c161b731b48895032f61c56a41e3e0f182a64e47a"
+    },
+    {
+      "handle": 2,
+      "ssh": "Pinned Ed25519 public-key authentication, x86_64 architecture, sync",
+      "workload": "PASS: online=0-1 affinity=0,1 overlapping x87/SSE workers",
+      "console_sha256": "6a896964b3f56dadeab902a40d0ac86c4750ebbf691f35ee5c90fe55281bf383",
+      "input_transcript_sha256": "77fe29ef869737d3c4fec8626fa1a1efd42d3b53380749a1ab3b8fdc0c60c9d2"
+    }
+  ],
+  "lifecycle": "CREATE, exact input echo, normal DESTROY, stale status/suspend/resume/console handle rejection, distinct recreated handle; both generations passed",
+  "log_sha256": "fd453588d232069d934de083ffd1df9b2dc143cc5d71abc000b9dd64d4db5d9b",
+  "artifact": "/home/jkh/.local/share/agentos-evidence/2026-09-19-cr2-candidate/intel-smp-pass.tar.gz",
+  "artifact_sha256": "e182131ba8f9278156ae1266aa58f631c6eb803b76b34cbc226b7b5fc03e12c0",
+  "limitations": [
+    "Virtual SMP serializes bounded VM entries; no simultaneous host-core execution claim",
+    "Journald replaced an unclean user journal in both generations; this does not establish orderly guest reboot or storage durability",
+    "This candidate pass does not establish causation for previous unmodified-kernel failures",
+    "Patched managed single-CPU regression, final integrated revision acceptance and required review/CI remain separate"
+  ]
+}
