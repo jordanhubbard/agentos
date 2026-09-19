@@ -1,0 +1,27 @@
+{
+  "status": "passed Intel cold-boot storage and focused guest-fault qualification",
+  "source_revision": "cd9efb957fa3ce632cb5dc2c49c1ff082a5a580a",
+  "host": "madmax Intel Linux with nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "guest_faults": {
+    "command": "make gate-x86_64-guest-faults",
+    "result": "PASS: VMX/EPT entry, guest GP read/write handlers and IRET recovery",
+    "log_sha256": "8859f3d2305c65f3cc3ec29e194956099d6cc337959bc92282d0b080a0b83be5",
+    "log_scope": "Also retains the subsequent storage invocation failure caused by omitted X86_BOOT_KERNEL; that combined command exited 2 before the storage guest booted."
+  },
+  "storage": {
+    "command": "make gate-x86_64-storage QEMU_TEST_TIMEOUT=1800 with the pinned firmware and kernel; exact launcher archived",
+    "make_exit": 0,
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "kernel_sha256": "0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+    "proof": "First Linux userspace boot checked a pristine block, wrote 4096 bytes and required fsync success. A fresh platform boot verified the persisted block with read-only media. Host compared all 32 MiB against expected bytes after each phase.",
+    "disk_sha256": "e5617c82288dc536b1b6d18642aa98b33546a26d53dd01626da22b8f6976865f",
+    "write_image_sha256": "0c23a0f074847bf90e9d01078ca1cc18725f56bf352853a3da51738f6c9eaa22",
+    "verify_image_sha256": "161950a11ad0518fb95429c337ecf1cdd4e6463795c8fdbb52c6d985f50bf9c0",
+    "log_sha256": "47eb3fddc97c3b155cf879d67c07dfae57080fe963035e5c079f59deb07610ab"
+  },
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-storage-cd9efb9.tar.gz",
+  "archive_sha256": "b317ba1dfd5df478998a16f2a47d214cff7db663df142be228c3d6198f84197f",
+  "archive_contents": "Logs, launchers, exit receipts, both storage boot images and root tasks, and the detailed storage receipt. No guest disks or private identities.",
+  "limits": "One minimal Linux guest across full platform cold boots. Not Debian acceptance, concurrent disk isolation, live snapshots, physical power-loss durability, comprehensive capability isolation or final v0.4 release qualification. Retained pre-existing VMs and disks were untouched."
+}
