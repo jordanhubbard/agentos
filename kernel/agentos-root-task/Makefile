@@ -1136,9 +1136,11 @@ $(BUILD_DIR)/display_ramfb.elf: $(BUILD_DIR)/ramfb_pd.o $(BUILD_DIR)/ramfb.o $(B
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/input_service.o: $(REPO_ROOT)/platform/input-virt/service.c
 	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/input_rebind_service.o: $(REPO_ROOT)/platform/input-virt/rebind_service.c
+	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/input_virt.o: $(REPO_ROOT)/platform/input-virt/input_virt.c $(GUEST_CONFIG_STAMP)
 	$(CC) $(CFLAGS) -c $< -o $@
-$(BUILD_DIR)/input_virt.elf: $(BUILD_DIR)/input_virt.o $(BUILD_DIR)/input_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+$(BUILD_DIR)/input_virt.elf: $(BUILD_DIR)/input_virt.o $(BUILD_DIR)/input_service.o $(BUILD_DIR)/input_rebind_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/framebuffer_queue.o: $(REPO_ROOT)/platform/framebuffer/framebuffer_pd.c
 	$(CC) $(CFLAGS) -c $< -o $@

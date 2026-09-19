@@ -2942,6 +2942,9 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 #endif
         seL4_CPtr pd_ntfn_cap = g_pd_notifications[i];
+#ifdef AGENTOS_GUEST_INPUT
+        if (i == input_service) pd_ntfn_cap = g_input_notify[0];
+#endif
         if (pd->self_svc_id == SVC_ID_CC_PD && pd->irq_count > 0u) {
             if (pd_ntfn_cap == seL4_CapNull ||
                 seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_CC_IRQ_WAIT,
@@ -2966,6 +2969,16 @@ void root_task_main(const seL4_BootInfo *bi)
             if (i==input_clients[f]) input_own=f;
         if (input_own<=INPUT_PEERS) {
             seL4_Error err=seL4_NoError;
+            if (input_own<AOS_INPUT_CLIENTS) {
+                seL4_CPtr input_ep=ep_alloc_for_service(SVC_ID_INPUT_VIRT);
+                if (input_ep==seL4_CapNull ||
+                    seL4_CNode_Mint(pd_cnode,PD_CNODE_SLOT_INPUT_VIRT_EP,
+                        pd->cnode_size_bits,seL4_CapInitThreadCNode,input_ep,64u,
+                        seL4_CapRights_new(1,1,0,1),virt_client_badge(input_own))!=seL4_NoError) {
+                    dbg_puts("[rt] input rebind endpoint grant failed; refusing boot\n");
+                    return;
+                }
+            }
             if (input_own>=AOS_INPUT_CLIENTS)
                 err=seL4_CNode_Copy(pd_cnode,PD_CNODE_SLOT_INPUT_WAIT,pd->cnode_size_bits,
                     seL4_CapInitThreadCNode,g_input_notify[input_own==INPUT_PEERS ? 0 : 1],
@@ -3188,7 +3201,8 @@ void root_task_main(const seL4_BootInfo *bi)
 
         if (pd->self_svc_id == SVC_ID_SERIAL_VIRT ||
             pd->self_svc_id == SVC_ID_NET_VIRT ||
-            pd->self_svc_id == SVC_ID_BLK_VIRT) {
+            pd->self_svc_id == SVC_ID_BLK_VIRT ||
+            pd->self_svc_id == SVC_ID_INPUT_VIRT) {
             if (pd->cnode_size_bits != AOS_QUEUE_SERVICE_CNODE_BITS ||
                 seL4_CNode_Copy(pd_cnode, AOS_QUEUE_SERVICE_CNODE, pd->cnode_size_bits,
                     seL4_CapInitThreadCNode, pd_cnode, 64u, seL4_AllRights) != seL4_NoError ||

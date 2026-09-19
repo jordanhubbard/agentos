@@ -301,6 +301,10 @@ _Static_assert(PD_CNODE_SLOT_CC_IRQ_WAIT > PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY &&
                "CC IRQ wait slot must not overlap device peer or handler slots");
 #define PD_CNODE_SLOT_NET_PRIMARY_NOTIFY 43u
 #define PD_CNODE_SLOT_NET_SECONDARY_NOTIFY 44u
+#define PD_CNODE_SLOT_INPUT_VIRT_EP 45u
+_Static_assert(PD_CNODE_SLOT_INPUT_VIRT_EP > PD_CNODE_SLOT_NET_SECONDARY_NOTIFY &&
+               PD_CNODE_SLOT_INPUT_VIRT_EP < PD_IRQHANDLER_SLOT_BASE,
+               "input rebind endpoint must not overlap notifications or IRQ slots");
 _Static_assert(PD_CNODE_SLOT_NET_PRIMARY_NOTIFY > PD_CNODE_SLOT_CC_IRQ_WAIT &&
                PD_CNODE_SLOT_NET_SECONDARY_NOTIFY < PD_IRQHANDLER_SLOT_BASE,
                "network notification slots must not overlap input, display or IRQ slots");
