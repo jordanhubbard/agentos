@@ -48,8 +48,10 @@ dynamic loader during first-generation boot. The workload was not reached.
 The [failure receipt](evidence/2026-09-18-spark/x86-smp-failure.json) records
 the executable image and console hashes. Loader, libc and systemd-generator
 files match the earlier seeded disk; this does not establish runtime memory
-correctness. A journal-recovered copy of that earlier disk is the next
-controlled qualification input. The failure's cause remains unconfirmed.
+correctness. Repeating the same revision with a journal-recovered copy of
+that earlier disk also failed, with a userspace instruction-fetch fault on
+CPU 0. The fault is not confined to CPU 1 and reproduces on the baseline
+disk. The failure's cause remains unconfirmed.
 
 Native workload acceptance is pending;
 the first two-CPU bring-up exposed the private CMOS warm-start marker, which

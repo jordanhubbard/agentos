@@ -26,7 +26,14 @@
     "disk": "/var/tmp/agentos-smp-qualification/clean-4a7c8b0.raw",
     "preboot_sha256": "057ce18a65b41964fa4eb3cf94f0e8f5b57d1cc8c07344b79f5274d50c40f9c2",
     "preparation": "Copy earlier boot-19.raw, recover journal with e2fsck -p, then e2fsck -fn exits 0.",
-    "purpose": "Separate reused disk state from recurring SMP runtime failure; result not yet available."
+    "purpose": "Separate reused disk state from recurring SMP runtime failure.",
+    "exit_code": 2,
+    "result": "First-generation boot rejected a userspace instruction-fetch fault in libc on CPU 0 at guest timestamp 233.056509. Workload not reached. The recurring fault is not confined to CPU 1 and reproduces on the journal-recovered baseline disk.",
+    "artifact_archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-smp-crash/intel-clean-failure.tar",
+    "artifact_archive_sha256": "a59bd75b8ffab512164cd46da00c1471c87804f9d48012f4a835cc5ace256453",
+    "gate_log_sha256": "9f666f746d5e46b01a5d7d564d341a5f8fddacd5aa828d5037edd061a96b93f0",
+    "qemu_pid": 1299389,
+    "qemu_gone_after_completion": true
   },
   "conclusion": "SMP remains unqualified. No confirmed root cause; file identity does not prove memory, CPU or I/O correctness."
 }
