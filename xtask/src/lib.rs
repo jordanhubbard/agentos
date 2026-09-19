@@ -37,6 +37,9 @@ pub use guest_scenario::GuestScenarioArgs;
 
 #[derive(Clone, clap::Args)]
 pub struct TestArgs {
+    /// Select a data-defined scenario for --guest-os both.
+    #[arg(long)]
+    pub scenario: Option<String>,
     /// Recreate the deferred scenario guest while its peer remains running.
     #[arg(long, conflicts_with_all = ["keep_running", "seed_profile", "assert_seeded_recreation"])]
     pub assert_scenario_recreation: bool,

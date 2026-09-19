@@ -598,11 +598,15 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     let initial_agentos_revision = agentos_revision(&repo_root)?;
     let timing_source_tree_clean = agentos_worktree_clean(&repo_root)?;
     let profile_root = repo_root.join("guest-profiles");
+    anyhow::ensure!(
+        args.scenario.is_none() || args.guest_os == "both",
+        "a test scenario requires --guest-os both"
+    );
     let scenario_plan = if args.guest_os == "both" {
         Some(guest_scenario::resolve_alias(
             &repo_root.join("guest-scenarios"),
             &profile_root,
-            &args.guest_os,
+            args.scenario.as_deref().unwrap_or(&args.guest_os),
         )?)
     } else {
         None
@@ -761,7 +765,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             make_args.push(String::from("BOARD_NAME=qemu-x86_64-vtx"));
         }
         if scenario_plan.is_some() {
-            make_args.push(format!("GUEST_SCENARIO={}", args.guest_os));
+            make_args.push(format!(
+                "GUEST_SCENARIO={}",
+                args.scenario.as_deref().unwrap_or(&args.guest_os)
+            ));
         } else if let Some(profile) = &profile_plan {
             make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
         }
