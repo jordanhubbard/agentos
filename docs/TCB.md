@@ -41,6 +41,14 @@ matching ACPI and CPUID identities and I/O APIC ID 15. The new scheduling path
 still requires Intel multi-CPU qualification; profile admission is not proof
 of Linux SMP or workload isolation.
 
+The first two-CPU Debian attempt at `073f890` reached Linux AP startup and
+failed on CMOS shutdown-status write `0x0a` to index `0x0f`. The config model
+now retains cold/warm CPU-start values zero and `0x0a` in guest-private state,
+reset to zero on reconstruction. Other shutdown codes remain rejected.
+This matches Linux's warm-reset marker around INIT/SIPI and does not grant
+host RTC, reset, persistent CMOS or sleep authority. Native continuation
+past this point still requires qualification.
+
 The x86 ACPI bundle builder now derives MADT/SSDT lengths, root-table
 relocations and fw_cfg file sizes from an explicitly supplied topology.
 The firmware CPU-count fields use that same bundle. CPUID now has a bounded

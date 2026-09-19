@@ -290,6 +290,26 @@ int main(void)
     io(&a, 0x70, 1, true, 0xf); assert(io(&a, 0x71, 1, false, 0) == 0);
     io(&a, 0x71, 1, true, 0);
     reject(&a, 0x71, 1, true);
+    io(&a,0x71,1,true,0x100a);
+    assert(io(&a,0x71,1,false,0)==0x0a);
+    for (unsigned status=0;status<256;status++) {
+        if (status==0 || status==0x0a) continue;
+        aos_x86_config_t saved=a;
+        uint32_t v=status;
+        assert(!aos_x86_config_io(&a,0x71,1,true,&v,0));
+        assert(v==status && !memcmp(&a,&saved,sizeof(a)));
+    }
+    reject(&a,0x71,2,true); reject(&a,0x71,2,false);
+    io(&a,0x71,1,true,0);
+    assert(io(&a,0x71,1,false,0)==0);
+    aos_x86_config_t cold;
+    assert(aos_x86_config_init(&cold,32u*1024u*1024u));
+    io(&cold,0x70,1,true,0xf);
+    io(&a,0x71,1,true,0x0a);
+    assert(io(&cold,0x71,1,false,0)==0); /* no cross-guest CMOS state */
+    assert(aos_x86_config_init(&a,32u*1024u*1024u));
+    io(&a,0x70,1,true,0xf);
+    assert(io(&a,0x71,1,false,0)==0); /* reconstruction starts cold */
     io(&a,0x70,1,true,0xa); io(&a,0x71,1,true,0x26);
     assert((io(&a,0x71,1,false,0)&0x7f)==0x26);
     io(&a,0x70,1,true,1); assert(io(&a,0x71,1,false,0)==0);

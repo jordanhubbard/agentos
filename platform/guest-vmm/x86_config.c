@@ -274,14 +274,22 @@ bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
         else *value=0xffu;
         return true;
     }
-    if (port == 0x71u && width == 1u && write && s->cmos_index == 0x0fu)
-        return (*value & 0xffu) == 0; /* acknowledge cold boot; no S3 resume */
+    if (port == 0x71u && width == 1u && s->cmos_index == 0x0fu) {
+        /* Linux brackets AP startup with warm-reset marker 0x0a and zero.
+         * This is guest-private scratch state. CPU execution starts only via
+         * INIT/SIPI; no host reset, persistent CMOS or sleep state is invoked. */
+        if (write) {
+            uint8_t status=(uint8_t)*value;
+            if (status!=0u && status!=0x0au) return false;
+            s->cmos_shutdown=status;
+        } else *value=s->cmos_shutdown;
+        return true;
+    }
     if (port == 0x71u && width == 1u && (s->cmos_index<=0x0du || s->cmos_index==0x32u))
         return aos_x86_rtc_io(&s->rtc,s->cmos_index,write,value,timer_ticks);
     if (port == 0x71u && width == 1u && !write) {
         uint32_t above16 = (s->ram_bytes - 0x1000000u) >> 16;
-        if (s->cmos_index == 0x0fu) *value = 0; /* cold boot; no S3 resume state */
-        else if (s->cmos_index == 0x34u) *value = above16 & 0xffu;
+        if (s->cmos_index == 0x34u) *value = above16 & 0xffu;
         else if (s->cmos_index == 0x35u) *value = above16 >> 8;
         else if (s->cmos_index >= 0x5bu && s->cmos_index <= 0x5du) *value = 0;
         else return false; /* no pretend RTC clock */
