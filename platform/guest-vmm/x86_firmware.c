@@ -683,6 +683,88 @@ static bool recreated_console_device_proof(uint32_t generation)
     return virtio_gpa_to_hva(0u, 1u) == NULL;
 }
 
+static seL4_VCPUContext save_registers(const aos_x86_vmenter_return_t *returned);
+
+/* Scratch-RAM qualification after teardown, before releasing the new pools.
+ * Both CPUs retain distinct GPR/x87/SSE values across a native runner switch.
+ * This isolates architectural context handling from Linux and its disk. */
+static bool reconstructed_cpu_context_proof(seL4_CPtr ep)
+{
+    const unsigned previous=selected_cpu;
+    seL4_VCPUContext expected[2];
+    for (unsigned cpu=0;cpu<2u;cpu++) {
+        teardown_proof_stage=1100u+cpu;
+        if (!firmware_select(cpu)) return false;
+        firmware_retire(cpu);
+        const seL4_CPtr tcb=cpu ? AOS_X86_AP_RUNNER_TCB_CAP : AOS_X86_VMM_SELF_TCB_CAP;
+        seL4_Word failed=0;
+        if (aos_x86_guest_vcpu_bind(VCPU,tcb)!=seL4_NoError ||
+            aos_x86_firmware_startup_cpu(VCPU,8u+cpu,&firmware_cpu()->entry,&failed)
+                !=seL4_NoError) return false;
+        /* 16-bit absolute operands address each CPU's own scratch data.
+         * fninit; fildl input; movdqu input,xmm0; hlt;
+         * movdqu xmm0,output; fistpl output; hlt. No GPR is consumed. */
+        uint8_t page=(uint8_t)(0x81u+cpu*0x10u);
+        const uint8_t code[]={0xdb,0xe3,0xdb,0x06,0x00,page,
+            0xf3,0x0f,0x6f,0x06,0x10,page,0xf4,
+            0xf3,0x0f,0x7f,0x06,0x20,page,0xdb,0x1e,0x30,page,0xf4};
+        volatile uint8_t *ram=(volatile uint8_t *)AOS_X86_FIRMWARE_RAM_VA;
+        for (unsigned i=0;i<sizeof(code);i++) ram[(8u+cpu)*4096u+i]=code[i];
+        volatile uint32_t *integer=(volatile uint32_t *)(ram+((unsigned)page<<8));
+        *integer=cpu ? 39u : 17u;
+        for (unsigned i=0;i<16u;i++) {
+            ram[((unsigned)page<<8)+0x10u+i]=(uint8_t)(0x31u+cpu*0x40u+i);
+            ram[((unsigned)page<<8)+0x20u+i]=0;
+        }
+        *(volatile uint32_t *)(ram+((unsigned)page<<8)+0x30u)=0;
+        _Static_assert(sizeof(seL4_VCPUContext)==15u*sizeof(seL4_Word),"GPR proof ABI");
+        const seL4_Word base=UINT64_C(0x1234000000000000)+(cpu<<16);
+        expected[cpu]=(seL4_VCPUContext){.eax=base,.ebx=base+1u,.ecx=base+2u,
+            .edx=base+3u,.esi=base+4u,.edi=base+5u,.ebp=base+6u,.r8=base+7u,
+            .r9=base+8u,.r10=base+9u,.r11=base+10u,.r12=base+11u,
+            .r13=base+12u,.r14=base+13u,.r15=base+14u};
+        if (seL4_X86_VCPU_WriteRegisters(VCPU,&expected[cpu])!=seL4_NoError)
+            return false;
+        write_field(ep,CR4,read_field(ep,CR4)|(1u<<9)); /* OSFXSR for movdqu */
+    }
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    for (unsigned phase=0;phase<2u;phase++) {
+        for (unsigned cpu=0;cpu<2u;cpu++) {
+            teardown_proof_stage=1200u+phase*100u+cpu*10u;
+            if (!firmware_select(cpu)) return false;
+            aos_x86_vmenter_return_t returned={0};
+            bool halted=false;
+            for (unsigned attempt=0;attempt<64u;attempt++) {
+                returned=firmware_run_cpu(ep);
+                if (returned.result!=SEL4_VMENTER_RESULT_FAULT || returned.badge)
+                    return false;
+                if (returned.words[SEL4_VMENTER_FAULT_REASON_MR]==12u) {
+                    halted=true;
+                    break;
+                }
+                if (returned.words[SEL4_VMENTER_FAULT_REASON_MR]!=52u) return false;
+                firmware_cpu()->entry.ip=returned.words[SEL4_VMENTER_CALL_EIP_MR];
+            }
+            if (!halted || returned.words[SEL4_VMENTER_CALL_EIP_MR]!=(phase ? 23u : 12u) ||
+                returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR]!=1u) return false;
+            const seL4_VCPUContext observed=save_registers(&returned);
+            teardown_proof_stage++;
+            if (__builtin_memcmp(&observed,&expected[cpu],sizeof(observed))) return false;
+            firmware_cpu()->entry.ip=returned.words[SEL4_VMENTER_CALL_EIP_MR]+1u;
+        }
+    }
+    for (unsigned cpu=0;cpu<2u;cpu++) {
+        teardown_proof_stage=1400u+cpu*10u;
+        const volatile uint8_t *data=(const volatile uint8_t *)
+            (AOS_X86_FIRMWARE_RAM_VA+0x8100u+cpu*0x1000u);
+        if (*(const volatile uint32_t *)(data+0x30u)!=(cpu ? 39u : 17u)) return false;
+        for (unsigned i=0;i<16u;i++)
+            if (data[0x20u+i]!=(uint8_t)(0x31u+cpu*0x40u+i)) return false;
+        firmware_retire(cpu);
+    }
+    return firmware_select(previous);
+}
+
 static bool terminal_teardown_proof(void)
 {
     /* Root is already waiting for the terminal report. A failed report on
@@ -889,6 +971,8 @@ static bool terminal_teardown_proof(void)
             firmware_cpus[1].returned.result!=UINT64_MAX ||
             __builtin_memcmp(&bsp_context,&firmware_cpus[0],sizeof(bsp_context)))
             return false;
+        teardown_proof_stage=158u+pass*100u;
+        if (!reconstructed_cpu_context_proof(block_proof_ep)) return false;
         teardown_proof_stage = 140u + pass * 100u;
         if (!aos_vmm_guest_ram_release(AOS_X86_FIRMWARE_RAM)) return false;
         const seL4_CPtr retired_frames[] = {AOS_GUEST_RAM_FRAME_BASE,
