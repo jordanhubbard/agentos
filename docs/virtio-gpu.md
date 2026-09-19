@@ -83,6 +83,17 @@ respectively. These measurements show a partial throughput improvement;
 170–180 ms p95 region-read delays persist. They do not establish interactive
 desktop, native GUI rendering, or input-response acceptance.
 
+The [CC refill follow-up](evidence/2026-09-19-spark/cc-refill-cadence.json)
+qualifies runtime `3999e6d` with a 100 us CC budget per 1 ms period, retaining
+the 10% CPU ceiling. The full OS gate and Debian graphics qualification passed;
+the harness's complete pixel-checked capture took 3 seconds rather than 12.
+Alternating production-client measurements took 1.58/1.46 seconds for 128
+region reads versus 3.27 seconds on the preceding runtime. Status means fell
+from 20.10 ms to 3.41/3.10 ms, and region-read p95 fell from 173 ms to
+12–14 ms. Occasional 194–216 ms reads remain. This does not yet establish
+interactive frame refresh or input-response acceptance; the retry limits also
+remain iteration counts, not guarantees of identical elapsed recovery time.
+
 `agentctl frame-capture GUEST_HANDLE OUTPUT.ppm` exports one coherent PPM
 image over the existing privileged CC socket and prints JSON metadata. It
 refuses to overwrite an existing file. The guest GPU test retains `.frame.ppm`
