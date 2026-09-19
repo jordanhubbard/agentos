@@ -252,6 +252,13 @@ EPT-backed guest isolation, interrupt virtualization, boot protocol, and
 architecture-specific fault handling while reusing common lifecycle and
 device backends.
 
+The initial VMX/EPT entry-and-exit qualification passed on the Intel Linux
+host `madmax` at commit `2efbe1e`: `make gate-x86_64-vtx` entered the isolated
+HLT guest and checked its exit reason, RIP and instruction length. The
+[retained receipt](evidence/2026-09-16-madmax/vmx-hlt.json) records the host,
+nested-KVM setting and artifact hashes. This resolves access to a usable Intel
+test host; Linux execution and the remaining requirements below are still open.
+
 Acceptance evidence:
 
 - `make gate` remains green for both root-task architectures.
