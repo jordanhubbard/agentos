@@ -804,9 +804,51 @@ static bool terminal_teardown_proof(void)
             if (value.error || (value.value & reset_fields[i].mask) !=
                     reset_fields[i].value) return false;
         }
+        /* A second, distinct VCPU proves that startup writes honor the
+         * selected capability and cannot silently alter the bootstrap CPU.
+         * It is never bound or entered in this register-state qualification. */
+        teardown_proof_stage = 155u + pass * 100u;
+        const seL4_CPtr ap_vcpu=AOS_GUEST_QUEUE_TEST_FRAME;
+        if (seL4_Untyped_Retype(AOS_X86_GUEST_OBJECT_POOL_CAP,seL4_X86_VCPUObject,0u,
+                AOS_GUEST_RAM_SELF_CNODE,0u,0u,ap_vcpu,1u)!=seL4_NoError) return false;
+        const unsigned vectors[]={0u,8u,255u};
+        for (unsigned v=0; v<sizeof(vectors)/sizeof(vectors[0]); v++) {
+            aos_x86_vmenter_entry_t ap_entry={0x11u,0x22u,0x33u};
+            if (aos_x86_firmware_startup_cpu(ap_vcpu,vectors[v],&ap_entry,&failed_field)!=seL4_NoError ||
+                failed_field || ap_entry.ip || ap_entry.controls!=(1u<<7) || ap_entry.interruption_info)
+                return false;
+            const struct { seL4_Word field,value; } ap_fields[]={
+                {0x0802u,(seL4_Word)vectors[v]<<8},
+                {0x6808u,(seL4_Word)vectors[v]<<12},
+                {0x4802u,0xffffu},{0x4816u,0x009bu},{0x2806u,0u},
+                {0x6802u,0u},{0x681cu,0u},{0x4810u,0xffffu},{0x4812u,0xffffu},
+            };
+            for (unsigned i=0; i<sizeof(ap_fields)/sizeof(ap_fields[0]); i++) {
+                seL4_X86_VCPU_ReadVMCS_t value=seL4_X86_VCPU_ReadVMCS(ap_vcpu,ap_fields[i].field);
+                if (value.error || value.value!=ap_fields[i].value) return false;
+            }
+            for (unsigned i=0; i<sizeof(reset_fields)/sizeof(reset_fields[0]); i++) {
+                seL4_X86_VCPU_ReadVMCS_t value=seL4_X86_VCPU_ReadVMCS(VCPU,reset_fields[i].field);
+                if (value.error || (value.value & reset_fields[i].mask)!=reset_fields[i].value)
+                    return false;
+            }
+        }
+        aos_x86_vmenter_entry_t refused_entry={0x11u,0x22u,0x33u};
+        failed_field=0x123u;
+        if (aos_x86_firmware_startup_cpu(ap_vcpu,256u,&refused_entry,&failed_field)!=seL4_InvalidArgument ||
+            refused_entry.ip!=0x11u || refused_entry.controls!=0x22u ||
+            refused_entry.interruption_info!=0x33u || failed_field!=0x123u) return false;
+        seL4_X86_VCPU_ReadVMCS_t last_base=seL4_X86_VCPU_ReadVMCS(ap_vcpu,0x6808u);
+        if (last_base.error || last_base.value!=0xff000u) return false;
         if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
                 AOS_X86_GUEST_OBJECT_POOL_CAP, AOS_GUEST_RAM_CNODE_BITS)
                 != seL4_NoError) return false;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,AOS_GUEST_QUEUE_TEST_COPY,
+                AOS_GUEST_RAM_CNODE_BITS,AOS_GUEST_RAM_SELF_CNODE,ap_vcpu,
+                AOS_GUEST_RAM_CNODE_BITS,seL4_AllRights)!=seL4_FailedLookup) return false;
+        if (aos_x86_firmware_startup_cpu(ap_vcpu,8u,&refused_entry,&failed_field)==seL4_NoError ||
+            failed_field!=0x0800u || refused_entry.ip!=0x11u || refused_entry.controls!=0x22u ||
+            refused_entry.interruption_info!=0x33u) return false;
         for (unsigned i = 0; i < 2u; i++) {
             if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_COPY,
                     AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_SELF_CNODE,

@@ -58,6 +58,15 @@ runnable. This helper is host-tested but not yet connected to firmware ICR
 handling. INIT/reset behavior follows Intel SDM Volume 3A sections 10.4 and
 12.4.7; no runtime CPU creation or multi-CPU execution is established here.
 
+Firmware reset and SIPI setup now accept an explicit admitted VCPU capability.
+SIPI setup requires a fresh, stopped VCPU, installs its real-mode startup page
+and publishes entry inputs only after checked VMCS writes succeed. The Intel
+teardown qualification additionally allocates a separate second VCPU from
+the private execution pool, checks startup vectors 0, 8 and 255, checks that
+bootstrap state is unchanged, rejects vector 256, and verifies revocation.
+This additional vCPU is not bound or entered by that test. Native qualification
+of these new checks is pending; normal guest admission remains one CPU.
+
 The x86 firmware profile binder enforces CPU-feature requests against the
 synthetic CPUID model before VM entry. Its fixed baseline exposes x87 (FP)
 and SSE/SSE2 (SIMD); crypto (AES/PCLMUL), RNG (RDRAND/RDSEED), AVX-family
