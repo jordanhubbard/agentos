@@ -1,0 +1,37 @@
+{
+  "schema": "agentos.input_qualification_attempt.v1",
+  "runtime_revision": "55fd91ecb3127cf709c597da9160f526fe07038d",
+  "host": "sparky Linux aarch64",
+  "source_tree_clean": true,
+  "host_suite": {
+    "command": "make test-host",
+    "exit_code": 0,
+    "log_sha256": "5ef6f125f4730e4dbf153bd42ed704fdde6dac466a6cff1d5e4ac3d43088c004"
+  },
+  "os_gate": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12268",
+    "exit_code": 0,
+    "log_sha256": "280c0a7731cff03c30b43890074b0c7fbbe696017f496ec54d887e17132808f3"
+  },
+  "input_attempt": {
+    "command": "make test-guest-input SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12268 QEMU_TEST_TIMEOUT=1800",
+    "exit_code": 2,
+    "log_sha256": "aff28d073c012ddb4a0aa9f7878e192a211a5c5e0a08bae744e81d61f042a1a1",
+    "guest_helper_sha256": "0d7766ef52797a0aa024e74099d2402f9b6237b4c5cb1325bfe886248bd78ee2",
+    "failure": "input probe output ended early: failed to fill whole buffer",
+    "stage": "first explicit-events probe, before AGENTOS_INPUT_READY and before event injection",
+    "probe_stderr": "empty",
+    "ssh_process_exit_status": "not retained by the original diagnostic",
+    "boot_diagnostics": [
+      "systemd-udevd.service startup failed",
+      "systemd-networkd.service startup failed",
+      "networkd persistent-storage dependency failed"
+    ],
+    "later_progress": "Reached shell, passed input enumeration, completed console provisioning and authenticated SSH; uploaded checker before launch failure",
+    "qemu_pid": 135683,
+    "qemu_stopped": true
+  },
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-input-backpressure/55fd91e-first-run.tar.gz",
+  "archive_sha256": "de1a7d0fdc9448f9394f3bdd638db0496a0ad64f582727ee6fc50847ab44ffe4",
+  "conclusion": "No target input pass completed. This result neither qualifies nor diagnoses retained release under backpressure; the checker launch failure requires further evidence."
+}

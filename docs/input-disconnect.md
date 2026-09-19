@@ -25,11 +25,20 @@ exposes it as `agentctl input-release GUEST_HANDLE keyboard|pointer`. Its
 zero accepted-event count acknowledges retained work, not completion in the
 guest. Existing GUI version-1 requests remain unchanged.
 
-`make test-guest-input QEMU_TEST_TIMEOUT=1800` runs the evdev checker twice:
+`make test-guest-input QEMU_TEST_TIMEOUT=1800` runs the evdev checker three times:
 first with explicit release events, then with zero-event server release
 requests. Both passes require identical key, button, motion and SYN packets.
 Separate `.input.json` and `.input-release.json` receipts distinguish the two
-proofs. This does not simulate a lost connection.
+proofs. The third pass suspends the guest and fills both device paths until
+the CLI returns validated WOULD_BLOCK responses, first for full batches and
+then for a single press plus SYN. Duplicate presses occupy transport queues
+but Linux filters them to one down event, avoiding an evdev-buffer overflow
+when the guest resumes. Each device accepts repeated release requests while
+full and rejects new input. After resume, the checker requires exactly one
+down/SYN and one up/SYN for each device, with no extra events. The
+`.input-backpressure.json` receipt records accepted batches and actual guest
+events. A timeout or malformed reply cannot count as backpressure. This does
+not simulate a lost connection; target results must be recorded separately.
 
 `make test-input-host` checks exact release events, unchanged queues under
 backpressure, keyboard/pointer isolation, repeats, and all 255 supported keys
@@ -109,3 +118,13 @@ The verifier-runtime repair is tracked by
 `task_c66efe1c0eb44ee5926250ebcd38e5e3`; declaring prerequisites does not install
 them or turn that rejected review into a pass. Policy and profile checks remain
 part of the unchanged `make test-host` contract.
+
+The first three-pass attempt at `55fd91e` passed the host suite and full OS
+gate, but the explicit-events checker ended its output before its READY
+marker. No input was injected. Debian had reported udev and network-service
+startup failures before eventually reaching the shell and authenticated SSH.
+The checker stderr was empty, and its SSH process exit status was not retained.
+The [failed-attempt receipt](evidence/2026-09-19-spark/input-backpressure-first-run.json)
+preserves the logs and limits. The harness now includes phase, SSH process
+status and bounded stderr in such failures; no cause or target backpressure
+pass is inferred from this attempt.
