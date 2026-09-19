@@ -26,8 +26,10 @@ typedef struct aos_guest_vmm_runtime {
     void (*quiesce_timer)(void);
     /*
      * Release every per-guest execution resource after a successful suspend.
-     * A failed teardown leaves the guest suspended so it cannot be reported
-     * as either runnable or dead. NULL is a successful no-op for existing
+     * The runtime enters DESTROYING before calling this callback. Failure
+     * retains that non-resumable state; retries must safely continue partial
+     * cleanup. Guest mappings must remain valid until all device work that
+     * can access them is drained. NULL is a successful no-op for existing
      * terminal-only VMMs that have no resources to release here.
      */
     bool (*teardown)(void);

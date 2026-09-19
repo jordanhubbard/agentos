@@ -15,6 +15,8 @@ static unsigned resumes;
 static unsigned timer_quiesces;
 static unsigned teardowns;
 static unsigned resets;
+static unsigned console_drains;
+static bool teardown_state_valid = true;
 static bool suspend_fails;
 static bool resume_fails;
 static bool teardown_fails;
@@ -33,7 +35,12 @@ static bool start_guest(void)
 static bool suspend_guest(void) { suspends++; return !suspend_fails; }
 static bool resume_guest(void) { resumes++; return !resume_fails; }
 static void quiesce_timer(void) { timer_quiesces++; }
-static bool teardown_guest(void) { teardowns++; return !teardown_fails; }
+static bool teardown_guest(void)
+{
+    teardowns++;
+    teardown_state_valid &= state == GUEST_STATE_DESTROYING;
+    return !teardown_fails;
+}
 static bool reset_guest(void) { resets++; return !reset_fails; }
 static bool push_input(uint32_t event_type, const uint8_t *bytes,
                        uint32_t length)
@@ -45,6 +52,7 @@ static bool push_input(uint32_t event_type, const uint8_t *bytes,
 }
 static uint32_t drain_console(uint8_t *bytes, uint32_t capacity)
 {
+    console_drains++;
     static const uint8_t output[] = {'t', 't', 'y'};
     uint32_t length = capacity < sizeof(output) ? capacity : sizeof(output);
     for (uint32_t i = 0u; i < length; i++) bytes[i] = output[i];
@@ -253,18 +261,73 @@ int main(void)
                     "resume can be retried after failure");
 
     teardown_fails = true;
+    suspends_before = suspends;
+    quiesces_before = timer_quiesces;
     request(&req, MSG_GUEST_DESTROY, 0u);
     (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
     failed += check(rep.opcode == GUEST_ERR_NOT_READY &&
-                    state == GUEST_STATE_SUSPENDED && started &&
-                    teardowns == 2u,
-                    "failed teardown retains the quiesced guest state");
+                    state == GUEST_STATE_DESTROYING && started &&
+                    teardowns == 2u && teardown_state_valid &&
+                    suspends == suspends_before + 1u &&
+                    timer_quiesces == quiesces_before + 1u,
+                    "failed teardown retains the non-resumable cleanup state");
 
+    unsigned resumes_after_teardown = resumes;
+    request(&req, MSG_GUEST_RESUME, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_BAD_STATE &&
+                    resumes == resumes_after_teardown,
+                    "partial teardown cannot resume execution");
+
+    const uint32_t blocked_ops[] = {
+        MSG_GUEST_CREATE, MSG_GUEST_BOOT, MSG_GUEST_SUSPEND,
+    };
+    unsigned starts_after_teardown = starts;
+    unsigned resets_after_teardown = resets;
+    for (unsigned i = 0; i < sizeof(blocked_ops) / sizeof(blocked_ops[0]); i++) {
+        request(&req, blocked_ops[i], 0u);
+        (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+        failed += check(rep.opcode == GUEST_ERR_BAD_STATE &&
+                        state == GUEST_STATE_DESTROYING &&
+                        starts == starts_after_teardown &&
+                        resets == resets_after_teardown &&
+                        suspends == suspends_before + 1u,
+                        "partial teardown rejects other lifecycle transitions");
+    }
+
+    unsigned drains_before = console_drains;
+    request(&req, MSG_GUEST_CONSOLE_DRAIN, 0u);
+    req.length = 8u;
+    rep_u32(&req, 4u, 16u);
+    (void)aos_guest_vmm_console_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_BAD_STATE &&
+                    console_drains == drains_before,
+                    "partial teardown cannot access console resources");
+
+    pushed_length = 0u;
+    request(&req, MSG_GUEST_SEND_INPUT, 0u);
+    req.length = 29u;
+    rep_u32(&req, 4u, CC_INPUT_TEXT);
+    rep_u32(&req, 8u, 1u);
+    req.data[28] = 'x';
+    (void)aos_guest_vmm_console_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_BAD_STATE && pushed_length == 0u,
+                    "partial teardown cannot deliver guest input");
+
+    request(&req, MSG_GUEST_DESTROY, 0u);
+    (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
+    failed += check(rep.opcode == GUEST_ERR_NOT_READY &&
+                    state == GUEST_STATE_DESTROYING && teardowns == 3u &&
+                    suspends == suspends_before + 1u &&
+                    timer_quiesces == quiesces_before + 1u,
+                    "failed cleanup retry does not touch released execution resources");
+
+    request(&req, MSG_GUEST_DESTROY, 0u);
     teardown_fails = false;
     (void)aos_guest_vmm_lifecycle_rpc(&req, &rep, &runtime);
     failed += check(rep.opcode == GUEST_OK && state == GUEST_STATE_DEAD &&
-                    !started && teardowns == 3u,
-                    "teardown can be retried from suspended state");
+                    !started && teardowns == 4u && teardown_state_valid,
+                    "teardown can be retried from cleanup state");
 
     reset_fails = true;
     request(&req, MSG_GUEST_CREATE, 2u);

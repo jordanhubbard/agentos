@@ -32,6 +32,10 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             rep->opcode = GUEST_ERR_BAD_OS_TYPE;
             return true;
         }
+        if (*runtime->state == GUEST_STATE_DESTROYING) {
+            rep->opcode = GUEST_ERR_BAD_STATE;
+            return true;
+        }
         if (*runtime->state == GUEST_STATE_DEAD) {
             /*
              * A VMM remains terminal unless it explicitly supplies reset
@@ -117,21 +121,20 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
         } else {
             if (*runtime->state != GUEST_STATE_DEAD) {
                 if (*runtime->state != GUEST_STATE_SUSPENDED &&
+                    *runtime->state != GUEST_STATE_DESTROYING &&
                     (runtime->suspend == NULL || !runtime->suspend())) {
                     rep->opcode = GUEST_ERR_NOT_READY;
                     return true;
                 }
-                if (*runtime->state != GUEST_STATE_SUSPENDED) {
+                if (*runtime->state != GUEST_STATE_SUSPENDED &&
+                    *runtime->state != GUEST_STATE_DESTROYING) {
                     if (runtime->quiesce_timer != NULL) {
                         runtime->quiesce_timer();
                     }
-                    /*
-                     * Suspend has already detached the execution context.
-                     * If teardown then fails, retain that truthful state
-                     * rather than falsely reporting RUNNING or READY.
-                     */
-                    *runtime->state = GUEST_STATE_SUSPENDED;
                 }
+                /* Cleanup may revoke only some resources before failing.
+                 * A subsequent RESUME must never use that partial context. */
+                *runtime->state = GUEST_STATE_DESTROYING;
                 if (runtime->teardown != NULL && !runtime->teardown()) {
                     rep->opcode = GUEST_ERR_NOT_READY;
                     return true;
@@ -202,6 +205,10 @@ bool aos_guest_vmm_console_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
         }
         if (*runtime->state == GUEST_STATE_DEAD) {
             rep->opcode = GUEST_ERR_DEAD;
+            return true;
+        }
+        if (*runtime->state == GUEST_STATE_DESTROYING) {
+            rep->opcode = GUEST_ERR_BAD_STATE;
             return true;
         }
         uint32_t capacity = msg_u32(req, 4u);
