@@ -128,3 +128,26 @@ The [failed-attempt receipt](evidence/2026-09-19-spark/input-backpressure-first-
 preserves the logs and limits. The harness now includes phase, SSH process
 status and bounded stderr in such failures; no cause or target backpressure
 pass is inferred from this attempt.
+
+The diagnostic revision `bc785e9ffd9065c7d2d8ad5efd3ee89563f49b58` then
+passed all three target input passes on Spark with SDK 2.3. The
+[paused-guest receipt](evidence/2026-09-19-spark/input-backpressure-paused.json)
+records four accepted full batches per device before saturation, validated
+WOULD_BLOCK responses, retained repeated releases and rejection of new input.
+After resume, Linux observed exactly four keyboard and four pointer events
+(down/SYN, up/SYN). The
+[explicit-events](evidence/2026-09-19-spark/input-backpressure-events.json) and
+[server-release](evidence/2026-09-19-spark/input-backpressure-held.json)
+passes also succeeded. All receipts identify a clean source tree.
+
+[Boot through authenticated SSH](evidence/2026-09-19-spark/input-backpressure-timing.json)
+took 461,181 ms. The image SHA-256 is
+`fbea8d2404fb4eeb013527172d8f50ef6b952a9b42298f9397c637aa872b1885`;
+the live log is
+`355b0d18b431f48a49d2007c95ed804437679218609f726db1a36146fb1335d0`.
+The retained local archive
+`/home/jkh/.local/share/agentos-evidence/2026-09-19-input-backpressure/bc785e9-pass.tar.gz`
+has SHA-256 `b81056be9586233aae64ee5d514c01570c23dfec6fbc7f262e4d587b2b49d5a8`.
+The prior early exit did not recur, but no cause or fix is established for it.
+Debian baseline task `task_26e8b1157ffe449483d2fe1c44f2a8be` retains that
+reliability concern. Abrupt socket loss remains unqualified.
