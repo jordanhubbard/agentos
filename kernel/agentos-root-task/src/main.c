@@ -4034,18 +4034,22 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("[rt] private VMX report endpoint setup failed; stopping boot\n");
                 return;
             }
-#ifdef AGENTOS_X86_USERSPACE_PROOF
+#if defined(AGENTOS_X86_USERSPACE_PROOF) || defined(AGENTOS_X86_DUAL_GUEST)
             /* Root waits here during qualification, rather than on its
              * normal fault endpoint. Fail immediately on a native VMM fault
              * instead of silently blocking both the VMM and test client. */
             seL4_CPtr fault_report = ut_alloc_slot();
+            seL4_Word fault_badge = AOS_X86_LIFECYCLE_FAULT_BADGE;
+#ifdef AGENTOS_X86_DUAL_GUEST
+            fault_badge = AOS_X86_DUAL_FAULT_BADGE | pd->self_svc_id;
+#endif
             aos_x86_runner_owner_t *runners = aos_x86_runner_owner(
                 g_x86_runner_owners, X86_RUNNER_OWNER_COUNT, pd->self_svc_id);
             if (!runners || !runners->tcb[0] || !runners->tcb[1] ||
                 fault_report == seL4_CapNull ||
                 seL4_CNode_Mint(seL4_CapInitThreadCNode, fault_report, 64u,
                     seL4_CapInitThreadCNode, g_x86_vtx_proof_endpoint, 64u,
-                    seL4_AllRights, AOS_X86_LIFECYCLE_FAULT_BADGE) != seL4_NoError ||
+                    seL4_AllRights, fault_badge) != seL4_NoError ||
                 seL4_TCB_SetSchedParams(tr.tcb_cap, seL4_CapInitThreadTCB,
                     255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError ||
                 seL4_TCB_SetSchedParams(runners->tcb[0], seL4_CapInitThreadTCB,
@@ -4250,8 +4254,9 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word reason = seL4_GetMR(1);
         seL4_Word rip = seL4_GetMR(2);
         seL4_Word instruction_len = seL4_GetMR(3);
-#ifdef AGENTOS_X86_USERSPACE_PROOF
-        if (badge == AOS_X86_LIFECYCLE_FAULT_BADGE) {
+#if defined(AGENTOS_X86_USERSPACE_PROOF) || defined(AGENTOS_X86_DUAL_GUEST)
+        if (badge == AOS_X86_LIFECYCLE_FAULT_BADGE ||
+            (badge & AOS_X86_DUAL_FAULT_BADGE)) {
             dbg_puts("[rt] x86 native VMM fault label=");
             dbg_hex(seL4_MessageInfo_get_label(tag));
             dbg_puts(" words="); dbg_hex(seL4_MessageInfo_get_length(tag));
