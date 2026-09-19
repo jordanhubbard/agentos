@@ -1,0 +1,33 @@
+{
+  "schema": "agentos.acceptance_gap.v1",
+  "date": "2026-09-19",
+  "revision": "db1642f",
+  "requirement": "v0.4 writable guest disks preserve flushed data across reboot and remain isolated between concurrent guests",
+  "task": "task_4090f05598f74a9cafbb571a6271b6e5",
+  "status": "not_implemented_or_qualified_for_concurrent_x86_guests",
+  "observations": [
+    {
+      "source": "platform/guest-vmm/x86_profile.c:aos_x86_profile_bind",
+      "finding": "Admission requires guest_id 0, control_type 1, network_client 0 and block_media 0. A secondary x86 profile is rejected."
+    },
+    {
+      "source": "kernel/agentos-root-task/src/main.c:setup_x86_firmware",
+      "finding": "Provisioning requires SVC_ID_GUEST_VMM_PRIMARY and uses one global bootstrap/AP runner pair. Both VCPUs bind the same guest EPT. This is one two-vCPU guest, not two isolated guests."
+    },
+    {
+      "source": "platform/guest-vmm/x86_firmware.c",
+      "finding": "The runtime guest configuration selects VMM_PROFILE_PRIMARY and guest_id 0."
+    },
+    {
+      "source": "xtask/src/cmd_test.rs:run_x86_storage",
+      "finding": "A single disk is exercised through write and verify platform cold boots. Exact full-disk bytes are checked, but concurrent guests and guest lifecycle reset are explicitly excluded."
+    }
+  ],
+  "implementation_boundary": "A secondary profile alone is insufficient. Each guest needs an independently owned coordinator, runner pair, EPT, RAM and revocation pools, canonical device client/media bindings, and public lifecycle identity. Provisioning and teardown must preserve the other guest's resources.",
+  "required_runtime_evidence": "Two concurrently executing Intel guests use distinct writable media, write and flush different witnesses at the same logical offsets, survive independent lifecycle transitions without changing the peer's witness or progress, and verify persisted bytes after reboot. Retain exact source, media and result identities. Storage task additionally requires close, snapshot compatibility and supported discard semantics.",
+  "exclusions": [
+    "No concurrent isolation result is inferred from two CPUs or sequential recreated handles.",
+    "No release acceptance or task completion is claimed.",
+    "This source audit is not a runtime test."
+  ]
+}

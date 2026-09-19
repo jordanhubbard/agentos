@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-19",
+  "status": "clean_revision_gate_and_graphics_input_pass",
+  "task": "task_00ba79d8c6024e43a5cb3d7dffff9696",
+  "base_revision": "b781265",
+  "source_state": "Gate ran on the uncommitted optimization subsequently committed with this receipt; source hash below binds the changed target file. This is not final clean-revision release qualification.",
+  "source_file": "libvmm/src/virtio/gpu_2d.c",
+  "before_sha256": "0a8f11cb5224a1f8b7a1fc4ede648b5e2685c35df9aac182e3715c16e66b719a",
+  "after_sha256": "4a6cca6bea402f345555e2d3dfdb01f77ea4b90f6a1c385592baac9a1897de60",
+  "change": "Keep a command-local cursor into immutable resource backing entries while increasing row offsets are read. Preserve bounds, stride, pixel bytes, callback validation and 64 KiB queue writes.",
+  "tests": [
+    "make test-virtio-gpu-host passed",
+    "Added exact full-frame and cropped-update comparisons using 1024 permuted 3 KiB backing segments; rows cross entries and unchanged pixels remain intact.",
+    "make gate with approved CR2 SDK passed: full host suite (115 Rust tests), ARM and generic x86 root-task boots, guest net/block/console."
+  ],
+  "benchmark": {
+    "scope": "Single before/after host CPU replay through real GPU engine, adapter and framebuffer queue; excludes target IPC/scheduling, scanout and observer transport.",
+    "command_before": "make benchmark-virtio-gpu-host GPU_2D_BENCH_SOURCE=/tmp/agentos-gpu-backing-baseline.c",
+    "command_after": "make benchmark-virtio-gpu-host",
+    "frames": 200,
+    "backing_entries": 1024,
+    "queue_writes": 9600,
+    "before_seconds": 0.088589,
+    "after_seconds": 0.03095,
+    "exact_pixel_checks": "passed for both source versions"
+  },
+  "gate_command": "make gate SEL4_SDK=/home/jkh/.cache/agentos/sdk-make-cr2-20260919/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+  "gate_log_sha256": "723eb4b1d2d027ab621be0e03ff24644ba94781a26b1da1ef947d317d7b849f3",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-gpu-backing-walk",
+  "limitations": [
+    "No claim this fixes cold SSH session setup.",
+    "No changed qualification deadline or guest policy.",
+    "No native GUI or full release acceptance."
+  ],
+  "target_qualification": {
+    "revision": "a7ed99f2ae456d2084a4b27b39993048a6576bdb",
+    "source_tree_clean": true,
+    "profile": "debian-nocloud-graphics-input-aarch64",
+    "status": "pass",
+    "harness_exit": 0,
+    "frame_dimensions": [
+      1024,
+      768
+    ],
+    "matching_scanout_pixels": 786432,
+    "frame_capture_seconds": 13,
+    "frame_sha256": "ad15c2d7ae529b74289668f9e50594cb4f02ca2a48be57b5de82da248d581065",
+    "image_sha256": "e92c6c7b0a3129355b5e93d8ddc684e78545be2db645c0300743f2254cdb3399",
+    "input_modes": [
+      "explicit-events",
+      "server-held-release",
+      "paused-backpressure"
+    ],
+    "snapshot_archive_sha256": "bc7dfb35f7b7f39f0fa6e08b9e9a3b0fdb1260e21275a8f88adb9ee1c159396f",
+    "final_log_sha256": "c2bd57ee9d7cb94a5c282ece523ffb27a2a3d93340786c436b2067966181e538"
+  },
+  "clean_revision_gate": {
+    "revision": "1f40ff220b35dcac7558f4520f805d0e71d095c5",
+    "source_tree_clean": true,
+    "command": "make gate SEL4_SDK=/home/jkh/.cache/agentos/sdk-make-cr2-20260919/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+    "exit_code": 0,
+    "log_sha256": "0e100f732daf06d191dc17448c9ec66878c6b81accc185cea28f09cefdb93531",
+    "scope": "Full make gate: host tests, ARM and generic x86 root boots, canonical guest net/block/console; not Intel VMX or release acceptance"
+  }
+}
