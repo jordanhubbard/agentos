@@ -431,11 +431,45 @@ static int test_media_range_checked_before_backend(void)
     aos_blk_client_set_media(&c, 2u);
     v.clients[0].media_blocks = 2u;
     aos_blk_virt_set_backend(&v, probe_backend, &probe);
-    CHECK(enqueue_req(&c, AOS_BLK_REQ_READ, 0u, 2u, 1u, 601u) == 0);
-    CHECK(aos_blk_virt_pump(&v) == 1u);
-    CHECK(dequeue_resp(&c, &resp) == 0);
-    CHECK(resp.status == AOS_BLK_RESP_ERR_INVALID_PARAM);
-    CHECK(probe.calls == 0u);
+    const struct {
+        uint64_t offset, block;
+        uint16_t count;
+    } invalid[] = {
+        {0u, 2u, 1u}, /* Start immediately beyond the last block. */
+        {0u, 1u, 2u}, /* Valid start, extent crosses media end. */
+        {0u, UINT64_MAX, 1u},
+        {0u, 0u, 0u},
+        {0u, 0u, UINT16_MAX},
+        {AOS_BLK_DATA_BYTES, 0u, 1u},
+        {AOS_BLK_DATA_BYTES - AOS_BLK_TRANSFER_SIZE + 1u, 0u, 1u},
+        {UINT64_MAX, 0u, 1u},
+    };
+    const aos_blk_req_code_t codes[] = {AOS_BLK_REQ_READ, AOS_BLK_REQ_WRITE};
+    uint32_t id = 601u;
+    for (unsigned op = 0; op < sizeof(codes) / sizeof(codes[0]); ++op) {
+        memset(c.data, 0x6d, AOS_BLK_DATA_BYTES);
+        unsigned calls_before = probe.calls;
+        for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+            CHECK(enqueue_req(&c, codes[op], invalid[i].offset,
+                              invalid[i].block, invalid[i].count, id) == 0);
+            CHECK(aos_blk_virt_pump(&v) == 1u);
+            CHECK(dequeue_resp(&c, &resp) == 0);
+            CHECK(resp.id == id++ && resp.status == AOS_BLK_RESP_ERR_INVALID_PARAM);
+            CHECK(resp.success_count == 0u && probe.calls == calls_before);
+            for (unsigned byte = 0; byte < AOS_BLK_DATA_BYTES; ++byte)
+                CHECK(c.data[byte] == 0x6d);
+        }
+        /* Rejections must not poison the queue or reject an exact-end span. */
+        uint64_t end_offset = AOS_BLK_DATA_BYTES - AOS_BLK_TRANSFER_SIZE;
+        CHECK(enqueue_req(&c, codes[op], end_offset, 1u, 1u, id) == 0);
+        CHECK(aos_blk_virt_pump(&v) == 1u);
+        CHECK(dequeue_resp(&c, &resp) == 0);
+        CHECK(resp.id == id++ && resp.status == AOS_BLK_RESP_OK);
+        CHECK(resp.success_count == 1u && probe.calls == calls_before + 1u);
+        for (unsigned byte = 0; byte < AOS_BLK_DATA_BYTES; ++byte)
+            CHECK(c.data[byte] == (codes[op] == AOS_BLK_REQ_READ &&
+                  byte >= end_offset ? 0xa5 : 0x6d));
+    }
     PASS("test_media_range_checked_before_backend");
 }
 
