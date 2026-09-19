@@ -26,6 +26,36 @@ int main(void)
         }
         assert(!accept_event(backpressure,gui,device,&position,&(struct input_event){0}));
     }
+    for (unsigned device=0;device<2;++device) {
+        unsigned count=device ? 5 : 2;
+        for (unsigned mask=0;mask<(1u<<(count-1));++mask) {
+            unsigned position=0;
+            bool pending=false;
+            struct input_event syn={.type=EV_SYN,.code=SYN_REPORT,.value=123};
+            assert(!accept_gui_event(device,&position,&pending,&syn));
+            for (unsigned i=0;i<count;++i) {
+                expected_event_t expected=device ? gui_pointer[i] :
+                    (expected_event_t){EV_KEY,KEY_F12,i ? 0 : 1};
+                struct input_event e={.type=expected.type,.code=expected.code,.value=expected.value};
+                struct input_event bad=e;
+                bad.value++;
+                assert(!accept_gui_event(device,&position,&pending,&bad) && position==i);
+                bad=e; bad.code++;
+                assert(!accept_gui_event(device,&position,&pending,&bad) && position==i);
+                bad=e; bad.type=EV_ABS;
+                assert(!accept_gui_event(device,&position,&pending,&bad) && position==i);
+                assert(accept_gui_event(device,&position,&pending,&e) && pending);
+                if (mask & (1u<<i)) {
+                    assert(accept_gui_event(device,&position,&pending,&syn) && !pending);
+                    assert(!accept_gui_event(device,&position,&pending,&syn));
+                }
+            }
+            assert(position==count && pending); /* final SYN is mandatory */
+            assert(accept_gui_event(device,&position,&pending,&syn) && !pending);
+            assert(!accept_gui_event(device,&position,&pending,&syn));
+            assert(!accept_gui_event(device,&position,&pending,&(struct input_event){.type=EV_KEY}));
+        }
+    }
     puts("PASS: guest evdev checker requires exact key/button/motion values and packet boundaries");
     return 0;
 }

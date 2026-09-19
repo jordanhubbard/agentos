@@ -28,6 +28,30 @@ static const expected_event_t pointer_backpressure[] = {
     {EV_KEY,BTN_LEFT,1},{EV_SYN,SYN_REPORT,0},
     {EV_KEY,BTN_LEFT,0},{EV_SYN,SYN_REPORT,0}
 };
+static const expected_event_t gui_pointer[] = {
+    {EV_REL,REL_X,17},{EV_REL,REL_Y,-9},{EV_REL,REL_WHEEL,1},
+    {EV_KEY,BTN_LEFT,1},{EV_KEY,BTN_LEFT,0}
+};
+/* GUI batches may group adjacent transitions, but must terminate each packet
+ * with SYN_REPORT. Values and ordering remain exact; empty packets fail. */
+static bool accept_gui_event(unsigned device,unsigned *position,bool *pending,
+                             const struct input_event *event)
+{
+    unsigned count=device ? 5 : 2;
+    if (event->type==EV_SYN) {
+        if (event->code!=SYN_REPORT || !*pending) return false;
+        *pending=false;
+        return true;
+    }
+    if (*position>=count) return false;
+    expected_event_t expected=device ? gui_pointer[*position] :
+        (expected_event_t){EV_KEY,KEY_F12,*position ? 0 : 1};
+    if (event->type!=expected.type || event->code!=expected.code ||
+        event->value!=expected.value) return false;
+    ++*position;
+    *pending=true;
+    return true;
+}
 static bool accept_event(bool backpressure,bool gui,unsigned device,unsigned *position,const struct input_event *event)
 {
     const expected_event_t *expected=device ? (backpressure ? pointer_backpressure : pointer) : keyboard;
@@ -58,7 +82,9 @@ int main(int argc,char **argv)
 {
     bool backpressure=argc==2 && !strcmp(argv[1],"--backpressure");
     bool gui=argc==2 && !strcmp(argv[1],"--gui");
-    if (argc!=1 && !backpressure && !gui) { fprintf(stderr,"usage: input-probe [--backpressure|--gui]\n"); return 2; }
+    bool motion=argc==2 && !strcmp(argv[1],"--gui-pointer");
+    if (argc!=1 && !backpressure && !gui && !motion) { fprintf(stderr,"usage: input-probe [--backpressure|--gui|--gui-pointer]\n"); return 2; }
+    gui=gui || motion;
     /* Native GUI qualification uses its supported F12 physical key and a
      * stationary captured click. The CLI/backpressure recipes retain F13. */
     backpressure=backpressure || gui;
@@ -85,7 +111,8 @@ int main(int argc,char **argv)
     int64_t start=milliseconds();
     if (start<0) return 1;
     unsigned positions[2]={0,0};
-    while (positions[0]<4 || positions[1]<(backpressure ? 4u : 7u)) {
+    bool pending[2]={false,false};
+    while (positions[0]<(motion ? 2u : 4u) || positions[1]<(motion ? 5u : backpressure ? 4u : 7u) || pending[0] || pending[1]) {
         int64_t now=milliseconds();
         if (now<0 || now-start>=120000) { fprintf(stderr,"input deadline expired\n"); return 1; }
         struct pollfd fds[2]={{devices[0],POLLIN,0},{devices[1],POLLIN,0}};
@@ -99,7 +126,8 @@ int main(int argc,char **argv)
             if (bytes<0 && (errno==EINTR || errno==EAGAIN)) continue;
             if (bytes<=0 || bytes%(ssize_t)sizeof(*events)) return 1;
             for (unsigned j=0;j<(size_t)bytes/sizeof(*events);++j)
-                if (!accept_event(backpressure,gui,i,&positions[i],&events[j])) {
+                if (!(motion ? accept_gui_event(i,&positions[i],&pending[i],&events[j]) :
+                      accept_event(backpressure,gui,i,&positions[i],&events[j]))) {
                     fprintf(stderr,"unexpected device %u event %u: %u/%u/%d\n",i,
                             positions[i],events[j].type,events[j].code,events[j].value);
                     return 1;
@@ -109,6 +137,6 @@ int main(int argc,char **argv)
     struct pollfd extra[2]={{devices[0],POLLIN,0},{devices[1],POLLIN,0}};
     if (poll(extra,2,200)!=0) { fprintf(stderr,"unexpected trailing input\n"); return 1; }
     close(devices[0]); close(devices[1]);
-    puts(gui ? "AGENTOS_GUI_INPUT_PASS keyboard=4 pointer=4" : backpressure ? "AGENTOS_INPUT_PASS keyboard=4 pointer=4" : "AGENTOS_INPUT_PASS keyboard=4 pointer=7");
+    puts(motion ? "AGENTOS_GUI_POINTER_PASS key=F12 x=17 y=-9 wheel=1 button=left packets=complete" : gui ? "AGENTOS_GUI_INPUT_PASS keyboard=4 pointer=4" : backpressure ? "AGENTOS_INPUT_PASS keyboard=4 pointer=4" : "AGENTOS_INPUT_PASS keyboard=4 pointer=7");
     return 0;
 }
