@@ -90,3 +90,29 @@ aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf, uint64_t tsc_hz)
     }
     return r;
 }
+
+bool aos_x86_cpu_id_topology(uint32_t leaf, uint32_t subleaf, uint64_t tsc_hz,
+                            unsigned count, unsigned apic_id,
+                            aos_x86_cpuid_t *output)
+{
+    if (!output || !count || count>32u || apic_id>=count) return false;
+    aos_x86_cpuid_t r=aos_x86_cpu_id(leaf,subleaf,tsc_hz);
+    if (count>1u) {
+        unsigned shift=0;
+        while ((1u<<shift)<count) shift++;
+        if (leaf==0u && r.eax<0xbu) r.eax=0xbu;
+        if (leaf==1u) {
+            r.ebx=(apic_id<<24)|(count<<16);
+            r.edx|=1u<<28; /* multiple logical processors per package */
+        }
+        if (leaf==0xbu) {
+            /* Intel SDM CPUID.0BH: invalid levels retain the index and ID,
+             * but return zero shift/count/type. No x2APIC MSRs are exposed. */
+            r=(aos_x86_cpuid_t){.ecx=subleaf&0xffu,.edx=apic_id};
+            if (subleaf==0u) { r.ebx=1u; r.ecx|=1u<<8; }
+            if (subleaf==1u) { r.eax=shift; r.ebx=count; r.ecx|=2u<<8; }
+        }
+    }
+    *output=r;
+    return true;
+}

@@ -20,6 +20,19 @@ delivery and mapping-isolation qualification remain pending.
 
 ## Privilege
 
+The x86 ACPI bundle builder now derives MADT/SSDT lengths, root-table
+relocations and fw_cfg file sizes from an explicitly supplied topology.
+The firmware CPU-count fields use that same bundle. CPUID now has a bounded
+topology interface for one package with one thread per core and contiguous
+APIC IDs; the coordinator supplies its current LAPIC identity and ACPI count.
+Host tests relocate every supported ACPI count at three guest addresses,
+check CPU identities and checksums, and reject invalid configurations without
+mutation. CPUID tests decode unique core/package identities for every supported
+count and check termination leaves. These interfaces can describe up to 32
+CPUs; they do not allocate them. Normal admission and the installed default
+bundle remain one CPU, preserving its original guest-visible bytes. Native
+multi-CPU startup and workload acceptance remain outstanding.
+
 The x86 firmware composition now reserves two private execution runners.
 Each has its own native TCB, VSpace, IPC buffer, scheduling context and
 16 KiB VCPU child pool. Their endpoint grants are coordinator-only; both

@@ -24,6 +24,13 @@ bool aos_x86_cpu_supported(uint32_t basic_edx, uint32_t ext_edx, uint32_t widths
  * CPUID crystal Hz is 32-bit; reject clocks outside this explicit profile. */
 bool aos_x86_cpu_clock_supported(uint64_t tsc_hz);
 aos_x86_cpuid_t aos_x86_cpu_id(uint32_t leaf, uint32_t subleaf, uint64_t tsc_hz);
+/* One package, one thread per core, contiguous APIC IDs [0,count), up to
+ * 32 provisioned CPUs. Count one preserves the bootstrap CPUID profile.
+ * Larger counts expose leaf 0xB SMT/core levels and leaf 1 identity/count.
+ * Invalid topology leaves output unchanged; this does not admit resources. */
+bool aos_x86_cpu_id_topology(uint32_t leaf, uint32_t subleaf, uint64_t tsc_hz,
+                            unsigned count, unsigned apic_id,
+                            aos_x86_cpuid_t *output);
 /* Explicit clock discovery only: architectural ratio or QEMU/KVM's published
  * kHz leaf. Caller supplies zero leaves when their namespace is unavailable. */
 uint64_t aos_x86_tsc_frequency(bool invariant, aos_x86_cpuid_t ratio,

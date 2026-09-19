@@ -30,11 +30,25 @@ static unsigned file_index(const uint8_t *name)
     if (!strcmp((const char *)name,"etc/acpi/tables")) return 0;
     assert(!strcmp((const char *)name,"etc/acpi/rsdp")); return 1;
 }
-static void relocate(uint64_t base)
+static aos_x86_acpi_topology_t topology(unsigned count)
 {
-    aos_x86_acpi_bundle_t source, copy;
+    aos_x86_acpi_topology_t t={.lapic_gpa=0xfee00000u,
+        .ioapic_gpa=0xfec00000u,.ioapic_id=1,.cpu_count=(uint8_t)count};
+    for (unsigned i=0;i<count;i++) {
+        t.cpus[i].uid=(uint8_t)(255u-i);
+        t.cpus[i].apic_id=(uint8_t)(i ? i+1u : 0u); /* skip I/O APIC ID */
+    }
+    return t;
+}
+static void relocate(uint64_t base, unsigned count)
+{
+    aos_x86_acpi_bundle_t source, copy={0};
     aos_x86_config_t c;
-    assert(aos_x86_acpi_bundle_init(&source));
+    aos_x86_acpi_topology_t t=topology(count);
+    assert(aos_x86_acpi_bundle_topology(&source,&t));
+    assert(source.cpu_count==count && source.table_bytes==846u+37u*(count-1u));
+    /* Capacity outside the actual bundle must never escape through fw_cfg. */
+    memset(source.tables+source.table_bytes,0xa5,sizeof(source.tables)-source.table_bytes);
     assert(aos_x86_config_init(&c,256u*1024u*1024u));
     assert(!aos_x86_config_acpi(NULL,&source));
     assert(!aos_x86_config_acpi(&c,NULL));
@@ -44,7 +58,7 @@ static void relocate(uint64_t base)
     uint8_t dir[261]; fw(&c,0x19,dir,sizeof(dir));
     assert(dir[0]==0 && dir[1]==0 && dir[2]==0 && dir[3]==4 && dir[260]==0);
     const char *names[]={"etc/e820","etc/acpi/tables","etc/acpi/rsdp","etc/table-loader"};
-    const unsigned lengths[]={80,sizeof(source.tables),sizeof(source.rsdp),sizeof(source.loader)};
+    const unsigned lengths[]={80,source.table_bytes,sizeof(source.rsdp),sizeof(source.loader)};
     for (unsigned i=0;i<4;i++) {
         const uint8_t *d=dir+4+64*i;
         unsigned length=(unsigned)d[0]<<24 | (unsigned)d[1]<<16 | (unsigned)d[2]<<8 | d[3];
@@ -54,9 +68,21 @@ static void relocate(uint64_t base)
     fw(&c,0x21,copy.tables,sizeof(copy.tables));
     fw(&c,0x22,copy.rsdp,sizeof(copy.rsdp));
     fw(&c,0x23,copy.loader,sizeof(copy.loader));
-    assert(!memcmp(&copy,&source,sizeof(copy)));
+    assert(!memcmp(copy.tables,source.tables,source.table_bytes));
+    assert(!memcmp(copy.rsdp,source.rsdp,sizeof(copy.rsdp)));
+    assert(!memcmp(copy.loader,source.loader,sizeof(copy.loader)));
+    for (unsigned i=source.table_bytes;i<sizeof(copy.tables);i++) assert(!copy.tables[i]);
+    uint32_t past=123;
+    /* The preceding RSDP/loader reads do not inspect the tables' EOF. */
+    fw(&c,0x21,copy.tables,sizeof(copy.tables));
+    assert(aos_x86_config_io(&c,0x511,1,false,&past,0) && !past);
+    uint8_t cpus[4];
+    fw(&c,5,cpus,sizeof(cpus));
+    assert(read_le(cpus,4)==count);
+    fw(&c,0xf,cpus,sizeof(cpus));
+    assert(read_le(cpus,4)==count);
     uint8_t *files[]={copy.tables,copy.rsdp};
-    const unsigned sizes[]={sizeof(copy.tables),sizeof(copy.rsdp)};
+    const unsigned sizes[]={source.table_bytes,sizeof(copy.rsdp)};
     const uint64_t bases[]={base,base+0x10000};
     bool allocated[2]={false,false};
     unsigned allocations=0, pointers=0, checksums=0;
@@ -90,7 +116,7 @@ static void relocate(uint64_t base)
     assert(!memcmp(copy.rsdp,"RSD PTR ",8) && copy.rsdp[15]==2);
     unsigned rsdt=(unsigned)(read_le(copy.rsdp+16,4)-base);
     unsigned xsdt=(unsigned)(read_le(copy.rsdp+24,8)-base);
-    assert(rsdt==738 && xsdt==786);
+    assert(rsdt==738u+37u*(count-1u) && xsdt==rsdt+48u);
     assert(!sum(copy.tables+rsdt,48) && !sum(copy.tables+xsdt,60));
     const char *signatures[]={"FACP","APIC","SSDT"};
     unsigned fadt=0;
@@ -98,9 +124,34 @@ static void relocate(uint64_t base)
         uint64_t addr=read_le(copy.tables+rsdt+36+4*i,4);
         assert(addr==read_le(copy.tables+xsdt+36+8*i,8));
         unsigned off=(unsigned)(addr-base), len=(unsigned)read_le(copy.tables+off+4,4);
-        assert(off+len<=sizeof(copy.tables) && !sum(copy.tables+off,len));
+        assert(off+len<=source.table_bytes && !sum(copy.tables+off,len));
         assert(!memcmp(copy.tables+off,signatures[i],4));
         if (!i) fadt=off;
+        if (i==1) {
+            const uint8_t *m=copy.tables+off;
+            assert(len==56u+8u*count && read_le(m+36,4)==t.lapic_gpa);
+            for (unsigned cpu=0;cpu<count;cpu++) {
+                const uint8_t *entry=m+44u+8u*cpu;
+                assert(entry[0]==0 && entry[1]==8 && entry[2]==t.cpus[cpu].uid);
+                assert(entry[3]==t.cpus[cpu].apic_id && read_le(entry+4,4)==1);
+            }
+            const uint8_t *io=m+44u+8u*count;
+            assert(io[0]==1 && io[1]==12 && io[2]==t.ioapic_id);
+            assert(read_le(io+4,4)==t.ioapic_gpa && !read_le(io+8,4));
+        }
+        if (i==2) {
+            const uint8_t *s=copy.tables+off;
+            assert(len==44u+29u*count);
+            assert(s[36]==0x10 && (s[37]&0xc0u)==0x40u);
+            assert((s[37]&15u)+((unsigned)s[38]<<4)==7u+29u*count);
+            for (unsigned cpu=0;cpu<count;cpu++) {
+                const uint8_t *d=s+44u+29u*cpu;
+                assert(d[0]==0x5b && d[1]==0x82 && d[2]==27);
+                assert(!memcmp(d+13,"ACPI0007",9));
+                assert(!memcmp(d+23,"_UID",4) && d[27]==0x0a);
+                assert(d[28]==t.cpus[cpu].uid);
+            }
+        }
     }
     const uint8_t *f=copy.tables+fadt;
     assert(read_le(f+36,4)==base && read_le(f+132,8)==base);
@@ -137,10 +188,58 @@ static void relocate(uint64_t base)
     fw(&c,0,dir,1); before=c;
     assert(!aos_x86_config_acpi(&c,&source) && !memcmp(&c,&before,sizeof(c)));
 }
+static void invalid_topology(void)
+{
+    aos_x86_acpi_bundle_t bundle, before;
+    memset(&bundle,0xa5,sizeof(bundle)); before=bundle;
+    aos_x86_acpi_topology_t valid=topology(2), bad=valid;
+    assert(!aos_x86_acpi_bundle_topology(NULL,&valid));
+    assert(!aos_x86_acpi_bundle_topology(&bundle,NULL));
+    for (unsigned i=0;i<9;i++) {
+        bad=valid;
+        switch (i) {
+        case 0: bad.cpu_count=0; break;
+        case 1: bad.cpu_count=AOS_X86_ACPI_MAX_CPUS+1; break;
+        case 2: bad.cpus[1].apic_id=bad.cpus[0].apic_id; break;
+        case 3: bad.cpus[1].uid=bad.cpus[0].uid; break;
+        case 4: bad.cpus[1].apic_id=bad.ioapic_id; break;
+        case 5: bad.cpus[1].apic_id=255; break;
+        case 6: bad.lapic_gpa+=4096; break;
+        case 7: bad.ioapic_gpa+=4096; break;
+        case 8: bad.gsi_base=1; break;
+        }
+        assert(!aos_x86_acpi_bundle_topology(&bundle,&bad));
+        assert(!memcmp(&bundle,&before,sizeof(bundle)));
+    }
+    /* Topology may reside inside the output; it must be snapshotted first. */
+    assert(aos_x86_acpi_bundle_topology(&before,&valid));
+    memcpy(bundle.tables,&valid,sizeof(valid));
+    assert(aos_x86_acpi_bundle_topology(&bundle,(const void *)bundle.tables));
+    assert(!memcmp(&bundle,&before,sizeof(bundle)));
+    aos_x86_config_t config, saved;
+    assert(aos_x86_config_init(&config,256u*1024u*1024u)); saved=config;
+    for (unsigned i=0;i<4;i++) {
+        bundle=before;
+        if (i==0) bundle.cpu_count=0;
+        if (i==1) bundle.cpu_count=AOS_X86_ACPI_MAX_CPUS+1;
+        if (i==2) bundle.table_bytes=UINT32_MAX;
+        if (i==3) bundle.table_bytes--;
+        assert(!aos_x86_config_acpi(&config,&bundle));
+        assert(!memcmp(&config,&saved,sizeof(config)));
+    }
+    /* Default wrapper retains the historical one-CPU byte layout. */
+    valid=topology(1); valid.cpus[0].uid=0;
+    assert(aos_x86_acpi_bundle_topology(&before,&valid));
+    assert(aos_x86_acpi_bundle_init(&bundle));
+    assert(!memcmp(&bundle,&before,sizeof(bundle)));
+}
 int main(int argc, char **argv)
 {
     if (argc>2) return 2;
-    relocate(0x100000); relocate(0x12340000); relocate(0xfffe0000);
+    invalid_topology();
+    for (unsigned count=1;count<=AOS_X86_ACPI_MAX_CPUS;count++) {
+        relocate(0x100000,count); relocate(0x12340000,count); relocate(0xfffe0000,count);
+    }
     if (argc==2) {
         aos_x86_acpi_bundle_t bundle;
         assert(aos_x86_acpi_bundle_init(&bundle));

@@ -1,9 +1,57 @@
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 #include "platform/x86_cpu.h"
 
+static void topology(void)
+{
+    const aos_x86_cpuid_t sentinel={0x1234,0x5678,0xabcd,0xef01};
+    aos_x86_cpuid_t r=sentinel;
+    assert(!aos_x86_cpu_id_topology(1,0,0,0,0,&r));
+    assert(!memcmp(&r,&sentinel,sizeof(r)));
+    assert(!aos_x86_cpu_id_topology(1,0,0,33,0,&r));
+    assert(!memcmp(&r,&sentinel,sizeof(r)));
+    assert(!aos_x86_cpu_id_topology(1,0,0,2,2,&r));
+    assert(!memcmp(&r,&sentinel,sizeof(r)));
+    assert(!aos_x86_cpu_id_topology(1,0,0,2,0,NULL));
+    const uint64_t clocks[]={0,3187200000u};
+    const uint32_t leaves[]={0,1,6,7,0xb,0x15,0x16,0x40000000,0x80000001,0x80000008};
+    for (unsigned clock=0;clock<2;clock++) {
+        for (unsigned leaf=0;leaf<sizeof(leaves)/sizeof(leaves[0]);leaf++) {
+            aos_x86_cpuid_t old=aos_x86_cpu_id(leaves[leaf],0,clocks[clock]);
+            assert(aos_x86_cpu_id_topology(leaves[leaf],0,clocks[clock],1,0,&r));
+            assert(!memcmp(&r,&old,sizeof(r)));
+        }
+        for (unsigned count=2;count<=32;count++) {
+            unsigned seen=0;
+            for (unsigned cpu=0;cpu<count;cpu++) {
+                assert(aos_x86_cpu_id_topology(0,0,clocks[clock],count,cpu,&r));
+                assert(r.eax==(clock ? 0x16u : 0xbu));
+                assert(aos_x86_cpu_id_topology(1,0,clocks[clock],count,cpu,&r));
+                assert((r.ebx>>24)==cpu && ((r.ebx>>16)&0xffu)==count);
+                assert(r.edx==(AOS_X86_BASIC_EDX|(1u<<28)) && r.ecx==(1u<<31));
+                assert(aos_x86_cpu_id_topology(0xb,0,clocks[clock],count,cpu,&r));
+                assert(r.eax==0 && r.ebx==1 && r.ecx==0x100 && r.edx==cpu);
+                assert(aos_x86_cpu_id_topology(0xb,1,clocks[clock],count,cpu,&r));
+                assert(r.eax<=5 && (1u<<r.eax)>=count && (1u<<(r.eax-1))<count);
+                assert(r.ebx==count && r.ecx==0x201 && r.edx==cpu);
+                /* Every CPU decodes to a distinct core in the same package. */
+                assert((r.edx>>r.eax)==0);
+                unsigned core=r.edx&((1u<<r.eax)-1u);
+                assert(!(seen&(1u<<core))); seen|=1u<<core;
+                const uint32_t ends[]={2,255,256,UINT32_MAX};
+                for (unsigned i=0;i<sizeof(ends)/sizeof(ends[0]);i++) {
+                    assert(aos_x86_cpu_id_topology(0xb,ends[i],clocks[clock],count,cpu,&r));
+                    assert(!r.eax && !r.ebx && r.ecx==(ends[i]&0xffu) && r.edx==cpu);
+                }
+            }
+            assert(seen==(UINT32_MAX>>(32u-count)));
+        }
+    }
+}
 int main(void)
 {
+    topology();
     uint64_t next=0xdead;
     assert(aos_x86_cpu_efer(0xd00,0xd01,true,&next) && next==0xd01);
     assert(aos_x86_cpu_efer(0xd01,0x900,true,&next) && next==0xd00);

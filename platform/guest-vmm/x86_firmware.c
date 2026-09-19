@@ -1285,7 +1285,10 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
                           ((uint64_t)aos_vmm_virtio_net_diagnostic() << 32)));
             }
 #endif
-            aos_x86_cpuid_t r = aos_x86_cpu_id((uint32_t)regs.eax, (uint32_t)regs.ecx,hz);
+            aos_x86_cpuid_t r;
+            if (!aos_x86_cpu_id_topology((uint32_t)regs.eax,(uint32_t)regs.ecx,hz,
+                                        acpi.cpu_count,apic.id,&r))
+                stop(ep,AOS_X86_VTX_PROOF_FAIL,0x435055u,rip,apic.id);
             regs.eax = r.eax; regs.ebx = r.ebx; regs.ecx = r.ecx; regs.edx = r.edx;
         } else if (reason == 28u && len == 3u && (qual & ~0xf0fu) == 0u &&
                    ((qual & 15u) == 0u || (qual & 15u) == 4u)) {
