@@ -10,6 +10,10 @@ The detailed compatibility baseline below remains the explicitly dated v4.0.3
 study; this update records newly verified facts without implying that the new
 ISO has been installed or qualified on agentOS.
 
+The upstream release listing was rechecked on **2026-09-19** and still names
+v4.0.4 as latest. The ISO metadata observations below remain dated 2026-09-16;
+this release-list check did not download or requalify the media.
+
 ## Current official release observation
 
 | Field | Observed value | Evidence |
@@ -119,15 +123,23 @@ until the first measurements show a stable distribution; thereafter, regress
 the qualified percentile and record artifact, vCPU, RAM, storage, renderer,
 and acceleration mode with every result.
 
-## Known gaps at this snapshot
+## agentOS implementation evidence, 2026-09-19
 
-- The VMX/EPT HLT-exit probe exists, but does not establish x86_64 Linux
-  guest execution. See `docs/TCB.md` for its proof boundary.
-- No agentOS UEFI/ACPI path exists for a full x86 guest yet.
-- Writable guest storage has not been qualified for an installer, LUKS,
-  Btrfs, flush, reboot, or snapshot recovery.
-- Virtio-gpu and virtio-input virtualizers and their canonical target services
-  are roadmap work, not current behavior.
+The earlier implementation-gap notes predated the following target proofs.
+These receipts describe their exact tested revisions, including work still
+awaiting canonical integration and required review. They do not qualify the
+official Omarchy ISO or turn this branch into a released platform.
+
+| Area | Retained evidence | Remaining acceptance |
+| --- | --- | --- |
+| x86 execution and firmware | [Managed Debian recreation](evidence/2026-09-18-spark/x86-managed-recreation.json) passed two single-CPU boot, pinned-key SSH, console-input and destroy cycles through the firmware path on Intel Linux. | Final integrated qualification and desktop resource admission remain required. [Two-CPU Linux acceptance failed](evidence/2026-09-18-spark/x86-smp-failure.json); SMP is not qualified. |
+| Writable storage | [Intel storage proof](evidence/2026-09-17-spark/x86-storage.json) retained a guest write and successful fsync across two complete platform cold boots. | Concurrent writable disks, snapshot compatibility, installer/LUKS/Btrfs use, and physical power-loss durability are not established by that test. Discard is not exposed by the current queue contract. |
+| Guest graphics and input | [Combined ARM qualification](evidence/2026-09-16-spark/graphics-input.json) captured guest-written pixels and checked Linux input events. [Integrated paused-input qualification](evidence/2026-09-19-spark/input-integration-paused.json) retained releases through backpressure. | x86 desktop graphics, abrupt connection-loss recovery, and an interactive Omarchy session remain unqualified. Bulk frame capture is not a responsive remote-desktop claim. |
+| Integration guests | [Seeded Debian cold boots](evidence/2026-09-19-spark/debian-seeded-cold-boots.json) retained the disk and SSH host identity. [Ubuntu/FreeBSD acceptance](evidence/2026-09-19-spark/dual-guest.json) passed concurrent SSH and guest destruction. | This does not establish concurrent Debian guests, all Debian promotion gates, or final release acceptance. Retained boot warnings still need assessment. |
+
+## Remaining official-Omarchy gaps
+
+- No official Omarchy installation or desktop-session acceptance is claimed.
 - The minimum renderer needed for unmodified Hyprland plus Quickshell is not
   yet measured. A software-rendered bring-up may accelerate development but
   cannot silently become the final support profile.
