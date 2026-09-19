@@ -8,11 +8,11 @@ memory = "3G"
 [[guests]]
 profile = "freebsd.toml"
 ram_mb = 256
-ssh_host_port = 12285
+ssh_host_port = 12485
 ssh_guest_address = "10.0.2.16"
 
 [[guests]]
 profile = "debian-scenario.toml"
 ram_mb = 1024
-ssh_host_port = 12284
+ssh_host_port = 12484
 ssh_guest_address = "10.0.2.15"

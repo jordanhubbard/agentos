@@ -282,8 +282,8 @@ mod tests {
         assert!(linux.profile.provision.is_empty());
         assert_eq!(linux.ssh_guest_address, "10.0.2.15");
         assert_eq!(peer.ssh_guest_address, "10.0.2.16");
-        assert_eq!(linux.ssh_host_port, 12284);
-        assert_eq!(peer.ssh_host_port, 12285);
+        assert_eq!(linux.ssh_host_port, 12484);
+        assert_eq!(peer.ssh_host_port, 12485);
         assert!(linux
             .profile
             .test
