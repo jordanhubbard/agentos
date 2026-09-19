@@ -109,7 +109,13 @@ hashes and passed the full Spark `make gate`. The updated harness passed
 [build receipt](evidence/2026-09-19-spark/cr2-sdk-build.json) records the source
 pins, build scope and log hashes.
 
-Patched managed one-CPU Debian qualification, both SMP generations with the
-updated harness, final integrated revision gates,
+The clean repeat at `de1458c` passed both SMP generations with the updated
+harness: pinned SSH, overlapping affined x87/SSE workers, console input,
+destruction/recreation and stale-handle rejection. The
+[Intel SMP receipt](evidence/2026-09-19-spark/cr2-intel-smp.json) records the
+exact binaries and retained evidence. Journald replaced an unclean user
+journal; this is not proof of orderly guest reboot or storage durability.
+
+Patched managed one-CPU Debian qualification, final integrated revision gates,
 required CI/review and the rest of v0.4 remain outstanding. Do not infer crash
 causation or SMP acceptance from this patch, its build or the shorter gates.

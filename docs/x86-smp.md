@@ -53,6 +53,12 @@ that earlier disk also failed, with a userspace instruction-fetch fault on
 CPU 0. The fault is not confined to CPU 1 and reproduces on the baseline
 disk. The failure's cause remains unconfirmed.
 
-Native workload acceptance is pending;
-the first two-CPU bring-up exposed the private CMOS warm-start marker, which
+The approved CR2 candidate passed the strict gate in both managed generations
+at `de1458c` on 2026-09-19. The [Intel receipt](evidence/2026-09-19-spark/cr2-intel-smp.json)
+binds the SDK, root task, workload, console and lifecycle evidence. This is
+acceptance of that candidate run, not default SDK adoption or release
+qualification. Earlier unmodified-kernel failures remain valid observations;
+their cause is not established by this pass.
+
+The first two-CPU bring-up exposed the private CMOS warm-start marker, which
 is now emulated.
