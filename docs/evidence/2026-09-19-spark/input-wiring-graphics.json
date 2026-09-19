@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "make_exit": 0,
+  "command": "make test-guest-graphics-input QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12256",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "timing": {
+    "agentos_image_sha256": "ab3bcab56fcfe11f9d348c0faed4b68090960cdb58a3964ce86e5cfd0fb7283f",
+    "agentos_revision": "96cb54a699ddbed38dd464c8cec008ca08a51876",
+    "board": "qemu_virt_aarch64",
+    "boundary": "host QEMU launch request to completed authenticated SSH proof",
+    "elapsed_ms": 476432,
+    "excludes": [
+      "artifact acquisition",
+      "build",
+      "persistent media preparation"
+    ],
+    "guest_bundle_sha256": "6bf01119bd0015620690616f6deae82d853bd47551d6450d16362cf169914013",
+    "host_arch": "aarch64",
+    "host_backed_virtio": true,
+    "host_os": "linux",
+    "includes": [
+      "host scheduling",
+      "QEMU startup",
+      "agentOS boot",
+      "guest boot",
+      "console provisioning",
+      "SSH authentication"
+    ],
+    "persistent_second_boot": false,
+    "profile": "debian-graphics-input-aarch64",
+    "qemu_config_sha256": "57f7f302b54baa5f4e5ed25d67f3877ada0e947b76445c72f978786a63f537a6",
+    "qualification_status": "passed",
+    "schema": "agentos.guest_boot_timing.v2",
+    "serial_log": "/tmp/agentos-arm-managed-recreation/build/tmp/agentos-qemu-HhEPsb.log",
+    "source_tree_clean": true,
+    "status": "ssh_authenticated"
+  },
+  "log_sha256": "39c47715793492c5b1f34953f6439a2976ee96925b7b9c34ead83e35cffd0ee2",
+  "frame_sha256": "cb9b1f94595564c62a17a1e987f5e8b3877467efcf4510191e78261c25de9643",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/input-wiring-96cb54a",
+  "proof": "Exact guest input batches, held-state releases, paused-guest backpressure and host-backed net/block/console passed; expected 1024x768 framebuffer captured.",
+  "limits": "Regression of initial guest boot and input notification delivery after binding the service notification to its TCB. No capability-rebind exercise, managed second boot, framebuffer reconstruction, peer qualification or final release acceptance."
+}
