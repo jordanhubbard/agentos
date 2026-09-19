@@ -2,6 +2,33 @@
 #include <platform/input_rebind.h>
 #include "contracts/virtualizer_authority.h"
 
+uint32_t aos_input_rebind_retire(aos_input_service_t *s,uint64_t badge,
+    const input_virt_rebind_req_t *q,size_t length)
+{
+    if (!s || !q || length!=sizeof(*q) || q->version!=INPUT_VIRT_REBIND_VERSION ||
+        !q->generation) return AOS_INPUT_BAD_REQUEST;
+    if (q->client>=AOS_INPUT_CLIENTS || !virt_client_authorized(badge,q->client,q->client))
+        return AOS_INPUT_DENIED;
+    unsigned client=q->client;
+    if (!(s->allowed_mask & (1u<<client))) {
+        /* A failed rebind may never have committed. Never dereference its
+         * former frame while acknowledging already-retired ownership. */
+        return !s->clients[client] && (s->retired_mask & (1u<<client)) &&
+            (q->generation==s->generation[client] ||
+             (s->generation[client]!=UINT32_MAX && q->generation==s->generation[client]+1u))
+            ? AOS_INPUT_OK : AOS_INPUT_DENIED;
+    }
+    if (q->generation!=s->generation[client] || !s->clients[client]) return AOS_INPUT_DENIED;
+    aos_input_client_region_t *region=s->clients[client];
+    s->allowed_mask &= ~(1u<<client);
+    s->retired_mask |= 1u<<client;
+    s->releasing[client]=0;
+    __builtin_memset(s->held[client],0,sizeof(s->held[client]));
+    s->clients[client]=NULL;
+    __atomic_store_n(&region->detach.ack,1u,__ATOMIC_RELEASE);
+    return AOS_INPUT_OK;
+}
+
 uint32_t aos_input_rebind_validate(const aos_input_service_t *s, uint64_t badge,
     const input_virt_rebind_req_t *q, size_t length)
 {

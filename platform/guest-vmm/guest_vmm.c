@@ -1470,6 +1470,167 @@ int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
 
 /* ─── Init ───────────────────────────────────────────────────────────── */
 
+static bool guest_vmm_prepare_images(bool restored_images)
+{
+    /* Place guest images in RAM */
+    size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
+    size_t dtb_size    = _guest_dtb_image_end - _guest_dtb_image;
+    size_t embedded_initrd_size =
+        _guest_initrd_image_end - _guest_initrd_image;
+    size_t initrd_size = embedded_initrd_size;
+    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
+        initrd_size = 0u;
+    }
+    if (kernel_size > g_guest_profile->kernel_max_bytes ||
+        dtb_size > g_guest_profile->dtb_max_bytes ||
+        initrd_size > g_guest_profile->initrd_max_bytes) {
+        LOG_VMM_ERR("Embedded guest artifact exceeds its profile bound\n");
+        return false;
+    }
+
+    LOG_VMM("  Kernel: %zu bytes\n", kernel_size);
+    LOG_VMM("  DTB:    %zu bytes\n", dtb_size);
+    LOG_VMM("  Initrd: %zu bytes\n", initrd_size);
+    uint32_t kernel_source_checksum =
+        guest_image_checksum(_guest_kernel_image, kernel_size);
+    uint32_t dtb_source_checksum =
+        guest_image_checksum(_guest_dtb_image, dtb_size);
+    uint32_t initrd_source_checksum =
+        guest_image_checksum(_guest_initrd_image, initrd_size);
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd source 0x%lx checksum: 0x%x\n",
+                (unsigned long)_guest_initrd_image, initrd_source_checksum);
+    }
+
+    /*
+     * Guest frames are non-device seL4 objects and are already zeroed by
+     * Untyped_Retype before this PD can map them. Do not clear the full
+     * window again here: under nested TCG that duplicate pass dominates boot.
+     */
+    LOG_VMM("  Guest RAM zeroed by seL4 retype\n");
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd checksum after guest RAM setup: 0x%x\n",
+                guest_image_checksum(_guest_initrd_image, initrd_size));
+    }
+
+    aos_guest_boot_images_t images = {
+        .kernel = _guest_kernel_image,
+        .kernel_size = kernel_size,
+        .dtb = _guest_dtb_image,
+        .dtb_size = dtb_size,
+        .initrd = _guest_initrd_image,
+        .initrd_size = initrd_size,
+    };
+    /* Qualification can boot its last verified restored copy directly. */
+    enum aos_guest_boot_error boot_error = AOS_GUEST_BOOT_OK;
+    if (!restored_images) boot_error = aos_guest_boot_prepare(
+        &g_guest_boot_plan, g_guest_profile, guest_ram_vaddr, &images,
+        g_guest_profile->kernel_format == AOS_GUEST_KERNEL_LINUX_IMAGE
+            ? linux_setup_images : NULL);
+    if (boot_error != AOS_GUEST_BOOT_OK) {
+        LOG_VMM_ERR("Failed to initialise guest images\n");
+        return false;
+    }
+    uintptr_t kernel_hva = g_guest_boot_plan.kernel_hva;
+    uintptr_t dtb_hva = g_guest_boot_plan.dtb_hva;
+    uintptr_t initrd_hva = g_guest_boot_plan.initrd_hva;
+    uintptr_t kernel_pc = g_guest_boot_plan.entry_gpa;
+    uint32_t initrd_guest_checksum = guest_image_checksum(
+        (const void *)initrd_hva, initrd_size);
+    uint32_t kernel_guest_checksum =
+        guest_image_checksum((const void *)kernel_hva, kernel_size);
+    uint32_t dtb_guest_checksum =
+        guest_image_checksum((const void *)dtb_hva, dtb_size);
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd guest checksum:  0x%x\n", initrd_guest_checksum);
+    }
+    LOG_VMM("  Kernel checksums: source=0x%x guest=0x%x\n",
+            kernel_source_checksum, kernel_guest_checksum);
+    LOG_VMM("  DTB checksums: source=0x%x guest=0x%x\n",
+            dtb_source_checksum, dtb_guest_checksum);
+    if (initrd_source_checksum != initrd_guest_checksum ||
+        kernel_source_checksum != kernel_guest_checksum ||
+        dtb_source_checksum != dtb_guest_checksum) {
+        LOG_VMM_ERR("Guest image copy checksum mismatch\n");
+        return false;
+    }
+
+    LOG_VMM("  Kernel entry: 0x%lx\n", (unsigned long)kernel_pc);
+
+    g_guest_kernel_pc = kernel_pc;
+    return true;
+}
+
+static bool guest_vmm_prepare_interrupts(void)
+{
+    /* Initialise the virtual GIC driver */
+    bool success = virq_controller_init();
+    if (!success) {
+        LOG_VMM_ERR("Failed to initialise emulated interrupt controller\n");
+        return false;
+    }
+
+    /* Register PL011 UART MMIO emulation (0x9000000 .. 0x9000FFF).
+     * A guest may use PL011 for early console output; serial_pd owns the
+     * physical IRQ.  Our handler returns FR=0x90 on reads so the kernel
+     * does not spin waiting for TX-empty. */
+    if (!fault_register_vm_exception_handler(PL011_BASE, PL011_SIZE,
+                                             pl011_fault_handler, NULL)) {
+        LOG_VMM_ERR("Failed to register PL011 UART fault handler\n");
+        return false;
+    }
+    if (!virq_register(GUEST_BOOT_VCPU_ID, PL011_UART_IRQ,
+                       &pl011_irq_ack, NULL)) {
+        LOG_VMM_ERR("Failed to register PL011 UART IRQ\n");
+        return false;
+    }
+
+    return true;
+}
+
+static bool guest_vmm_stage_media(void)
+{
+    const uintptr_t initrd_hva = g_guest_boot_plan.initrd_hva;
+    const size_t embedded_initrd_size = _guest_initrd_image_end - _guest_initrd_image;
+    /* Stage profile-selected boot data from agentOS-owned block media. */
+    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
+        size_t media_initrd_size = 0u;
+        size_t initrd_capacity =
+            g_guest_profile->dtb_load_address -
+            g_guest_profile->initrd_load_address;
+        if (!aos_vmm_virtio_blk_load_iso_file(
+            g_guest_profile->media_initrd_path, initrd_hva,
+            initrd_capacity,
+            &media_initrd_size, guest_vmm_wait_blk_event)) {
+            LOG_VMM_ERR("Failed to stage profile initrd from host media\n");
+            return false;
+        }
+        if (media_initrd_size > initrd_capacity ||
+            embedded_initrd_size > initrd_capacity - media_initrd_size ||
+            media_initrd_size + embedded_initrd_size >
+                g_guest_profile->initrd_max_bytes) {
+            LOG_VMM_ERR("Profile initrd plus overlay exceeds its bound\n");
+            return false;
+        }
+        if (AGENTOS_GUEST_INITRD_TOTAL_BYTES != 0u &&
+            media_initrd_size + embedded_initrd_size !=
+                AGENTOS_GUEST_INITRD_TOTAL_BYTES) {
+            LOG_VMM_ERR("Profile initrd exact size does not match its checked build metadata\n");
+            return false;
+        }
+        volatile uint8_t *overlay_dest =
+            (volatile uint8_t *)(initrd_hva + media_initrd_size);
+        const volatile uint8_t *overlay_src =
+            (const volatile uint8_t *)_guest_initrd_image;
+        for (size_t i = 0u; i < embedded_initrd_size; i++) {
+            overlay_dest[i] = overlay_src[i];
+        }
+        LOG_VMM("Profile initrd ready in guest RAM (%zu media + %zu overlay bytes)\n",
+                media_initrd_size, embedded_initrd_size);
+    }
+    return true;
+}
+
 void init(void)
 {
     const uint32_t serial_slot =
@@ -1525,6 +1686,7 @@ void init(void)
                       AGENTOS_VMM_VCPU_CAP_BASE + GUEST_BOOT_VCPU_ID,
                       AGENTOS_VMM_TCB_CAP_BASE  + GUEST_BOOT_VCPU_ID);
 
+    bool restored_images = false;
 #ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
     if (!aos_vmm_guest_ram_recycle_test(g_guest_profile->guest_gpa_base,
             guest_ram_vaddr, g_guest_profile->ram_size, guest_restore_embedded_images_test)) {
@@ -1533,117 +1695,10 @@ void init(void)
     }
     microkit_dbg_puts("guest RAM recycle: PASS two full overwrite/revoke/rebuild/zero cycles\n");
     microkit_dbg_puts("guest image recycle: embedded artifacts restored byte for byte twice\n");
+    restored_images = true;
 #endif
 
-    /* Place guest images in RAM */
-    size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
-    size_t dtb_size    = _guest_dtb_image_end - _guest_dtb_image;
-    size_t embedded_initrd_size =
-        _guest_initrd_image_end - _guest_initrd_image;
-    size_t initrd_size = embedded_initrd_size;
-    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
-        initrd_size = 0u;
-    }
-    if (kernel_size > g_guest_profile->kernel_max_bytes ||
-        dtb_size > g_guest_profile->dtb_max_bytes ||
-        initrd_size > g_guest_profile->initrd_max_bytes) {
-        LOG_VMM_ERR("Embedded guest artifact exceeds its profile bound\n");
-        return;
-    }
-
-    LOG_VMM("  Kernel: %zu bytes\n", kernel_size);
-    LOG_VMM("  DTB:    %zu bytes\n", dtb_size);
-    LOG_VMM("  Initrd: %zu bytes\n", initrd_size);
-    uint32_t kernel_source_checksum =
-        guest_image_checksum(_guest_kernel_image, kernel_size);
-    uint32_t dtb_source_checksum =
-        guest_image_checksum(_guest_dtb_image, dtb_size);
-    uint32_t initrd_source_checksum =
-        guest_image_checksum(_guest_initrd_image, initrd_size);
-    if (initrd_size > 0u) {
-        LOG_VMM("  Initrd source 0x%lx checksum: 0x%x\n",
-                (unsigned long)_guest_initrd_image, initrd_source_checksum);
-    }
-
-    /*
-     * Guest frames are non-device seL4 objects and are already zeroed by
-     * Untyped_Retype before this PD can map them. Do not clear the full
-     * window again here: under nested TCG that duplicate pass dominates boot.
-     */
-    LOG_VMM("  Guest RAM zeroed by seL4 retype\n");
-    if (initrd_size > 0u) {
-        LOG_VMM("  Initrd checksum after guest RAM setup: 0x%x\n",
-                guest_image_checksum(_guest_initrd_image, initrd_size));
-    }
-
-    aos_guest_boot_images_t images = {
-        .kernel = _guest_kernel_image,
-        .kernel_size = kernel_size,
-        .dtb = _guest_dtb_image,
-        .dtb_size = dtb_size,
-        .initrd = _guest_initrd_image,
-        .initrd_size = initrd_size,
-    };
-#ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
-    /* Boot the last restored copy itself, not a third replacement copy. */
-    enum aos_guest_boot_error boot_error = AOS_GUEST_BOOT_OK;
-#else
-    enum aos_guest_boot_error boot_error = aos_guest_boot_prepare(
-        &g_guest_boot_plan, g_guest_profile, guest_ram_vaddr, &images,
-        g_guest_profile->kernel_format == AOS_GUEST_KERNEL_LINUX_IMAGE
-            ? linux_setup_images : NULL);
-#endif
-    if (boot_error != AOS_GUEST_BOOT_OK) {
-        LOG_VMM_ERR("Failed to initialise guest images\n");
-        return;
-    }
-    uintptr_t kernel_hva = g_guest_boot_plan.kernel_hva;
-    uintptr_t dtb_hva = g_guest_boot_plan.dtb_hva;
-    uintptr_t initrd_hva = g_guest_boot_plan.initrd_hva;
-    uintptr_t kernel_pc = g_guest_boot_plan.entry_gpa;
-    uint32_t initrd_guest_checksum = guest_image_checksum(
-        (const void *)initrd_hva, initrd_size);
-    uint32_t kernel_guest_checksum =
-        guest_image_checksum((const void *)kernel_hva, kernel_size);
-    uint32_t dtb_guest_checksum =
-        guest_image_checksum((const void *)dtb_hva, dtb_size);
-    if (initrd_size > 0u) {
-        LOG_VMM("  Initrd guest checksum:  0x%x\n", initrd_guest_checksum);
-    }
-    LOG_VMM("  Kernel checksums: source=0x%x guest=0x%x\n",
-            kernel_source_checksum, kernel_guest_checksum);
-    LOG_VMM("  DTB checksums: source=0x%x guest=0x%x\n",
-            dtb_source_checksum, dtb_guest_checksum);
-    if (initrd_source_checksum != initrd_guest_checksum ||
-        kernel_source_checksum != kernel_guest_checksum ||
-        dtb_source_checksum != dtb_guest_checksum) {
-        LOG_VMM_ERR("Guest image copy checksum mismatch\n");
-        return;
-    }
-
-    LOG_VMM("  Kernel entry: 0x%lx\n", (unsigned long)kernel_pc);
-
-    /* Initialise the virtual GIC driver */
-    bool success = virq_controller_init();
-    if (!success) {
-        LOG_VMM_ERR("Failed to initialise emulated interrupt controller\n");
-        return;
-    }
-
-    /* Register PL011 UART MMIO emulation (0x9000000 .. 0x9000FFF).
-     * A guest may use PL011 for early console output; serial_pd owns the
-     * physical IRQ.  Our handler returns FR=0x90 on reads so the kernel
-     * does not spin waiting for TX-empty. */
-    if (!fault_register_vm_exception_handler(PL011_BASE, PL011_SIZE,
-                                             pl011_fault_handler, NULL)) {
-        LOG_VMM_ERR("Failed to register PL011 UART fault handler\n");
-        return;
-    }
-    if (!virq_register(GUEST_BOOT_VCPU_ID, PL011_UART_IRQ,
-                       &pl011_irq_ack, NULL)) {
-        LOG_VMM_ERR("Failed to register PL011 UART IRQ\n");
-        return;
-    }
+    if (!guest_vmm_prepare_images(restored_images) || !guest_vmm_prepare_interrupts()) return;
 
     /*
      * Complete guest binding protocol (guest_contract.h §3.1) before boot.
@@ -1675,43 +1730,7 @@ void init(void)
         return;
     }
 
-    /* Stage profile-selected boot data from agentOS-owned block media. */
-    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
-        size_t media_initrd_size = 0u;
-        size_t initrd_capacity =
-            g_guest_profile->dtb_load_address -
-            g_guest_profile->initrd_load_address;
-        if (!aos_vmm_virtio_blk_load_iso_file(
-            g_guest_profile->media_initrd_path, initrd_hva,
-            initrd_capacity,
-            &media_initrd_size, guest_vmm_wait_blk_event)) {
-            LOG_VMM_ERR("Failed to stage profile initrd from host media\n");
-            return;
-        }
-        if (media_initrd_size > initrd_capacity ||
-            embedded_initrd_size > initrd_capacity - media_initrd_size ||
-            media_initrd_size + embedded_initrd_size >
-                g_guest_profile->initrd_max_bytes) {
-            LOG_VMM_ERR("Profile initrd plus overlay exceeds its bound\n");
-            return;
-        }
-        if (AGENTOS_GUEST_INITRD_TOTAL_BYTES != 0u &&
-            media_initrd_size + embedded_initrd_size !=
-                AGENTOS_GUEST_INITRD_TOTAL_BYTES) {
-            LOG_VMM_ERR("Profile initrd exact size does not match its checked build metadata\n");
-            return;
-        }
-        volatile uint8_t *overlay_dest =
-            (volatile uint8_t *)(initrd_hva + media_initrd_size);
-        const volatile uint8_t *overlay_src =
-            (const volatile uint8_t *)_guest_initrd_image;
-        for (size_t i = 0u; i < embedded_initrd_size; i++) {
-            overlay_dest[i] = overlay_src[i];
-        }
-        LOG_VMM("Profile initrd ready in guest RAM (%zu media + %zu overlay bytes)\n",
-                media_initrd_size, embedded_initrd_size);
-    }
-    g_guest_kernel_pc = kernel_pc;
+    if (!guest_vmm_stage_media()) return;
     g_guest_startable = true;
 #if defined(AGENTOS_GUEST_DUAL) || defined(AGENTOS_GUEST_MANAGED_BOOT)
     g_guest_state = GUEST_STATE_READY;

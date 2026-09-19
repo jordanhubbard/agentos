@@ -26,4 +26,7 @@ static inline bool aos_input_rebind_reply_valid(const input_virt_rebind_reply_t 
  * leaves execution stopped; a service-committed frame may require detach
  * and pool revocation before a new generation can be attempted. */
 bool aos_input_virt_rebind(uint32_t client, uint32_t generation);
+uint32_t aos_input_rebind_retire(aos_input_service_t *,uint64_t badge,
+    const input_virt_rebind_req_t *,size_t length);
+bool aos_input_virt_retire(uint32_t client,uint32_t generation);
 #endif

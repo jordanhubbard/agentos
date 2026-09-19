@@ -60,20 +60,22 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
             .length=sizeof(input_virt_rebind_reply_t)};
         input_virt_rebind_req_t request={0};
         uint32_t status=AOS_INPUT_BAD_REQUEST;
-        if (seL4_MessageInfo_get_label(info)==INPUT_VIRT_OP_REBIND &&
+        uint32_t op=seL4_MessageInfo_get_label(info);
+        if ((op==INPUT_VIRT_OP_REBIND || op==INPUT_VIRT_OP_RETIRE) &&
             seL4_MessageInfo_get_length(info)==_SEL4_MR_COUNT &&
-            seL4_MessageInfo_get_extraCaps(info)==1u &&
+            seL4_MessageInfo_get_extraCaps(info)==(op==INPUT_VIRT_OP_REBIND ? 1u : 0u) &&
             seL4_MessageInfo_get_capsUnwrapped(info)==0u) {
             _sel4_mrs_to_msg(&message);
-            if (message.opcode==INPUT_VIRT_OP_REBIND && message.length==sizeof(request)) {
+            if (message.opcode==op && message.length==sizeof(request)) {
                 __builtin_memcpy(&request,message.data,sizeof(request));
-                status=rebind(&service,badge,&request);
+                status=op==INPUT_VIRT_OP_REBIND ? rebind(&service,badge,&request) :
+                    aos_input_rebind_retire(&service,badge,&request,sizeof(request));
             }
         }
         input_virt_rebind_reply_t result={status,INPUT_VIRT_REBIND_VERSION,request.generation};
         __builtin_memcpy(reply.data,&result,sizeof(result));
         _sel4_msg_to_mrs(&reply);
-        bool success=status==AOS_INPUT_OK;
+        bool success=status==AOS_INPUT_OK && op==INPUT_VIRT_OP_REBIND;
         seL4_SetCap(0,success ? AOS_QUEUE_SERVICE_FRAME_BASE+request.client : seL4_CapNull);
         seL4_MessageInfo_t response=seL4_MessageInfo_new(SEL4_ERR_OK,0u,success ? 1u : 0u,_SEL4_MR_COUNT);
 #ifdef CONFIG_KERNEL_MCS

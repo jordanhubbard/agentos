@@ -58,6 +58,23 @@ int main(void)
     assert(aos_input_rebind_validate(&service,owner,&request,sizeof(request))==AOS_INPUT_WOULD_BLOCK);
     request.generation=2;
     assert(aos_input_rebind_validate(&service,owner,&request,sizeof(request))==AOS_INPUT_OK);
+    /* Failed mapping cleanup needs no access through the VMM's old frame. */
+    assert(aos_input_rebind_retire(&service,owner,&request,sizeof(request))==AOS_INPUT_OK);
+    aos_input_client_region_t second={0};
+    assert(aos_input_rebind_commit(&service,owner,&request,sizeof(request),&second)==AOS_INPUT_OK);
+    before=service;
+    assert(aos_input_rebind_retire(&service,virt_client_badge(1),&request,sizeof(request))==AOS_INPUT_DENIED);
+    request.generation=1;
+    assert(aos_input_rebind_retire(&service,owner,&request,sizeof(request))==AOS_INPUT_DENIED);
+    assert(!memcmp(&before,&service,sizeof(service)));
+    request.generation=2;
+    assert(aos_input_rebind_retire(&service,owner,&request,sizeof(request)-1)==AOS_INPUT_BAD_REQUEST);
+    service.releasing[0]=3;
+    service.held[0][0][0]=1;
+    assert(aos_input_rebind_retire(&service,owner,&request,sizeof(request))==AOS_INPUT_OK);
+    assert(!service.clients[0] && second.detach.ack && !service.releasing[0] && !service.held[0][0][0]);
+    assert(service.clients[1]==&peer);
+    assert(aos_input_rebind_retire(&service,owner,&request,sizeof(request))==AOS_INPUT_OK);
     service.generation[0]=UINT32_MAX;
     request.generation=0;
     assert(aos_input_rebind_validate(&service,owner,&request,sizeof(request))==AOS_INPUT_WOULD_BLOCK);
