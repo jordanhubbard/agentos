@@ -15,6 +15,14 @@
     "log_sha256": "7557cb41b4cd546406d11217b607e9fc1a101c98713dcfe74af7c9680329ac83",
     "scope": "Host checks, ARM and generic x86 root-task boots, ARM guest network/block/console proofs"
   },
+  "restored_cadence_full_gate": {
+    "revision": "cb210b8",
+    "command": "make gate SEL4_SDK=/home/jkh/.cache/agentos/sdk-make-cr2-20260919/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+    "exit_code": 0,
+    "log_sha256": "d87e2a59e5cff3005db78c853f3936fbdd5bad16755314291b7037200b82520b",
+    "scope": "Complete host suite, ARM and generic x86 root-task boots, ARM guest network/block/console proofs after restoring the qualified CC cadence and correcting the host teardown retry",
+    "related_qualification": "sdk-cadence-control.json records separate Intel SMP and Spark graphics lifecycle acceptance and the shorter-cadence failures"
+  },
   "artifact_staging": {
     "initial_attempt": "Intentionally stopped during external Buildroot download, before guest I/O qualification; not a passing gate",
     "replacement": "Existing local kernel and initrd verified against exact profile pins, then copied into the fresh worktree before the complete gate was rerun",
