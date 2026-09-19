@@ -882,6 +882,14 @@ test-x86-composition-host:
 
 test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
 test-host: test-guest-execution-host
+test-host: test-fault-registry-host
+.PHONY: test-fault-registry-host
+test-fault-registry-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Itests/platform/virtio-stubs -Itests/platform/mmio-stubs -Ilibvmm/include \
+		tests/platform/test_fault_registry.c libvmm/src/arch/aarch64/fault_registry.c \
+		-o $(BUILD_TMP_DIR)/test_fault_registry
+	$(BUILD_TMP_DIR)/test_fault_registry
 test-host: test-x86-guest-objects-host
 test-host: test-untyped-host
 test-host: test-loader-page-tables-host

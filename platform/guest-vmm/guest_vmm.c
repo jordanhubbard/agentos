@@ -1223,6 +1223,7 @@ static bool guest_vmm_teardown(void)
     }
     if (done && (!probe_passed || !paging_passed)) return false;
 #endif
+    if (done) fault_reset_vm_exception_handlers();
     if (done) microkit_dbg_puts("guest teardown: execution and RAM revoked\n");
     if (done) microkit_dbg_puts("guest teardown: private paging revoked\n");
     if (done) microkit_dbg_puts("guest teardown: network queues detached\n");

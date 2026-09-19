@@ -22,6 +22,11 @@ bool fault_handle_vm_exception(size_t vcpu_id);
 
 typedef bool (*vm_exception_handler_t)(size_t vcpu_id, size_t offset, size_t fsr, seL4_UserContext *regs, void *data);
 bool fault_register_vm_exception_handler(uintptr_t base, size_t size, vm_exception_handler_t callback, void *data);
+/* Per-VMM registry: reset only after guest execution stops and all device
+ * accesses drain. Register every device again before permitting guest entry. */
+void fault_reset_vm_exception_handlers(void);
+bool fault_handle_registered_vm_exceptions(size_t vcpu_id, uintptr_t addr,
+                                          size_t fsr, seL4_UserContext *regs);
 
 /* Helpers for emulating the fault and getting fault details */
 seL4_Word *decode_rt(size_t reg_idx, seL4_UserContext *regs);

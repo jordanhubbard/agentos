@@ -9,6 +9,7 @@
 LIBVMM_DIR :=  $(abspath $(dir $(lastword ${MAKEFILE_LIST})))
 
 AARCH64_FILES := src/arch/aarch64/fault.c \
+                 src/arch/aarch64/fault_registry.c \
 		 src/arch/aarch64/linux.c \
 		 src/arch/aarch64/cpuif.c \
 		 src/arch/aarch64/psci.c \
