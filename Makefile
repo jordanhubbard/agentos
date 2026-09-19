@@ -1277,6 +1277,15 @@ test-ramfb-host:
 	$(BUILD_TMP_DIR)/test_ramfb_mmio
 
 .PHONY: test-virtio-gpu-host
+# Override only for an explicit before/after CPU benchmark; qualification
+# always compiles the source in this checkout.
+GPU_2D_BENCH_SOURCE ?= libvmm/src/virtio/gpu_2d.c
+.PHONY: benchmark-virtio-gpu-host
+benchmark-virtio-gpu-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -O2 -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -DAGENTOS_GPU_BENCHMARK -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu.c libvmm/src/virtio/gpa.c $(GPU_2D_BENCH_SOURCE) libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/bench_virtio_gpu_2d
+	$(BUILD_TMP_DIR)/bench_virtio_gpu_2d
+
 test-virtio-gpu-host:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu.c libvmm/src/virtio/gpa.c libvmm/src/virtio/gpu_2d.c libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_virtio_gpu_2d

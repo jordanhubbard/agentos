@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static aos_fb_client_t service;
 static aos_gpu_framebuffer_t adapter;
@@ -168,6 +169,67 @@ static void full_frame_test(void)
     }
     assert(virtio_gpu_2d_reset(&gpu));
 }
+static void fragmented_frame_test(void)
+{
+    /* 3 KiB segments deliberately split 4 KiB rows. Permuting their guest
+     * addresses also prevents a contiguous-memory shortcut from passing. */
+    const unsigned width=1024, height=768, segment=3072, entries=1024;
+    begin(GPU_RESOURCE_CREATE_2D); put32(24,92); put32(28,2);
+    put32(32,width); put32(36,height);
+    assert(run(40)==GPU_OK_NODATA);
+    begin(GPU_RESOURCE_ATTACH_BACKING); put32(24,92); put32(28,entries);
+    for (unsigned i=0;i<entries;++i) {
+        put64(32+16*i,0x80000000u+((i*17u)%entries)*segment);
+        put32(40+16*i,segment);
+    }
+    assert(run(32+16*entries)==GPU_OK_NODATA);
+    for (unsigned i=0;i<sizeof(guest);++i) guest[i]=(uint8_t)(i*17u+i/4096u);
+    begin(GPU_SET_SCANOUT); put32(32,width); put32(36,height); put32(44,92);
+    assert(run(48)==GPU_OK_NODATA);
+#ifdef AGENTOS_GPU_BENCHMARK
+    /* CPU-only replay through the real engine, adapter and framebuffer queue.
+     * It excludes target IPC/scheduling, scanout and observer transfer. The
+     * exact full/cropped pixel assertions below still run after measurement. */
+    begin(GPU_TRANSFER_TO_HOST_2D); put32(32,width); put32(36,height); put32(48,92);
+    struct timespec start, end;
+    assert(clock_gettime(CLOCK_MONOTONIC,&start)==0);
+    const unsigned frames=200;
+    unsigned before=calls;
+    for (unsigned i=0;i<frames;++i) assert(run(56)==GPU_OK_NODATA);
+    assert(clock_gettime(CLOCK_MONOTONIC,&end)==0 && calls-before==frames*48);
+    double seconds=(double)(end.tv_sec-start.tv_sec)+(end.tv_nsec-start.tv_nsec)/1e9;
+    printf("fragmented_gpu_transfer frames=%u backing_entries=%u queue_writes=%u seconds=%.6f\n",
+           frames,entries,calls-before,seconds);
+#endif
+    for (unsigned cropped=0;cropped<2;++cropped) {
+        if (cropped)
+            for (unsigned i=0;i<sizeof(guest);++i) guest[i]^=0xa7u;
+        begin(GPU_TRANSFER_TO_HOST_2D); put32(48,92);
+        put32(24,cropped ? 17 : 0); put32(28,cropped ? 9 : 0);
+        put32(32,cropped ? 512 : width); put32(36,cropped ? 32 : height);
+        put64(40,cropped ? (9u*width+17u)*4u : 0);
+        assert(run(56)==GPU_OK_NODATA);
+        begin(GPU_RESOURCE_FLUSH); put32(32,width); put32(36,height); put32(40,92);
+        assert(run(48)==GPU_OK_NODATA);
+        for (unsigned row=0;row<height;row+=16) {
+            aos_fb_request_t q={.version=AOS_FB_VERSION,.operation=AOS_FB_READ,
+                .handle=adapter.scanout_handle,.y=row,.width=width,.height=16,
+                .data_length=65536};
+            aos_fb_response_t p;
+            assert(exchange(NULL,&q,&p) && p.status==AOS_FB_OK);
+            for (unsigned byte=0;byte<65536;++byte) {
+                unsigned logical=row*width*4u+byte;
+                unsigned physical=((logical/segment*17u)%entries)*segment+logical%segment;
+                uint8_t expected=(uint8_t)(physical*17u+physical/4096u);
+                unsigned y=logical/(width*4u), x=(logical/4u)%width;
+                if (cropped && y>=9 && y<41 && x>=17 && x<529) expected^=0xa7u;
+                assert(service.region->data[byte]==expected);
+            }
+        }
+    }
+    assert(virtio_gpu_2d_reset(&gpu));
+}
+
 int main(void)
 {
     aos_fb_region_t *region=calloc(1,sizeof(*region));
@@ -260,6 +322,7 @@ int main(void)
     assert(run(32)==GPU_OK_NODATA && !adapter.cursor_handle);
     assert(virtio_gpu_2d_reset(&gpu));
     full_frame_test();
+    fragmented_frame_test();
     create_resource(31);
     fail_exchange=true;
     assert(!virtio_gpu_quiesce(&device));

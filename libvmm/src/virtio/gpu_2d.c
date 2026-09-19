@@ -60,18 +60,30 @@ bool virtio_gpu_2d_reset(virtio_gpu_2d_t *g)
     }
     return ok;
 }
+typedef struct {
+    unsigned entry;
+    uint64_t base;
+} backing_cursor_t;
+
 static bool backing_read(virtio_gpu_2d_t *g, virtio_gpu_resource_t *s,
-                         uint64_t offset, uint8_t *out, uint32_t length)
+                         backing_cursor_t *cursor, uint64_t offset,
+                         uint8_t *out, uint32_t length)
 {
-    for (unsigned i = 0; i < s->entries && length; ++i) {
-        const virtio_gpu_backing_t *b = &s->backing[i];
-        if (offset >= b->length) { offset -= b->length; continue; }
-        uint32_t n = b->length - (uint32_t)offset;
+    while (cursor->entry < s->entries && length) {
+        const virtio_gpu_backing_t *b = &s->backing[cursor->entry];
+        if (offset < cursor->base) return false;
+        uint64_t within = offset - cursor->base;
+        if (within >= b->length) {
+            cursor->base += b->length;
+            ++cursor->entry;
+            continue;
+        }
+        uint32_t n = b->length - (uint32_t)within;
         if (n > length) n = length;
-        if (!g->ops.read_gpa(g->context, b->address + offset, out, n)) return false;
+        if (!g->ops.read_gpa(g->context, b->address + within, out, n)) return false;
         out += n;
         length -= n;
-        offset = 0;
+        offset += n;
     }
     return length == 0;
 }
@@ -181,13 +193,16 @@ static uint32_t command(virtio_gpu_2d_t *g, const uint8_t *q, size_t n, uint8_t 
             return GPU_ERR_INVALID_PARAMETER;
         const uint32_t row_bytes = r.width * 4u;
         const uint32_t batch_rows = sizeof(g->transfer) / row_bytes;
+        /* Row offsets increase even for cropped transfers. Walk the immutable
+         * backing list once per command instead of rescanning it per row. */
+        backing_cursor_t cursor = {0};
         for (uint32_t row = 0; row < r.height;) {
             uint32_t rows = r.height - row;
             if (rows > batch_rows) rows = batch_rows;
             /* Preserve backing stride while packing the destination payload.
              * Batches stay within the canonical queue's fixed byte bound. */
             for (uint32_t i = 0; i < rows; ++i)
-                if (!backing_read(g, s, offset + (row + i) * stride,
+                if (!backing_read(g, s, &cursor, offset + (row + i) * stride,
                                   g->transfer + i * row_bytes, row_bytes))
                     return GPU_ERR_INVALID_PARAMETER;
             virtio_gpu_rect_t batch = {r.x, r.y + row, r.width, rows};

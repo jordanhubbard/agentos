@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-19",
+  "status": "host_and_full_gate_pass_target_graphics_pending",
+  "task": "task_00ba79d8c6024e43a5cb3d7dffff9696",
+  "base_revision": "b781265",
+  "source_state": "Gate ran on the uncommitted optimization subsequently committed with this receipt; source hash below binds the changed target file. This is not final clean-revision release qualification.",
+  "source_file": "libvmm/src/virtio/gpu_2d.c",
+  "before_sha256": "0a8f11cb5224a1f8b7a1fc4ede648b5e2685c35df9aac182e3715c16e66b719a",
+  "after_sha256": "4a6cca6bea402f345555e2d3dfdb01f77ea4b90f6a1c385592baac9a1897de60",
+  "change": "Keep a command-local cursor into immutable resource backing entries while increasing row offsets are read. Preserve bounds, stride, pixel bytes, callback validation and 64 KiB queue writes.",
+  "tests": [
+    "make test-virtio-gpu-host passed",
+    "Added exact full-frame and cropped-update comparisons using 1024 permuted 3 KiB backing segments; rows cross entries and unchanged pixels remain intact.",
+    "make gate with approved CR2 SDK passed: full host suite (115 Rust tests), ARM and generic x86 root-task boots, guest net/block/console."
+  ],
+  "benchmark": {
+    "scope": "Single before/after host CPU replay through real GPU engine, adapter and framebuffer queue; excludes target IPC/scheduling, scanout and observer transport.",
+    "command_before": "make benchmark-virtio-gpu-host GPU_2D_BENCH_SOURCE=/tmp/agentos-gpu-backing-baseline.c",
+    "command_after": "make benchmark-virtio-gpu-host",
+    "frames": 200,
+    "backing_entries": 1024,
+    "queue_writes": 9600,
+    "before_seconds": 0.088589,
+    "after_seconds": 0.03095,
+    "exact_pixel_checks": "passed for both source versions"
+  },
+  "gate_command": "make gate SEL4_SDK=/home/jkh/.cache/agentos/sdk-make-cr2-20260919/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+  "gate_log_sha256": "723eb4b1d2d027ab621be0e03ff24644ba94781a26b1da1ef947d317d7b849f3",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-gpu-backing-walk",
+  "limitations": [
+    "Target graphics timing and input qualification pending.",
+    "No claim this fixes cold SSH session setup.",
+    "No changed qualification deadline or guest policy.",
+    "No native GUI or full release acceptance."
+  ]
+}
