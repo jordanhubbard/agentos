@@ -55,6 +55,7 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #else
 #define X86_GUEST_OWNER 0u
 #endif
+#define X86_GUEST_SERIAL_VA (AOS_SERIAL_SHMEM_VA + X86_GUEST_OWNER * AOS_SERIAL_FRAME_SIZE)
 
 /* The executor's native state and sequence survive guest reconstruction. All
  * device/lifecycle handling stays in this coordinator, between synchronous
@@ -443,7 +444,7 @@ static bool reset_step(void *context, aos_x86_recreate_step_t step, uint32_t gen
     case AOS_X86_RECREATE_CONSOLE:
         if (!aos_vmm_virtio_console_recreate()) return false;
         *reset_context.serial = (aos_serial_endpoint_t){
-            .channel = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA)};
+            .channel = aos_serial_channel_at(X86_GUEST_SERIAL_VA)};
         return true;
     case AOS_X86_RECREATE_BIND:
         return aos_x86_guest_objects_bind() == seL4_NoError;
@@ -916,7 +917,7 @@ static bool terminal_teardown_proof(void)
                 AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup) return false;
         teardown_proof_stage = 120u + pass * 100u;
         if (!aos_serial_virt_rebind(0u, pass + 1u)) return false;
-        aos_serial_channel_t rebuilt_serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
+        aos_serial_channel_t rebuilt_serial = aos_serial_channel_at(X86_GUEST_SERIAL_VA);
         static const uint8_t message[] = "x86-recreated-serial\n";
         teardown_proof_stage = 121u + pass * 100u;
         if (aos_serial_queue_write(&rebuilt_serial.from_guest, message,
@@ -1261,7 +1262,7 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
     serial_attached = true;
     /* Root gives this VMM only its own client page. Check the newly retyped
      * queue state before any producer can publish console bytes. */
-    aos_serial_channel_t serial = aos_serial_channel_at(AOS_SERIAL_SHMEM_VA);
+    aos_serial_channel_t serial = aos_serial_channel_at(X86_GUEST_SERIAL_VA);
     aos_serial_endpoint_t serial_endpoint = {.channel=serial};
     if (__atomic_load_n(&serial.to_guest.queue->head, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&serial.to_guest.queue->tail, __ATOMIC_ACQUIRE) ||

@@ -130,3 +130,10 @@ Use two independently seeded disks, not the small blank disk used solely
 for driver initialization qualification. This image build does not prove
 concurrent boot, network routing, peer progress during teardown or persistent
 storage isolation. Those runtime results remain required for v0.4.
+
+The first two-guest image booted all 13 PDs, but secondary CREATE did not
+complete. The native-fault diagnostic build identified secondary service 17
+reading `0x2a001004` in the serial startup check. Root maps that guest's serial
+page at `0x2a200000`; the coordinator still used the primary base. Startup
+and reconstruction now select the serial page by compiled guest slot. The
+observed fault is retained; the corrected guest path requires native retesting.
