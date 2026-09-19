@@ -4380,6 +4380,24 @@ fn wait_for_guest_console_login_on_cc(
         qemu,
     )?;
     if profile.is_some_and(|plan| plan.devices.iter().any(|device| device == "gpu")) {
+        if let Some(plan) =
+            profile.filter(|plan| plan.test.iter().any(|s| s.action == "assert-frame-pixels"))
+        {
+            // A console marker after fbdev write/sleep is not a display fence.
+            // Observe the declared pixels while the guest can still complete
+            // asynchronous GPU work, before freezing it for scanout comparison.
+            let (attempts, sequence) = wait_frame_ready(
+                || {
+                    ensure_qemu_running(qemu, "waiting for expected frame pixels")?;
+                    probe_guest_frame_pixels(cc, guest_handle, &plan.test)
+                },
+                timeout
+                    .saturating_sub(start.elapsed())
+                    .min(Duration::from_secs(30)),
+                Duration::from_millis(250),
+            )?;
+            println!("[xtask:test] expected framebuffer pixels ready: probes={attempts}, sequence={sequence}");
+        }
         if display_log.is_some() {
             suspend_guest_via_cc(cc, guest_handle)?;
             println!("[xtask:test] guest suspended for coherent framebuffer/scanout comparison");
@@ -4578,6 +4596,99 @@ fn verify_frame_pixels(
         }
     }
     Ok(checked)
+}
+
+fn wait_frame_ready(
+    mut probe: impl FnMut() -> anyhow::Result<(bool, u64)>,
+    timeout: Duration,
+    interval: Duration,
+) -> anyhow::Result<(usize, u64)> {
+    let started = Instant::now();
+    let mut attempts = 0;
+    let mut last_sequence = None;
+    // Deadline is checked between bounded CC exchanges; neither timeout nor
+    // malformed protocol data is converted into a retryable pixel mismatch.
+    while attempts < 120 && started.elapsed() < timeout {
+        attempts += 1;
+        let (ready, sequence) = probe()?;
+        last_sequence = Some(sequence);
+        if ready {
+            return Ok((attempts, sequence));
+        }
+        println!("[xtask:test] expected framebuffer pixels not ready: probe={attempts}, sequence={sequence}");
+        std::thread::sleep(interval.min(timeout.saturating_sub(started.elapsed())));
+    }
+    anyhow::bail!("expected framebuffer pixels did not become ready after {attempts} probes; last sequence={last_sequence:?}, elapsed={:?}", started.elapsed())
+}
+
+fn probe_guest_frame_pixels(
+    cc: &mut CcClient,
+    handle: u32,
+    steps: &[cmd_guest_profile::RecipeStep],
+) -> anyhow::Result<(bool, u64)> {
+    let mut request = [0u8; 32];
+    wr32(&mut request, 0, 1);
+    wr32(&mut request, 4, 1);
+    let snapshot = cc.call(0x261d, handle, 0, 0, &request)?;
+    // NO_FRAME is a valid not-ready result before the first completed flip.
+    // Accept only its exact empty response shape; all other errors propagate.
+    if snapshot.mr == [CC_OK, 40, 3, 1]
+        && rd32(&snapshot.shmem, 0) == 1
+        && rd32(&snapshot.shmem, 4) == 3
+        && snapshot.shmem[8..40].iter().all(|byte| *byte == 0)
+    {
+        return Ok((false, 0));
+    }
+    let identity = decode_frame_reply(&snapshot, 0)?;
+    let (cookie, sequence, width, height) = identity;
+    anyhow::ensure!(
+        cookie != 0 && sequence != 0,
+        "frame readiness has no committed snapshot"
+    );
+    request[16..24].copy_from_slice(&cookie.to_le_bytes());
+    let checked = (|| -> anyhow::Result<bool> {
+        let mut ready = true;
+        let mut checked_pixels = 0;
+        for step in steps.iter().filter(|s| s.action == "assert-frame-pixels") {
+            let (x, y, expected) = cmd_guest_profile::frame_pixel_expectation(step)?;
+            anyhow::ensure!(
+                y < height as usize && x + expected.len() <= width as usize,
+                "expected pixel span lies outside readiness snapshot"
+            );
+            let start = (y * width as usize + x) * 4;
+            for (chunk_index, pixels) in expected.chunks((CC_WIRE_SHMEM_SIZE - 40) / 4).enumerate()
+            {
+                let offset = start + chunk_index * ((CC_WIRE_SHMEM_SIZE - 40) / 4) * 4;
+                wr32(&mut request, 4, 2);
+                wr32(&mut request, 24, offset as u32);
+                wr32(&mut request, 28, (pixels.len() * 4) as u32);
+                let reply = cc.call(0x261d, 0, 0, 0, &request)?;
+                anyhow::ensure!(
+                    decode_frame_reply(&reply, pixels.len() * 4)? == identity,
+                    "frame readiness snapshot changed during read"
+                );
+                for (rgb, bytes) in pixels.iter().zip(reply.shmem[40..].chunks_exact(4)) {
+                    ready &= *rgb == [bytes[2], bytes[1], bytes[0]];
+                    checked_pixels += 1;
+                }
+            }
+        }
+        anyhow::ensure!(
+            checked_pixels > 0,
+            "frame readiness requires declared pixels"
+        );
+        Ok(ready)
+    })();
+    wr32(&mut request, 4, 3);
+    wr32(&mut request, 24, 0);
+    wr32(&mut request, 28, 0);
+    let released = cc.call(0x261d, 0, 0, 0, &request);
+    let ready = checked?;
+    anyhow::ensure!(
+        decode_frame_reply(&released?, 0)? == (0, sequence, width, height),
+        "frame readiness snapshot release failed"
+    );
+    Ok((ready, sequence))
 }
 
 fn capture_guest_frame(
@@ -6673,6 +6784,135 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn frame_readiness_wait_is_bounded_and_does_not_retry_errors() {
+        let mut calls = 0;
+        assert_eq!(
+            wait_frame_ready(
+                || {
+                    calls += 1;
+                    Ok((calls == 3, calls as u64))
+                },
+                Duration::from_secs(1),
+                Duration::ZERO
+            )
+            .unwrap(),
+            (3, 3)
+        );
+        assert_eq!(calls, 3);
+        calls = 0;
+        assert!(wait_frame_ready(
+            || {
+                calls += 1;
+                anyhow::bail!("malformed reply")
+            },
+            Duration::from_secs(1),
+            Duration::ZERO
+        )
+        .is_err());
+        assert_eq!(calls, 1);
+        calls = 0;
+        assert!(wait_frame_ready(
+            || {
+                calls += 1;
+                Ok((false, 7))
+            },
+            Duration::from_secs(1),
+            Duration::ZERO
+        )
+        .is_err());
+        assert_eq!(calls, 120);
+        assert!(wait_frame_ready(
+            || panic!("expired deadline must not probe"),
+            Duration::ZERO,
+            Duration::ZERO
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn frame_readiness_probes_exact_pixels_and_releases_failed_reads() {
+        use std::os::unix::net::UnixListener;
+        for mode in 0..6 {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("cc.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                for operation in 1..=3 {
+                    let mut q = [0u8; CC_REQ_SIZE];
+                    stream.read_exact(&mut q).unwrap();
+                    assert_eq!(rd32(&q, 0), 0x261d);
+                    assert_eq!(rd32(&q, 20), operation);
+                    assert_eq!(rd32(&q, 4), if operation == 1 { 19 } else { 0 });
+                    assert_eq!(rd32(&q, 40), 0);
+                    assert_eq!(rd32(&q, 44), if operation == 2 { 8 } else { 0 });
+                    assert_eq!(
+                        u64::from_le_bytes(q[32..40].try_into().unwrap()),
+                        if operation == 1 { 0 } else { 5 }
+                    );
+                    let mut p = [0u8; CC_REPLY_SIZE];
+                    if mode >= 4 {
+                        assert_eq!(operation, 1);
+                        for (offset, value) in [(4, 40), (8, 3), (12, 1), (16, 1), (20, 3)] {
+                            wr32(&mut p, offset, value);
+                        }
+                        if mode == 5 {
+                            p[32] = 1;
+                        } // malformed nonempty NO_FRAME
+                        stream.write_all(&p).unwrap();
+                        return;
+                    }
+                    let length = if operation == 2 { 8 } else { 0 };
+                    for (offset, value) in [
+                        (4, 40 + length),
+                        (12, 1),
+                        (16, 1),
+                        (28, length),
+                        (48, 2),
+                        (52, 1),
+                    ] {
+                        wr32(&mut p, offset, value);
+                    }
+                    let cookie: u64 = if operation == 3 {
+                        if mode == 3 {
+                            5
+                        } else {
+                            0
+                        }
+                    } else if operation == 2 && mode == 2 {
+                        6
+                    } else {
+                        5
+                    };
+                    p[32..40].copy_from_slice(&cookie.to_le_bytes());
+                    p[40..48].copy_from_slice(&17u64.to_le_bytes());
+                    if operation == 2 && mode != 0 {
+                        p[56..64].copy_from_slice(&[17, 34, 51, 0, 68, 85, 102, 0]);
+                    }
+                    stream.write_all(&p).unwrap();
+                }
+            });
+            let step = cmd_guest_profile::RecipeStep {
+                action: "assert-frame-pixels".into(),
+                args: [("x", "0"), ("y", "0"), ("rgb", "332211665544")]
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v.into()))
+                    .collect(),
+            };
+            let mut cc = CcClient::connect(&socket).unwrap();
+            let result = probe_guest_frame_pixels(&mut cc, 19, &[step]);
+            if mode == 4 {
+                assert_eq!(result.unwrap(), (false, 0));
+            } else if mode < 2 {
+                assert_eq!(result.unwrap(), (mode == 1, 17));
+            } else {
+                assert!(result.is_err());
+            }
+            server.join().unwrap();
+        }
+    }
 
     #[test]
     fn frame_pixel_proof_rejects_wrong_colors_bounds_and_malformed_expectations() {
