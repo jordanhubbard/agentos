@@ -5591,6 +5591,7 @@ fn prove_profile_input(
         InputProofMode::Events,
         InputProofMode::Release,
         InputProofMode::Backpressure,
+        InputProofMode::Disconnect,
     ] {
         prove_profile_input_pass(repo, socket, log, helper, profile, key, qemu, mode)?;
     }
@@ -5605,6 +5606,7 @@ enum InputProofMode {
     Events,
     Release,
     Backpressure,
+    Disconnect,
 }
 
 impl InputProofMode {
@@ -5613,6 +5615,7 @@ impl InputProofMode {
             Self::Events => "explicit-events",
             Self::Release => "server-held-state",
             Self::Backpressure => "paused-backpressure",
+            Self::Disconnect => "connection-close",
         }
     }
     fn stem(self) -> &'static str {
@@ -5620,88 +5623,95 @@ impl InputProofMode {
             Self::Events => "input",
             Self::Release => "input-release",
             Self::Backpressure => "input-backpressure",
+            Self::Disconnect => "input-disconnect",
         }
     }
 }
 
-// Use the public CLI's no-replay input path and inspect its structured result.
+// Keep a single public binary CC connection for each input session.
 // A transport error or malformed reply must never count as queue backpressure.
-fn input_cli_result(
-    repo: &Path,
-    socket: &Path,
-    stderr: &std::fs::File,
+fn input_session_result(
+    cc: &mut CcClient,
     qemu: &mut Child,
     release: bool,
     device: &str,
     events: &[&str],
 ) -> anyhow::Result<u32> {
-    let mut child = ChildGuard::new(
-        std::process::Command::new(repo.join("tools/agentctl/agentctl"))
-            .env("CC_PD_SOCK", socket)
-            .args([
-                "--batch",
-                if release {
-                    "input-release"
-                } else {
-                    "input-batch"
-                },
-                "0",
-                device,
-            ])
-            .args(events)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(stderr.try_clone()?))
-            .spawn()?,
+    ensure_qemu_running(qemu, "submitting guest input")?;
+    let query = input_session_request(release, device, events)?;
+    let reply = cc.call(0x261e, 0, 0, 0, &query)?;
+    validate_input_session_reply(&reply, &query)
+}
+
+fn input_session_request(
+    release: bool,
+    device: &str,
+    events: &[&str],
+) -> anyhow::Result<[u8; 544]> {
+    anyhow::ensure!(
+        events.len() % 3 == 0 && events.len() / 3 < 64,
+        "invalid event count"
     );
-    let mut output = child.stdout.take().context("input CLI stdout missing")?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let exit = loop {
-        anyhow::ensure!(
-            qemu.try_wait()?.is_none(),
-            "QEMU exited during input backpressure proof"
-        );
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        anyhow::ensure!(Instant::now() < deadline, "input CLI deadline expired");
-        std::thread::sleep(Duration::from_millis(20));
+    anyhow::ensure!(
+        !release || events.is_empty(),
+        "release must not contain events"
+    );
+    anyhow::ensure!(
+        release || !events.is_empty(),
+        "input batch must contain events"
+    );
+    let device = match device {
+        "keyboard" => 0,
+        "pointer" => 1,
+        _ => anyhow::bail!("unknown input device"),
     };
-    let mut bytes = Vec::new();
-    output.by_ref().take(1025).read_to_end(&mut bytes)?;
-    anyhow::ensure!(bytes.len() <= 1024, "input CLI output exceeded limit");
-    let reply: serde_json::Value = serde_json::from_slice(&bytes)
-        .context("input CLI did not return a validated input response")?;
-    let status = reply["status"].as_u64().context("input status missing")?;
-    let accepted = reply["accepted"]
-        .as_u64()
-        .context("input accepted count missing")?;
+    let mut query = [0u8; 544];
+    wr32(&mut query, 0, if release { 2 } else { 1 });
+    wr32(&mut query, 12, device);
+    wr32(
+        &mut query,
+        16,
+        if release {
+            0
+        } else {
+            events.len() as u32 / 3 + 1
+        },
+    );
+    for (i, event) in events.chunks_exact(3).enumerate() {
+        let kind: u16 = event[0].parse()?;
+        let code: u16 = event[1].parse()?;
+        let value: i32 = event[2].parse()?;
+        anyhow::ensure!(kind != 0, "SYN_REPORT is appended by the harness");
+        query[32 + i * 8..34 + i * 8].copy_from_slice(&kind.to_le_bytes());
+        query[34 + i * 8..36 + i * 8].copy_from_slice(&code.to_le_bytes());
+        wr32(&mut query, 36 + i * 8, value as u32);
+    }
+    Ok(query)
+}
+
+fn validate_input_session_reply(reply: &CcReply, query: &[u8; 544]) -> anyhow::Result<u32> {
+    anyhow::ensure!(reply.shmem.len() >= 16, "truncated input response");
+    let version = rd32(query, 0);
+    let status = rd32(&reply.shmem, 8);
+    let accepted = rd32(&reply.shmem, 12);
+    anyhow::ensure!(
+        reply.mr == [CC_OK, 16, status, version]
+            && rd32(&reply.shmem, 0) == version
+            && rd32(&reply.shmem, 4) == 0,
+        "invalid input response identity"
+    );
     anyhow::ensure!(
         status == 0 || status == 3,
         "unexpected input status {status}"
     );
-    anyhow::ensure!(
-        exit.code() == Some(if status == 0 { 0 } else { 1 }),
-        "input status/exit mismatch"
-    );
-    let expected = if release || status != 0 {
-        0
-    } else {
-        events.len() / 3 + 1
-    };
-    anyhow::ensure!(accepted == expected as u64, "input accepted count mismatch");
-    Ok(status as u32)
+    let expected = if status == 0 { rd32(query, 16) } else { 0 };
+    anyhow::ensure!(accepted == expected, "input accepted count mismatch");
+    Ok(status)
 }
 
-fn prove_paused_input_release(
-    repo: &Path,
-    socket: &Path,
-    stderr: &std::fs::File,
-    qemu: &mut Child,
-) -> anyhow::Result<[usize; 2]> {
+fn prove_paused_input_release(socket: &Path, qemu: &mut Child) -> anyhow::Result<[usize; 2]> {
     let mut cc = CcClient::connect(socket)?;
     suspend_guest_via_cc(&mut cc, 0)?;
-    drop(cc);
     let result = (|| {
         let mut accepted = [0usize; 2];
         for (device, (name, code, rejected_code)) in
@@ -5716,7 +5726,7 @@ fn prove_paused_input_release(
                 let events: Vec<&str> = (0..repeats).flat_map(|_| ["1", *code, "1"]).collect();
                 let mut blocked = false;
                 for _ in 0..64 {
-                    if input_cli_result(repo, socket, stderr, qemu, false, name, &events)? == 3 {
+                    if input_session_result(&mut cc, qemu, false, name, &events)? == 3 {
                         blocked = true;
                         break;
                     }
@@ -5727,27 +5737,19 @@ fn prove_paused_input_release(
             anyhow::ensure!(accepted[device] > 0, "{name} accepted no held-state input");
             for _ in 0..2 {
                 anyhow::ensure!(
-                    input_cli_result(repo, socket, stderr, qemu, true, name, &[])? == 0,
+                    input_session_result(&mut cc, qemu, true, name, &[])? == 0,
                     "{name} release was not retained"
                 );
             }
             anyhow::ensure!(
-                input_cli_result(
-                    repo,
-                    socket,
-                    stderr,
-                    qemu,
-                    false,
-                    name,
-                    &["1", rejected_code, "1"]
-                )? == 3,
+                input_session_result(&mut cc, qemu, false, name, &["1", rejected_code, "1"])? == 3,
                 "new {name} input bypassed pending release"
             );
         }
         Ok(accepted)
     })();
     // Resume even after a failed assertion, before awaiting guest SSH cleanup.
-    let resumed = CcClient::connect(socket).and_then(|mut cc| resume_guest_via_cc(&mut cc, 0));
+    let resumed = resume_guest_via_cc(&mut cc, 0);
     let accepted = result?;
     resumed?;
     Ok(accepted)
@@ -5830,10 +5832,11 @@ fn prove_profile_input_pass(
         &["pointer", "1", "272", "0"],
     ];
     let accepted_while_paused = if mode == InputProofMode::Backpressure {
-        Some(prove_paused_input_release(repo, socket, &stderr, qemu)?)
+        Some(prove_paused_input_release(socket, qemu)?)
     } else {
         None
     };
+    let mut input_connection = None;
     for (index, batch) in batches
         .iter()
         .enumerate()
@@ -5841,33 +5844,27 @@ fn prove_profile_input_pass(
     {
         // The same guest checker requires identical evdev output. In the
         // release pass only the server knows which key/button must be released.
-        let releasing = mode == InputProofMode::Release && (index == 1 || index == 3);
-        let args = if releasing { &batch[..1] } else { *batch };
-        let mut submit = ChildGuard::new(
-            std::process::Command::new(repo.join("tools/agentctl/agentctl"))
-                .env("CC_PD_SOCK", socket)
-                .args([
-                    "--batch",
-                    if releasing {
-                        "input-release"
-                    } else {
-                        "input-batch"
-                    },
-                    "0",
-                ])
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::from(stderr.try_clone()?))
-                .spawn()?,
+        let up = index == 1 || index == 3;
+        if mode == InputProofMode::Disconnect && up {
+            // No key-up, release request, or protocol goodbye: EOF is the
+            // only trigger available to CC for the guest-observed release.
+            drop(input_connection.take());
+            continue;
+        }
+        if input_connection.is_none() {
+            input_connection = Some(CcClient::connect(socket)?);
+        }
+        let releasing = mode == InputProofMode::Release && up;
+        anyhow::ensure!(
+            input_session_result(
+                input_connection.as_mut().unwrap(),
+                qemu,
+                releasing,
+                batch[0],
+                if releasing { &[] } else { &batch[1..] },
+            )? == 0,
+            "guest input was not accepted"
         );
-        // agentctl validates the exact response and never retries input batches.
-        wait_qualification_child(&mut submit, qemu, 30).with_context(|| {
-            format!(
-                "input batch submission failed; see {}",
-                stderr_path.display()
-            )
-        })?;
     }
     expect_input_probe_line(
         &receive,
@@ -5888,9 +5885,10 @@ fn prove_profile_input_pass(
         "helper_sha256": sha256_bytes(&std::fs::read(helper)?),
         "keyboard_events": 4, "pointer_events": if mode == InputProofMode::Backpressure { 4 } else { 7 },
         "accepted_batches_while_paused": accepted_while_paused,
-        "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+        "scope": "persistent public binary CC connection through virtio-input to exact Linux evdev packets",
         "release_mode": mode.name(),
-        "excludes": ["physical input devices", "peer guest isolation", "guest recreation", "abrupt disconnect"],
+        "connection_close_without_release_request": mode == InputProofMode::Disconnect,
+        "excludes": ["physical input devices", "peer guest isolation", "guest recreation", "GUI process termination", "paused disconnect"],
         "stderr": stderr_path,
     });
     std::fs::write(
@@ -7369,6 +7367,37 @@ mod tests {
         }
         assert_eq!(frame_count, 3);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn input_session_wire_and_reply_contract() {
+        let query = input_session_request(false, "pointer", &["2", "1", "-9"]).unwrap();
+        assert_eq!(rd32(&query, 0), 1);
+        assert_eq!(rd32(&query, 12), 1);
+        assert_eq!(rd32(&query, 16), 2);
+        assert_eq!(&query[32..40], &[2, 0, 1, 0, 247, 255, 255, 255]);
+        assert!(query[40..].iter().all(|v| *v == 0));
+        let mut reply = CcReply {
+            mr: [CC_OK, 16, 0, 1],
+            shmem: vec![0; 16],
+        };
+        wr32(&mut reply.shmem, 0, 1);
+        wr32(&mut reply.shmem, 12, 2);
+        assert_eq!(validate_input_session_reply(&reply, &query).unwrap(), 0);
+        wr32(&mut reply.shmem, 12, 1);
+        assert!(validate_input_session_reply(&reply, &query).is_err());
+        reply.mr[2] = 3;
+        wr32(&mut reply.shmem, 8, 3);
+        wr32(&mut reply.shmem, 12, 0);
+        assert_eq!(validate_input_session_reply(&reply, &query).unwrap(), 3);
+        wr32(&mut reply.shmem, 4, 1);
+        assert!(validate_input_session_reply(&reply, &query).is_err());
+        let release = input_session_request(true, "keyboard", &[]).unwrap();
+        assert_eq!(rd32(&release, 0), 2);
+        assert!(release[4..].iter().all(|v| *v == 0));
+        assert!(input_session_request(true, "keyboard", &["1", "183", "1"]).is_err());
+        assert!(input_session_request(false, "keyboard", &[]).is_err());
+        assert!(input_session_request(false, "pointer", &["1", "272", "2147483648"]).is_err());
     }
 
     #[test]
