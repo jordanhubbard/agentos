@@ -11,6 +11,7 @@
 
 static unsigned calls, fail_at;
 static bool allocated[5], mapped, configured, bound, exported[4];
+static bool gic_tables, temporary_gic_mapping;
 static bool fail(void) { return ++calls == fail_at; }
 seL4_Error seL4_CNode_Revoke(seL4_CPtr root, seL4_Word slot, uint8_t depth)
 {
@@ -18,7 +19,7 @@ seL4_Error seL4_CNode_Revoke(seL4_CPtr root, seL4_Word slot, uint8_t depth)
     assert(depth == AOS_GUEST_RAM_CNODE_BITS);
     if (fail()) return 1;
     memset(allocated, 0, sizeof(allocated));
-    mapped = configured = bound = false;
+    mapped = configured = bound = temporary_gic_mapping = false;
     exported[0] = exported[1] = false;
     return 0;
 }
@@ -37,15 +38,26 @@ seL4_Error seL4_Untyped_Retype(seL4_CPtr pool, seL4_Word type, seL4_Word bits,
 }
 bool aos_vmm_guest_page_map(uintptr_t frame, uintptr_t address)
 {
-    assert(allocated[4] && frame == AOS_GUEST_IPC_FRAME_CAP && address == AOS_GUEST_IPC_BUFFER_VA);
+    assert(allocated[4] && frame == AOS_GUEST_IPC_FRAME_CAP && !mapped);
+    assert(address == AOS_GUEST_GIC_IPA || address == AOS_GUEST_IPC_BUFFER_VA);
+    assert(!temporary_gic_mapping);
+    if (address == AOS_GUEST_IPC_BUFFER_VA) assert(gic_tables);
     if (fail()) return false;
-    mapped = true;
+    if (address == AOS_GUEST_GIC_IPA) gic_tables = temporary_gic_mapping = true;
+    else mapped = true;
     return true;
+}
+seL4_Error seL4_ARM_Page_Unmap(seL4_CPtr frame)
+{
+    assert(frame == AOS_GUEST_IPC_FRAME_CAP && temporary_gic_mapping && !mapped);
+    if (fail()) return 1;
+    temporary_gic_mapping = false;
+    return 0;
 }
 seL4_Error seL4_TCB_Configure(seL4_CPtr tcb, seL4_CPtr cnode, seL4_Word guard,
     seL4_CPtr space, seL4_Word data, seL4_Word ipc, seL4_CPtr frame)
 {
-    assert(allocated[1] && mapped && tcb == AOS_GUEST_TCB_CAP_BASE);
+    assert(allocated[1] && mapped && gic_tables && !temporary_gic_mapping && tcb == AOS_GUEST_TCB_CAP_BASE);
     assert(cnode == AOS_GUEST_RAM_SELF_CNODE && guard == 64 - AOS_GUEST_RAM_CNODE_BITS);
     assert(space == AOS_GUEST_RAM_GUEST_VSPACE && !data);
     assert(ipc == AOS_GUEST_IPC_BUFFER_VA && frame == AOS_GUEST_IPC_FRAME_CAP);
@@ -78,6 +90,7 @@ static void cleanup(void)
     assert(aos_vmm_guest_execution_release());
     /* The caller must also revoke paging to remove the VSpace export. */
     exported[3] = false;
+    gic_tables = false;
     assert(exported[2] && !configured && !bound && !mapped);
 }
 int main(void)

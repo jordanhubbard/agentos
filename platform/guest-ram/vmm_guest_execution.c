@@ -41,7 +41,13 @@ bool aos_vmm_guest_execution_rebuild(void)
         !allocate(seL4_ARM_VCPUObject, 0, AOS_GUEST_VCPU_CAP_BASE) ||
         !allocate(seL4_SchedContextObject, seL4_MinSchedContextBits, AOS_GUEST_SC_CAP_BASE) ||
         !allocate(seL4_ARM_SmallPageObject, 0, AOS_GUEST_IPC_FRAME_CAP)) return false;
-    if (!aos_vmm_guest_page_map(AOS_GUEST_IPC_FRAME_CAP, AOS_GUEST_IPC_BUFFER_VA)) return false;
+    /* Populate the GIC's intermediate tables before exporting this VSpace.
+     * The manager owns the device frame and only performs the final mapping.
+     * Borrow the fresh IPC frame while execution is stopped, then leave the
+     * GIC leaf empty. No device capability enters the VMM. */
+    if (!aos_vmm_guest_page_map(AOS_GUEST_IPC_FRAME_CAP, AOS_GUEST_GIC_IPA) ||
+        seL4_ARM_Page_Unmap(AOS_GUEST_IPC_FRAME_CAP) != seL4_NoError ||
+        !aos_vmm_guest_page_map(AOS_GUEST_IPC_FRAME_CAP, AOS_GUEST_IPC_BUFFER_VA)) return false;
     if (seL4_TCB_Configure(AOS_GUEST_TCB_CAP_BASE, AOS_GUEST_RAM_SELF_CNODE,
             seL4_WordBits - AOS_GUEST_RAM_CNODE_BITS, AOS_GUEST_RAM_GUEST_VSPACE,
             0, AOS_GUEST_IPC_BUFFER_VA, AOS_GUEST_IPC_FRAME_CAP) != seL4_NoError ||

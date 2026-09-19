@@ -20,4 +20,5 @@ seL4_Error seL4_Untyped_Retype(seL4_CPtr, seL4_Word, seL4_Word, seL4_CPtr, seL4_
 seL4_Error seL4_CNode_Copy(seL4_CPtr, seL4_Word, uint8_t, seL4_CPtr, seL4_Word, uint8_t, seL4_Word);
 seL4_Error seL4_TCB_Configure(seL4_CPtr, seL4_CPtr, seL4_Word, seL4_CPtr, seL4_Word, seL4_Word, seL4_CPtr);
 seL4_Error seL4_ARM_VCPU_SetTCB(seL4_CPtr, seL4_CPtr);
+seL4_Error seL4_ARM_Page_Unmap(seL4_CPtr);
 #endif
