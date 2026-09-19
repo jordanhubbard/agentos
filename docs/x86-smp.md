@@ -7,9 +7,13 @@ between bounded VM entries; this is virtual SMP, not a claim of simultaneous
 execution on two host cores.
 
 Run the qualification on an Intel Linux host with working nested VMX:
+build the approved [isolated CR2 candidate](x86-cr2-candidate.md) first.
+The unmodified 2.3.0 SDK has not passed this SMP gate.
 
 ```sh
-make gate-x86_64-smp SEL4_SDK_VERSION=2.3.0 \
+make gate-x86_64-smp \
+  SEL4_SDK=/path/to/microkit-sdk-2.3.1-agentos-e60776ac-cr2 \
+  SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 \
   X86_ROOT_DISK=/path/to/disposable-seeded-debian.raw \
   X86_SSH_KEY=/path/to/guest-identity \
   X86_SSH_PORT=12224 \

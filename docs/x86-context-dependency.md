@@ -1,8 +1,12 @@
 # x86 architectural context dependency
 
-Linux SMP remains unqualified. The strict gate rejects recurring userspace
-faults with both the reused disk and a journal-recovered baseline copy.
-Disabling nested VMX VPID does not eliminate the failure.
+The approved CR2 candidate passed the strict Linux SMP gate in both managed
+generations at `de1458c`; see the
+[Intel receipt](evidence/2026-09-19-spark/cr2-intel-smp.json). Default SDK
+adoption and final release qualification remain incomplete. Earlier strict
+runs rejected recurring userspace faults with both the reused disk and a
+journal-recovered baseline copy. Disabling nested VMX VPID did not eliminate
+those failures.
 
 At `41b3e9b`, native scratch-RAM tests pass for distinct GPR, x87 and SSE
 values across two runner switches. Separate guest page-table roots also
@@ -22,23 +26,24 @@ and VCPU invocation implementation found no per-VCPU CR2 storage or
 save/restore path, nor a userspace invocation for managing that register.
 CR2 contains the guest page-fault address. This is an architectural-context
 dependency and a plausible explanation for the observed Linux faults;
-causation has not been established by a corrected-kernel comparison.
+the passing candidate comparison does not establish that it explains every
+previous Linux fault.
 
 ## Upstream VMX fix found on 2026-09-19
 
 Upstream [seL4 PR 1732](https://github.com/seL4/seL4/pull/1732) is merged at
 `e60776acc31097ca063806c257f07a3ec05eacf8`. It fixes VM execution when
 multiple VCPUs share a physical core, as well as host SMP VMX setup. This is
-a more direct supported dependency candidate than a new CR2 implementation.
-It has not yet been qualified with agentOS; the cause of our Linux failure
-remains unproven.
+the first upstream dependency candidate tested before applying the CR2 patch.
+It passed managed single-CPU qualification but still failed the strict SMP
+workload during boot, as recorded below.
 
 [Microkit 2.3.1 release notes](https://docs.sel4.systems/releases/microkit/2.3.1)
 explicitly exclude this fix and warn about multiple VMs and x86 VTX SMP.
 Installing the 2.3.1 release archive alone therefore cannot qualify this
 dependency. The release points to PR 1732 for the future correction.
 
-The proposed qualification candidate uses these exact, unmodified upstream
+The unmodified qualification candidate uses these exact upstream
 source revisions:
 
 | Component | Revision |
@@ -101,8 +106,8 @@ baseline disk's public host key was then read through a read-only loop device
 and matched the observed key. Both managed one-CPU generations then passed
 at `4143e14`. The strict SMP gate at that revision failed before the workload:
 `systemd-remount` faulted in the dynamic loader on CPU 0. The unmodified VMX
-fix is therefore insufficient for this workload. The CR2 comparison remains
-pending; the failure alone does not establish its cause.
+fix is therefore insufficient for this workload. The subsequent CR2 candidate
+passed both SMP generations; the failure alone does not establish its cause.
 
 The first Spark gate stopped at kernel entry: the new ARM kernel's ELF entry
 is `0xffc0000000`, while the loader used a fixed `0x8060000000` branch target

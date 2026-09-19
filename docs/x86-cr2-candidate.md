@@ -116,6 +116,10 @@ destruction/recreation and stale-handle rejection. The
 exact binaries and retained evidence. Journald replaced an unclean user
 journal; this is not proof of orderly guest reboot or storage durability.
 
-Patched managed one-CPU Debian qualification, final integrated revision gates,
-required CI/review and the rest of v0.4 remain outstanding. Do not infer crash
-causation or SMP acceptance from this patch, its build or the shorter gates.
+The [patched one-CPU regression](evidence/2026-09-19-spark/cr2-intel-single-cpu.json)
+also passed both managed Debian generations at `de1458c`, including pinned
+SSH, console input, teardown and stale-handle rejection.
+
+Final integrated revision gates, required CI/review and the rest of v0.4
+remain outstanding. Do not infer crash causation from the candidate passes
+or broaden their acceptance beyond the recorded workloads and lifecycle.
