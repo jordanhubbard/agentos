@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "date": "2026-09-19",
-  "status": "host_gate_and_clean_revision_graphics_input_pass",
+  "status": "clean_revision_gate_and_graphics_input_pass",
   "task": "task_00ba79d8c6024e43a5cb3d7dffff9696",
   "base_revision": "b781265",
   "source_state": "Gate ran on the uncommitted optimization subsequently committed with this receipt; source hash below binds the changed target file. This is not final clean-revision release qualification.",
@@ -37,8 +37,8 @@
     "revision": "a7ed99f2ae456d2084a4b27b39993048a6576bdb",
     "source_tree_clean": true,
     "profile": "debian-nocloud-graphics-input-aarch64",
-    "status": "passed_and_retained_for_native_clients",
-    "harness_exit": "pending_retained_guest_shutdown",
+    "status": "pass",
+    "harness_exit": 0,
     "frame_dimensions": [
       1024,
       768
@@ -52,6 +52,15 @@
       "server-held-release",
       "paused-backpressure"
     ],
-    "snapshot_archive_sha256": "bc7dfb35f7b7f39f0fa6e08b9e9a3b0fdb1260e21275a8f88adb9ee1c159396f"
+    "snapshot_archive_sha256": "bc7dfb35f7b7f39f0fa6e08b9e9a3b0fdb1260e21275a8f88adb9ee1c159396f",
+    "final_log_sha256": "c2bd57ee9d7cb94a5c282ece523ffb27a2a3d93340786c436b2067966181e538"
+  },
+  "clean_revision_gate": {
+    "revision": "1f40ff220b35dcac7558f4520f805d0e71d095c5",
+    "source_tree_clean": true,
+    "command": "make gate SEL4_SDK=/home/jkh/.cache/agentos/sdk-make-cr2-20260919/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+    "exit_code": 0,
+    "log_sha256": "0e100f732daf06d191dc17448c9ec66878c6b81accc185cea28f09cefdb93531",
+    "scope": "Full make gate: host tests, ARM and generic x86 root boots, canonical guest net/block/console; not Intel VMX or release acceptance"
   }
 }
