@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-19",
+  "status": "failed_guest_retained",
+  "task": "task_00ba79d8c6024e43a5cb3d7dffff9696",
+  "runtime_revision": "b16bfe214f9dbc04fdde6265bd343bd058135563",
+  "host_cli_revision": "eb60715",
+  "host_cli_note": "Rebuilt during boot for console data_hex diagnostics; input submission behavior unchanged.",
+  "image_sha256": "46d80edde5227fe407a176d067528aefc87a3b76071f152eb8d1283e9951f9d5",
+  "cli_sha256": "59afbb7e6300433041db182a3006b7983a7993757bb97752c887ab3d30103f39",
+  "command": "make demo-debian-nocloud-graphics SEL4_SDK=/home/jkh/.cache/agentos/sdk-make-cr2-20260919/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 QEMU_TEST_SSH_PORT=12284 QEMU_TEST_TIMEOUT=1800 QEMU_RETAIN_FAILED=1",
+  "passed": [
+    "Pinned SSH readiness on third attempt",
+    "Graphics preparation",
+    "1024x768 frame capture in 13 seconds",
+    "All 786432 QEMU scanout pixels matched",
+    "Post-resume input helper upload"
+  ],
+  "failed": "Input probe readiness: SSH exit 255, Timeout, server 127.0.0.1 not responding.",
+  "retention": "Harness printed FAILED guest retained for diagnosis; QEMU 3442670 remains live. Final harness exit has not been exercised.",
+  "diagnostics": [
+    "CC guest status returned RUNNING; console drain returned cloud-init completion and login, with a subsequent empty chunk.",
+    "Fresh SSH with the same 5-second/one-missed-reply keepalive authenticated then timed out after requesting a session channel.",
+    "Separate diagnostic SSH with 30-second/two-missed-reply keepalive completed in 51.1 seconds after authentication and returned uptime, network counters and service logs. This is not qualification.",
+    "Guest interface counters showed zero errors/drops; guest load average was 3.98/5.23/4.22 on one vCPU.",
+    "Guest workload snapshot showed busy kernel workers and no pending systemd jobs; later stacks caught workers idle and did not establish a cause.",
+    "Interrupt snapshot included timer, network, block and graphics interrupts with Err=0; no new dmesg warning/error output.",
+    "Short host vmstat sample showed 77-80 percent idle CPU and no swap I/O; it does not cover the entire failure interval."
+  ],
+  "frame_sha256": "ad15c2d7ae529b74289668f9e50594cb4f02ca2a48be57b5de82da248d581065",
+  "log_sha256": "1599ef90e0a3ee34464797c60d39de980a0dbd9b330c3e55803dcc6684208797",
+  "diagnostic_ssh_output_sha256": "73bfaf3f1ab369950b6ee804c2b8c391dff582ef29c61cf71ab9644657fdbadd",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
+  "snapshot_archive": "retained-diagnostic-snapshot.tar.gz",
+  "snapshot_sha256": "4e91b56bc86a9d15a3f1040a0195994ca2d4faea328249e659fa10cf4d368762",
+  "limitations": [
+    "Cause of delayed SSH session setup remains unresolved.",
+    "No changed qualification deadline or assertion.",
+    "Native GUI not launched in this run.",
+    "No final integration or release acceptance."
+  ]
+}
