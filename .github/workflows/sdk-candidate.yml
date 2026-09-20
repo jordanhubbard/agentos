@@ -35,6 +35,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sdk-toolchain"
           ln -s /usr/bin/aarch64-linux-gnu-gcc-13 "$RUNNER_TEMP/sdk-toolchain/aarch64-linux-gnu-gcc"
           ln -s /usr/bin/x86_64-linux-gnu-gcc-13 "$RUNNER_TEMP/sdk-toolchain/x86_64-linux-gnu-gcc"
+          ln -s /usr/bin/aarch64-linux-gnu-cpp-13 "$RUNNER_TEMP/sdk-toolchain/aarch64-linux-gnu-cpp"
+          ln -s /usr/bin/x86_64-linux-gnu-cpp-13 "$RUNNER_TEMP/sdk-toolchain/x86_64-linux-gnu-cpp"
           echo "$RUNNER_TEMP/sdk-toolchain" >> "$GITHUB_PATH"
           python3 -m venv "$RUNNER_TEMP/sdk-venv"
           "$RUNNER_TEMP/sdk-venv/bin/pip" install -r tools/sdk/python-requirements.txt
