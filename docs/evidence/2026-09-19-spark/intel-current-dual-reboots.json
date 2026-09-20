@@ -1,0 +1,22 @@
+{
+  "status": "passed concurrent filesystem payload checks and individual ordinary reboots",
+  "source_revision": "030915a37e351546bdc81ecfee512c56d5e5d958",
+  "host": "madmax Intel Linux, nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "root_elf_sha256": "d35f0b247330f1ce86356cc16eecd2e765d0a789dcaefa74079764f8ba0ca1c9",
+  "guests": "Two fresh Debian guests admitted as handles 1 and 2; separate console-enrolled pinned host keys, IP addresses and writable disks",
+  "proof": "Both guests passed concurrent authenticated SSH. Each wrote and synced a distinct 2 MiB payload at the same filesystem path. Each subsequently rebooted through systemctl reboot, returned a changed boot ID and retained its exact payload hash. The peer remained authenticated and returned its unchanged boot ID and payload at the observation checkpoint.",
+  "primary": {
+    "before_boot_id": "47d34614-e383-4de5-a3cc-48544f512800",
+    "after_boot_id": "513ceae0-5ff1-4bb5-99e8-d1657810174b",
+    "payload_sha256": "5b766f6d76a999636fd93b4e039d5a32187f84a19c0950449f0c721da0223914"
+  },
+  "secondary": {
+    "before_boot_id": "d100f35f-3660-44aa-a9d8-0a0561a40a43",
+    "after_boot_id": "8e29e14e-7c5b-4470-bdd5-272c322f62ac",
+    "payload_sha256": "7995dfceebfb9fa8972d361d53d899f6e268ecd6d823b5737198041fabc02e20"
+  },
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-reboots-030915a/receipts.tar.gz",
+  "archive_sha256": "e9dc71763314676ea0634ff1b6cdcdf86403bb4c5443b31a46478cbe9056a412",
+  "limits": "Filesystem payload checks do not prove equal raw LBA isolation, capability bounds, crash recovery or managed recreation. Peer checks are discrete observations, not uninterrupted throughput. Initial primary reboot SSH consumed the outer script stdin, so no request exit receipt was recorded; changed boot ID and subsequent pinned payload proof establish the reboot outcome independently. Running disks were not copied."
+}

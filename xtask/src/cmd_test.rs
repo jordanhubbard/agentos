@@ -3134,7 +3134,13 @@ fn seeded_recreation_via_cc(
         }
         let stdout = round_log.with_extension("witness.stdout");
         let stderr = round_log.with_extension("witness.stderr");
-        let mut command = seeded_ssh_command(key, port, &known, &ssh.account);
+        let mut command = seeded_ssh_command_with_liveness(
+            key,
+            port,
+            &known,
+            &ssh.account,
+            SSH_SESSION_LIVENESS_OPTIONS,
+        );
         command
             .arg("sudo -n timeout 60 sh -s")
             .stdin(Stdio::piped())
@@ -3428,6 +3434,22 @@ fn x86_retained_host_key(path: &Path, port: u16) -> anyhow::Result<String> {
 }
 
 fn seeded_ssh_command(key: &Path, port: u16, known: &Path, account: &str) -> std::process::Command {
+    seeded_ssh_command_with_liveness(
+        key,
+        port,
+        known,
+        account,
+        &["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"],
+    )
+}
+
+fn seeded_ssh_command_with_liveness(
+    key: &Path,
+    port: u16,
+    known: &Path,
+    account: &str,
+    liveness: &[&str],
+) -> std::process::Command {
     let mut command = std::process::Command::new("ssh");
     command
         .args([
@@ -3453,11 +3475,8 @@ fn seeded_ssh_command(key: &Path, port: u16, known: &Path, account: &str) -> std
             "HostKeyAlgorithms=ssh-ed25519",
             "-o",
             "ConnectTimeout=10",
-            "-o",
-            "ServerAliveInterval=5",
-            "-o",
-            "ServerAliveCountMax=2",
         ])
+        .args(liveness)
         .arg("-o")
         .arg(format!("UserKnownHostsFile={}", known.display()))
         .arg("-i")

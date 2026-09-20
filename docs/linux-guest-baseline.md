@@ -277,4 +277,7 @@ passed the same-revision and QEMU-configuration checks: Ubuntu measured
 1,061,081 ms and Debian 753,604 ms from launch request through authenticated
 SSH. These include provisioning and host scheduling, impose no performance
 threshold, and do not establish second-boot persistence or full baseline
-promotion. The second Debian cold boot remains separately qualified.
+promotion. The [second Debian cold boot](evidence/2026-09-19-spark/debian-current-cold-boots.json)
+subsequently passed in 623,489 ms with the retained disk and original pinned
+host identity. This is a sync-and-cold-boot result, not orderly shutdown or
+managed guest-slot recreation.
