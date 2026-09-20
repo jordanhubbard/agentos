@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   sdk:
     name: Rebuild and package qualified SDK kernels
