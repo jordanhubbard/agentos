@@ -71,7 +71,7 @@ variables above, and an optional fresh `SDK_CANDIDATE_PACKAGE_DIR` (default
 - `agentos-sdk-targets.tar.gz`, containing the three-board target bundle;
 - `microkit-source.tar.gz` and `sel4-source.tar.gz` at the pinned commits,
   retaining their source licenses;
-- the CR2 patch, kernel hash manifest, Make recipe, pinned Python build
+- the CR2 patch, kernel hash manifest, Make recipe, C header normalizer, pinned Python build
   dependencies and this build description;
 - `SHA256SUMS` covering all those artifacts.
 
@@ -80,8 +80,17 @@ the extracted seL4 tree before rebuilding. The recipe's normal clone-based
 build remains the qualified build path. GNU tar and gzip normalize package
 metadata; this does not claim whole-SDK reproducibility across compilers.
 The target archive retains the usual `microkit-sdk-<version>` top directory.
-It has no host Microkit executable and must not be advertised as a complete
-upstream SDK. Packaging is local only and preserves existing output. CI
+It contains each board's kernel and complete include tree, plus VERSION and
+licenses. agentOS supplies its own loader and does not link libmicrokit, so
+unused Microkit loader/monitor/library binaries and examples are excluded.
+The C packaging helper replaces only the absolute source path in the first
+comment of the six generated bitfield headers with its repository-relative
+path. All declarations and the original installed SDK remain unchanged.
+Archive metadata and modes are normalized. This produced identical target
+archives from the independent Spark and Intel builds; the pinned SHA-256 is
+`52c5283ef20a2f28b7c22c26601265b7fd67eda578226892480d257cfd184567`.
+It must not be advertised as a complete upstream SDK.
+Packaging is local only and preserves existing output. CI
 distribution and default adoption remain pending.
 
 The normal installer can consume the qualified target archive explicitly:

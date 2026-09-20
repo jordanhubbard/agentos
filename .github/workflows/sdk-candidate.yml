@@ -83,6 +83,7 @@ jobs:
             build/sdk-candidate-package/*.mk
             build/sdk-candidate-package/*.md
             build/sdk-candidate-package/*.txt
+            build/sdk-candidate-package/*.c
             build/sdk-candidate-package/SHA256SUMS
           if-no-files-found: error
       - name: Retain build evidence

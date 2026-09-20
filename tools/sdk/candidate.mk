@@ -6,7 +6,7 @@ SDK_CANDIDATE_SEL4_SOURCE ?=
 SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
-SDK_CANDIDATE_ARCHIVE_SHA256 := 6a7db9fbb4b0480bad0d66ef2408d7ade71000ce894fac1323bb8397387d1eee
+SDK_CANDIDATE_ARCHIVE_SHA256 := 52c5283ef20a2f28b7c22c26601265b7fd67eda578226892480d257cfd184567
 SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/build/sdk-candidate-package
 
 .PHONY: sdk-candidate sdk-candidate-check
@@ -21,8 +21,22 @@ sdk-candidate-package: sdk-candidate-check
 	@mkdir "$(SDK_CANDIDATE_PACKAGE_DIR)" || \
 		{ echo 'Package output must be fresh; existing results are preserved'; exit 1; }
 	@mkdir "$(SDK_CANDIDATE_PACKAGE_DIR)/stage"
-	cp -a "$(SEL4_SDK)" "$(SDK_CANDIDATE_PACKAGE_DIR)/stage/microkit-sdk-$(SDK_CANDIDATE_VERSION)"
-	tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
+	cc -std=c11 -Wall -Wextra -Werror "$(SDK_CANDIDATE_REPO)/tools/sdk/normalize-header.c" \
+		-o "$(SDK_CANDIDATE_PACKAGE_DIR)/normalize-header"
+	@set -eu; stage="$(SDK_CANDIDATE_PACKAGE_DIR)/stage/microkit-sdk-$(SDK_CANDIDATE_VERSION)"; \
+		mkdir "$$stage"; \
+		cp -a "$(SEL4_SDK)/VERSION" "$(SEL4_SDK)/LICENSE.md" "$(SEL4_SDK)/LICENSES" "$$stage/"; \
+		for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
+			mkdir -p "$$stage/board/$$board/release/elf"; \
+			cp -a "$(SEL4_SDK)/board/$$board/release/elf/sel4.elf" "$$stage/board/$$board/release/elf/"; \
+			cp -a "$(SEL4_SDK)/board/$$board/release/include" "$$stage/board/$$board/release/"; \
+			for header in sel4/shared_types_gen.h sel4/sel4_arch/types_gen.h; do \
+				file="$$stage/board/$$board/release/include/$$header"; \
+				"$(SDK_CANDIDATE_PACKAGE_DIR)/normalize-header" "$$file" "$$file.tmp"; \
+				mv "$$file.tmp" "$$file"; \
+			done; \
+		done
+	tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu --mode='u=rwX,go=rX' \
 		-cf "$(SDK_CANDIDATE_PACKAGE_DIR)/agentos-sdk-targets.tar" \
 		-C "$(SDK_CANDIDATE_PACKAGE_DIR)/stage" "microkit-sdk-$(SDK_CANDIDATE_VERSION)"
 	gzip -n "$(SDK_CANDIDATE_PACKAGE_DIR)/agentos-sdk-targets.tar"
@@ -36,8 +50,9 @@ sdk-candidate-package: sdk-candidate-check
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256" \
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/candidate.mk" \
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/python-requirements.txt" \
+		"$(SDK_CANDIDATE_REPO)/tools/sdk/normalize-header.c" \
 		"$(SDK_CANDIDATE_REPO)/docs/x86-cr2-candidate.md" "$(SDK_CANDIDATE_PACKAGE_DIR)/"
-	cd "$(SDK_CANDIDATE_PACKAGE_DIR)" && sha256sum *.tar.gz *.patch *.sha256 *.mk *.md *.txt > SHA256SUMS
+	cd "$(SDK_CANDIDATE_PACKAGE_DIR)" && sha256sum *.tar.gz *.patch *.sha256 *.mk *.md *.txt *.c > SHA256SUMS
 	@echo 'Candidate artifacts packaged locally; publication and default adoption remain separate.'
 
 # Check the selected installed candidate before accepting it as a build input.
