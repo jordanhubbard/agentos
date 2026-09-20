@@ -34,6 +34,9 @@ cross toolchains must be on `PATH`.
 `qemu-system-aarch64` and `dtc` must also be available: upstream extracts the
 ARM platform device tree during kernel configuration, even for this target-only
 SDK build.
+On Ubuntu with recommended packages disabled, install `ipxe-qemu` explicitly
+as well; the default QEMU network device used by upstream's DTB probe needs
+its `efi-virtio.rom`.
 
 ```sh
 make sdk-candidate \
