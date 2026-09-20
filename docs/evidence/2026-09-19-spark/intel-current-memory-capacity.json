@@ -1,0 +1,19 @@
+{
+  "status": "passed two-GiB managed recreation with measured Linux memory in both generations",
+  "source_revision": "030915a37e351546bdc81ecfee512c56d5e5d958",
+  "host": "madmax Intel Linux with nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "profile": "debian-amd64-2g.toml",
+  "command": "make gate-x86_64-cc-linux QEMU_TEST_TIMEOUT=1800 with isolated writable disk and pinned SSH host key; exact launcher and observers archived",
+  "make_exit": 0,
+  "guest_handles": [1, 2],
+  "observed_boot_ids": ["4fe1cc73-5086-4ba3-88ba-c1f09d83d05f", "006dc777-6906-41e6-92bc-abe3cb452ea8"],
+  "linux_memtotal_kib": [2017468, 2017468],
+  "observer_exit": [0, 0],
+  "proof": "Both managed generations passed pinned-key SSH, x86_64 architecture and sync assertions; binary CC create, console input echo, destroy, fresh-handle recreation and stale-handle rejection passed. Independent bounded SSH collectors retained full meminfo and distinct boot IDs and asserted MemTotal between 1900000 and 2097152 KiB. The first collector started before boot; the second started after the harness announced handle2. All observers and the QEMU were confirmed absent after completion.",
+  "root_task_sha256": "acd155144f796ac6ae856fe47c9331105618f979d7f2b36c0cb56f8fa9187e51",
+  "log_sha256": "b610e5b9f58e32c49969ce25b742c12d378c167d68e579cde91751bb4dd07263",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-resource-030915a/receipts.tar.gz",
+  "archive_sha256": "6a643c3a385a663d166fc799a96bf49fd5856ca01d637a14c0974a74df7a94b9",
+  "limits": "Measured Linux-visible capacity, not a full-memory stress workload or every resource-admission boundary. Configured RAM includes reserved memory, so MemTotal is lower than two GiB. Does not qualify larger profiles, x86 graphics, final integrated release or v0.4 completion. Archive excludes private SSH identities and disks."
+}
