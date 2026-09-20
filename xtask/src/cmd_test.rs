@@ -3808,6 +3808,8 @@ fn x86_cc_linux_probe(
     }
     let mut proofs = Vec::new();
     let mut previous_handle = None;
+    let first_known_hosts = log_path.with_extension("known_hosts");
+    let mut generation_ssh = ssh;
     for generation in 0..2 {
         x86_reject_oversized_create(&mut cc)?;
         let generation_log = if generation == 0 {
@@ -3842,8 +3844,12 @@ fn x86_cc_linux_probe(
             log_path,
             &generation_log,
             Instant::now() + timeout,
-            ssh,
+            generation_ssh,
         )?;
+        // Cloud-init prints the host key only on first boot. Recreated guests
+        // must authenticate against the key that already passed SSH, including
+        // when the caller did not supply an external known-hosts file.
+        generation_ssh = ssh.map(|(key, port, _)| (key, port, Some(first_known_hosts.as_path())));
         if let Some(payload) = smp_probe {
             let (key, port, _) = ssh.context("SMP qualification requires pinned SSH")?;
             proof.push_str("; ");

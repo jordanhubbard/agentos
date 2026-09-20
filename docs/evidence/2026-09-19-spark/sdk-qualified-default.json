@@ -23,7 +23,8 @@
     "The corrected bundle contains the three kernels, both x86 Multiboot wrappers, complete board headers, all three Microkit linker scripts, VERSION and licenses.",
     "The full corrected-bundle gate passed the host suite, ARM and x86 root boots, and ARM guest network, block and console assertions.",
     "Default installation on Spark and Intel checked all eight pinned binary/linker inputs. Direct Rust x86 boot also passed without SDK environment overrides.",
-    "Fresh packaging at 37a9eacf reproduced the pinned target archive and bundled source archives, scoped patch, input manifest, current recipe, dependency pins, normalizer and documentation; all nine distribution checksums verified."
+    "Fresh packaging at 37a9eacf reproduced the pinned target archive and bundled source archives, scoped patch, input manifest, current recipe, dependency pins, normalizer and documentation; all nine distribution checksums verified.",
+    "Native Intel packaging from its independent SDK build matched all nine Spark distribution checksums byte-for-byte. The retained intel-SHA256SUMS has SHA-256 3b326078853ac48d28c74b82172244f61a8a16b747765383ee27887ae024d195. Initial native packaging stopped at Git ownership validation; a process-scoped exception for the two recorded container-owned source clones allowed packaging without changing global Git configuration."
   ],
   "limits": "Local QEMU evidence only. Intel VMX requalification is running separately. Earlier omitted-wrapper and omitted-linker failures remain retained. Hosted CI, final integration and release publication are incomplete; the default download URL requires the v0.4.0 SDK asset to be published."
 }
