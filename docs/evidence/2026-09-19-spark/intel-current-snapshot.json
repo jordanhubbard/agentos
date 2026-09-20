@@ -12,5 +12,6 @@
   "copy_on_write": "An overlay-only file was written, synced and read back. The complete backing-file SHA256 remained unchanged. Original primary handle5 confirmed the file was absent and its original witness hash unchanged.",
   "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-snapshot-030915a/receipts.tar.gz",
   "archive_sha256": "f839f13056acc235f0d2bd285ec89b70a70aacdc8b7797979f8b41e59e581c54",
-  "limits": "Offline disk snapshots, not live memory/device snapshots. The overlay VM remains retained for further qualification; no final offline overlay integrity or interrupted-write recovery claim is made here. No private keys or disks are in the archive."
+  "followup": "intel-current-crash-recovery.json records subsequent interrupted-write recovery, normal guest teardown, empty final inventory and final offline overlay/backing checks. The disposable VM is no longer running.",
+  "limits": "Offline disk snapshots, not live memory/device snapshots. No private keys or disks are in the archive."
 }

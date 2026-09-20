@@ -1,0 +1,32 @@
+{
+  "status": "passed one disposable overlay interrupted-write recovery",
+  "source_revision": "030915a37e351546bdc81ecfee512c56d5e5d958",
+  "host": "madmax Intel Linux, nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "isolation": "Separate qcow2 overlay VM; original dual-guest VM and immutable snapshot backing retained",
+  "interruption": {
+    "qemu_pid": 2932218,
+    "before_boot_id": "56ec300a-9f2f-4e8e-8356-ee0064041d6d",
+    "workload": "dd if=/dev/zero of=/home/debian/agentos-v04-interrupted-write bs=1M count=512 conv=fsync status=progress",
+    "last_observed_bytes": 142606336,
+    "last_observed_seconds": 1,
+    "action": "Verified exact QEMU overlay argument, active writer and absence of final records-out line; sent SIGKILL to that QEMU. Writer SSH exited255.",
+    "preservation": "Confirmed QEMU no longer executing; copied interrupted overlay before recovery. qemu-img check passed without repair, and full backing-file hash was unchanged."
+  },
+  "recovery": {
+    "qemu_pid": 2963846,
+    "same_overlay": true,
+    "boot_id": "b2553483-63e8-4794-9d1c-3dbda66c729d",
+    "ssh": "Authenticated against original pinned Ed25519 host key",
+    "filesystem": "EXT4 reported recovery complete and mounted read/write",
+    "previously_synced_payload_sha256": "5b766f6d76a999636fd93b4e039d5a32187f84a19c0950449f0c721da0223914",
+    "previously_synced_overlay_file": "overlay-only-030915a",
+    "interrupted_file": "absent; unflushed file existence or content is not guaranteed",
+    "new_write": "New recovery-write-030915a file synced and read back correctly",
+    "observer_correction": "Initial bounded observer incorrectly required stat on the unflushed file and ended exit1 after40 attempts. Those failed attempts are retained. Independent recovery-proof.exit=0 asserts both previously synced witnesses, changed boot ID and a fresh synced write, while explicitly recording the interrupted file's absence.",
+    "cleanup": "DESTROY returned CC_OK, final inventory was empty, exact recovery QEMU terminated and was confirmed non-executing. Final offline overlay check passed without repair; backing-file hash remained unchanged."
+  },
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-crash-030915a/receipts.tar.gz",
+  "archive_sha256": "bf2c098cab92f0a360afc91ecbe7d4055d56bb3e2fc84f19eb12f6acd4e789e1",
+  "limits": "One abrupt outer-QEMU termination during a guest write workload. Does not prove host power-loss durability, a particular request in flight at termination, preservation of unflushed bytes, exhaustive crash boundaries, or full v0.4 acceptance. Private keys and disk images excluded from archive."
+}
