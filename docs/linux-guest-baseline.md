@@ -165,7 +165,14 @@ witness command is not retried. Evidence remains under
 `build/evidence/seeded-cold-boots-*`. The first target run at `e0d207f` wrote
 and flushed the witness, but systemd froze before login on the second boot.
 The [failure receipt](evidence/2026-09-18-spark/seeded-file-cold-boots.json)
-retains the exact scope and logs. Seeded file persistence remains unqualified.
+retains the exact scope and logs. A subsequent
+[two-boot qualification](evidence/2026-09-18-spark/seeded-file-cold-boots-completion.json)
+passed at `f5c636c` with the block-completion wake fix and original profile
+logging/deadlines. Both boots authenticated against the original SSH host key;
+the second read the exact first-boot witness without rewriting it. Host launch
+to authenticated SSH took 772,879 ms and 604,049 ms, respectively. This single
+trial qualifies that file-persistence path, not the cause of the earlier
+failure, concurrent disk isolation, guest recreation or full baseline parity.
 The profile rejects systemd's terminal `Failed to start up manager.` and
 `Freezing execution.` messages so subsequent runs report that failure without
 waiting for the authentication deadline. This changes only host-side failure
