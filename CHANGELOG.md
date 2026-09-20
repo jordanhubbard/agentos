@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-20
+
 ### Added
 
 - A VMX-backed x86 guest composition with pinned UEFI firmware, generated ACPI,
