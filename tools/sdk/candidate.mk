@@ -6,8 +6,37 @@ SDK_CANDIDATE_SEL4_SOURCE ?=
 SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
+SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/build/sdk-candidate-package
 
 .PHONY: sdk-candidate sdk-candidate-check
+
+# GNU tar normalizes archive metadata; gzip -n omits timestamps and filenames.
+# Keep sources and the exact patch alongside the target-only SDK archive.
+.PHONY: sdk-candidate-package
+sdk-candidate-package: sdk-candidate-check
+	@git -C "$(SDK_CANDIDATE_MICROKIT_SOURCE)" cat-file -e ec86afdcd662b5976d11d4994acf1b11a2979882^{commit}
+	@git -C "$(SDK_CANDIDATE_SEL4_SOURCE)" cat-file -e e60776acc31097ca063806c257f07a3ec05eacf8^{commit}
+	@mkdir -p "$$(dirname "$(SDK_CANDIDATE_PACKAGE_DIR)")"
+	@mkdir "$(SDK_CANDIDATE_PACKAGE_DIR)" || \
+		{ echo 'Package output must be fresh; existing results are preserved'; exit 1; }
+	@mkdir "$(SDK_CANDIDATE_PACKAGE_DIR)/stage"
+	cp -a "$(SEL4_SDK)" "$(SDK_CANDIDATE_PACKAGE_DIR)/stage/microkit-sdk-$(SDK_CANDIDATE_VERSION)"
+	tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
+		-cf "$(SDK_CANDIDATE_PACKAGE_DIR)/agentos-sdk-targets.tar" \
+		-C "$(SDK_CANDIDATE_PACKAGE_DIR)/stage" "microkit-sdk-$(SDK_CANDIDATE_VERSION)"
+	gzip -n "$(SDK_CANDIDATE_PACKAGE_DIR)/agentos-sdk-targets.tar"
+	git -C "$(SDK_CANDIDATE_MICROKIT_SOURCE)" archive --format=tar --prefix=microkit/ \
+		ec86afdcd662b5976d11d4994acf1b11a2979882 > "$(SDK_CANDIDATE_PACKAGE_DIR)/microkit-source.tar"
+	gzip -n "$(SDK_CANDIDATE_PACKAGE_DIR)/microkit-source.tar"
+	git -C "$(SDK_CANDIDATE_SEL4_SOURCE)" archive --format=tar --prefix=sel4/ \
+		e60776acc31097ca063806c257f07a3ec05eacf8 > "$(SDK_CANDIDATE_PACKAGE_DIR)/sel4-source.tar"
+	gzip -n "$(SDK_CANDIDATE_PACKAGE_DIR)/sel4-source.tar"
+	cp "$(SDK_CANDIDATE_REPO)/tools/sdk/patches/sel4-e60776ac-cr2.patch" \
+		"$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256" \
+		"$(SDK_CANDIDATE_REPO)/tools/sdk/candidate.mk" \
+		"$(SDK_CANDIDATE_REPO)/docs/x86-cr2-candidate.md" "$(SDK_CANDIDATE_PACKAGE_DIR)/"
+	cd "$(SDK_CANDIDATE_PACKAGE_DIR)" && sha256sum *.tar.gz *.patch *.sha256 *.mk *.md > SHA256SUMS
+	@echo 'Candidate artifacts packaged locally; publication and default adoption remain separate.'
 
 # Check the selected installed candidate before accepting it as a build input.
 # A directory name alone does not establish which kernel it contains.
