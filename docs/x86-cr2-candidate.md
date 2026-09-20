@@ -75,7 +75,21 @@ metadata; this does not claim whole-SDK reproducibility across compilers.
 The target archive retains the usual `microkit-sdk-<version>` top directory.
 It has no host Microkit executable and must not be advertised as a complete
 upstream SDK. Packaging is local only and preserves existing output. CI
-distribution, authenticated artifact pins and default adoption remain pending.
+distribution and default adoption remain pending.
+
+The normal installer can consume the qualified target archive explicitly:
+
+```sh
+make sdk SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 \
+  SEL4_SDK=/path/to/new/sdk-directory \
+  MICROKIT_SDK_URL=file:///absolute/path/to/agentos-sdk-targets.tar.gz
+```
+
+For this candidate version, `make sdk` verifies the pinned archive SHA-256
+before extraction, stages extraction separately, and then runs `sdk-check`.
+An existing incomplete destination is preserved and rejected. This explicit
+URL remains necessary until a canonical distribution URL is published; the
+candidate version is not an upstream Microkit release tag.
 
 The target bundle used by agentOS needs the kernel and generated headers.
 `--skip-tool` and `--skip-initialiser` avoid building unused Microkit components.

@@ -427,21 +427,30 @@ sdk:
 		echo "Use macOS or Linux for the guest demo, or set SEL4_SDK to a cross-build SDK."; \
 		exit 1; \
 	fi
-	@if [ -d "$(SEL4_SDK)/board" ]; then \
+	@set -eu; if [ -d "$(SEL4_SDK)/board" ]; then \
 		echo "✓ Microkit SDK $(SEL4_SDK_VERSION): $(SEL4_SDK)"; \
 	else \
 		echo "Downloading Microkit SDK $(SEL4_SDK_VERSION) for $(SDK_PLATFORM)..."; \
 		command -v curl >/dev/null 2>&1 || \
 			(echo "ERROR: curl is required; run 'make install' first." && exit 1); \
+		test ! -e "$(SEL4_SDK)" || \
+			{ echo "ERROR: refusing to replace incomplete SDK at $(SEL4_SDK)"; exit 1; }; \
+		mkdir -p "$$(dirname "$(SEL4_SDK)")"; \
 		tmp="$$(mktemp -t agentos-microkit-sdk.XXXXXX)"; \
 		trap 'rm -f "$$tmp"' EXIT INT TERM; \
 		curl -fsSL "$(MICROKIT_SDK_URL)" -o "$$tmp"; \
-		mkdir -p "$$(dirname "$(SEL4_SDK)")"; \
-		tar -xzf "$$tmp" -C "$$(dirname "$(SEL4_SDK)")"; \
-		test -d "$(SEL4_SDK)/board" || \
-			(echo "ERROR: SDK archive did not create $(SEL4_SDK)" && exit 1); \
+		if [ "$(SEL4_SDK_VERSION)" = "$(SDK_CANDIDATE_VERSION)" ]; then \
+			printf '%s  %s\n' "$(SDK_CANDIDATE_ARCHIVE_SHA256)" "$$tmp" | sha256sum -c -; \
+		fi; \
+		stage="$$(mktemp -d "$$(dirname "$(SEL4_SDK)")/.agentos-sdk.XXXXXX")"; \
+		trap 'rm -f "$$tmp"; rm -rf "$$stage"' EXIT INT TERM; \
+		tar -xzf "$$tmp" -C "$$stage"; \
+		test -d "$$stage/microkit-sdk-$(SEL4_SDK_VERSION)/board" || \
+			{ echo 'ERROR: SDK archive has no expected board directory'; exit 1; }; \
+		mv "$$stage/microkit-sdk-$(SEL4_SDK_VERSION)" "$(SEL4_SDK)"; \
 		echo "✓ Microkit SDK installed: $(SEL4_SDK)"; \
 	fi
+	@$(MAKE) sdk-check
 
 setup:
 	@$(MAKE) install

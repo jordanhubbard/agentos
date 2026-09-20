@@ -6,6 +6,7 @@ SDK_CANDIDATE_SEL4_SOURCE ?=
 SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
+SDK_CANDIDATE_ARCHIVE_SHA256 := 6a7db9fbb4b0480bad0d66ef2408d7ade71000ce894fac1323bb8397387d1eee
 SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/build/sdk-candidate-package
 
 .PHONY: sdk-candidate sdk-candidate-check
