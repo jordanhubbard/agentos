@@ -1,0 +1,22 @@
+{
+  "status": "cross-host packaging and installation passed; full OS gate pending",
+  "source_revision": "a574808249f51e7e5507916dd2b19afac7c6b430",
+  "sdk_version": "2.3.1-agentos-e60776ac-cr2",
+  "archive_sha256": "52c5283ef20a2f28b7c22c26601265b7fd67eda578226892480d257cfd184567",
+  "proof": [
+    "Independent Spark and Intel source builds reproduced all three pinned kernel hashes.",
+    "Packaging both SDK trees on Spark produced byte-identical target archives and nine matching distribution-file checksums.",
+    "Native Intel Ubuntu 24.04 container packaging produced the same nine checksums; checksum-enforced installation passed and the container exited zero.",
+    "Spark installation also passed using the newly pinned archive; the full OS gate is running separately at a5748082."
+  ],
+  "normalization": "Package the required kernels and complete include trees plus licenses and VERSION. Exclude unused Microkit runtime binaries/examples. Replace only the first-line absolute bitfield-generator source-path comments in six staged headers; preserve declarations and original SDK trees. Normalize tar metadata and modes.",
+  "intel": {
+    "container": "agentos-sdk-normalize-a5748082",
+    "exit": 0,
+    "source_build_receipt": "sdk-ci-intel-build.json",
+    "remote_directory": "/var/tmp/agentos-sdk-normalize-a5748082"
+  },
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/sdk-normalized",
+  "intel_receipts_sha256": "377c70cfa836a6c437b3048376b0eb826a5277a3684983c7cac5d74638faca9e",
+  "limits": "The target inputs match for these recorded builds. This does not establish a complete upstream Microkit SDK, arbitrary-toolchain reproducibility, hosted Actions execution, default SDK adoption or final release acceptance."
+}

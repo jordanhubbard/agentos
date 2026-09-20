@@ -1,0 +1,24 @@
+{
+  "status": "passed",
+  "source_revision": "67c2fe04763d6b6649ce6f46d49cfe09e8b0641e",
+  "source_tree_clean": true,
+  "command": "make gate demo-test SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 DUAL_OS_TEST_TIMEOUT=7200",
+  "make_exit": 0,
+  "scenario": "dual-release-aarch64",
+  "profiles": ["freebsd-15-aarch64", "debian-scenario-aarch64"],
+  "guest_handles": [1, 2],
+  "proof": [
+    "The full local OS gate passed before demo-test.",
+    "The canonical default scenario selected pinned seeded Debian alongside FreeBSD.",
+    "FreeBSD completed its console probe, provisioning and authenticated SSH before and after suspend/resume.",
+    "Debian passed pinned Ed25519 host-key SSH, architecture and disk-sync assertions.",
+    "Both guests passed concurrent authenticated SSH; the harness then destroyed both profiles and exited zero."
+  ],
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/debian-default-67c2fe04",
+  "sha256": {
+    "test-and-gate.log": "f0a8033adc9e72bc62a720dbe0b40041e1493159b07027f0e27770c54ffc1576",
+    "agentos-qemu-hYBvGO.log": "52f21c53a8ec4b7feb152da5ef747db6891e675b4dd0ef3e749b59f6578748f0",
+    "agentos.img": "d16c15de75d4bacbb78dc8d5f15dc00019ac953cc5f4797e900bd29367bf8d2e"
+  },
+  "limits": "QEMU ARM default-scenario qualification at the recorded revision, not final release integration or physical-host support. Archive contains public SSH evidence, packet capture and logs; private identities and guest disks are excluded."
+}
