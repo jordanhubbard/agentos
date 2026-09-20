@@ -1856,6 +1856,10 @@ static void guest_vmm_reset_cleanup(void)
 }
 static bool guest_vmm_reconstruct(void)
 {
+    LOG_VMM("ARM reconstruction: enter failed=%u execution=%u ram=%u paging=%u started=%u\n",
+        (unsigned)reconstruction.failed,(unsigned)guest_teardown.execution_released,
+        (unsigned)guest_teardown.ram_released,(unsigned)guest_teardown.paging_released,
+        (unsigned)guest_started);
     if (reconstruction.failed) { guest_vmm_reset_cleanup(); return false; }
     if (!guest_teardown.execution_released || !guest_teardown.ram_released ||
         !guest_teardown.paging_released || guest_started) return false;
@@ -1897,6 +1901,7 @@ static bool guest_vmm_reset(void)
         !guest_teardown.execution_released || !guest_teardown.ram_released ||
         !guest_teardown.paging_released || guest_started) return false;
     reconstruction_pending = true;
+    LOG_VMM("ARM reconstruction: queued after CREATE reply\n");
     /* Return NOT_READY now. Media staging must not hold the caller's reply
      * object or block the entire control chain until an ISO initrd is read. */
     return false;
@@ -1906,6 +1911,7 @@ static void guest_vmm_after_rpc_reply(void)
 {
     if (reconstruction.failed) { guest_vmm_reset_cleanup(); return; }
     if (!reconstruction_pending) return;
+    LOG_VMM("ARM reconstruction: CREATE reply sent; deferred work begins\n");
     reconstruction_pending = false;
     reconstruction_ready = guest_vmm_reconstruct();
 }

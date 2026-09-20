@@ -1,0 +1,22 @@
+{
+  "status": "failed replacement CREATE after successful first-generation qualification and destruction",
+  "source_revision": "85598edf15b27b405de70d5328a0304233575f21",
+  "command": "make test-debian-managed-graphics-recreation QEMU_TEST_TIMEOUT=3600 QEMU_TEST_SSH_PORT=12266",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "host": "Spark Linux AArch64",
+  "make_exit": 2,
+  "qemu_stem": "agentos-qemu-gzXZr5",
+  "first_generation": {
+    "handle": 1,
+    "proof": "Pinned SSH, profile assertions, exact framebuffer, all five exact evdev input modes including paused disconnect, persistent disk witness and successful DESTROY passed.",
+    "frame_sha256": "ad15c2d7ae529b74289668f9e50594cb4f02ca2a48be57b5de82da248d581065",
+    "frame_size": [1024, 768],
+    "frame_transfer_seconds": 22
+  },
+  "replacement": "First CREATE returned NOT_READY; a subsequent CREATE timed out reading the CC frame after zero bytes. No ARM reconstruction step marker appeared. Teardown logs confirmed execution/RAM/paging revocation and all device detach/revoke messages. This does not identify the cause or prove that deferred reconstruction started.",
+  "cleanup": "QEMU3016033 and xtask2994233 confirmed absent after terminal failure; tool session returned exit2.",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/graphics-85598ed-recreate-failed",
+  "test_log_sha256": "2cc4d7caa4a234489dd6b32e007b16096ce47c26243af7a65f048c13cee9c136",
+  "serial_log_sha256": "52f4e9403c423e5040e7f3fdda0539bad2be5cc2a3fd994e60e306325804c608",
+  "limits": "Graphics recreation and release qualification failed. This diagnostic does not replace the separate 1800-second initial startup failure. Private identities and disk contents are excluded from the archive."
+}
