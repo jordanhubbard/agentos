@@ -2583,8 +2583,11 @@ pub(crate) fn sel4_sdk_path() -> anyhow::Result<PathBuf> {
     let home = std::env::var_os("HOME").context(
         "SEL4_SDK is unset and HOME is unavailable; set SEL4_SDK to the external Microkit SDK",
     )?;
-    let version = std::env::var("SEL4_SDK_VERSION")
-        .unwrap_or_else(|_| include_str!("../../tools/sdk/default-version").trim().to_owned());
+    let version = std::env::var("SEL4_SDK_VERSION").unwrap_or_else(|_| {
+        include_str!("../../tools/sdk/default-version")
+            .trim()
+            .to_owned()
+    });
     Ok(PathBuf::from(home).join(format!(".cache/agentos/microkit-sdk-{version}")))
 }
 
