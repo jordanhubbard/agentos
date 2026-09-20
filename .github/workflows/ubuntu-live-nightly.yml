@@ -14,12 +14,18 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SEL4_SDK: /tmp/microkit-sdk-2.1.0
+  SEL4_SDK_VERSION: 2.3.1-agentos-e60776ac-cr2
+  SEL4_SDK: /tmp/microkit-sdk-2.3.1-agentos-e60776ac-cr2
 
 jobs:
+  sdk-candidate:
+    uses: ./.github/workflows/sdk-candidate.yml
+    permissions:
+      contents: read
   ubuntu-live:
     name: Guest qualification (${{ matrix.target }})
     runs-on: ubuntu-24.04
+    needs: sdk-candidate
     strategy:
       fail-fast: false
       matrix:
@@ -55,22 +61,8 @@ jobs:
           targets: aarch64-unknown-none
       - uses: Swatinem/rust-cache@v2
 
-      - name: Cache Microkit SDK
-        id: cache-sdk-ubuntu-live
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SEL4_SDK }}
-          key: microkit-sdk-2.1.0-linux-x86-64
-
-      - name: Download Microkit SDK
-        if: steps.cache-sdk-ubuntu-live.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL \
-            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o /tmp/microkit-sdk.tar.gz
-          mkdir -p "$(dirname "$SEL4_SDK")"
-          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
-          rm /tmp/microkit-sdk.tar.gz
+      - name: Install verified SDK artifact
+        uses: ./.github/actions/install-sdk
 
       - name: Cache Ubuntu ISO
         if: matrix.media == 'ubuntu'

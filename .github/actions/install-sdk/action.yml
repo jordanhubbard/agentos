@@ -1,0 +1,16 @@
+name: Install qualified SDK artifact
+description: Install the pinned target bundle produced by this workflow's SDK build job.
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: sdk-candidate-${{ github.sha }}
+        path: ${{ runner.temp }}/agentos-sdk-artifact
+    - name: Verify and install target bundle
+      shell: bash
+      env:
+        SDK_ARTIFACT_DIR: ${{ runner.temp }}/agentos-sdk-artifact
+      run: |
+        make sdk GUEST_OS=none \
+          MICROKIT_SDK_URL="file://$SDK_ARTIFACT_DIR/agentos-sdk-targets.tar.gz"

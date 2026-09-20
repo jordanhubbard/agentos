@@ -1,7 +1,8 @@
 # CR2 dependency candidate
 
 The user approved this scoped kernel exception and full requalification on
-2026-09-19. Default SDK pins and installed release SDKs remain unchanged.
+2026-09-19. Local Make defaults and installed release SDKs remain unchanged;
+CI explicitly selects this candidate through a verified build artifact.
 This is an experimental dependency candidate, not a released seL4 fix or a
 claim of upstream acceptance.
 
@@ -80,7 +81,8 @@ the extracted seL4 tree before rebuilding. The recipe's normal clone-based
 build remains the qualified build path. GNU tar and gzip normalize package
 metadata; this does not claim whole-SDK reproducibility across compilers.
 The target archive retains the usual `microkit-sdk-<version>` top directory.
-It contains each board's kernel and complete include tree, plus VERSION and
+It contains each board's kernel and complete include tree, both x86
+`sel4_32.elf` Multiboot wrappers, plus VERSION and
 licenses. agentOS supplies its own loader and does not link libmicrokit, so
 unused Microkit loader/monitor/library binaries and examples are excluded.
 The C packaging helper replaces only the absolute source path in the first
@@ -88,10 +90,14 @@ comment of the six generated bitfield headers with its repository-relative
 path. All declarations and the original installed SDK remain unchanged.
 Archive metadata and modes are normalized. This produced identical target
 archives from the independent Spark and Intel builds; the pinned SHA-256 is
-`52c5283ef20a2f28b7c22c26601265b7fd67eda578226892480d257cfd184567`.
+`1e7b4600edec7af57d3cd5c25efed5e7da9d3196c3b4439585f43088bdb58512`.
+The hash manifest verifies all three kernels and both Multiboot wrappers.
+The earlier normalized archive omitted those wrappers and failed the x86
+OS gate; it is not an accepted release bundle.
 It must not be advertised as a complete upstream SDK.
-Packaging is local only and preserves existing output. CI
-distribution and default adoption remain pending.
+Packaging preserves existing output. CI consumes this artifact through the
+reusable SDK build job; hosted acceptance, public release distribution and
+local-default adoption remain pending.
 
 The normal installer can consume the qualified target archive explicitly:
 
@@ -112,7 +118,11 @@ exact upstream commits and scoped patch on Ubuntu 24.04 with GCC 13 and the
 retained Python dependency pins. It rejects kernel hash differences, packages
 sources and licenses with the target bundle, and exercises the checksum-checked
 installer before uploading distribution artifacts. Build logs and toolchain
-versions are retained even on failure. It runs on SDK-related pull requests or
+versions are retained even on failure. Main CI and nightly guest qualification
+call it once, and all their SDK-consuming jobs depend on its success. A shared
+installation action downloads the artifact from that same workflow run and
+invokes the checksum-enforced Make installer. Required check names and their
+guest-I/O assertions remain intact. The SDK workflow can also run through
 manual dispatch. An uploaded workflow artifact is not an OS release, public
 download URL, or default-SDK adoption; hosted execution still needs to pass.
 
