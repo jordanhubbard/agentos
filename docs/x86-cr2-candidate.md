@@ -31,6 +31,9 @@ environment containing the pinned dependencies. The example uses absolute
 paths; the output directory must be fresh and outside the agentOS checkout.
 GNU build tools and the `aarch64-linux-gnu` and `x86_64-linux-gnu` GCC 13.3
 cross toolchains must be on `PATH`.
+`qemu-system-aarch64` and `dtc` must also be available: upstream extracts the
+ARM platform device tree during kernel configuration, even for this target-only
+SDK build.
 
 ```sh
 make sdk-candidate \

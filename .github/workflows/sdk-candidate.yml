@@ -30,7 +30,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build python3-venv libxml2-utils \
             gcc-13-aarch64-linux-gnu gcc-13-x86-64-linux-gnu \
-            binutils-aarch64-linux-gnu binutils-x86-64-linux-gnu curl
+            binutils-aarch64-linux-gnu binutils-x86-64-linux-gnu curl \
+            qemu-system-arm device-tree-compiler
           mkdir -p "$RUNNER_TEMP/sdk-toolchain"
           ln -s /usr/bin/aarch64-linux-gnu-gcc-13 "$RUNNER_TEMP/sdk-toolchain/aarch64-linux-gnu-gcc"
           ln -s /usr/bin/x86_64-linux-gnu-gcc-13 "$RUNNER_TEMP/sdk-toolchain/x86_64-linux-gnu-gcc"
