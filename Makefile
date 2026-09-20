@@ -499,7 +499,7 @@ demo-smoke: demo-check
 
 demo-test: demo-check
 	@echo ""
-	@echo "Running the non-interactive Ubuntu + FreeBSD authenticated-SSH proof..."
+	@echo "Running the non-interactive pinned Debian + FreeBSD authenticated-SSH proof..."
 	@$(MAKE) e2e-dual-os BOARD=qemu_virt_aarch64
 
 demo: demo-check
@@ -507,7 +507,7 @@ demo: demo-check
 		(echo "ERROR: 'make demo' requires an interactive terminal; use 'make demo-test' in automation." && exit 1)
 	@echo ""
 	@echo "Starting the agentOS dual-guest demonstration."
-	@echo "The gate boots Ubuntu and FreeBSD concurrently and proves key-only SSH."
+	@echo "The gate boots pinned Debian and FreeBSD concurrently and proves key-only SSH."
 	@echo "After it passes, open the printed SSH commands in two other terminals."
 	@echo "Press Enter here when the demonstration is complete."
 	@echo ""

@@ -8402,7 +8402,7 @@ mod tests {
             manual_ssh_commands(Path::new("build/tmp/dual-ssh/id_ed25519"), &scenario).unwrap();
         assert!(commands
             .iter()
-            .any(|command| command.contains("-p 12222") && command.contains("ubuntu@127.0.0.1")));
+            .any(|command| command.contains("-p 12222") && command.contains("debian@127.0.0.1")));
         assert!(commands
             .iter()
             .any(|command| command.contains("-p 12223") && command.contains("root@127.0.0.1")));

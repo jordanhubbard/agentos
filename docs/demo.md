@@ -1,7 +1,7 @@
 # agentOS Dual-Guest Demo
 
 This is the shortest path to the current agentOS showcase: one seL4 system
-boots Ubuntu and FreeBSD concurrently, routes their storage, network, and
+boots pinned Debian and FreeBSD concurrently, routes their storage, network, and
 console traffic through agentOS-owned services, proves key-only SSH access to
 both guests, and leaves both systems running for inspection.
 
@@ -23,7 +23,7 @@ an existing SDK.
 
 `make demo` then:
 
-1. stages the Ubuntu 26.04 and FreeBSD 15.0 AArch64 media under
+1. stages the pinned Debian 13 generic image and FreeBSD 15.0 AArch64 media under
    `build/guest-images`;
 2. builds one AArch64 agentOS image containing both VMM protection domains;
 3. starts QEMU with 3 GB assigned to the outer agentOS system;
@@ -47,7 +47,7 @@ After the acceptance gate succeeds, it prints commands equivalent to:
 ```bash
 ssh -i build/tmp/dual-ssh/id_ed25519 -p 12222 \
   -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null ubuntu@127.0.0.1
+  -o UserKnownHostsFile=/dev/null debian@127.0.0.1
 
 ssh -i build/tmp/dual-ssh/id_ed25519 -p 12223 \
   -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
@@ -82,7 +82,7 @@ the complete seL4, VMM, device-service, guest, and SSH path.
 A successful run demonstrates the following behavior in one live system:
 
 - seL4 remains the only privileged kernel;
-- Ubuntu and FreeBSD execute in distinct guest VSpaces at the same time;
+- Debian and FreeBSD execute in distinct guest VSpaces at the same time;
 - each guest sees a conventional GPA window while its VMM uses a separate HVA
   mapping;
 - host devices are owned by agentOS driver/service protection domains;
@@ -94,7 +94,7 @@ A successful run demonstrates the following behavior in one live system:
 It does not prove unfinished operations such as guest snapshot, restore, or
 live migration.
 
-## Integrated Spark checkpoint, 2026-09-19
+## Historical Ubuntu integrated Spark checkpoint, 2026-09-19
 
 At clean revision `ff47898c9d12af9f6eae9748cf5247a8e804deb4`,
 `make demo-test SEL4_SDK_VERSION=2.3.0` passed with its existing 7200-second

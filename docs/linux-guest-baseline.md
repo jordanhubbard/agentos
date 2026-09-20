@@ -20,6 +20,16 @@ required gates only after Debian proves equivalent net, block, console,
 lifecycle, provisioning, and authenticated SSH behavior. Existing Ubuntu
 evidence and release receipts are not rewritten.
 
+The `both` integration scenario now selects the pinned, seeded Debian profile
+alongside FreeBSD, so `make demo-test`, `make demo` and `make e2e` use Debian.
+This selection follows the recorded [cold boots](evidence/2026-09-19-spark/debian-current-cold-boots.json),
+[peer recreation](evidence/2026-09-19-spark/debian-peer-recreation.json), and
+[Ubuntu timing comparison](evidence/2026-09-19-spark/guest-current-boot-comparison.json).
+Qualification of the changed default remains required. Explicit Ubuntu
+per-device, live-media and network-desktop targets remain available; the
+minimal console proof is still Ubuntu initramfs. This is integration-scenario
+promotion, not a claim that every release gate has completed the migration.
+
 Arch Linux ARM is not the canonical AArch64 guest. It is a separately produced
 rolling distribution rather than the same official artifact stream used for
 Arch Linux x86_64, which weakens cross-architecture provenance and release

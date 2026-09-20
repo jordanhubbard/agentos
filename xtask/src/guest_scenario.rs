@@ -261,6 +261,10 @@ mod tests {
         assert_eq!(plan.guests.len(), 2);
         assert_eq!(plan.guests[0].profile.control_type, 2);
         assert_eq!(plan.guests[1].profile.control_type, 1);
+        assert_eq!(plan.guests[1].profile.id, "debian-scenario-aarch64");
+        assert!(plan.guests[1].profile.seed.is_some());
+        assert_eq!(plan.guests[1].ssh_host_port, 12222);
+        assert_eq!(plan.guests[0].ssh_host_port, 12223);
     }
 
     #[test]
