@@ -68,8 +68,8 @@ tests and compilation alone do not create a passing target receipt.
 delivery in the same boot. It enables both canonical backends, loads both
 Linux drivers, writes the graphics probe pixels, captures an immutable frame,
 authenticates SSH and runs the keyboard/pointer helper. Its default SSH port
-is 12235; `QEMU_TEST_SSH_PORT` overrides it. This combined qualification is
-pending, and does not establish physical scanout or physical input ownership.
+is 12235; `QEMU_TEST_SSH_PORT` overrides it. The recorded combined Spark
+qualification is described below; it does not establish physical input ownership.
 
 External clients can submit a packet with:
 

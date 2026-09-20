@@ -105,6 +105,19 @@ peer isolation, paused disconnect, physical device ownership, or GUI latency.
 
 ## Spark qualification
 
+At clean revision `3942f3afd70cb992b7314d2e905ede6a7c4b8b3e`,
+`make test-guest-graphics-input` passed all five input recipes on Spark with
+SDK `2.3.1-agentos-e60776ac-cr2` (Make exit zero). The
+[paused-disconnect receipt](evidence/2026-09-19-spark/cc-sync-paused-disconnect.json)
+records four accepted batches per device before saturation. Closing without
+a release RPC, reconnecting while paused, and resuming produced exactly four
+keyboard and four pointer events. This qualifies retained releases across
+reconnect under backpressure; it does not establish peer isolation or physical
+input ownership. The full run log SHA-256 is
+`63fca07edd3c88640a0f11ca01fce5cd98b28440eb111d20a2b6ce0a75c1b833`.
+Logs and all five receipts are retained under
+`/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/paused-disconnect-3942f3a/`.
+
 At runtime revision `d10620b8eaa5ee13b5c4fe5c79f6e3cd4b100795`,
 `make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12267` passed on
 2026-09-17. This includes the host release tests, both root boot architectures,
