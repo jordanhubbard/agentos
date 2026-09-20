@@ -411,6 +411,11 @@ endif
 .PHONY: sdk-check
 include tools/sdk/candidate.mk
 
+ifeq ($(SEL4_SDK_VERSION),$(SDK_CANDIDATE_VERSION))
+sdk-check: sdk-candidate-check
+build: sdk-check
+endif
+
 sdk-check:
 	@test -d "$(SEL4_SDK)/board" || \
 		(echo "ERROR: Microkit SDK missing at $(SEL4_SDK); run 'make sdk'." && exit 1)

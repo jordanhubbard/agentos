@@ -7,7 +7,22 @@ SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
 
-.PHONY: sdk-candidate
+.PHONY: sdk-candidate sdk-candidate-check
+
+# Check the selected installed candidate before accepting it as a build input.
+# A directory name alone does not establish which kernel it contains.
+sdk-candidate-check:
+	@test "$$(cat "$(SEL4_SDK)/VERSION")" = "$(SDK_CANDIDATE_VERSION)" || \
+		{ echo 'ERROR: candidate SDK VERSION does not match the qualified pin'; exit 1; }
+	@cd "$(SEL4_SDK)" && sha256sum -c "$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"
+	@for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
+		for header in sel4/sel4.h kernel/gen_config.h; do \
+			test -s "$(SEL4_SDK)/board/$$board/release/include/$$header" || \
+				{ echo "ERROR: candidate SDK missing $$board/$$header"; exit 1; }; \
+		done; \
+	done
+	@echo 'Candidate version, kernel hashes and required header presence verified.'
+
 sdk-candidate:
 	@test -d "$(SDK_CANDIDATE_MICROKIT_SOURCE)" -a -d "$(SDK_CANDIDATE_SEL4_SOURCE)" || \
 		{ echo 'Set SDK_CANDIDATE_MICROKIT_SOURCE and SDK_CANDIDATE_SEL4_SOURCE to upstream clones'; exit 1; }
@@ -35,7 +50,6 @@ sdk-candidate:
 		--sel4 ../sel4 --boards qemu_virt_aarch64,x86_64_generic,x86_64_generic_vtx \
 		--configs release --gcc-toolchain-prefix-aarch64 aarch64-linux-gnu \
 		--skip-tool --skip-initialiser --skip-docs --skip-tar --version $(SDK_CANDIDATE_VERSION)
-	cd "$(SDK_CANDIDATE_DIR)/microkit/release/microkit-sdk-$(SDK_CANDIDATE_VERSION)" && \
-		sha256sum -c "$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"
+	$(MAKE) sdk-candidate-check SEL4_SDK="$(SDK_CANDIDATE_DIR)/microkit/release/microkit-sdk-$(SDK_CANDIDATE_VERSION)"
 	@echo 'Candidate built; runtime acceptance and default SDK adoption remain separate.'
 	@echo 'SEL4_SDK=$(SDK_CANDIDATE_DIR)/microkit/release/microkit-sdk-$(SDK_CANDIDATE_VERSION)'

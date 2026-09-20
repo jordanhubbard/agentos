@@ -47,6 +47,15 @@ hashes against `tools/sdk/cr2-kernels.sha256` and prints the candidate
 pins. A differing kernel hash is a failed reproduction, not a new accepted
 candidate. Existing output directories are preserved and rejected.
 
+An installed candidate can be checked independently with
+`make sdk-candidate-check SEL4_SDK=/path/to/candidate`.
+`make sdk-check` and the top-level `make build` perform this verification when
+`SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2` is selected. It rejects a
+different version, any changed or missing pinned kernel, and missing or empty
+required public/configuration headers. Header presence is not header-content
+authentication. These checks do not replace the runtime gates or adopt the
+candidate as the default SDK.
+
 The target bundle used by agentOS needs the kernel and generated headers.
 `--skip-tool` and `--skip-initialiser` avoid building unused Microkit components.
 Do not use `--skip-run-time`: upstream also skips the kernel under that option.
