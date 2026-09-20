@@ -6,7 +6,7 @@ SDK_CANDIDATE_SEL4_SOURCE ?=
 SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
-SDK_CANDIDATE_ARCHIVE_SHA256 := 52c5283ef20a2f28b7c22c26601265b7fd67eda578226892480d257cfd184567
+SDK_CANDIDATE_ARCHIVE_SHA256 := 1e7b4600edec7af57d3cd5c25efed5e7da9d3196c3b4439585f43088bdb58512
 SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/build/sdk-candidate-package
 
 .PHONY: sdk-candidate sdk-candidate-check
@@ -29,6 +29,8 @@ sdk-candidate-package: sdk-candidate-check
 		for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
 			mkdir -p "$$stage/board/$$board/release/elf"; \
 			cp -a "$(SEL4_SDK)/board/$$board/release/elf/sel4.elf" "$$stage/board/$$board/release/elf/"; \
+			case "$$board" in x86_64_*) \
+				cp -a "$(SEL4_SDK)/board/$$board/release/elf/sel4_32.elf" "$$stage/board/$$board/release/elf/" ;; esac; \
 			cp -a "$(SEL4_SDK)/board/$$board/release/include" "$$stage/board/$$board/release/"; \
 			for header in sel4/shared_types_gen.h sel4/sel4_arch/types_gen.h; do \
 				file="$$stage/board/$$board/release/include/$$header"; \
