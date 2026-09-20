@@ -1,0 +1,16 @@
+{
+  "status": "passed detached disk snapshot boot and copy-on-write checks",
+  "source_revision": "030915a37e351546bdc81ecfee512c56d5e5d958",
+  "host": "madmax Intel Linux, nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "close": "Primary handle3 synced its filesystem and returned the original witness. DESTROY returned CC_OK before the detached raw disk was copied. Whole-file source and copy SHA256 matched. Original primary was then recreated as handle5.",
+  "detached_raw_sha256": "c6380e4f87c35c54c0d8e44364a443eb6114fa1db450bab74fec2547a8dba672",
+  "conversion": "qemu-img raw-to-qcow2 conversion passed qemu-img check and logical-byte comparison with the detached raw copy. A separate qcow2 overlay names the qcow2 backing format explicitly.",
+  "snapshot_boot": "Separate outer QEMU2932218, unchanged root image, fresh primary handle1. SSH on port12520 authenticated against the original pinned Ed25519 key and returned x86_64 plus the original 2 MiB payload hash.",
+  "snapshot_boot_id": "56ec300a-9f2f-4e8e-8356-ee0064041d6d",
+  "payload_sha256": "5b766f6d76a999636fd93b4e039d5a32187f84a19c0950449f0c721da0223914",
+  "copy_on_write": "An overlay-only file was written, synced and read back. The complete backing-file SHA256 remained unchanged. Original primary handle5 confirmed the file was absent and its original witness hash unchanged.",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-snapshot-030915a/receipts.tar.gz",
+  "archive_sha256": "f839f13056acc235f0d2bd285ec89b70a70aacdc8b7797979f8b41e59e581c54",
+  "limits": "Offline disk snapshots, not live memory/device snapshots. The overlay VM remains retained for further qualification; no final offline overlay integrity or interrupted-write recovery claim is made here. No private keys or disks are in the archive."
+}

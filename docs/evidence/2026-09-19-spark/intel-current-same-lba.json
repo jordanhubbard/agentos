@@ -1,0 +1,16 @@
+{
+  "status": "passed concurrent distinct writes at the same raw disk offset",
+  "source_revision": "030915a37e351546bdc81ecfee512c56d5e5d958",
+  "host": "madmax Intel Linux, nested VMX/KVM",
+  "guest_handles": [5, 4],
+  "lba": 6290000,
+  "sectors": 256,
+  "sector_bytes": 512,
+  "safety_check": "Each current disk's sfdisk JSON was independently checked: 512-byte sectors, entire test range within usable GPT LBAs, no intersection with any partition. Both guest block devices also reported the expected 6291456-sector capacity and /dev/vda1 as the mounted root source.",
+  "proof": "Concurrent pinned SSH sessions wrote 128 KiB of C or D to the same unallocated /dev/vda sector range with conv=notrunc,fsync. Each immediate read matched its independently computed expected SHA256. After both writers completed, each guest again returned its own pattern and original filesystem witness. Host reads from the corresponding raw disk at the same offset matched each guest's pattern.",
+  "primary_sha256": "d87438b22de89f463fb38ac6aefedd43cbb2ca934b34374391cb94bc784948b3",
+  "secondary_sha256": "041ae98d0af9ca59d54f7cb1f2f519e925fb7d206868b6c38ccff6aa5eb9f4c3",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-same-lba-030915a/receipts.tar.gz",
+  "archive_sha256": "48350ee0660ec70dd115961a64d98a442995e49646d340e2c6a4275e3e2f3dd5",
+  "limits": "This receipt does not establish reboot persistence of these newly written raw patterns, power-loss durability, exhaustive bounds enforcement or full release acceptance. Earlier filesystem witnesses have separate reboot and recreation receipts. Only the deliberately selected unallocated sectors were modified; mounted partitions were not written through the raw path."
+}

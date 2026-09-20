@@ -2,6 +2,8 @@
   "schema": "agentos.acceptance_gap.v1",
   "date": "2026-09-19",
   "revision": "db1642f",
+  "historical": true,
+  "later_evidence": "At 030915a, intel-current-dual-reboots.json, intel-current-primary-recreation.json, intel-current-secondary-recreation.json, intel-current-same-lba.json and intel-current-snapshot.json supersede this earlier implementation gap for their stated scopes. Current crash recovery, comprehensive bounds and final release qualification remain separate requirements.",
   "requirement": "v0.4 writable guest disks preserve flushed data across reboot and remain isolated between concurrent guests",
   "task": "task_4090f05598f74a9cafbb571a6271b6e5",
   "status": "not_implemented_or_qualified_for_concurrent_x86_guests",
