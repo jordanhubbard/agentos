@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A VMX-backed x86 guest composition with pinned UEFI firmware, generated ACPI,
+  bounded guest memory, and agentOS-emulated network, block and console devices.
+  Retained Intel qualification covers Debian userspace, managed recreation,
+  two-vCPU workloads, writable-media isolation and detached snapshots. These
+  are scoped development results; final v0.4 integration remains pending.
+- Live AArch64 framebuffer and input services, emulated virtio-gpu and
+  virtio-input, bounded CC frame export, and keyboard/pointer delivery. The
+  external `agentos_gui` consumes these contracts; no human UI is embedded in
+  the OS repository.
+- Managed AArch64 Debian reconstruction after teardown, including fresh queue,
+  input and graphics bindings. Retained qualification checks a second guest
+  identity, stale-handle rejection, pinned SSH and a persistent disk witness.
+
+### Changed
+
+- Use pinned Debian stable alongside FreeBSD for the default dual-guest
+  scenario. Dated images and checksum manifests, key-only provisioning and
+  extracted boot artifacts replace moving integration media. Focused legacy
+  Ubuntu gates remain available.
+- Select the approved Microkit 2.3.1 / seL4 e60776ac SDK with the scoped CR2
+  preservation patch through a shared default-version file. The reproducible
+  target bundle includes kernel wrappers, headers, linker scripts and licenses;
+  distribution artifacts retain the source, patch and build recipe. The
+  prerelease source-build path is documented in `docs/x86-cr2-candidate.md`;
+  the default download requires publication of the v0.4.0 release asset.
+
 - Route dynamic guest control from CC-PD directly to `vm_manager` and remove
   `vibe_engine` from the boot image. Public handles remain distinct from backend
   slots, backend failures propagate, and failed-start rollback retains a

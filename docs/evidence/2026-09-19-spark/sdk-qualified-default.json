@@ -1,5 +1,5 @@
 {
-  "status": "corrected target SDK qualified locally; default-path gate completed with all expected PASS markers",
+  "status": "corrected target SDK and full default-path gate passed locally",
   "sdk_version": "2.3.1-agentos-e60776ac-cr2",
   "archive_sha256": "fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b",
   "corrected_bundle_gate": {
@@ -12,6 +12,15 @@
     "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/sdk-linker-qualified"
   },
   "default_path_gate": {
+    "revision": "b2b86f5cdc0940c59c8271f93299a320f2f24cb5",
+    "command": "env -u SEL4_SDK -u SEL4_SDK_VERSION make gate",
+    "observed_exit": 0,
+    "log_sha256": "74e9533dd2c11954dfe14f6c44922201dfcb229da3465695272d05a49810c86b",
+    "arm_image_sha256": "cb6a7c95911ccf683d4082e65baea89f619e3e453ecf14122cdbbcff260110a0",
+    "x86_image_sha256": "bcffbdea7573ccb004b1a46d945f36dbd314d42b5fef907b009cba33c8318187",
+    "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/sdk-default-b2b86f5c"
+  },
+  "earlier_default_path_gate": {
     "revision": "37a9eacfccd2008b543ad4a92e678acccb0d7258",
     "command": "env -u SEL4_SDK -u SEL4_SDK_VERSION make gate",
     "observed_exit": null,
