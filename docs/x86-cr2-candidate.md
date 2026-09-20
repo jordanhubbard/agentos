@@ -65,7 +65,8 @@ variables above, and an optional fresh `SDK_CANDIDATE_PACKAGE_DIR` (default
 - `agentos-sdk-targets.tar.gz`, containing the three-board target bundle;
 - `microkit-source.tar.gz` and `sel4-source.tar.gz` at the pinned commits,
   retaining their source licenses;
-- the CR2 patch, kernel hash manifest, Make recipe and this build description;
+- the CR2 patch, kernel hash manifest, Make recipe, pinned Python build
+  dependencies and this build description;
 - `SHA256SUMS` covering all those artifacts.
 
 The source archives contain the upstream bases; apply the included patch to
@@ -90,6 +91,15 @@ before extraction, stages extraction separately, and then runs `sdk-check`.
 An existing incomplete destination is preserved and rejected. This explicit
 URL remains necessary until a canonical distribution URL is published; the
 candidate version is not an upstream Microkit release tag.
+
+The `Pinned SDK candidate` workflow rebuilds the three-board bundle from the
+exact upstream commits and scoped patch on Ubuntu 24.04 with GCC 13 and the
+retained Python dependency pins. It rejects kernel hash differences, packages
+sources and licenses with the target bundle, and exercises the checksum-checked
+installer before uploading distribution artifacts. Build logs and toolchain
+versions are retained even on failure. It runs on SDK-related pull requests or
+manual dispatch. An uploaded workflow artifact is not an OS release, public
+download URL, or default-SDK adoption; hosted execution still needs to pass.
 
 The target bundle used by agentOS needs the kernel and generated headers.
 `--skip-tool` and `--skip-initialiser` avoid building unused Microkit components.

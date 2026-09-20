@@ -1,0 +1,87 @@
+name: Pinned SDK candidate
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - '.github/workflows/sdk-candidate.yml'
+      - 'tools/sdk/**'
+      - 'docs/x86-cr2-candidate.md'
+
+permissions:
+  contents: read
+
+jobs:
+  sdk:
+    name: Rebuild and package qualified SDK kernels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build python3-venv libxml2-utils \
+            gcc-13-aarch64-linux-gnu gcc-13-x86-64-linux-gnu \
+            binutils-aarch64-linux-gnu binutils-x86-64-linux-gnu curl
+          mkdir -p "$RUNNER_TEMP/sdk-toolchain"
+          ln -s /usr/bin/aarch64-linux-gnu-gcc-13 "$RUNNER_TEMP/sdk-toolchain/aarch64-linux-gnu-gcc"
+          ln -s /usr/bin/x86_64-linux-gnu-gcc-13 "$RUNNER_TEMP/sdk-toolchain/x86_64-linux-gnu-gcc"
+          echo "$RUNNER_TEMP/sdk-toolchain" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/sdk-venv"
+          "$RUNNER_TEMP/sdk-venv/bin/pip" install -r tools/sdk/python-requirements.txt
+          echo "$RUNNER_TEMP/sdk-venv/bin" >> "$GITHUB_PATH"
+      - name: Fetch pinned upstream sources
+        run: |
+          git init "$RUNNER_TEMP/microkit-source"
+          git -C "$RUNNER_TEMP/microkit-source" fetch --depth=1 https://github.com/seL4/microkit.git ec86afdcd662b5976d11d4994acf1b11a2979882
+          git -C "$RUNNER_TEMP/microkit-source" checkout --detach FETCH_HEAD
+          git init "$RUNNER_TEMP/sel4-source"
+          git -C "$RUNNER_TEMP/sel4-source" fetch --depth=1 https://github.com/seL4/seL4.git e60776acc31097ca063806c257f07a3ec05eacf8
+          git -C "$RUNNER_TEMP/sel4-source" checkout --detach FETCH_HEAD
+      - name: Rebuild and check all three kernel hashes
+        run: |
+          mkdir -p build/sdk-evidence
+          aarch64-linux-gnu-gcc --version > build/sdk-evidence/toolchain.txt
+          x86_64-linux-gnu-gcc --version >> build/sdk-evidence/toolchain.txt
+          "$RUNNER_TEMP/sdk-venv/bin/pip" freeze > build/sdk-evidence/python-requirements.txt
+          make sdk-candidate GUEST_OS=none \
+            SDK_CANDIDATE_MICROKIT_SOURCE="$RUNNER_TEMP/microkit-source" \
+            SDK_CANDIDATE_SEL4_SOURCE="$RUNNER_TEMP/sel4-source" \
+            SDK_CANDIDATE_PYTHON="$RUNNER_TEMP/sdk-venv/bin/python" \
+            SDK_CANDIDATE_DIR="$RUNNER_TEMP/sdk-build" 2>&1 | tee build/sdk-evidence/build.log
+      - name: Package and verify installation
+        run: |
+          make sdk-candidate-package GUEST_OS=none \
+            SEL4_SDK="$RUNNER_TEMP/sdk-build/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2" \
+            SDK_CANDIDATE_MICROKIT_SOURCE="$RUNNER_TEMP/microkit-source" \
+            SDK_CANDIDATE_SEL4_SOURCE="$RUNNER_TEMP/sel4-source" 2>&1 | tee build/sdk-evidence/package.log
+          make sdk GUEST_OS=none SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 \
+            SEL4_SDK="$RUNNER_TEMP/sdk-installed" \
+            MICROKIT_SDK_URL="file://$GITHUB_WORKSPACE/build/sdk-candidate-package/agentos-sdk-targets.tar.gz" \
+            2>&1 | tee build/sdk-evidence/install.log
+          cd build/sdk-candidate-package
+          sha256sum -c SHA256SUMS
+      - name: Retain distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-candidate-${{ github.sha }}
+          path: |
+            build/sdk-candidate-package/*.tar.gz
+            build/sdk-candidate-package/*.patch
+            build/sdk-candidate-package/*.sha256
+            build/sdk-candidate-package/*.mk
+            build/sdk-candidate-package/*.md
+            build/sdk-candidate-package/*.txt
+            build/sdk-candidate-package/SHA256SUMS
+          if-no-files-found: error
+      - name: Retain build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-build-evidence-${{ github.sha }}
+          path: build/sdk-evidence/
+          if-no-files-found: warn

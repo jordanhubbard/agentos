@@ -35,8 +35,9 @@ sdk-candidate-package: sdk-candidate-check
 	cp "$(SDK_CANDIDATE_REPO)/tools/sdk/patches/sel4-e60776ac-cr2.patch" \
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256" \
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/candidate.mk" \
+		"$(SDK_CANDIDATE_REPO)/tools/sdk/python-requirements.txt" \
 		"$(SDK_CANDIDATE_REPO)/docs/x86-cr2-candidate.md" "$(SDK_CANDIDATE_PACKAGE_DIR)/"
-	cd "$(SDK_CANDIDATE_PACKAGE_DIR)" && sha256sum *.tar.gz *.patch *.sha256 *.mk *.md > SHA256SUMS
+	cd "$(SDK_CANDIDATE_PACKAGE_DIR)" && sha256sum *.tar.gz *.patch *.sha256 *.mk *.md *.txt > SHA256SUMS
 	@echo 'Candidate artifacts packaged locally; publication and default adoption remain separate.'
 
 # Check the selected installed candidate before accepting it as a build input.
