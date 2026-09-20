@@ -81,7 +81,7 @@ the extracted seL4 tree before rebuilding. The recipe's normal clone-based
 build remains the qualified build path. GNU tar and gzip normalize package
 metadata; this does not claim whole-SDK reproducibility across compilers.
 The target archive retains the usual `microkit-sdk-<version>` top directory.
-It contains each board's kernel and complete include tree, both x86
+It contains each board's kernel, complete include tree and `microkit.ld`, both x86
 `sel4_32.elf` Multiboot wrappers, plus VERSION and
 licenses. agentOS supplies its own loader and does not link libmicrokit, so
 unused Microkit loader/monitor/library binaries and examples are excluded.
@@ -90,10 +90,12 @@ comment of the six generated bitfield headers with its repository-relative
 path. All declarations and the original installed SDK remain unchanged.
 Archive metadata and modes are normalized. This produced identical target
 archives from the independent Spark and Intel builds; the pinned SHA-256 is
-`1e7b4600edec7af57d3cd5c25efed5e7da9d3196c3b4439585f43088bdb58512`.
-The hash manifest verifies all three kernels and both Multiboot wrappers.
-The earlier normalized archive omitted those wrappers and failed the x86
-OS gate; it is not an accepted release bundle.
+`fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b`.
+The hash manifest verifies all three kernels, both Multiboot wrappers and
+the three linker scripts. The VMM still uses the SDK's linker script even
+though it does not link libmicrokit. Earlier normalized archives omitted
+the wrappers or linker scripts and failed the OS gate; neither is accepted
+as a release bundle.
 It must not be advertised as a complete upstream SDK.
 Packaging preserves existing output. CI consumes this artifact through the
 reusable SDK build job; hosted acceptance, public release distribution and

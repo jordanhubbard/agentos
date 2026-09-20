@@ -6,7 +6,7 @@ SDK_CANDIDATE_SEL4_SOURCE ?=
 SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
-SDK_CANDIDATE_ARCHIVE_SHA256 := 1e7b4600edec7af57d3cd5c25efed5e7da9d3196c3b4439585f43088bdb58512
+SDK_CANDIDATE_ARCHIVE_SHA256 := fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b
 SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/build/sdk-candidate-package
 
 .PHONY: sdk-candidate sdk-candidate-check
@@ -28,6 +28,8 @@ sdk-candidate-package: sdk-candidate-check
 		cp -a "$(SEL4_SDK)/VERSION" "$(SEL4_SDK)/LICENSE.md" "$(SEL4_SDK)/LICENSES" "$$stage/"; \
 		for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
 			mkdir -p "$$stage/board/$$board/release/elf"; \
+			mkdir -p "$$stage/board/$$board/release/lib"; \
+			cp -a "$(SEL4_SDK)/board/$$board/release/lib/microkit.ld" "$$stage/board/$$board/release/lib/"; \
 			cp -a "$(SEL4_SDK)/board/$$board/release/elf/sel4.elf" "$$stage/board/$$board/release/elf/"; \
 			case "$$board" in x86_64_*) \
 				cp -a "$(SEL4_SDK)/board/$$board/release/elf/sel4_32.elf" "$$stage/board/$$board/release/elf/" ;; esac; \
