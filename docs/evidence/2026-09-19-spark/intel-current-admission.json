@@ -1,0 +1,27 @@
+{
+  "schema": "agentos.intel-admission-qualification.v1",
+  "date_utc": "2026-09-20",
+  "revision": "933545bd4b754e8df4d4e9aba4520bc2891eb2c2",
+  "host": "madmax, Intel Linux with nested VMX/KVM",
+  "profile": "debian-amd64-2g.toml",
+  "sdk": "Extracted qualified three-board target archive, all pinned kernel hashes verified",
+  "target": "make gate-x86_64-cc-linux QEMU_TEST_TIMEOUT=1800",
+  "result": "exit 0; launcher 3263841 and QEMU 3268326 terminated",
+  "proofs": [
+    "Before each generation, inventory was empty and a wire-valid 2052 MiB CREATE returned CC_ERR_RELAY_FAULT with zero guest/recovery handles and unchanged inventory",
+    "Normal CREATE subsequently succeeded for handles 1 and 2 using the 2 GiB profile",
+    "Both generations authenticated with pinned Ed25519 SSH identity and verified x86_64 plus sync",
+    "Console input echo, normal destroy, managed recreation and stale-handle rejection passed"
+  ],
+  "root_task_sha256": "66a06e017257abc28aff9f0d1cbffcd8ebd3a2c32967ffbbe0fbc4e904b57a9e",
+  "gate_log_sha256": "fd9c76fafda20cb0f907a3ff8923fbfa360a925170647da0cb6a82102d5c0152",
+  "archive_sha256": "94bc58d591fd9839a46df0b7ee227ed6b8b3d82d416f24c73441e79e2a0738eb",
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-admission-933545b/receipts.tar.gz",
+  "remote_evidence": "/var/tmp/agentos-v04-933545b-admission-evidence",
+  "setup": "Initial submodule setup failed before runtime due to /tmp quota. Original failure log retained; retry used /var/tmp compiler scratch and shared Cargo output. Disk baseline was closed before copying.",
+  "limits": [
+    "Tests the firmware composition's 2 GiB admission bound, not every profile size or host-memory exhaustion",
+    "Does not remeasure MemTotal, all CPU-feature combinations or every capability pool",
+    "No final integrated release claim; graphics recreation, CI and canonical integration remain outstanding"
+  ]
+}
