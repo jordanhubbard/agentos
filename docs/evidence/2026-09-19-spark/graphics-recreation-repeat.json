@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "source_revision": "adcf5a80caeefb1c4f2120a1072e33a28cce0c8a",
+  "source_tree_clean": true,
+  "command": "make test-debian-managed-graphics-recreation SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 QEMU_TEST_TIMEOUT=3600 QEMU_TEST_SSH_PORT=12267",
+  "make_exit": 0,
+  "guest_handles": [1, 2],
+  "proof": [
+    "An independent repeat on the same frozen revision passed both managed generations: pinned SSH, profile assertions, exact frame pixels, persistent disk witness, successful destroy and stale-handle rejection.",
+    "All five input receipts passed in both generations: explicit evdev packets, held-state release, disconnect release, paused disconnect release and paused backpressure.",
+    "The recreated guest used fresh handle 2 after one NOT_READY response. Both retained known-hosts files are byte-identical.",
+    "The harness exited zero; its process and QEMU process are absent."
+  ],
+  "frames": [
+    {"handle": 1, "width": 1024, "height": 768, "sequence": 2703, "sha256": "ad15c2d7ae529b74289668f9e50594cb4f02ca2a48be57b5de82da248d581065"},
+    {"handle": 2, "width": 1024, "height": 768, "sequence": 2805, "sha256": "ad15c2d7ae529b74289668f9e50594cb4f02ca2a48be57b5de82da248d581065"}
+  ],
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/graphics-repeat-adcf5a80",
+  "sha256": {
+    "test.log": "0f1c4440a9ea072e10601763d115fa9c17dd72d9e078520dbc3f35e623a7d64e",
+    "agentos-qemu-0PQmMF.log": "387abde9afb2b05af91ef7436913abbf53fb70c554dfafdb9defd54af72c92e9",
+    "agentos.img": "31f9df55ee3364612fe75a1ffda7599092150f483c7c9b1d61318e09b8beac37"
+  },
+  "limits": "Together with graphics-recreation-adcf5a80.json, two runs passed at this revision. This is not statistical reliability evidence or a diagnosis of earlier intermittent failures. No physical GPU/input or final release claim. Private SSH identities and guest disks are excluded from the archive."
+}
