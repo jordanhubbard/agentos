@@ -69,6 +69,7 @@ const CC_ERR_BAD_HANDLE: u32 = 6;
 const VMM_RELAY_PAYLOAD_BYTES: usize = 48;
 const MSG_CC_LOG_STREAM: u32 = 0x2610;
 const MSG_CC_CREATE_GUEST: u32 = 0x2611;
+const MSG_CC_LIST_GUESTS: u32 = 0x2607;
 const MSG_CC_GUEST_STATUS: u32 = 0x260a;
 const MSG_CC_SEND_INPUT: u32 = 0x260d;
 const MSG_CC_SUSPEND_GUEST: u32 = 0x2613;
@@ -3743,6 +3744,38 @@ fn x86_smp_ssh_proof(probe: &Path, key: &Path, port: u16, log: &Path) -> anyhow:
     Ok("two online CPUs, pinned overlapping workers and x87/SSE state verified".into())
 }
 
+fn x86_reject_oversized_create(cc: &mut CcClient) -> anyhow::Result<()> {
+    // The firmware composition admits at most 2 GiB. This request is above
+    // that bound but still valid under the public 64..8192 MiB wire contract.
+    // An empty inventory is essential: duplicate-profile rejection happens
+    // before the manager's capacity check and would prove the wrong property.
+    anyhow::ensure!(
+        cc.call(MSG_CC_LIST_GUESTS, 64, 0, 0, &[])?.mr[0] == 0,
+        "oversized admission probe requires an empty inventory"
+    );
+    let mut request = [0u8; 52];
+    request[0] = 1;
+    request[1] = VIBEOS_ARCH_X86_64;
+    wr32(&mut request, 4, 2052);
+    wr32(
+        &mut request,
+        16,
+        VIBEOS_DEV_SERIAL | VIBEOS_DEV_NET | VIBEOS_DEV_BLOCK,
+    );
+    let reply = cc.call(MSG_CC_CREATE_GUEST, 0, 0, 0, &request)?;
+    anyhow::ensure!(
+        reply.mr[..3] == [CC_ERR_RELAY_FAULT, 0, 0],
+        "oversized CREATE was accepted or left a public/recovery handle: {:?}",
+        reply.mr
+    );
+    anyhow::ensure!(
+        cc.call(MSG_CC_LIST_GUESTS, 64, 0, 0, &[])?.mr[0] == 0,
+        "oversized CREATE changed the inventory"
+    );
+    println!("[xtask:test] Intel 2052 MiB CREATE rejected with no handle or inventory change");
+    Ok(())
+}
+
 fn x86_cc_linux_probe(
     socket: &Path,
     log_path: &Path,
@@ -3771,6 +3804,7 @@ fn x86_cc_linux_probe(
     let mut proofs = Vec::new();
     let mut previous_handle = None;
     for generation in 0..2 {
+        x86_reject_oversized_create(&mut cc)?;
         let generation_log = if generation == 0 {
             log_path.to_path_buf()
         } else {
@@ -3865,7 +3899,7 @@ fn x86_cc_linux_probe(
         previous_handle = Some(handle);
         proofs.push(proof);
     }
-    Ok(format!("{}; binary CC CREATE, input echo, DESTROY, recreate and second boot verified with stale handle rejection", proofs.join("; ")))
+    Ok(format!("{}; oversized RAM rejected before both generations; binary CC CREATE, input echo, DESTROY, recreate and second boot verified with stale handle rejection", proofs.join("; ")))
 }
 
 fn x86_console_roundtrip(socket: &Path, timeout: Duration) -> anyhow::Result<()> {
@@ -7401,6 +7435,56 @@ mod tests {
         assert!(x86_cc_console_bytes(&mut cc, 17).is_err());
         assert!(x86_cc_console_bytes(&mut cc, 17).is_err());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn x86_oversized_admission_requires_empty_inventory_and_clean_rejection() {
+        use std::os::unix::net::UnixListener;
+        for (before, reply_words, after, accepted) in [
+            (0, [CC_ERR_RELAY_FAULT, 0, 0], 0, true),
+            (1, [CC_ERR_RELAY_FAULT, 0, 0], 0, false),
+            (0, [CC_OK, 17, 0], 0, false),
+            (0, [CC_ERR_RELAY_FAULT, 0, 17], 0, false),
+            (0, [CC_ERR_RELAY_FAULT, 17, 0], 0, false),
+            (0, [CC_ERR_BAD_HANDLE, 0, 0], 0, false),
+            (0, [CC_ERR_RELAY_FAULT, 0, 0], 1, false),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("cc.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                mock_cc_sync(&mut stream);
+                let mut request = [0u8; CC_REQ_SIZE];
+                let mut reply = [0u8; CC_REPLY_SIZE];
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(rd32(&request, 0), MSG_CC_LIST_GUESTS);
+                wr32(&mut reply, 0, before);
+                stream.write_all(&reply).unwrap();
+                if before != 0 {
+                    return;
+                }
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(rd32(&request, 0), MSG_CC_CREATE_GUEST);
+                assert_eq!(&request[16..18], &[1, VIBEOS_ARCH_X86_64]);
+                assert_eq!(rd32(&request, 20), 2052);
+                assert_eq!(rd32(&request, 32), 7);
+                for (i, value) in reply_words.iter().enumerate() {
+                    wr32(&mut reply, i * 4, *value);
+                }
+                stream.write_all(&reply).unwrap();
+                if reply_words != [CC_ERR_RELAY_FAULT, 0, 0] {
+                    return;
+                }
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(rd32(&request, 0), MSG_CC_LIST_GUESTS);
+                wr32(&mut reply, 0, after);
+                stream.write_all(&reply).unwrap();
+            });
+            let mut cc = CcClient::connect(&socket).unwrap();
+            assert_eq!(x86_reject_oversized_create(&mut cc).is_ok(), accepted);
+            server.join().unwrap();
+        }
     }
 
     #[test]
