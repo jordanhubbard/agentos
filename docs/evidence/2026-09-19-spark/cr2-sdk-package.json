@@ -16,13 +16,20 @@
     "extracted_sdk": "make sdk-candidate-check passed all three pinned kernels and required headers",
     "overwrite_guard": "Existing package output rejected without replacement",
     "build": "make build GUEST_OS=none with extracted SDK and explicit candidate version exited 0",
-    "host_tests": "make test-host exited 0"
+    "host_tests": "make test-host exited 0",
+    "full_gate": {
+      "revision": "f7e829b2a4ffb1f27c2f28ceb54a56f234700d56",
+      "command": "make gate SEL4_SDK=/tmp/agentos-sdk-unpack.1FSevI/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+      "exit_code": 0,
+      "log_sha256": "d41cd9a2a16ca154891f610960644a390baa364aaf991a367965963d07a96d34",
+      "scope": "Host suite, ARM and reduced x86 root boots, canonical guest net/block/console proofs using the extracted package"
+    }
   },
   "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/sdk-package",
   "limitations": [
     "Local artifacts only; not published or selected by default or CI",
     "Packaging reproducibility is not whole-SDK source-build reproducibility",
-    "No new runtime acceptance claim; existing kernel qualification remains revision-scoped",
+    "Full gate does not establish Intel VMX execution or graphics recreation; those remain separate revision-scoped qualifications",
     "Target bundle omits the host Microkit executable"
   ]
 }
