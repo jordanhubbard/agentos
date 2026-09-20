@@ -1,8 +1,8 @@
 # CR2 dependency candidate
 
 The user approved this scoped kernel exception and full requalification on
-2026-09-19. Local Make defaults and installed release SDKs remain unchanged;
-CI explicitly selects this candidate through a verified build artifact.
+2026-09-19. The v0.4 Make and Rust defaults select this bundle through
+`tools/sdk/default-version`; CI consumes its verified build artifact.
 This is an experimental dependency candidate, not a released seL4 fix or a
 claim of upstream acceptance.
 
@@ -98,8 +98,8 @@ the wrappers or linker scripts and failed the OS gate; neither is accepted
 as a release bundle.
 It must not be advertised as a complete upstream SDK.
 Packaging preserves existing output. CI consumes this artifact through the
-reusable SDK build job; hosted acceptance, public release distribution and
-local-default adoption remain pending.
+reusable SDK build job. Local defaults select the qualified bundle; hosted
+acceptance and public release distribution remain pending.
 
 The normal installer can consume the qualified target archive explicitly:
 
@@ -112,8 +112,10 @@ make sdk SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 \
 For this candidate version, `make sdk` verifies the pinned archive SHA-256
 before extraction, stages extraction separately, and then runs `sdk-check`.
 An existing incomplete destination is preserved and rejected. This explicit
-URL remains necessary until a canonical distribution URL is published; the
-candidate version is not an upstream Microkit release tag.
+URL is needed for prerelease local installation. The default installer URL is
+the planned v0.4.0 `agentos-sdk-targets.tar.gz` release asset; it becomes usable
+when the evidence-bound release workflow publishes that asset. The bundle
+version is not an upstream Microkit release tag.
 
 The `Pinned SDK candidate` workflow rebuilds the three-board bundle from the
 exact upstream commits and scoped patch on Ubuntu 24.04 with GCC 13 and the
@@ -126,7 +128,7 @@ installation action downloads the artifact from that same workflow run and
 invokes the checksum-enforced Make installer. Required check names and their
 guest-I/O assertions remain intact. The SDK workflow can also run through
 manual dispatch. An uploaded workflow artifact is not an OS release, public
-download URL, or default-SDK adoption; hosted execution still needs to pass.
+download URL, or runtime qualification; hosted execution still needs to pass.
 
 The target bundle used by agentOS needs the kernel and generated headers.
 `--skip-tool` and `--skip-initialiser` avoid building unused Microkit components.

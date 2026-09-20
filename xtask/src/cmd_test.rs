@@ -2583,7 +2583,9 @@ pub(crate) fn sel4_sdk_path() -> anyhow::Result<PathBuf> {
     let home = std::env::var_os("HOME").context(
         "SEL4_SDK is unset and HOME is unavailable; set SEL4_SDK to the external Microkit SDK",
     )?;
-    Ok(PathBuf::from(home).join(".cache/agentos/microkit-sdk-2.1.0"))
+    let version = std::env::var("SEL4_SDK_VERSION")
+        .unwrap_or_else(|_| include_str!("../../tools/sdk/default-version").trim().to_owned());
+    Ok(PathBuf::from(home).join(format!(".cache/agentos/microkit-sdk-{version}")))
 }
 
 fn attach_profile_media(

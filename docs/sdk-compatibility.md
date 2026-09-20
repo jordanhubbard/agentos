@@ -1,9 +1,13 @@
 # Microkit SDK compatibility
 
-The default remains Microkit 2.1.0. Microkit 2.3.0 can be selected explicitly
-with `SEL4_SDK_VERSION=2.3.0`; install it through `make sdk` before building.
-Its separate cache directory preserves the default SDK. No seL4 source changes
-are part of this compatibility work.
+The v0.4 default is the approved `2.3.1-agentos-e60776ac-cr2` target bundle,
+selected by `tools/sdk/default-version`. Its [source pins, scoped kernel patch,
+packaging and qualification](x86-cr2-candidate.md) are separate from the earlier
+userspace API compatibility work below. CI builds and verifies the same bundle.
+
+Microkit 2.1.0 and 2.3.0 remain selectable with `SEL4_SDK_VERSION` for historical
+compatibility checks. Their separate cache directories are preserved. The
+original API compatibility changes below did not alter seL4 source.
 
 Three userspace API adjustments permit both versions:
 

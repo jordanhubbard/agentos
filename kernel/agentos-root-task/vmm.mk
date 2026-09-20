@@ -18,7 +18,7 @@ SDDF_ABS       := $(LIBVMM_ABS)/dep/sddf
 DTC            := dtc
 
 # BOARD_DIR: seL4 SDK board package containing include/ and lib/.
-SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK_VERSION ?= $(strip $(shell cat "$(AGENTOS_ROOT)/tools/sdk/default-version"))
 SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 SEL4_PROFILE ?= release
 BOARD_DIR ?= $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)

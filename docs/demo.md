@@ -16,10 +16,12 @@ make setup
 make demo
 ```
 
-`make setup` runs `make install` for host packages, downloads the shared Microkit 2.1.0 SDK
-to `$HOME/.cache/agentos`, and validates the demo toolchain. It is idempotent.
-Set `SEL4_SDK=/absolute/path/to/microkit-sdk-2.1.0` before invoking it to use
-an existing SDK.
+`make setup` runs `make install` for host packages, downloads the pinned agentOS
+SDK target bundle to `$HOME/.cache/agentos`, and validates the demo toolchain.
+It is idempotent. The bundle is sourced from the v0.4.0 release assets.
+Before that release is published, follow the [isolated SDK build recipe](x86-cr2-candidate.md)
+and set `SEL4_SDK` to its output, or install a verified local archive with
+`make sdk MICROKIT_SDK_URL=file:///absolute/path/to/agentos-sdk-targets.tar.gz`.
 
 `make demo` then:
 

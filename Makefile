@@ -120,7 +120,7 @@ QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 # repo root.
 ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
-SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK_VERSION ?= $(strip $(shell cat "$(ROOT_DIR)tools/sdk/default-version"))
 SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 export SEL4_SDK
 
@@ -412,6 +412,7 @@ endif
 include tools/sdk/candidate.mk
 
 ifeq ($(SEL4_SDK_VERSION),$(SDK_CANDIDATE_VERSION))
+MICROKIT_SDK_URL := https://github.com/jordanhubbard/agentos/releases/download/v0.4.0/agentos-sdk-targets.tar.gz
 sdk-check: sdk-candidate-check
 build: sdk-check
 endif
