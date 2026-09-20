@@ -268,3 +268,13 @@ availability at explicit checkpoints; it does not measure uninterrupted peer
 throughput or concurrent writable-storage isolation. Final promotion still
 requires the full parity suite at one immutable revision, including the
 current cold-boot comparison and architecture-specific storage acceptance.
+
+At clean revision `2bb18a0`, the current Ubuntu live qualification and the
+first seeded Debian cold boot both passed authenticated SSH and host-backed
+VirtIO net/block/console assertions on Spark. Their
+[comparison receipt](evidence/2026-09-19-spark/guest-current-boot-comparison.json)
+passed the same-revision and QEMU-configuration checks: Ubuntu measured
+1,061,081 ms and Debian 753,604 ms from launch request through authenticated
+SSH. These include provisioning and host scheduling, impose no performance
+threshold, and do not establish second-boot persistence or full baseline
+promotion. The second Debian cold boot remains separately qualified.
