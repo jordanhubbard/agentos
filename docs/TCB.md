@@ -15,8 +15,10 @@ Root maps one event page per VMM and a separate CC frontend page; only the
 virtualizer maps all three. CC resolves public guest handles before submitting
 input batches. VMMs consume only their own keyboard/pointer queues and emulate
 two faulting virtio-input devices. Input notifications confer send-only wakeup
-authority, never access to another client's queues. Target enumeration,
-delivery and mapping-isolation qualification remain pending.
+authority, never access to another client's queues. Target enumeration and
+delivery, including held/disconnected-input release across managed Debian
+recreation, passed in the [two retained ARM runs](evidence/2026-09-19-spark/graphics-recreation-repeat.json).
+Those receipts do not establish target peer-input mapping isolation.
 
 ## Privilege
 
@@ -36,8 +38,11 @@ hardware mappings. In the dual composition, root receives diagnostic reports
 from either coordinator on a root-owned endpoint. Each coordinator gets only
 send authority with its immutable service identity as a badge; neither can
 receive reports or transfer capabilities through it. The first report names
-its coordinator. This is not a combined two-guest success reporter. The image and topology checks pass;
-concurrent boot, independent lifecycle and persistent storage remain unqualified.
+its coordinator. This is not a combined two-guest success reporter. Later
+[concurrent reboot](evidence/2026-09-19-spark/intel-current-dual-reboots.json)
+and [same-LBA storage](evidence/2026-09-19-spark/intel-current-same-lba.json)
+receipts qualify their recorded Intel compositions; the report mechanism
+alone does not prove those outcomes.
 
 The x86 coordinator now selects runner ownership and queue revocation pools
 by its root-assigned slot. A separately compiled secondary coordinator uses
@@ -1090,9 +1095,12 @@ guest TCB; resume reattaches it. This preserves queued guest fault IPC while
 removing execution budget. Failed execution transitions return an error and
 retain the prior lifecycle state. This authority does not include another
 VMM's guest or the driver scheduling contexts. The dual-guest qualification
-above verifies resume for the configured slots. Destroy is terminal for a
-slot in the current image: RAM/capability reclamation and clean guest recreation
-remain work under `task_e58e8c20b539a258fc1f0ec28aeb5308`.
+above verifies resume for the configured slots. Those original dual-guest
+receipts do not establish recreation. Later managed Debian qualification on
+[ARM](evidence/2026-09-19-spark/graphics-recreation-repeat.json) and
+[Intel](evidence/2026-09-19-spark/intel-current-admission.json) proves fresh
+guest handles after complete destruction at the named revisions. FreeBSD
+reconstruction and arbitrary guest configurations remain outside those proofs.
 
 QEMU virtio devices are hardware stand-ins owned by canonical agentOS driver
 PDs. The QEMU buses used for block media (8), networking (16), and the control
@@ -1148,7 +1156,7 @@ each image. [The qualification record](evidence/2026-09-16-spark/framebuffer-obs
 identifies all sixteen retained images. Hardware scanout and guest DRM/input
 remain required for v0.4.
 
-The in-progress libvmm GPU backend (`libvmm/src/virtio/gpu*.c`) implements
+The libvmm GPU backend (`libvmm/src/virtio/gpu*.c`) implements
 bounded 2D resource commands and direct control/cursor virtqueues, with
 `platform/gpu-virt/framebuffer_adapter.c` translating backend operations to
 the framebuffer queue contract. The AArch64 `GUEST_GRAPHICS=1` variant adds
