@@ -33,11 +33,24 @@
     "serial_log_sha256": "b34f944d468986d7028fa8030cbe1bec6511dfe32cd6e525e8dc14b81f2383cd",
     "image_sha256": "882db83c93f41c23301dda00c3ff7a6cba00a9c20131e02605520b9061f39053"
   },
+  "intel_regression": {
+    "runtime_revision": "bab66033d5589b3a509a90a11232ab5f799fab3e",
+    "host": "Existing Intel Linux madmax via puck.local",
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600",
+    "root_disk": "/tmp/agentos-debian-amd64/boot-24.raw",
+    "ssh": "Existing public-key identity and original pinned Ed25519 host key; loopback port 12224",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "PASS, exit 0: pinned-host-key SSH, x86_64 identity and sync",
+    "qemu_pid": 2524466,
+    "qemu_log_stem": "agentos-qemu-VgSxxn",
+    "log_sha256": "dfe70d611314b57b423ca8830d3fb0848418fe139b9729cc46db4bfb9ff817ed",
+    "source_clean_after_run": true
+  },
   "limits": [
     "Driver vNICs, shared-page capabilities and other service attachments remain allocated; this is not complete resource reclamation",
     "Retired network clients cannot reattach until a generation/reset contract safely recycles driver state; guest recreation remains unavailable",
     "Protected removed-client memory and surviving-client progress are host proofs, not on-target peer-continuity or shared-page-revocation proofs",
-    "Intel Debian SSH regression is running separately and has no result in this receipt",
+    "Intel SSH proves boot and I/O compatibility with contract v6, not Intel guest teardown or recreation",
     "Required GitHub checks and canonical integration remain pending"
   ]
 }

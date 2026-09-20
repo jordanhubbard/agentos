@@ -1,0 +1,34 @@
+{
+  "schema": "agentos.input_base_integration.v1",
+  "host": "sparky Linux aarch64",
+  "runtime_commit": "f5b75613d1e33ebd3234d5d24766f04f10ede43c",
+  "source_clean": true,
+  "profile": "debian-input-aarch64",
+  "commands": [
+    "make gate QEMU_TEST_SSH_PORT=12255",
+    "make test-guest-input QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12256"
+  ],
+  "result": "pass",
+  "authenticated_ssh_elapsed_ms": 450785,
+  "proven": [
+    "Linux virtio_input loads and discovers agentOS keyboard and agentOS pointer",
+    "Authenticated SSH and canonical host-backed net/block/console qualification",
+    "Full host suite and both architecture root boot gates"
+  ],
+  "not_proven": [
+    "Exact evdev event delivery in this base profile; supplied by dependent input-delivery qualification",
+    "Target peer-input mapping isolation",
+    "Physical input devices",
+    "Guest lifecycle capability reclamation or recreation",
+    "Bare-metal Spark or x86 Linux execution",
+    "Final merged release qualification"
+  ],
+  "retained_local_directory": "/tmp/agentos-v04-input/build/evidence/input-integration-f5b7561",
+  "sha256": {
+    "os_image": "c42d50d8b1a6fd7cf2014a4a2b225964a8437b8348df993bfc744bac2997d5d3",
+    "gate_log": "5b6dcb2765b8bfe78943988e0ddc6d1145a0fdac562e5045ba23d8dff17c1969",
+    "qualification_log": "7f783130ae61d45ee5e09bcc13315c081a17394c25ece4b2bdf8847cb4f0506c",
+    "serial_log": "3ca8e1f2575336da2c9e709aab25d3b4674616b3e52f23014dbe33060eada3c6",
+    "boot_timing": "cabd8b58d4ca420d6d830e1fa7d6486cec9546ac98ad31c3f7f919f99c814cc8"
+  }
+}

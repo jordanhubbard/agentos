@@ -1,0 +1,28 @@
+{
+  "schema": "agentos.intel_integrated_smp.v1",
+  "date": "2026-09-19",
+  "revision": "1f40ff220b35dcac7558f4520f805d0e71d095c5",
+  "source_tree_clean": false,
+  "task": "task_00ba79d8c6024e43a5cb3d7dffff9696",
+  "host": "madmax Intel i9-14900KF with nested VMX/KVM",
+  "command": "make gate-x86_64-smp",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "timeout_seconds_per_boot": 600,
+  "exit_code": 0,
+  "handles": [
+    1,
+    2
+  ],
+  "result": "Both generations passed pinned Ed25519 SSH, x86_64 identity, sync, two online CPUs and overlapping affinity-pinned x87/SSE workers. Binary CC CREATE, input echo, DESTROY, recreation and stale-handle rejection passed.",
+  "initial_disk_sha256": "fdcdd0dc1a4384cc01d3bfce4a7dd232de4001d01380e06b58b728f24c1daaf3",
+  "artifact": "/home/jkh/.local/share/agentos-evidence/2026-09-19-intel-integration/1f40ff2-smp.tar.gz",
+  "artifact_sha256": "935dd60f25c4198f0a2d3e7e4d4c58cc9557b5b12c144e39624f0e76dcad1038",
+  "build_recovery": "Initial attempt stopped before QEMU launch on Cargo archive disk-quota error. Moved the checkout target directory from /tmp to disk-backed /var/tmp, retained the failed build log, then reran with the unchanged fresh disk.",
+  "limitations": [
+    "One guest in two sequential generations, not concurrent guests",
+    "Does not establish orderly guest shutdown or concurrent media isolation",
+    "Does not qualify later runner-ownership changes",
+    "Required CI, canonical integration and release acceptance remain outstanding"
+  ],
+  "source_state": "Tracked source unchanged. Moving the Cargo target directory left an untracked target symlink during this run; it was detected by the next clean-tree check. No source changes occurred."
+}

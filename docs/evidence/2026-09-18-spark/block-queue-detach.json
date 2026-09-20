@@ -32,11 +32,24 @@
     "log_sha256": "b08dc4c8885a3cd0c985a3bed6abf021d72336c922f4f2f686c6751ba50a72bd",
     "serial_log_sha256": "735cf7c4b3715e7dad4589d9beb3b1f8ab1858b772db3a343431c43e4adf6571"
   },
+  "intel_regression": {
+    "runtime_revision": "38b7925bb56f0e29b416b3e8c7e9962109797720",
+    "host": "Existing Intel Linux madmax via puck.local",
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600",
+    "root_disk": "/tmp/agentos-debian-amd64/boot-24.raw",
+    "ssh": "Original pinned Ed25519 host key and existing public-key identity; loopback port 12224",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "PASS, exit 0: pinned-host-key SSH, x86_64 identity and sync",
+    "qemu_pid": 2556181,
+    "qemu_log_stem": "agentos-qemu-Fxu4iO",
+    "log_sha256": "8443334fb54d4d590f14bd48fc3d720716760df1799d051629db354b87e2a142",
+    "source_clean_after_run": true
+  },
   "limits": [
     "Detach does not flush media or prove durability",
     "Shared-page capabilities, media resources and fallback RAM disks remain allocated",
     "Guest recreation, generation reset, actual shared-page revocation and target peer continuity remain unqualified",
-    "Intel Debian SSH regression is running separately; no result is asserted here",
+    "Intel SSH proves boot and I/O compatibility with contract v5, not Intel detach or guest recreation",
     "Required GitHub checks and canonical integration remain pending"
   ]
 }
