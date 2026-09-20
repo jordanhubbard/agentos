@@ -1,0 +1,24 @@
+{
+  "status": "passed independent reboot persistence of distinct same-offset raw patterns",
+  "source_revision": "030915a37e351546bdc81ecfee512c56d5e5d958",
+  "host": "madmax Intel Linux, nested VMX/KVM",
+  "prerequisite": "intel-current-same-lba.json records partition exclusion checks and concurrent flushed writes of different 128 KiB patterns at LBA6290000 on each disk",
+  "proof": "Each guest rebooted independently through systemctl reboot. Original pinned SSH identity authenticated a new boot ID, the exact original raw pattern and the original filesystem witness. During each reboot the other guest authenticated and returned its unchanged boot ID and raw pattern.",
+  "primary": {
+    "handle": 5,
+    "before_boot_id": "e54008a4-36b4-4bb3-9ba5-f910f42e93b0",
+    "after_boot_id": "0673b6a8-dac3-430d-a172-9c3400e657ae",
+    "raw_sha256": "d87438b22de89f463fb38ac6aefedd43cbb2ca934b34374391cb94bc784948b3",
+    "filesystem_sha256": "5b766f6d76a999636fd93b4e039d5a32187f84a19c0950449f0c721da0223914"
+  },
+  "secondary": {
+    "handle": 4,
+    "before_boot_id": "25733888-d20f-4d78-be87-b1541003a44f",
+    "after_boot_id": "982c6de9-0e58-4c27-ad58-5c2171222807",
+    "raw_sha256": "041ae98d0af9ca59d54f7cb1f2f519e925fb7d206868b6c38ccff6aa5eb9f4c3",
+    "filesystem_sha256": "7995dfceebfb9fa8972d361d53d899f6e268ecd6d823b5737198041fabc02e20"
+  },
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-raw-reboots-030915a/receipts.tar.gz",
+  "archive_sha256": "e0b4c063df1775ac0f9a174f44e392421b16b8492e69734de7d00db31490f0a4",
+  "limits": "Discrete peer checks, not uninterrupted throughput. Guest reboot persistence is not outer-host power-loss durability or comprehensive capability/bounds qualification. No release claim."
+}
