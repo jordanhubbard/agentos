@@ -253,13 +253,23 @@ jobs:
     name: Native Rust PD runtime and network isolation proof
     runs-on: ubuntu-24.04
     needs: sdk-candidate
-    timeout-minutes: 15
+    # This serial suite builds distinct isolation images, including 16 framebuffer
+    # modes. Allow a cold build to finish without adding more runner jobs.
+    timeout-minutes: 40
+    env:
+      CCACHE_MAXSIZE: 512M
+      # The root Makefile prepends LLVM_BIN for nested target builds.
+      MAKEFLAGS: LLVM_BIN=/usr/lib/ccache
     steps:
       - uses: actions/checkout@v4
       - name: Install target build tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clang lld llvm qemu-system-arm device-tree-compiler curl
+          sudo apt-get install -y --no-install-recommends clang lld llvm qemu-system-arm device-tree-compiler curl ccache
+          # Reuse identical compilations across probe modes within this job.
+          # ccache still checks compiler options and preprocessed source.
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$RUNNER_TEMP/native-proof-ccache" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-none
@@ -354,6 +364,10 @@ jobs:
             build/evidence/framebuffer-isolation/
             build/tmp/agentos-qemu-*
           if-no-files-found: error
+
+      - name: Report native compiler cache usage
+        if: always()
+        run: ccache --show-stats
 
   contract-tests:
     name: Phase 5 contract tests (qemu_virt_aarch64)
