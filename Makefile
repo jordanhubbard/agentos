@@ -2258,6 +2258,18 @@ release-verify:
 PRESENTATION_EDITION ?= dev
 PRESENTATION_PDF ?= build/presentations/agentos-systems-security-v$(PRESENTATION_EDITION).pdf
 
+# Compile the shipping default AArch64 table, without target execution.
+# Optional PD names restrict the report to edges between those domains.
+.PHONY: topology-report
+TOPOLOGY_PDS ?=
+topology-report:
+	@mkdir -p build/tools
+	@$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_GUEST_PRIMARY=1 \
+		-iquote kernel/agentos-root-task/include -Iplatform/include \
+		tools/system-topology.c kernel/agentos-root-task/src/system_desc_aarch64.c \
+		-o build/tools/system-topology
+	@build/tools/system-topology $(TOPOLOGY_PDS)
+
 presentation-render:
 	@cargo xtask render-deck --edition $(PRESENTATION_EDITION) --output $(PRESENTATION_PDF) \
 		$(if $(filter 1,$(PRESENTATION_VISUAL_REVIEW)),--visual-review,)

@@ -1,0 +1,32 @@
+{
+  "schema": "agentos.dual-recreation-qualification.v1",
+  "source_revision": "c2a2505072b6a9760e8e33dc5427309410ba3abe",
+  "source_clean": true,
+  "command": "make test-dual-guest-recreation DUAL_OS_TEST_TIMEOUT=7200",
+  "exit_code": 0,
+  "host": "Spark Linux AArch64",
+  "image_sha256": "6fd5fa2155b99fe424f332f5dd499f38c3d96ec77b2afa10736b61122782d256",
+  "root_task_sha256": "dcb6cde96b4986766c2a0c347ebaded41d6c43b3a3e89c587e7b187239a75c5b",
+  "proof": [
+    "Concurrent pinned-key authenticated FreeBSD and Ubuntu SSH before recreation",
+    "FreeBSD authenticated SSH after Ubuntu destruction",
+    "Ubuntu recreated with fresh handle 3 after retired handle 2",
+    "Concurrent authenticated SSH after recreation and stale-handle rejection",
+    "Final guest destruction and successful harness exit; QEMU3526553 absent"
+  ],
+  "logs": {
+    "baseline.log": "e0b7e09a48550c1f85913d8ad82eaaf7d09d970a155a3158026b4a5d8682f23b",
+    "dual-local-receipts.tar.gz": "1cd3dea0ea9edb2b9af802c71b71433b65159ca515b12e758e4a15f731622156"
+  },
+  "diagnostic": "Build transcript and dependency file identify fresh candidate compilation. Missing ARM reconstruction diagnostics are explained by agentos.h redefining LOG_VMM to release-build no-op sel4_dbg_puts; their absence does not establish a blocked reconstruction.",
+  "ci": {
+    "run": 35679648789,
+    "attempt": 2,
+    "status": "completed",
+    "scope": "Only failed concurrent-SSH job retried; successful SDK reused.",
+    "conclusion": "success",
+    "url": "https://github.com/jordanhubbard/agentos/actions/runs/35679648789/attempts/2",
+    "qualification_log_sha256": "ebf091c41b2f4abd2b769254f16d05e0eb5dc87627cc93e2998bf4ec1c319050"
+  },
+  "limits": "One local candidate pass; original CI failure cause remains unconfirmed and hosted retry is not yet accepted."
+}

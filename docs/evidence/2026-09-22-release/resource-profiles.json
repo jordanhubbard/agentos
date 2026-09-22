@@ -1,0 +1,137 @@
+{
+  "task": "task_5a7af19b3d99497a8c13b1f7ac57b230",
+  "memory": {
+    "status": "passed two-GiB managed recreation with measured Linux memory in both generations",
+    "source_revision": "030915a37e351546bdc81ecfee512c56d5e5d958",
+    "host": "madmax Intel Linux with nested VMX/KVM",
+    "sdk": "2.3.1-agentos-e60776ac-cr2",
+    "profile": "debian-amd64-2g.toml",
+    "command": "make gate-x86_64-cc-linux QEMU_TEST_TIMEOUT=1800 with isolated writable disk and pinned SSH host key; exact launcher and observers archived",
+    "make_exit": 0,
+    "guest_handles": [
+      1,
+      2
+    ],
+    "observed_boot_ids": [
+      "4fe1cc73-5086-4ba3-88ba-c1f09d83d05f",
+      "006dc777-6906-41e6-92bc-abe3cb452ea8"
+    ],
+    "linux_memtotal_kib": [
+      2017468,
+      2017468
+    ],
+    "observer_exit": [
+      0,
+      0
+    ],
+    "proof": "Both managed generations passed pinned-key SSH, x86_64 architecture and sync assertions; binary CC create, console input echo, destroy, fresh-handle recreation and stale-handle rejection passed. Independent bounded SSH collectors retained full meminfo and distinct boot IDs and asserted MemTotal between 1900000 and 2097152 KiB. The first collector started before boot; the second started after the harness announced handle2. All observers and the QEMU were confirmed absent after completion.",
+    "root_task_sha256": "acd155144f796ac6ae856fe47c9331105618f979d7f2b36c0cb56f8fa9187e51",
+    "log_sha256": "b610e5b9f58e32c49969ce25b742c12d378c167d68e579cde91751bb4dd07263",
+    "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-resource-030915a/receipts.tar.gz",
+    "archive_sha256": "6a643c3a385a663d166fc799a96bf49fd5856ca01d637a14c0974a74df7a94b9",
+    "limits": "Measured Linux-visible capacity, not a full-memory stress workload or every resource-admission boundary. Configured RAM includes reserved memory, so MemTotal is lower than two GiB. Does not qualify larger profiles, x86 graphics, final integrated release or v0.4 completion. Archive excludes private SSH identities and disks."
+  },
+  "admission": {
+    "schema": "agentos.intel-admission-qualification.v1",
+    "date_utc": "2026-09-20",
+    "revision": "933545bd4b754e8df4d4e9aba4520bc2891eb2c2",
+    "host": "madmax, Intel Linux with nested VMX/KVM",
+    "profile": "debian-amd64-2g.toml",
+    "sdk": "Extracted qualified three-board target archive, all pinned kernel hashes verified",
+    "target": "make gate-x86_64-cc-linux QEMU_TEST_TIMEOUT=1800",
+    "result": "exit 0; launcher 3263841 and QEMU 3268326 terminated",
+    "proofs": [
+      "Before each generation, inventory was empty and a wire-valid 2052 MiB CREATE returned CC_ERR_RELAY_FAULT with zero guest/recovery handles and unchanged inventory",
+      "Normal CREATE subsequently succeeded for handles 1 and 2 using the 2 GiB profile",
+      "Both generations authenticated with pinned Ed25519 SSH identity and verified x86_64 plus sync",
+      "Console input echo, normal destroy, managed recreation and stale-handle rejection passed"
+    ],
+    "root_task_sha256": "66a06e017257abc28aff9f0d1cbffcd8ebd3a2c32967ffbbe0fbc4e904b57a9e",
+    "gate_log_sha256": "fd9c76fafda20cb0f907a3ff8923fbfa360a925170647da0cb6a82102d5c0152",
+    "archive_sha256": "94bc58d591fd9839a46df0b7ee227ed6b8b3d82d416f24c73441e79e2a0738eb",
+    "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-admission-933545b/receipts.tar.gz",
+    "remote_evidence": "/var/tmp/agentos-v04-933545b-admission-evidence",
+    "setup": "Initial submodule setup failed before runtime due to /tmp quota. Original failure log retained; retry used /var/tmp compiler scratch and shared Cargo output. Disk baseline was closed before copying.",
+    "limits": [
+      "Tests the firmware composition's 2 GiB admission bound, not every profile size or host-memory exhaustion",
+      "Does not remeasure MemTotal, all CPU-feature combinations or every capability pool",
+      "No final integrated release claim; graphics recreation, CI and canonical integration remain outstanding"
+    ]
+  },
+  "reclamation": {
+    "status": "passed Intel native userspace and terminal reclamation gate",
+    "source_revision": "030915a37e351546bdc81ecfee512c56d5e5d958",
+    "host": "madmax Intel Linux with nested VMX/KVM",
+    "sdk": "2.3.1-agentos-e60776ac-cr2",
+    "command": "make gate-x86_64-teardown QEMU_TEST_TIMEOUT=300 with pinned firmware, Linux EFI kernel and minimal initramfs; exact command archived in run.sh",
+    "make_exit": 0,
+    "qemu_stem": "agentos-qemu-OcdP82",
+    "proof": [
+      "Target reported Linux ring3 initramfs syscall execution, canonical host network attachment, host and guest block reads, and guest network packet roundtrip.",
+      "Console request/reply passed through COM2 and serial_virt queues.",
+      "Target reported terminal teardown and zeroed pool reuse, and lifecycle client suspend/resume/destroy verification.",
+      "The terminal proof exercises every configured RAM and ROM pool and the applicable device queue pools twice with retype, zero checks, writes and revoke; it also reconstructs execution objects. See terminal_teardown_proof in platform/guest-vmm/x86_firmware.c at the recorded revision.",
+      "Detached launcher recorded exit zero; launcher3141167 and QEMU3144402 were absent after completion."
+    ],
+    "root_task_sha256": "e5b78e918fd935332fccbcf90f7206879bdca187595938ba563c2b3171dfbe2e",
+    "log_sha256": "042cecd4c2ed94e4bdc505ad72a152f77b6136b47b8db479758a8396084fff58",
+    "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-teardown-030915a/receipts.tar.gz",
+    "archive_sha256": "42149cdfc33a7f7d3dae5bb45dfcc056342a95932fdbf279536282882ac627f1",
+    "limits": "Configured minimal firmware/Linux proof, not all resource sizes or arbitrary admission failures. Retained empty management pools are intentional authority for reconstruction. Does not establish x86 graphics/input reclamation, final integrated release qualification, or v0.4 completion. No separate QEMU stderr artifact was emitted; the gate log and serial log are retained."
+  },
+  "cpus": {
+    "status": "passed",
+    "source_revision": "b2b86f5cdc0940c59c8271f93299a320f2f24cb5",
+    "host": "madmax Intel Linux with nested VMX/KVM",
+    "profile": "debian-amd64-2cpu.toml",
+    "sdk": "default 2.3.1-agentos-e60776ac-cr2, installed from the checksum-verified target bundle",
+    "sdk_archive_sha256": "fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b",
+    "command": "make gate-x86_64-smp GUEST_OS=none X86_ROOT_DISK=/var/tmp/agentos-intel-b2b86f5c-tmp/repeat.raw X86_SSH_KEY=/var/tmp/agentos-intel-b2b86f5c-tmp/ssh-seed/identity X86_SSH_PORT=12371 X86_FIRMWARE_IMAGE=/var/tmp/agentos-intel-37a9eacf-tmp/OVMF.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=1800",
+    "make_exit": 0,
+    "launcher_exit": 0,
+    "qemu_stem": "agentos-qemu-tKp9cX",
+    "proof": [
+      "Before both generations, an oversized 2052 MiB CREATE failed without a guest handle or inventory change. The bounded 2 GiB profile subsequently created handles 1 and 2.",
+      "Both generations reached Debian userspace, authenticated using pinned Ed25519 SSH, returned x86_64 and completed sync.",
+      "Both SMP receipts report online=0-1, worker affinity=0,1 and overlapping x87/SSE workers with preserved register state.",
+      "Console input echo, successful DESTROY, managed reconstruction and stale-handle rejection passed.",
+      "No external known-hosts file was supplied. The first authenticated console key was retained for the recreated guest; both host-key receipts are byte-identical.",
+      "The remote launcher had isolated stdin and saved exit zero. The tool session exited zero and QEMU244491 was absent after completion."
+    ],
+    "root_task_sha256": "2c9c9dbc5f2733bd1292b049b8c97911beb7e7f628ac0dd363e476c1d64715da",
+    "gate_log_sha256": "838113b1f5dc0a462ba03cb0e3c87b1af42f7ea3dc13dbfdc23999bc45550d90",
+    "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-smp-b2b86f5c/repeat-receipts.tar.gz",
+    "archive_sha256": "bac81e1aeec34e73528023422473bd426db89b9961b61932d44c7a307b69745a",
+    "earlier_attempt": {
+      "qemu_stem": "agentos-qemu-gPhiEZ",
+      "result": "All target and guest assertions emitted PASS, but the streamed remote shell wrapper lost its exit-status assignment and exited 2; its saved status is blank. This is not an accepted zero-exit run.",
+      "archive_sha256": "fe42a57f5952ed1cfcc7af7e2b73ed68a057f7dcfd406f254e5bc6457d8cbd3c",
+      "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-smp-b2b86f5c/receipts.tar.gz"
+    },
+    "limits": "Two virtual CPUs in the qualified Intel composition, not simultaneous execution on two host cores, every resource profile, physical power-loss durability, x86 desktop support or final release acceptance. Private SSH identities and guest disks are excluded from both evidence archives."
+  },
+  "implementation": "terminal_teardown_proof verifies stale caps fail lookup, retired GPA/MMIO fail and pools can be retyped and zero-checked twice",
+  "source_comparison": "git diff b2b86f5c..630134f8 -- platform kernel libvmm tools/sdk is empty; target and SDK source are unchanged",
+  "admission_archive_reverified": true,
+  "final_two_gib_teardown": {
+    "command": "#!/bin/bash\nset -uo pipefail\nproof_dir=/var/tmp/agentos-resource-2g-20260922\ntrap 'result=$?; printf \"%s\\n\" \"$result\" > \"$proof_dir/gate.exit\"' EXIT\ncd /var/tmp/agentos-milestone-fd7d1dcd || exit 2\nexport TMPDIR=\"$proof_dir/compiler-tmp\"\nexport CARGO_TARGET_DIR=/var/tmp/agentos-milestone-cargo-target\nmake gate-x86_64-teardown SEL4_SDK=/home/jkh/.cache/agentos/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 X86_FIRMWARE_IMAGE=/var/tmp/agentos-intel-37a9eacf-tmp/OVMF.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/var/tmp/agentos-milestone-fd7d1dcd/build/evidence/milestone-vmm/linux.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=\"$proof_dir/initrd.bin\" X86_BOOT_INITRD_SHA256=43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4 X86_BOOT_RAM_BYTES=0x80000000u QEMU_TEST_TIMEOUT=300\n",
+    "source_revision": "fd7d1dcd3af2dedbcd27acd5eb9f2fc51ad2a470",
+    "source_clean": true,
+    "make_exit": 0,
+    "sdk": "2.3.1-agentos-e60776ac-cr2",
+    "ram_bytes": 2147483648,
+    "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-22-dual-recreation/intel-resource-2g/receipts.tar.gz",
+    "archive_sha256": "256ab9c6f035c9c00bd091909076a877f161f1c007ebd5c4a525ce4999efc1a8",
+    "artifact_hashes": "fdfcb25b9eeaae9297eddf1d112f21bbd4a346c9fa20d71b5edbaefd1c94ea29  agentos.img\nb5d8dde2d951554fb3bdefc313c0821e9a692d9252acf2de476126aaab9918e2  root_task.elf\n685043ea22829bf22b9fdb420eabf6373994de8cf4e063de89f6b21bb2621b85  gate.log\na2e7b466be2a27cc5b2a8b54c9e131fabd2682524e99f3845a4bf733b6c53a6e  serial.log\n43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4  initrd.bin\n",
+    "proof": "Linux ring3, canonical network/block/console, terminal teardown and zeroed pool reuse, lifecycle suspend/resume/destroy passed. Every configured RAM/ROM and applicable device queue pool exercised by the unchanged terminal proof. QEMU1903374 absent after exit.",
+    "source_equivalence": "fd7d1dcd to c2a25050 changes only .github/workflows/dual-guest-qualification.yml; no target or harness source changes.",
+    "limits": "Bounded 2 GiB composition with qualified SDK; not every size, physical hardware, exhaustive memory pressure, or arbitrary CPU count."
+  },
+  "host_contracts": {
+    "tests": [
+      "tests/platform/test_guest_profile.c",
+      "tests/platform/test_x86_cpu.c"
+    ],
+    "scope": "RAM/vCPU bounds, GPA/HVA and artifact-window overlap rejection; explicit CPUID feature exposure, unknown leaves and masked unsupported features. Full unchanged make test-host independently required in VM review."
+  }
+}

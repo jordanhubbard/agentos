@@ -10,9 +10,10 @@ The detailed compatibility baseline below remains the explicitly dated v4.0.3
 study; this update records newly verified facts without implying that the new
 ISO has been installed or qualified on agentOS.
 
-The upstream release listing was rechecked on **2026-09-19** and still names
-v4.0.4 as latest. The ISO metadata observations below remain dated 2026-09-16;
-this release-list check did not download or requalify the media.
+The upstream release listing, tag and published checksum were rechecked on
+**2026-09-22** and still identify v4.0.4 and the same digest. The ISO size and
+source observations below remain dated 2026-09-16; this metadata check did not
+download or requalify the media.
 
 ## Current official release observation
 

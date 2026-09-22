@@ -19,7 +19,7 @@ and speaker notes in the source, and excludes those notes from audience pages.
 Render a release edition with:
 
 ```text
-make presentation-render PRESENTATION_EDITION=0.2.0
+make presentation-render PRESENTATION_EDITION=0.4.0
 ```
 
 The first render leaves `visual_review=required` in the adjacent QA receipt.
