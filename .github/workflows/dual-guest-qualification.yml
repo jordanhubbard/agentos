@@ -1,0 +1,95 @@
+name: Dual guest SSH qualification
+
+# Expensive live-media boots are explicit release qualifications. Do not add
+# this workflow to push, pull_request, or scheduled events.
+on:
+  workflow_dispatch:
+    inputs:
+      guests:
+        description: Guest pair to qualify through concurrent authenticated SSH
+        required: true
+        default: ubuntu-freebsd
+        type: choice
+        options:
+          - ubuntu-freebsd
+          - debian-freebsd
+
+permissions:
+  contents: read
+
+# Keep one qualification active across all refs; never cancel retained work.
+concurrency:
+  group: dual-guest-qualification
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  SEL4_SDK_VERSION: 2.3.1-agentos-e60776ac-cr2
+  SEL4_SDK: /tmp/microkit-sdk-2.3.1-agentos-e60776ac-cr2
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sdk-candidate:
+    uses: ./.github/workflows/sdk-candidate.yml
+  dual-ssh:
+    name: Concurrent SSH (${{ inputs.guests }})
+    runs-on: ubuntu-24.04
+    needs: sdk-candidate
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install guest qualification tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang lld llvm qemu-system-arm qemu-utils \
+            device-tree-compiler libarchive-tools e2fsprogs zstd curl openssh-client
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install verified SDK artifact
+        uses: ./.github/actions/install-sdk
+
+      - name: Cache pinned guest media
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/agentos/isos/
+          key: dual-ssh-${{ runner.os }}-${{ inputs.guests }}-${{ hashFiles('guest-profiles/*.toml', 'xtask/src/guest_manifest.rs') }}
+
+      - name: Prove concurrent SSH and peer survival across recreation
+        timeout-minutes: 300
+        env:
+          GUEST_PAIR: ${{ inputs.guests }}
+        run: |
+          case "$GUEST_PAIR" in
+            ubuntu-freebsd) target=test-dual-guest-recreation ;;
+            debian-freebsd) target=test-debian-peer-recreation ;;
+            *) echo "Unsupported guest pair: $GUEST_PAIR" >&2; exit 1 ;;
+          esac
+          mkdir -p build/evidence/dual-ssh
+          git rev-parse HEAD > build/evidence/dual-ssh/source-revision.txt
+          # bash pipefail propagates the Make failure through tee. The existing
+          # harness requires exact FreeBSD/Linux replies from both concurrent
+          # SSH processes and repeats them after recreating the Linux guest.
+          make "$target" DUAL_OS_TEST_TIMEOUT=14400 2>&1 | tee build/evidence/dual-ssh/qualification.log
+
+      - name: Retain qualification and authenticated SSH transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dual-ssh-${{ inputs.guests }}-${{ github.sha }}
+          path: |
+            build/evidence/dual-ssh/
+            build/tmp/agentos-qemu-*.log
+            build/tmp/agentos-qemu-*.qemu.stderr
+            build/tmp/agentos-qemu-*.ssh-evidence/
+          if-no-files-found: error
