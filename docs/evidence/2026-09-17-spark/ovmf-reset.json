@@ -1,0 +1,48 @@
+{
+  "qualification": "OVMF reset to protected-mode execution",
+  "date": "2026-09-17",
+  "task": "task_a562ac606c7f44c0a62db899543d83bb",
+  "firmware": {
+    "package": "Ubuntu ovmf 2024.02-2ubuntu0.9",
+    "path": "/usr/share/ovmf/OVMF.fd",
+    "bytes": 4194304,
+    "sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "upstream": "TianoCore EDK II",
+    "package_license": "BSD-2-Clause-Patent",
+    "committed_binary": false
+  },
+  "intel": {
+    "host": "madmax",
+    "runtime_revision": "fae31085fde94c44c41e366f4965c24699ac0a80",
+    "sdk": "2.3.0",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "PASS",
+    "reset_linear_address": "0xfffffff0",
+    "initial_cr0_exit_linear_address": "0xfffffea4",
+    "final_exit": "CPUID, reason 10, instruction length 2",
+    "final_linear_address": "0xfffffbc6",
+    "final_code_segment": "base zero, D/B set, L clear",
+    "log_sha256": "6cf7b02973f1057f9168e5b1b499af609ab4d4ec100d3b2defd04b09bee730de",
+    "image_sha256": "2045f7c3fa70d33f39fedfefa59999df0ff0d347c7f6fa43a0ba7daa86e34ff8",
+    "retained_directory": "/tmp/agentos-v04-intel-reset/build/evidence/ovmf-protected-fae3108"
+  },
+  "spark": {
+    "runtime_revision": "59057d73f678c7ff13ee6fbe1a5b31cbc578ced6",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12260",
+    "result": "PASS",
+    "log_sha256": "67dfbeb847bc3442b5cc6ea592ea59720b04b929e02fc741c12b2fa0101e7aea",
+    "last_gate_image_sha256": "0825e06f8f2d6a12e1f7f16cfc79f0eca8bd9cbc4ff2f95df930b5570857f26e",
+    "retained_directory": "/tmp/agentos-v04-x86-reset/build/evidence/ovmf-reset-59057d7",
+    "rust_unit_tests": "84 passed",
+    "wrong_firmware_hash": "rejected before embedding",
+    "wrong_firmware_size": "rejected before embedding"
+  },
+  "revision_scope": "fae3108 changes only the opt-in VTX firmware handler, its root result check and expected test marker. Ordinary gate target behavior is unchanged. Later commits contain documentation only. The full-gate image hash identifies its final AArch64 guest-console variant.",
+  "limits": [
+    "CPUID is observed, not yet emulated",
+    "No long-mode firmware initialization, UEFI boot or Linux userspace",
+    "No installed ACPI, virtual interrupt topology or canonical x86 guest I/O",
+    "No persistent UEFI variables or runtime guest resource reclamation",
+    "Default SDK unchanged; no seL4 kernel source changes"
+  ]
+}

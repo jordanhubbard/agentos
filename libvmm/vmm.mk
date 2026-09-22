@@ -9,6 +9,7 @@
 LIBVMM_DIR :=  $(abspath $(dir $(lastword ${MAKEFILE_LIST})))
 
 AARCH64_FILES := src/arch/aarch64/fault.c \
+                 src/arch/aarch64/fault_registry.c \
 		 src/arch/aarch64/linux.c \
 		 src/arch/aarch64/cpuif.c \
 		 src/arch/aarch64/psci.c \
@@ -16,6 +17,7 @@ AARCH64_FILES := src/arch/aarch64/fault.c \
 		 src/arch/aarch64/tcb.c \
 		 src/arch/aarch64/vcpu.c \
 		 src/arch/aarch64/virq.c \
+		 src/arch/aarch64/virtio_mmio.c \
 		 src/arch/aarch64/vgic/vgic.c \
 		 src/arch/aarch64/vgic/vgic_v2.c \
 		 src/arch/aarch64/vgic/vgic_v3.c \
@@ -40,6 +42,10 @@ ARCH_INDEP_FILES := src/util/printf.c \
 		    src/virtio/block.c \
 		    src/virtio/console.c \
 		    src/virtio/gpa.c \
+		    src/virtio/gpu.c \
+		    src/virtio/gpu_2d.c \
+		    src/virtio/gpu_ring.c \
+		    src/virtio/input.c \
 		    src/virtio/mmio.c \
 		    src/virtio/pci.c \
 		    src/virtio/net.c \
@@ -71,6 +77,7 @@ libvmm/arch/aarch64/vgic:
 	mkdir -p libvmm/virtio
 
 libvmm.a: ${OBJECTS}
+	rm -f $@
 	${AR} crv $@ $^
 
 ${OBJECTS}: ${SDDF}/include

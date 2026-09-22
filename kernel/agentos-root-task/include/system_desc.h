@@ -229,6 +229,13 @@ typedef struct {
 #define SVC_ID_FRAMEBUFFER_QUEUE 30u /* isolated surface queue service */
 #define SVC_ID_FRAMEBUFFER_TEST0 31u
 #define SVC_ID_FRAMEBUFFER_TEST1 32u
+#define SVC_ID_INPUT_VIRT 33u /* isolated keyboard/pointer queue service */
+#define SVC_ID_DISPLAY_RAMFB 34u /* QEMU fw_cfg display driver */
+#define SVC_ID_X86_LIFECYCLE_PROBE 35u /* Qualification client; no device grants */
+#define SVC_ID_X86_RUNNER 36u /* Private VMM execution context */
+#define SVC_ID_X86_AP_RUNNER 37u /* Second private VMM execution context */
+#define SVC_ID_X86_SECONDARY_RUNNER 38u /* Secondary guest bootstrap executor */
+#define SVC_ID_X86_SECONDARY_AP_RUNNER 39u /* Secondary guest AP executor */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */
@@ -284,3 +291,23 @@ typedef struct {
 /* Slot 31 belongs to the generic log-ring notification in every client PD. */
 #define PD_CNODE_SLOT_FB_WAIT 32u
 #define PD_CNODE_SLOT_FB_PEER_NOTIFY 33u /* service uses 33/34 for clients */
+#define PD_CNODE_SLOT_INPUT_WAIT 36u
+#define PD_CNODE_SLOT_INPUT_PEER_NOTIFY 37u /* service: two VMMs and CC */
+#define PD_CNODE_SLOT_DISPLAY_WAIT 40u
+#define PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY 41u
+#define PD_CNODE_SLOT_CC_IRQ_WAIT 42u /* receive-only CC transport IRQ */
+_Static_assert(PD_CNODE_SLOT_CC_IRQ_WAIT > PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY &&
+               PD_CNODE_SLOT_CC_IRQ_WAIT < PD_IRQHANDLER_SLOT_BASE,
+               "CC IRQ wait slot must not overlap device peer or handler slots");
+#define PD_CNODE_SLOT_NET_PRIMARY_NOTIFY 43u
+#define PD_CNODE_SLOT_NET_SECONDARY_NOTIFY 44u
+#define PD_CNODE_SLOT_INPUT_VIRT_EP 45u
+#define PD_CNODE_SLOT_FB_REBIND_EP 46u
+_Static_assert(PD_CNODE_SLOT_FB_REBIND_EP>PD_CNODE_SLOT_INPUT_VIRT_EP &&
+    PD_CNODE_SLOT_FB_REBIND_EP<PD_IRQHANDLER_SLOT_BASE,"framebuffer rebind endpoint slot");
+_Static_assert(PD_CNODE_SLOT_INPUT_VIRT_EP > PD_CNODE_SLOT_NET_SECONDARY_NOTIFY &&
+               PD_CNODE_SLOT_INPUT_VIRT_EP < PD_IRQHANDLER_SLOT_BASE,
+               "input rebind endpoint must not overlap notifications or IRQ slots");
+_Static_assert(PD_CNODE_SLOT_NET_PRIMARY_NOTIFY > PD_CNODE_SLOT_CC_IRQ_WAIT &&
+               PD_CNODE_SLOT_NET_SECONDARY_NOTIFY < PD_IRQHANDLER_SLOT_BASE,
+               "network notification slots must not overlap input, display or IRQ slots");

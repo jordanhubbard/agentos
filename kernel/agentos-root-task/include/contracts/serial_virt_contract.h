@@ -4,10 +4,27 @@
 #include <stdint.h>
 #include "virtualizer_authority.h"
 
-/* Only ATTACH uses IPC. Console bytes use the shared sDDF byte queues.
+/* Only attachment control uses IPC. Console bytes use shared sDDF byte queues.
  * Notifications are persistent seL4 Signals, not endpoint NBSends. */
-#define SERIAL_VIRT_CONTRACT_VERSION 2u
+#define SERIAL_VIRT_CONTRACT_VERSION 4u
 #define SERIAL_VIRT_OP_ATTACH 0x2d01u
+/* Version 4 terminal guest detach: same layouts as attach, VMM role only.
+ * Frontend queue access uses the shared admission gate. Detach closes it
+ * until explicit reconstruction and returns BUSY while an admitted operation is in progress.
+ * The producer must stop before calling. OK retires the service's pointers
+ * to this guest page and marks its frontend detached. Pending terminal bytes
+ * may be abandoned; no viewer drain is required. Repeated detach is OK;
+ * legacy ATTACH cannot reopen it; REBIND requires the next generation. Other guest and
+ * operator channels are unaffected. This does not revoke page capabilities. */
+#define SERIAL_VIRT_OP_DETACH 0x2d02u
+/* Reconstruction control, separate from legacy ATTACH. The native
+ * capability-transfer handler must validate one private untyped grant and
+ * map a freshly retyped queue before committing this generation. No caller
+ * address is accepted. Success returns one frame capability and a 12-byte
+ * {status, rebind_version, generation} payload. Error returns no capability.
+ * Revoke the VMM pool before retrying a failed reconstruction. */
+#define SERIAL_VIRT_OP_REBIND 0x2d03u
+#define SERIAL_VIRT_REBIND_VERSION 1u
 #define SERIAL_VIRT_ROLE_VMM 0u
 #define SERIAL_VIRT_ROLE_FRONTEND 1u
 #define SERIAL_VIRT_ROLE_OPERATOR 2u
@@ -18,6 +35,7 @@
 #define SERIAL_VIRT_ERR_AUTHORITY 2u
 #define SERIAL_VIRT_ERR_BUSY 3u
 #define SERIAL_VIRT_ERR_PROTOCOL 4u
+#define SERIAL_VIRT_ERR_RESOURCE 5u
 #define SERIAL_VIRT_FRONTEND_BADGE UINT64_C(0xa0510100)
 
 /* Signals to a VMM use a bit distinct from legacy control notifications.
@@ -48,6 +66,12 @@ typedef struct __attribute__((packed)) {
     uint32_t status;
     uint32_t version;
 } serial_virt_attach_reply_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t version;
+    uint32_t client;
+    uint32_t generation; /* strictly previous + 1, never zero or wrapping */
+} serial_virt_rebind_req_t;
 
 static inline int serial_virt_authorized(uint64_t badge, uint32_t client,
                                          uint32_t role)

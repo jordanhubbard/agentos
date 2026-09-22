@@ -181,6 +181,19 @@ static seL4_Error scratch_init(void)
     return seL4_NoError;
 }
 
+#if defined(__aarch64__)
+#define PRIVATE_PAGING_SPACES 8u
+static struct { seL4_CPtr vspace, pool; } private_paging[PRIVATE_PAGING_SPACES];
+
+static seL4_Error paging_alloc(seL4_CPtr pool, uint32_t type, seL4_CPtr *cap)
+{
+    *cap = ut_alloc_slot();
+    if (*cap == seL4_CapNull) return seL4_NotEnoughMemory;
+    return seL4_Untyped_Retype(pool, type, 0u, seL4_CapInitThreadCNode,
+                               0u, 0u, *cap, 1u);
+}
+#endif
+
 static seL4_Error install_missing_paging_object(seL4_CPtr vspace, seL4_Word vaddr)
 {
 #if defined(__x86_64__)
@@ -224,7 +237,20 @@ static seL4_Error install_missing_paging_object(seL4_CPtr vspace, seL4_Word vadd
     return seL4_FailedLookup;
 #else
     seL4_CPtr pt;
-    seL4_Error err = ut_alloc_cap(seL4_ARCH_IntermediatePTObject, 0u, &pt);
+    seL4_Error err;
+#if defined(__aarch64__)
+    seL4_CPtr pool = seL4_CapNull;
+    for (uint32_t i = 0u; i < PRIVATE_PAGING_SPACES; i++) {
+        if (private_paging[i].vspace == vspace) {
+            pool = private_paging[i].pool;
+            break;
+        }
+    }
+    if (pool != seL4_CapNull)
+        err = paging_alloc(pool, seL4_ARCH_IntermediatePTObject, &pt);
+    else
+#endif
+        err = ut_alloc_cap(seL4_ARCH_IntermediatePTObject, 0u, &pt);
     if (err != seL4_NoError) {
         return err;
     }
@@ -587,6 +613,32 @@ pd_vspace_result_t pd_vspace_create(seL4_CPtr pd_cnode,
     };
 }
 
+pd_vspace_result_t pd_vspace_create_private(seL4_CPtr asid_pool,
+                                             seL4_CPtr paging_pool)
+{
+#if defined(__aarch64__)
+    if (paging_pool == seL4_CapNull || asid_pool == seL4_CapNull)
+        return error_result(seL4_InvalidCapability);
+    uint32_t slot = 0u;
+    while (slot < PRIVATE_PAGING_SPACES && private_paging[slot].vspace != seL4_CapNull)
+        slot++;
+    if (slot == PRIVATE_PAGING_SPACES) return error_result(seL4_NotEnoughMemory);
+    seL4_Error err = scratch_init();
+    if (err != seL4_NoError) return error_result(err);
+    seL4_CPtr vspace;
+    err = paging_alloc(paging_pool, seL4_ARM_VSpaceObject, &vspace);
+    if (err != seL4_NoError) return error_result(err);
+    err = seL4_ARM_ASIDPool_Assign(asid_pool, vspace);
+    if (err != seL4_NoError) return error_result(err);
+    private_paging[slot].vspace = vspace;
+    private_paging[slot].pool = paging_pool;
+    return (pd_vspace_result_t){.vspace_cap = vspace, .error = seL4_NoError};
+#else
+    (void)asid_pool; (void)paging_pool;
+    return error_result(seL4_IllegalOperation);
+#endif
+}
+
 pd_vspace_result_t pd_vspace_load_elf(seL4_CPtr    vspace_cap,
                                        const void  *elf_base,
                                        uint32_t     elf_size,
@@ -647,7 +699,26 @@ seL4_Error pd_vspace_map_device_frame(seL4_CPtr vspace,
                     seL4_ARM_Default_VMAttributes);
 }
 
+seL4_Error pd_vspace_map_uncached_device_frame(seL4_CPtr vspace,
+                                                seL4_CPtr frame_cap,
+                                                seL4_Word vaddr)
+{
+#if defined(__x86_64__)
+    seL4_ARCH_VMAttributes attributes = seL4_X86_Uncacheable;
+#else
+    seL4_ARCH_VMAttributes attributes = 0;
+#endif
+    return map_page(frame_cap, vspace, vaddr, seL4_AllRights, attributes);
+}
+
 #else /* AGENTOS_TEST_HOST ───────────────────────────────────────────────── */
+
+pd_vspace_result_t pd_vspace_create_private(seL4_CPtr asid_pool,
+                                             seL4_CPtr paging_pool)
+{
+    (void)paging_pool;
+    return pd_vspace_create(seL4_CapNull, asid_pool);
+}
 
 pd_vspace_result_t pd_vspace_create(seL4_CPtr pd_cnode, seL4_CPtr asid_pool)
 {
@@ -690,6 +761,13 @@ seL4_Error pd_vspace_map_device_frame(seL4_CPtr vspace,
     (void)frame_cap;
     (void)vaddr;
     return seL4_IllegalOperation;
+}
+
+seL4_Error pd_vspace_map_uncached_device_frame(seL4_CPtr vspace,
+                                                seL4_CPtr frame_cap,
+                                                seL4_Word vaddr)
+{
+    return pd_vspace_map_device_frame(vspace, frame_cap, vaddr);
 }
 
 #endif /* AGENTOS_TEST_HOST */

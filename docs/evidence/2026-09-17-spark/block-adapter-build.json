@@ -1,0 +1,25 @@
+{
+  "qualification": "Production block queue adapter SDK portability",
+  "runtime_revision": "df6c499f1a1132baea08dc81419448e7ccf87923",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "sdk21": {
+    "command": "make test-virtio-backends-build SEL4_SDK_VERSION=2.1.0",
+    "result": "PASS exit 0; ARM64 and x86_64 production adapter objects",
+    "log_sha256": "180eb7b53c04c0b6d6f388faf5159fc09d7abda0180e5e1463f6af844d1759dc"
+  },
+  "sdk23": {
+    "command": "make test-virtio-backends-build SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0; ARM64 and x86_64 production adapter objects",
+    "log_sha256": "e030adb3d3676b6e1886a3cee328828cf1178dff9c006c98374165ebe87350dd"
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0",
+    "log_sha256": "e5e8e85460b5668dfafa83487152499a0f58fb8447bb22e896db9ba33cd4b619"
+  },
+  "retained_directory": "build/evidence/block-adapter-df6c499",
+  "limitations": [
+    "No Intel block device is attached or advertised by this change.",
+    "Intel canonical block I/O, persistence and remaining release requirements are incomplete."
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "qualification": "Terminal input queue detach after seeded Debian graphics and input proof",
+  "runtime_revision": "f2277d304f108e537771f0384d957fa64cd042db",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "pipeline_result": "PASS, exit 0",
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12229",
+    "log_sha256": "390e8f36927ad6922f759a3a7df3d020159f577e2ea6938fcff48f7cb62a4687"
+  },
+  "target": {
+    "command": "make test-debian-nocloud-graphics-teardown",
+    "log_sha256": "94acb8c056a893aa5cdc9aab26086e09d85769393bd36a6ff7becaeed7df88e5",
+    "serial_log_sha256": "bf3ba122b6aca19daf26ef5cfb4907a3af847a5024ca5cb741e5363b23337eb8",
+    "image_sha256": "ab2eee013cd2079610db7dc95ed2318d6c4e4dfac5e04c50b45e387d18717dd5",
+    "qemu_pid": 589846,
+    "qemu_log_stem": "agentos-qemu-0E8deX",
+    "result": "Authenticated seeded Debian guest, canonical host-backed net/block/console, 1024x768 framebuffer capture, all 786432 scanout pixels matched, exact input batches and held-key/button releases, terminal input detach acknowledgment, execution/RAM/paging revocation and stale public-handle rejection",
+    "frame_sha256": "68dcf755e16f71c6de1a6c3ea545c6deb41ce341f13e4353cadc4f5cf311794b"
+  },
+  "limits": [
+    "Input queue page and notification capabilities remain allocated in this revision",
+    "Retired input channels require a future generation/reset protocol before reuse",
+    "No guest recreation or concurrent target peer continuity claim",
+    "Required GitHub checks, canonical integration and release qualification remain pending"
+  ]
+}

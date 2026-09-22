@@ -1,0 +1,22 @@
+{
+  "qualification": "Common root block queue allocation and client mapping boundaries",
+  "runtime_revision": "a57ebe34d4c9b335194e25f022e23e0bbc818956",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "spark_gate": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0",
+    "log_sha256": "c767f583163dabd6b1fffb377d43071ba0068fe895ef400d46ed9c4e9f088cf2"
+  },
+  "isolation": {
+    "command": "make test-block-isolation SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0; all eight target checks reported the root-validated expected VMM data fault",
+    "log_sha256": "0d03ff244feed8a057b3f260838585513881e36f01601450e3da039258c63c8d",
+    "scope": "Primary and secondary VMM read/write denial for the peer client page and the virtualizer's private disk page"
+  },
+  "retained_directory": "build/evidence/block-shared-a57ebe3",
+  "limitations": [
+    "The Intel composition does not yet include blk_virt, so Intel queue mappings and block I/O are not qualified here.",
+    "The tests do not inject allocation exhaustion or kernel mapping-call failure.",
+    "Runtime resource reclamation, physical Intel media I/O and the v0.4 release remain incomplete."
+  ]
+}

@@ -4,7 +4,7 @@
  * QueueDesc/Avail/Used and virtq_desc.addr are guest physical addresses.
  * libvmm historically cast them to host pointers (identity map). The VMM
  * installs a bounds-checked translator via virtio_gpa_set_translate().
- * Until that is called, copies use identity (legacy / unconfigured).
+ * Until that is called, translation and nonempty copies fail closed.
  */
 #pragma once
 
@@ -17,6 +17,8 @@ struct virtio_queue_handler;
 
 typedef void *(*virtio_gpa_translate_fn)(uint64_t gpa, size_t len);
 
+/* NULL disables future translations. Callers must separately quiesce devices
+ * and reset mapped rings before revoking or replacing their RAM mappings. */
 void virtio_gpa_set_translate(virtio_gpa_translate_fn fn);
 void *virtio_gpa_to_hva(uint64_t gpa, size_t len);
 

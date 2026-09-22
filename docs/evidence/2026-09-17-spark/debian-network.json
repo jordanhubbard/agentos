@@ -1,0 +1,31 @@
+{
+  "schema": "agentos.debian_network.v1",
+  "host": "sparky Linux aarch64",
+  "runtime_commit": "44378e485e453186eb06706bfaa6a4609750ab19",
+  "profile": "debian-stable-aarch64",
+  "command": "make run GUEST_OS=debian",
+  "os_image_sha256": "820b7d1410a17781b8267455e95f2aa0b3fa52bd2ede60265ed398ece1f8449c",
+  "preboot_networked_disk_sha256": "3817c73f8b02faeafcee2a09b5da4d0cdc4a8a29a915efff6732a6fda5046882",
+  "gui_binary_sha256": "d4aacbfc7d685896d6efbead3a4e82c44af0217bb519eb94c31858c40cf3190b",
+  "initrd_sha256": "909ad68f6ff313839860b225f41204c6456207081c7e5d5fcadde7f696a775a4",
+  "dtb_sha256": "db7edd81cfef50acfc3a4d441f2a91b50e254dbc6ccaacbfce74b8e6050447fc",
+  "validation": {
+    "profile_check": "pass",
+    "os_gate": "make gate QEMU_TEST_SSH_PORT=12252 passed at b50a69936867b0f1e11f696bd7a8ee822a0feb7a; runtime differs only by two DTB checksum pins",
+    "gate_log_sha256": "9bbc8881dabaa274749bd59e0acab215ca26bc1c1902798558c9ede9f93dbc68",
+    "automatic_network": "eth0 UP, DHCP 10.0.2.15/24, default route via 10.0.2.2",
+    "services": "systemd-networkd, systemd-resolved and ssh active without manual service changes",
+    "resolver": "existing resolv.conf stub nameserver 127.0.0.53; DHCP DNS 10.0.2.3",
+    "dns_query": "getent ahostsv4 deb.debian.org returned IPv4 records; repeated query returned 151.101.2.132 STREAM debian.map.fastlydns.net",
+    "forwarded_ssh": "ssh-keyscan -T 10 -p 12222 -t ed25519 127.0.0.1 matched guest public host-key fingerprint",
+    "ssh_ed25519_fingerprint": "SHA256:HavJxWa+Qla554297Gmyhv3mjlB/Eb1wIMVglbr7pzg",
+    "screenshot_sha256": "4c6f0c8028f0fd6a6aec926d31b35a29c9b1e619b7a3810b92a550aff43b76fd",
+    "gui_exit": 0,
+    "qemu_exit": 0
+  },
+  "limitations": [
+    "No account login or credential provisioning was performed",
+    "Interactive QEMU uses snapshot=on; VM-reboot disk persistence is not established",
+    "This is AArch64 QEMU qualification on Spark, not Intel VMX/Linux or physical device qualification"
+  ]
+}

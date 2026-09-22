@@ -261,5 +261,50 @@ mod tests {
         assert_eq!(plan.guests.len(), 2);
         assert_eq!(plan.guests[0].profile.control_type, 2);
         assert_eq!(plan.guests[1].profile.control_type, 1);
+        assert_eq!(plan.guests[1].profile.id, "debian-scenario-aarch64");
+        assert!(plan.guests[1].profile.seed.is_some());
+        assert_eq!(plan.guests[1].ssh_host_port, 12222);
+        assert_eq!(plan.guests[0].ssh_host_port, 12223);
+    }
+
+    #[test]
+    fn debian_recreation_retains_seed_and_separate_peer_routes() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let plan = resolve_alias(
+            &repo.join("guest-scenarios"),
+            &repo.join("guest-profiles"),
+            "debian-recreation",
+        )
+        .unwrap();
+        assert_eq!(plan.guests.len(), 2);
+        let peer = &plan.guests[0];
+        let linux = &plan.guests[1];
+        assert_eq!(peer.profile.control_type, 2);
+        assert!(peer.profile.seed.is_none());
+        assert_eq!(linux.profile.control_type, 1);
+        assert!(linux.profile.seed.is_some());
+        assert!(linux.profile.provision.is_empty());
+        assert_eq!(linux.ssh_guest_address, "10.0.2.15");
+        assert_eq!(peer.ssh_guest_address, "10.0.2.16");
+        assert_eq!(linux.ssh_host_port, 12484);
+        assert_eq!(peer.ssh_host_port, 12485);
+        assert!(linux
+            .profile
+            .test
+            .iter()
+            .any(|step| step.action == "wait-ssh"
+                && step.args.get("marker").map(String::as_str) == Some("Linux")));
+        assert_eq!(
+            linux
+                .profile
+                .qemu
+                .as_ref()
+                .unwrap()
+                .media
+                .iter()
+                .filter(|disk| disk.writable)
+                .count(),
+            1
+        );
     }
 }

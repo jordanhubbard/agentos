@@ -1,0 +1,27 @@
+{
+  "qualification": "NIC adoption of the shared host virtio transport",
+  "runtime_revision": "e6e3e34d6720b8e27c275711db9f1833454ec84e",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make test-virtio-host-transport test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/net-host-transport/focused.log",
+      "sha256": "cb29cbc456f71a35c3828299fa93e08cb21b7cc5205f4cd7518b1b6ce6d3c85b"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/net-host-transport/gate.log",
+      "sha256": "6a2230885bda001ec911d78d28d8512327feacf5c1c31e888c85a73f0f376a97"
+    }
+  ],
+  "scope": [
+    "Host transport register tests cover MMIO interrupt status and acknowledgment, with PCI polling bindings performing no interrupt-register access.",
+    "The actual NIC PD links for x86_64; its current device binding remains MMIO.",
+    "The full Spark gate passed host tests, ARM and x86 stub boot checks, and guest network, block and console proofs.",
+    "This does not qualify Intel PCI NIC discovery, DMA grants, asynchronous receive service or Linux x86 networking. Those integrations remain outstanding."
+  ]
+}

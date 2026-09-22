@@ -1,0 +1,49 @@
+{
+  "schema": "agentos.network_device_adoption.v1",
+  "runtime_commit": "c8c7f02",
+  "accepted_for_guest_recreation": false,
+  "scope": "VMM adoption of successfully rebound network queues after stopped detach and bus retirement",
+  "host": {
+    "result": "Sanitizer tests and full host suite passed; firmware linked; terminal exit 0",
+    "checks": [
+      "Fresh guest-facing registers and queues transfer exact TX and RX bytes in two replacement generations",
+      "Pending service RX and fresh backend MAC survive adoption without another ATTACH",
+      "Stale, zero and live replacement generations are rejected; a generation consumed before adoption may be skipped",
+      "Failed registration preserves cleanup ownership and allows detach",
+      "Old RAM and queue mappings are inaccessible during adoption and late callbacks"
+    ],
+    "log_sha256": "f630bdc7ec20ea670996a549ba3de406610ded757e34ad97e4648c9ed0985f35"
+  },
+  "spark_regression": {
+    "command": "make gate",
+    "result": "passed, terminal exit 0",
+    "log_sha256": "55b291f7302c7adfe390dfd8400578c0b9341a20671b6fd7d730380b176065c4"
+  },
+  "intel_regression": {
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 with pinned firmware, kernel and initrd",
+    "result": "passed, terminal exit 0",
+    "log_sha256": "70c9bc8bd5f48e04beec420555743795050d2bba81c29f4f59d74064d318405e",
+    "scope": "Existing boot, I/O, teardown and stopped reconstruction paths; does not execute the new adoption helper"
+  },
+  "native_adoption": {
+    "runtime_commit": "f2980ad",
+    "result": "Host suite/link, full Spark gate and Intel teardown qualification passed, all terminal exit 0",
+    "scope": "Two actual queue rebind/adoption cycles on restored guest RAM and a fresh native bus/controller, without binding or entering a VCPU",
+    "checks": [
+      "Guest-facing MMIO dispatcher returns network device identity, reset status, reset queue readiness and new attachment MAC",
+      "New backend reports ready without inherited guest I/O completion",
+      "Detach and bus retirement disable GPA translation before queue and RAM revocation",
+      "Returned network frame capabilities fail lookup after pool revocation"
+    ],
+    "host_and_link_log_sha256": "5ff3a058b8179576ef92fdd65fa33a6e8f0fb779d29f6d5ed1861c2300dd4ebb",
+    "spark_gate_log_sha256": "f0bfeb50f33e6ce84837ef241ff68f4d539b528f91d4419d338614b87b7af542",
+    "intel_log_sha256": "86922c691be7dcb733ebbc9898331d0d6f4d16eb8f962a3cad12df32c57713bf",
+    "stage_legend": "Base 4000 + generation * 100; 1 rebind/backend; 2 fresh bus/controller; 3 adoption/readiness; 10..14 MMIO identity/status/queue-ready/MAC; 20 detach/retire; 21 revoke; 22 stale frame cap"
+  },
+  "limitations": [
+    "Adoption is qualified while stopped on native seL4, but is not yet wired into firmware reset",
+    "Fresh device TX/RX descriptor execution is host-tested; native adoption only probes MMIO and cleanup",
+    "Block and serial device reset and actual second guest boot remain required",
+    "The intermittent serial reconstruction failure remains unresolved"
+  ]
+}

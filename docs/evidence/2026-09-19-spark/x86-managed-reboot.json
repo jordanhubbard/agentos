@@ -1,0 +1,41 @@
+{
+  "status": "passed bounded two-guest ordinary reboot and persistence checks",
+  "source_revision": "1db6fa1f3d8ba3433bf682743a226afeb5544a36",
+  "source_clean_during_qualification": true,
+  "spark": {
+    "make_test_host_exit": 0,
+    "make_gate_exit": 0,
+    "sdk": "2.3.1-agentos-e60776ac-cr2",
+    "gate_log_sha256": "73875e87c510c45649fad167d2b693987135fcf2c802d0aea2b2f63f56bcebc8",
+    "gate_log": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/1db6fa1-full-gate.log"
+  },
+  "intel": {
+    "host": "madmax, Intel Linux KVM",
+    "qemu_pid": 1645404,
+    "root_task_sha256": "3cf2b369296a14e14f3fac9185e6ba04a94f21c3c8430f4a377109802bf6a777",
+    "sequence": "Fresh secondary boot, fresh primary boot alongside it, secondary ordinary systemctl reboot, primary ordinary systemctl reboot. No outer QEMU restart.",
+    "authentication": "Ed25519 keys pinned from each complete trusted CC console host-key report; unchanged keys required after reboot.",
+    "payload_path": "/home/debian/agentos-storage-payload",
+    "payload_bytes_each": 2097152,
+    "primary": {
+      "handle": 2,
+      "address": "10.0.2.15",
+      "boot_before": "a89e4514-b65e-414e-803a-4a2e7193c95d",
+      "boot_after": "56653164-874c-43f1-9f59-fc7985297091",
+      "payload_sha256_before_and_after": "5f898587808fcbe9b2409bf42a16b834b91117be14f942101d22c9d66b2fe13f",
+      "initial_disk_sha256": "7f68d18685b9af5ecbcdb784330445f57799ee00eb52d61019738a6d2af9a8ee"
+    },
+    "secondary": {
+      "handle": 1,
+      "address": "10.0.2.16",
+      "boot_before": "f4dc386a-19d6-4940-9c8e-ca4b5834d2c6",
+      "boot_after": "ea3682cb-bc5b-4eac-9153-800331fa7d0b",
+      "payload_sha256_before_and_after": "fc52f4d49013484257d49864fa047abb1c0595fcf71431fe92120f85e1aa2045",
+      "initial_disk_sha256": "1813a637e55727c43b77b9a57e4871e5393297fb6579adf2a98ecf20c5b6a9c5"
+    },
+    "peer_checks": "Each peer remained SSH reachable during the other's reboot with unchanged boot ID and payload hash. Primary payload path was absent before its own first write. Expected payload hashes were independently calculated on Spark.",
+    "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/1db6fa1-reboot-evidence.tar.gz",
+    "archive_sha256": "00811b09f68bc20429b59d6796719eef896c1465bc628c10e0f01d8abf35b75a"
+  },
+  "limits": "One ordinary reboot per guest; not simultaneous first boot, abrupt power-loss durability, crash-safe close, snapshot compatibility, discard or bounds acceptance, full storage isolation, or complete v0.4 qualification. Private SSH identities and disks excluded from evidence archive."
+}

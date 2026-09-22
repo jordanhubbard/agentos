@@ -8,6 +8,8 @@ typedef struct {
     aos_serial_channel_t frontend[AOS_SERIAL_CLIENTS];
     uint8_t guest_attached[AOS_SERIAL_CLIENTS];
     uint8_t frontend_attached[AOS_SERIAL_CLIENTS];
+    uint8_t guest_retired[AOS_SERIAL_CLIENTS];
+    uint32_t guest_generation[AOS_SERIAL_CLIENTS];
 } aos_serial_virt_service_t;
 
 typedef struct {
@@ -23,6 +25,16 @@ typedef struct {
  * Zero-initialize the service's attachment arrays once before serving IPC. */
 uint32_t aos_serial_virt_attach(aos_serial_virt_service_t *service,
     uint64_t badge, const serial_virt_attach_req_t *request, uint32_t length);
+uint32_t aos_serial_virt_detach(aos_serial_virt_service_t *service,
+    uint64_t badge, const serial_virt_attach_req_t *request, uint32_t length);
+/* Validate before capability allocation. Commit only after the trusted native
+ * handler mapped a freshly retyped private queue. Both operations run in the
+ * service thread; the closed frontend gate excludes concurrent CC access. */
+uint32_t aos_serial_virt_rebind_validate(const aos_serial_virt_service_t *service,
+    uint64_t badge, const serial_virt_rebind_req_t *request, uint32_t length);
+uint32_t aos_serial_virt_rebind_commit(aos_serial_virt_service_t *service,
+    uint64_t badge, const serial_virt_rebind_req_t *request, uint32_t length,
+    aos_serial_channel_t fresh);
 aos_serial_virt_result_t aos_serial_virt_service_pump(
     aos_serial_virt_service_t *service, uint32_t budget_per_direction);
 #endif

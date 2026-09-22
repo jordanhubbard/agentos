@@ -1,0 +1,35 @@
+{
+  "schema": "agentos.guest-ram-recycle-qualification.v1",
+  "source_commit": "3581a277c598d49dce922ebd08ea29bc59722ae5",
+  "source_clean": true,
+  "host": "sparky",
+  "board": "qemu_virt_aarch64",
+  "profile": "buildroot-proof-aarch64",
+  "command": "make test-guest-ram-recycle QEMU_TEST_TIMEOUT=480 QEMU_TEST_SSH_PORT=12244",
+  "exit_code": 0,
+  "cycles": 2,
+  "assertions": [
+    "overwrite all guest RAM words before each revocation",
+    "disable GPA translation while mappings are released",
+    "revoke descendants of each dedicated guest RAM untyped",
+    "reject copying a deleted frame capability on the second cycle",
+    "retype and map new frames into the guest and VMM VSpaces",
+    "verify every word is zero after each rebuild",
+    "boot Linux and complete emulated virtio block I/O after recycling"
+  ],
+  "agentos_image_sha256": "77e50d5f3c9eeea52e42fb67c772f7f36680695abca36ff3e6f413ddb2a14371",
+  "qualification_log_sha256": "74bf37645626e5dc368a6102575ce7243c3b029f1cbd1efd4659ecfe19a18ea7",
+  "serial_log_sha256": "fd610d997f4d03c5675e30fe07b3db8409c11ec627f9f87233a57f38fb29848f",
+  "gate_command": "make gate QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12245",
+  "gate_exit_code": 0,
+  "gate_log_sha256": "dedf73145643102d0574c2cd1af20f3b81012046b24010b6f1a61839b4ab9f10",
+  "retained_artifacts": "/tmp/agentos-v04-ram-pools/build/evidence/ram-pools-3581a27",
+  "limits": [
+    "preboot recycling only; production teardown callbacks are not connected",
+    "no outstanding device work during recycling",
+    "no live guest destruction or recreation qualification",
+    "no execution-object or page-table reclamation",
+    "no peer guest continuity qualification",
+    "no v0.4 completion claim"
+  ]
+}

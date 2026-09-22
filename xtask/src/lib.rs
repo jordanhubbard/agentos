@@ -18,6 +18,7 @@ pub mod cmd_policy_check;
 pub mod cmd_release;
 pub mod cmd_render_deck;
 pub mod cmd_run_tests;
+pub mod cmd_seed_guest;
 pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
@@ -36,6 +37,12 @@ pub use guest_scenario::GuestScenarioArgs;
 
 #[derive(Clone, clap::Args)]
 pub struct TestArgs {
+    /// Select a data-defined scenario for --guest-os both.
+    #[arg(long)]
+    pub scenario: Option<String>,
+    /// Recreate the deferred scenario guest while its peer remains running.
+    #[arg(long, conflicts_with_all = ["keep_running", "seed_profile", "assert_seeded_recreation"])]
+    pub assert_scenario_recreation: bool,
     /// Prove a disk witness survives two fresh QEMU boots of one live profile.
     #[arg(long, requires = "assert_live", conflicts_with_all = ["no_build", "keep_running", "assert_desktop"])]
     pub assert_persistent_boots: bool,
@@ -69,8 +76,18 @@ pub struct TestArgs {
     /// Qualify framebuffer queue transactions from two isolated native clients.
     #[arg(long, conflicts_with_all = ["assert_native_rust", "assert_native_guest", "assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "assert_vmx_exit"])]
     pub assert_framebuffer: bool,
-    /// Verify either framebuffer client's denied queue/arena reads and writes.
-    #[arg(long, requires = "assert_framebuffer", value_parser = clap::value_parser!(u8).range(1..=8))]
+    /// Configure QEMU ramfb through the dedicated display driver.
+    #[arg(
+        long,
+        requires = "assert_framebuffer",
+        conflicts_with = "framebuffer_isolation_probe"
+    )]
+    pub assert_display: bool,
+    /// Compare a graphics guest's exported frame against QEMU RAMFB scanout.
+    #[arg(long, conflicts_with = "assert_display")]
+    pub assert_guest_display: bool,
+    /// Verify framebuffer clients cannot access peer queues or private/observer storage.
+    #[arg(long, requires = "assert_framebuffer", value_parser = clap::value_parser!(u8).range(1..=16))]
     pub framebuffer_isolation_probe: Option<u8>,
     /// Qualify fresh native NIC traffic interleaved with a live Ubuntu guest.
     #[arg(long, conflicts_with_all = ["assert_native_rust", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"])]
@@ -90,6 +107,9 @@ pub struct TestArgs {
     /// Test-only VMM fault probe: 1..4 primary foreign/disk read/write; 5..8 secondary.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
     pub block_isolation_probe: Option<u8>,
+    /// Test-only root failure: 1 missing GIC frame, 2 map failure, 3 copy failure.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3), conflicts_with_all = ["no_build", "keep_running"])]
+    pub guest_gic_failure_probe: Option<u8>,
     #[arg(long, default_value = "qemu_virt_aarch64")]
     pub board: String,
     #[arg(long, default_value = "buildroot")]
@@ -97,14 +117,40 @@ pub struct TestArgs {
     /// Host TCP port forwarded to guest SSH; 0 disables SSH forwarding.
     #[arg(long, env = "AGENTOS_TEST_SSH_PORT", default_value_t = 0)]
     pub ssh_port: u16,
+    /// Authenticate a preseeded ARM guest using a host key reported through CC-PD.
+    #[arg(long, conflicts_with_all = ["assert_live", "assert_desktop", "x86_ssh_key"])]
+    pub seeded_ssh_key: Option<std::path::PathBuf>,
+    /// Create fresh NoCloud media and a retained SSH identity from host.seed.
+    #[arg(long, conflicts_with_all = ["seeded_ssh_key", "seeded_directory", "seeded_ssh_known_hosts", "assert_live", "assert_desktop", "x86_ssh_key", "assert_persistent_boots", "no_build"])]
+    pub seed_profile: bool,
+    /// Seed once, then verify a flushed file and host identity across two cold boots.
+    #[arg(long, requires = "seed_profile")]
+    pub assert_seeded_cold_boots: bool,
+    /// Recreate a managed seeded ARM guest and verify pinned SSH and disk persistence.
+    #[arg(long, requires = "seed_profile", conflicts_with_all = ["assert_seeded_cold_boots", "assert_managed_guest", "assert_guest_teardown", "keep_running", "no_build", "assert_guest_display"])]
+    pub assert_seeded_recreation: bool,
+    #[arg(skip)]
+    pub seeded_witness: Option<String>,
+    #[arg(skip)]
+    pub seeded_source: Option<std::path::PathBuf>,
+    /// Pin the original host identity on a subsequent boot of the seeded disk.
+    #[arg(long, requires_all = ["seeded_ssh_key", "seeded_directory"])]
+    pub seeded_ssh_known_hosts: Option<std::path::PathBuf>,
+    /// Retain a managed writable disk copy and reuse it for the cold boot.
+    #[arg(long, requires = "seeded_ssh_key")]
+    pub seeded_directory: Option<std::path::PathBuf>,
     #[arg(long, default_value_t = 120)]
     pub timeout_secs: u64,
     #[arg(long)]
     pub no_build: bool,
-    /// After a successful dual-guest SSH gate, print manual SSH commands and
+    /// After successful live-guest qualification, print client connection details and
     /// keep QEMU running until Enter is pressed.
     #[arg(long)]
     pub keep_running: bool,
+
+    /// Retain a failed guest for interactive diagnosis; the test still fails on exit
+    #[arg(long, requires = "keep_running")]
+    pub retain_failed_guest: bool,
     /// Require emulated virtio-net probe + DRIVER_OK + a pumped frame.
     /// Host tests are not this proof. GUEST_OS=none is a stub VMM.
     #[arg(long)]
@@ -112,12 +158,27 @@ pub struct TestArgs {
     /// Require emulated virtio-blk probe + DRIVER_OK + a pumped request.
     #[arg(long)]
     pub assert_emulated_blk: bool,
+    /// Recycle RAM and restore embedded images twice before the selected guest I/O proof.
+    #[arg(long)]
+    pub assert_guest_ram_recycle: bool,
+    /// After destruction, retype private queue pools and verify zero pages and deleted caps.
+    #[arg(long, requires = "assert_guest_teardown")]
+    pub assert_guest_queue_recycle: bool,
+    /// Stop block admission with a pending response and require complete drain.
+    #[arg(long, requires = "assert_emulated_blk")]
+    pub assert_guest_block_drain: bool,
     /// Require Ubuntu login and bidirectional I/O through emulated virtio-console.
     #[arg(long)]
     pub assert_emulated_console: bool,
+    /// Create, boot, destroy, recreate and prove a second console boot via vm_manager.
+    #[arg(long, requires = "assert_emulated_console")]
+    pub assert_managed_guest: bool,
     /// Stall console consumption, then verify the deterministic probe stream.
     #[arg(long, requires = "assert_emulated_console")]
     pub assert_console_backpressure: bool,
+    /// Destroy a qualified console-proof or seeded guest and require revocation.
+    #[arg(long, conflicts_with_all = ["keep_running", "assert_live", "assert_desktop", "no_build", "assert_seeded_cold_boots"])]
+    pub assert_guest_teardown: bool,
     /// Require Ubuntu login plus real I/O through agentOS net, blk, and console.
     #[arg(long)]
     pub assert_agentos_virtio: bool,
@@ -127,6 +188,56 @@ pub struct TestArgs {
     /// Require the dedicated x86 VMX/EPT one-instruction HLT-exit proof.
     #[arg(long)]
     pub assert_vmx_exit: bool,
+    /// Require guest RDMSR/WRMSR faults, handler assertions and IRET recovery.
+    #[arg(long, requires = "assert_vmx_exit", conflicts_with_all = ["assert_firmware_modes", "assert_firmware_reset"])]
+    pub assert_guest_faults: bool,
+    /// Also require real-address and unpaged protected VM-entry qualification.
+    #[arg(long, requires = "assert_vmx_exit")]
+    pub assert_firmware_modes: bool,
+    /// Execute a hash-checked OVMF image from the architectural reset vector.
+    #[arg(
+        long,
+        requires = "assert_vmx_exit",
+        conflicts_with = "assert_firmware_modes"
+    )]
+    pub assert_firmware_reset: bool,
+    /// Require the Linux initramfs syscall proof from guest ring 3.
+    #[arg(
+        long,
+        requires = "assert_firmware_reset",
+        conflicts_with = "assert_guest_faults"
+    )]
+    pub assert_x86_userspace: bool,
+    /// Require a Linux login prompt over the canonical Intel virtio console.
+    #[arg(long, requires = "assert_firmware_reset", requires = "x86_block_image",
+          conflicts_with_all = ["assert_x86_userspace", "assert_guest_faults"])]
+    pub assert_x86_linux_login: bool,
+    /// Create Linux through binary CC and qualify its console and destruction.
+    #[arg(long, requires = "assert_x86_linux_login")]
+    pub assert_x86_cc: bool,
+    /// Acquire and verify an x86 UEFI boot profile instead of separate artifact arguments.
+    #[arg(long, requires = "assert_x86_linux_login")]
+    pub x86_boot_profile: Option<std::path::PathBuf>,
+    /// Prove Debian key-only SSH after login, pinning the host key from its console.
+    #[arg(long, requires = "assert_x86_linux_login")]
+    pub x86_ssh_key: Option<std::path::PathBuf>,
+    /// Reuse a first-boot gate's known_hosts receipt for a cold-boot identity check.
+    #[arg(long, requires = "x86_ssh_key")]
+    pub x86_ssh_known_hosts: Option<std::path::PathBuf>,
+    /// Run the bounded two-CPU register-state payload in both managed generations.
+    #[arg(long, requires_all = ["assert_x86_cc", "x86_ssh_key"])]
+    pub x86_smp_probe: Option<std::path::PathBuf>,
+    /// Reuse a root or qualification disk; writable only with --x86-block-write.
+    #[arg(long, requires = "assert_firmware_reset")]
+    pub x86_block_image: Option<std::path::PathBuf>,
+    #[arg(long, requires = "x86_block_image")]
+    pub x86_block_write: bool,
+    /// Attach a distinct second raw disk at the canonical PCI media-one slot.
+    #[arg(long, requires_all = ["x86_block_image", "assert_firmware_reset"], conflicts_with = "no_build")]
+    pub x86_secondary_block_image: Option<std::path::PathBuf>,
+    /// Allow writes to the second disk; independent of primary write policy.
+    #[arg(long, requires = "x86_secondary_block_image")]
+    pub x86_secondary_block_write: bool,
     /// Start the profile-defined desktop and verify one raw RFB frame
     /// through a key-authenticated SSH tunnel.
     #[arg(long)]
@@ -146,6 +257,20 @@ pub struct QemuLaunchArgs {
     /// Use the faster multi-threaded TCG development configuration.
     #[arg(long)]
     pub fast: bool,
+    /// Use the managed Intel binary CC composition.
+    #[arg(long, conflicts_with_all = ["profile", "scenario"])]
+    pub x86_cc: bool,
+    /// Pinned Intel boot profile, prepared through the same path as qualification.
+    #[arg(long, requires = "x86_cc", requires = "x86_block_image")]
+    pub x86_boot_profile: Option<std::path::PathBuf>,
+    /// Existing raw disk for the Intel guest.
+    #[arg(long, requires = "x86_cc")]
+    pub x86_block_image: Option<std::path::PathBuf>,
+    #[arg(long, requires = "x86_block_image")]
+    pub x86_block_write: bool,
+    /// Loopback SSH forwarding port for the Intel guest (zero disables it).
+    #[arg(long, requires = "x86_cc")]
+    pub ssh_port: Option<u16>,
 }
 
 #[derive(clap::Args)]

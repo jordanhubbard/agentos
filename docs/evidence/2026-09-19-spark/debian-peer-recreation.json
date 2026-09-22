@@ -1,0 +1,28 @@
+{
+  "status": "passed Debian recreation with a running FreeBSD peer and full local gate",
+  "source_revision": "cd9efb957fa3ce632cb5dc2c49c1ff082a5a580a",
+  "source_tree_clean": true,
+  "host": "Spark Linux AArch64",
+  "sdk": "microkit-sdk-2.3.1-agentos-e60776ac-cr2",
+  "command": "make test-debian-peer-recreation gate DUAL_OS_TEST_TIMEOUT=7200",
+  "make_exit": 0,
+  "scenario": "debian-recreation",
+  "guest_handles": {"freebsd": 1, "debian_retired": 2, "debian_recreated": 3},
+  "proof": [
+    "First FreeBSD and Debian boots passed concurrent authenticated SSH through their separate host forwards.",
+    "After destroying Debian handle 2, the running FreeBSD peer passed another authenticated uname -s probe with exact FreeBSD output. The peer was not paused for replacement boot.",
+    "Debian handle 3 booted from the persistent seeded disk and authenticated against the first boot's pinned host key; the retained known_hosts receipts are byte-identical.",
+    "After recreation, both guests again passed concurrent authenticated SSH with exact FreeBSD and Linux output.",
+    "The harness rejected status, resume and suspend for retired handle 2, then destroyed both active guests and rejected invalid handles.",
+    "The subsequent full make gate passed; the combined Make process exited zero."
+  ],
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/debian-peer-cd9efb9",
+  "qemu_stem": "agentos-qemu-9WH7YN",
+  "sha256": {
+    "test-and-gate.log": "2df6def26fb0b5d9cf2559eca457fdbbdfb5631ed1dfe78de70148357db5b28c",
+    "serial.log": "e8de267b43be1778b0f2bd3ceb469ffeebfabb2e31bce08efc83b67f9d0540ff",
+    "peer_after_destroy_stdout": "44a770f818b497715496d1384b8e35f4a7e75700ed314eaad0e18664ee945563",
+    "recreated_debian_stdout": "533e1007b450ba293f5e2cb35b768cf963d0a74c6943558059086eda254939c2"
+  },
+  "limits": "QEMU ARM qualification at the recorded revision. This is not graphics recreation, concurrent writable-storage stress, continuous peer throughput measurement, final integrated release qualification, or v0.4 completion. Raw SSH attempts and public host-key receipts are archived; private identities and disks are excluded."
+}

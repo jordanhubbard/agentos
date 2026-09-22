@@ -1,0 +1,41 @@
+{
+  "qualification": "Intel Linux guest block enumeration and host-backed read",
+  "runtime_revision": "32cb3866b09d98f762e6049433111320f2eede92",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/x86-block-guest-32cb386/gate.log",
+      "sha256": "3bc8d83031a6d4113b7a7e7031d1161ef6ba38fa73bc72f591a84dfa13362c04"
+    },
+    {
+      "host": "madmax Intel Linux via puck.local",
+      "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=28597fcdebf12f39ac69cef8cb4188239e596e3cff01d38dfaf3805df75483a7",
+      "result": "PASS",
+      "log": "build/evidence/x86-block-guest-32cb386/intel.log",
+      "sha256": "6a5196f68614d07709aee523a1faf1d5605208ccebcb6247821ac95f45724d68"
+    }
+  ],
+  "intel_artifacts": {
+    "root_task": "/tmp/agentos-v04-intel-discovery/build/evidence/x86-block-guest-32cb386/root_task.elf",
+    "root_task_sha256": "e1f3489ec9f72a57afc0e927d1e0e537108ee5c267ba6533bb71f9ac9de49b35",
+    "image": "/tmp/agentos-v04-intel-discovery/build/evidence/x86-block-guest-32cb386/agentos.img",
+    "image_sha256": "097e8db11d6e5b39cd6fcc6f8ed8b806f667e2b4f7a998763e560c7e2e7a5e0f",
+    "medium": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-5r0Bn3.block.img",
+    "medium_sha256": "2032f3e0f7f126ea7b0b58882b1301a5c37add508f53b2f9497ea276c4699923"
+  },
+  "observations": [
+    "Generated ACPI advertises distinct console and block MMIO devices with separate GSIs. ACPICA disassembly and recompilation passed before the Intel run.",
+    "Linux opened /dev/vda, verified BLKGETSIZE64 equals 33554432, sought to 4096 and read 4096 bytes matching a distinct guest marker and all remaining zero padding.",
+    "The VMM required a host-backed attachment, DRIVER_OK and a guest queue response before accepting the ring3 userspace result. The preboot read does not increment that response counter.",
+    "The first Intel attempt failed during Linux device configuration at GPA 0xf000111a. Adding operand-size-prefixed 16-bit MOV support resolved the failure. Host tests cover word loads, stores, immediate stores, truncation and preservation of upper register bits.",
+    "The successful Intel run also passed the preboot block read and bidirectional console exchange. No qualification QEMU remained afterward."
+  ],
+  "limitations": [
+    "The disk is a fresh read-only fixture. Writable flush/reboot persistence and pinned Debian acceptance remain unqualified.",
+    "This run does not establish multi-client Intel isolation or resource reclamation.",
+    "Canonical integration, GUI qualification and the v0.4 release remain incomplete."
+  ]
+}

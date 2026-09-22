@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-19",
+  "status": "diagnostic_only",
+  "task": "task_00ba79d8c6024e43a5cb3d7dffff9696",
+  "runtime_revision": "b16bfe214f9dbc04fdde6265bd343bd058135563",
+  "guest": "Retained failed Rcd2b2 guest, QEMU 3442670",
+  "observations": [
+    "An established diagnostic SSH session completed sleep 2 with guest CLOCK_START=1789826326 and CLOCK_END=1789826329; whole authenticated session took 48.0 seconds.",
+    "A separate workqueue trace instance recorded 176 entries without overwrite. Ten paired drm_fb_helper_damage_work calls spanned 4.048998 seconds within a five-second trace, maximum 0.600743 seconds. This is elapsed work duration, not measured CPU time. One start was unpaired at the end.",
+    "fb_flashcursor and virtio-gpu completion work interleaved with framebuffer damage work. The trace instance was removed after capture.",
+    "A reversible cursor-off experiment restored cursor_blink=1. Its strict SSH success (9.16 seconds) cannot be assigned to a cursor phase because host phase timing was insufficiently recorded.",
+    "Matched control: with cursor_blink=1 and one diagnostic SSH session held open for 90 seconds, a second SSH command using ServerAliveInterval=5 and ServerAliveCountMax=1 returned STRICT_SESSION_OK in 14.10 seconds.",
+    "The held session exited normally. After an additional 30-second host wait, the identical strict SSH command failed with exit 255 in 16.93 seconds: Timeout, server 127.0.0.1 not responding.",
+    "User-manager journal shows runtime-directory start 14:11:27 to 14:11:32 UTC, then user@1000.service start 14:11:33 to 14:11:53 UTC. This supports delayed cold session setup; it does not establish the cause of every earlier timeout."
+  ],
+  "source_finding": "libvmm/src/virtio/gpu_2d.c backing_read scans entries from index zero for each transferred row. A monotonic bounded traversal is a candidate optimization, not yet implemented or qualified.",
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
+  "files": [
+    "agentos-retained-session-clock.out",
+    "agentos-retained-session-clock.err",
+    "agentos-retained-workqueue-trace.out",
+    "agentos-retained-workqueue-trace.err",
+    "agentos-retained-cursor-control.out",
+    "agentos-retained-cursor-control.err",
+    "agentos-retained-cursor-on-ssh.out",
+    "agentos-retained-cursor-on-ssh.err",
+    "agentos-retained-session-hold.out",
+    "agentos-retained-session-hold.err",
+    "agentos-retained-warm-session-ssh.out",
+    "agentos-retained-warm-session-ssh.err",
+    "agentos-retained-cold-session-ssh.out",
+    "agentos-retained-cold-session-ssh.err",
+    "agentos-retained-user-manager.out",
+    "agentos-retained-user-manager.err"
+  ],
+  "limitations": [
+    "Original qualification remains failed.",
+    "No qualification timeout, assertion or guest service policy changed.",
+    "No native GUI acceptance.",
+    "Guest remains live; final harness exit still untested."
+  ]
+}

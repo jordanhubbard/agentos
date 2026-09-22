@@ -57,6 +57,31 @@ pub struct GuestProfileArgs {
     /// Print the profile's target control type without emitting.
     #[arg(long)]
     pub print_control_type: bool,
+    /// Prepare verified x86 artifacts for an explicitly selected VMM build slot.
+    #[arg(long, value_enum, conflicts_with_all = ["resolve_alias", "check_all", "output", "prepare_dir", "print_ram_size", "print_control_type"])]
+    pub prepare_x86_slot: Option<X86BuildSlot>,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum X86BuildSlot {
+    Primary,
+    Secondary,
+}
+
+impl X86BuildSlot {
+    fn owner(self) -> u32 {
+        match self {
+            Self::Primary => 0,
+            Self::Secondary => 1,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Secondary => "secondary",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -145,6 +170,7 @@ struct Placement {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Host {
+    seed: Option<SeedPlan>,
     qemu: Option<Qemu>,
     console: Option<HostConsole>,
     desktop: Option<HostDesktop>,
@@ -155,6 +181,15 @@ struct Host {
     provision: Vec<RecipeStep>,
     #[serde(default)]
     test: Vec<RecipeStep>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SeedPlan {
+    pub(crate) adapter: String,
+    pub(crate) root_ext4: String,
+    pub(crate) disk_raw: String,
+    pub(crate) partition_offset: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -174,7 +209,7 @@ struct HostDesktop {
 #[serde(deny_unknown_fields)]
 struct HostBuild {
     adapter: String,
-    template: String,
+    template: Option<String>,
     base: Option<String>,
     bootargs: Option<String>,
     initrd_total_bytes: Option<u64>,
@@ -255,6 +290,7 @@ pub(crate) struct RecipeStep {
 
 #[derive(Clone, Debug)]
 pub(crate) struct HostProfilePlan {
+    pub(crate) seed: Option<SeedPlan>,
     pub(crate) path: PathBuf,
     pub(crate) id: String,
     pub(crate) architecture: String,
@@ -350,10 +386,12 @@ const HOST_ACTIONS: &[&str] = &[
     "extract-arm64-linux-image",
     "extract-arm64-elf-image",
     "build-initramfs-file",
+    "build-static-linux-elf",
     "append-initramfs-file",
     "convert-qcow2-raw",
     "extract-gpt-partition",
     "extract-ext4-file",
+    "install-gpt-ext4-file",
     "normalize-arm64-linux-image",
     "decompress-gzip",
     "copy",
@@ -365,6 +403,8 @@ const HOST_ACTIONS: &[&str] = &[
     "run-ssh",
     "assert-console",
     "assert-virtio",
+    "assert-frame-pixels",
+    "assert-ssh-output",
 ];
 
 pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<RecipeStep>)> {
@@ -386,10 +426,12 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
                     | "extract-arm64-linux-image"
                     | "extract-arm64-elf-image"
                     | "build-initramfs-file"
+                    | "build-static-linux-elf"
                     | "append-initramfs-file"
                     | "convert-qcow2-raw"
                     | "extract-gpt-partition"
                     | "extract-ext4-file"
+                    | "install-gpt-ext4-file"
                     | "normalize-arm64-linux-image"
                     | "build-linux-probe-initramfs"
             ),
@@ -436,6 +478,171 @@ pub(crate) fn resolve_alias(root: &Path, alias: &str) -> Result<PathBuf> {
     matched.with_context(|| format!("unknown guest profile alias {alias:?}"))
 }
 
+#[cfg(test)]
+fn validate_x86_boot_profile(profile: &Profile) -> Result<()> {
+    validate_x86_slot_profile(profile, X86BuildSlot::Primary)
+}
+
+fn validate_x86_slot_profile(profile: &Profile, slot: X86BuildSlot) -> Result<()> {
+    validate(profile, Some("default"))?;
+    ensure!(
+        profile.status == Some(Status::Runtime),
+        "x86 boot requires a runtime profile"
+    );
+    let target = profile.target.as_ref().unwrap();
+    ensure!(
+        target.architecture.as_deref() == Some("x86-64")
+            && target.boot_protocol.as_deref() == Some("uefi")
+            && target.kernel_format.as_deref() == Some("uefi"),
+        "x86 boot requires an x86-64 UEFI kernel profile"
+    );
+    ensure!(
+        matches!(target.vcpus, Some(1 | 2))
+            && target.guest_id == Some(slot.owner())
+            && target.control_type == Some(slot.owner() + 1)
+            && target.autostart == Some(true),
+        "x86 boot profile must match the selected build slot and have one or two provisioned vCPUs"
+    );
+    if let Some(features) = &target.cpu_features {
+        // Keep admission aligned with the synthetic target CPUID model.
+        // These are exposure requirements, not instruction-trapping policy.
+        let exposed = ["fp", "simd"];
+        ensure!(
+            features.required.iter().all(|f| exposed.contains(&f.as_str()))
+                && features.prohibited.iter().all(|f| !exposed.contains(&f.as_str())),
+            "x86 CPU profile exposes fixed fp/simd; requested requirements or prohibitions are unavailable"
+        );
+    }
+    let devices = target.devices.as_ref().unwrap();
+    ensure!(
+        devices.len() == 3
+            && ["net", "block", "console"]
+                .iter()
+                .all(|d| devices.iter().any(|v| v == d))
+            && target.network_client == Some(slot.owner() as u16)
+            && target.block_media == Some(slot.owner() as u16),
+        "x86 boot requires canonical net, block and console devices owned by the selected slot"
+    );
+    ensure!(
+        !profile.artifacts.contains_key("dtb")
+            && profile.artifacts.contains_key("initrd")
+            && profile.boot.as_ref().unwrap().media_initrd_path.is_none(),
+        "x86 firmware boot requires a direct initrd and no DTB"
+    );
+    let placement = &profile.placements["default"];
+    let ram = placement.ram_size.unwrap();
+    ensure!(
+        placement.vmm_hva_base == Some(0x80000000) && placement.kernel_entry_address.is_none(),
+        "x86 firmware boot requires its fixed RAM mapping and firmware-selected kernel entry"
+    );
+    ensure!(
+        placement.guest_gpa_base == Some(0)
+            && (0x02000000..=0x80000000).contains(&ram)
+            && ram % 0x200000 == 0,
+        "x86 firmware RAM must start at zero and be 32 MiB..2 GiB in 2 MiB units"
+    );
+    ensure!(
+        profile
+            .host
+            .as_ref()
+            .and_then(|h| h.build.as_ref())
+            .is_some_and(|b| b.adapter == "uefi-artifacts"),
+        "x86 boot requires the uefi-artifacts acquisition adapter"
+    );
+    Ok(())
+}
+
+pub(crate) fn prepare_x86_boot_profile(repo: &Path, path: &Path) -> Result<Vec<String>> {
+    let root = repo.join("guest-profiles");
+    prepare_x86_slot_profile(repo, &root, path, X86BuildSlot::Primary)
+}
+
+fn prepare_x86_slot_profile(
+    repo: &Path,
+    root: &Path,
+    path: &Path,
+    slot: X86BuildSlot,
+) -> Result<Vec<String>> {
+    let absolute_repo = fs::canonicalize(repo).context("resolve x86 artifact repository")?;
+    let repo = absolute_repo.as_path();
+    let (profile, canonical) = resolve(root, path, &mut Vec::new())?;
+    validate_x86_slot_profile(&profile, slot)?;
+    if let Some(selected) = std::env::var_os("X86_VMM_SLOT") {
+        ensure!(
+            selected == slot.name(),
+            "X86_VMM_SLOT conflicts with selected build slot"
+        );
+    }
+    for name in [
+        "X86_BOOT_KERNEL",
+        "X86_BOOT_KERNEL_SHA256",
+        "X86_BOOT_INITRD",
+        "X86_BOOT_INITRD_SHA256",
+        "X86_BOOT_CMDLINE_FILE",
+        "X86_BOOT_CMDLINE_SHA256",
+        "X86_BOOT_RAM_BYTES",
+        "X86_BOOT_PROFILE_BIN",
+        "X86_BOOT_PROFILE_SHA256",
+    ] {
+        ensure!(
+            std::env::var_os(name).is_none(),
+            "{name} conflicts with x86 boot profile selection"
+        );
+    }
+    crate::cmd_fetch_guest::run(&crate::FetchGuestArgs {
+        profile: path.to_path_buf(),
+        profile_root: root.to_path_buf(),
+        output_dir: None,
+    })?;
+    verify_artifacts(&profile, "default", repo)?;
+    let directory = repo.join("build/tmp/x86-boot-profile").join(slot.name());
+    fs::create_dir_all(&directory)?;
+    let mut command_line = profile
+        .boot
+        .as_ref()
+        .unwrap()
+        .command_line
+        .as_ref()
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+    command_line.push(0);
+    let command_path = directory.join("cmdline.bin");
+    fs::write(&command_path, &command_line)?;
+    let manifest = compile(&profile, &canonical, "default")?;
+    let manifest_path = directory.join("profile.bin");
+    fs::write(&manifest_path, &manifest)?;
+    let mut args = vec![
+        format!("X86_VMM_SLOT={}", slot.name()),
+        format!("X86_BOOT_PROFILE_BIN={}", manifest_path.display()),
+        format!("X86_BOOT_PROFILE_SHA256={:x}", Sha256::digest(&manifest)),
+        format!(
+            "X86_BOOT_RAM_BYTES={:#x}u",
+            profile.placements["default"].ram_size.unwrap()
+        ),
+        format!("X86_BOOT_CMDLINE_FILE={}", command_path.display()),
+        format!(
+            "X86_BOOT_CMDLINE_SHA256={:x}",
+            Sha256::digest(&command_line)
+        ),
+    ];
+    for (name, variable) in [("kernel", "KERNEL"), ("initrd", "INITRD")] {
+        let artifact = &profile.artifacts[name];
+        let hash = artifact_hash(artifact, &profile.placements["default"], name)?;
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        args.push(format!(
+            "X86_BOOT_{variable}={}",
+            artifact_path(&profile, name, repo)?.display()
+        ));
+        args.push(format!("X86_BOOT_{variable}_SHA256={hex}"));
+    }
+    println!(
+        "[guest-profile] verified x86 boot profile {}",
+        profile.id.as_deref().unwrap()
+    );
+    Ok(args)
+}
+
 pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfilePlan> {
     let (profile, _) = resolve(root, path, &mut Vec::new())?;
     validate(&profile, None)?;
@@ -472,7 +679,16 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
                 guest_address: ssh.guest_address.clone(),
             }),
         });
+    ensure!(
+        !host.is_some_and(|h| h.test.iter().any(|s| s.action == "assert-frame-pixels"))
+            || target
+                .devices
+                .as_ref()
+                .is_some_and(|ds| ds.iter().any(|d| d == "gpu")),
+        "frame pixel assertions require target.devices gpu"
+    );
     Ok(HostProfilePlan {
+        seed: host.and_then(|value| value.seed.clone()),
         path: path.to_path_buf(),
         id: profile.id.clone().context("id is required")?,
         architecture: target
@@ -603,6 +819,17 @@ pub fn run(args: &GuestProfileArgs) -> Result<()> {
         .profile
         .as_ref()
         .context("--profile is required unless --check-all is used")?;
+    if let Some(slot) = args.prepare_x86_slot {
+        ensure!(
+            args.placement == "default",
+            "x86 boot requires default placement"
+        );
+        let build_args = prepare_x86_slot_profile(&args.repo_root, &args.root, profile_path, slot)?;
+        // Structured output preserves paths with spaces; these are argv entries,
+        // not shell code to evaluate.
+        println!("{}", serde_json::to_string(&build_args)?);
+        return Ok(());
+    }
     if args.print_ram_size || args.print_control_type {
         ensure!(
             !(args.print_ram_size && args.print_control_type)
@@ -690,6 +917,10 @@ fn prepare_bundle(
     ensure!(
         profile.status == Some(Status::Runtime),
         "only status=runtime profiles can enter a build bundle"
+    );
+    ensure!(
+        profile.target.as_ref().unwrap().boot_protocol.as_deref() == Some("fdt-direct"),
+        "build bundles currently require the fdt-direct boot protocol"
     );
     let host_build = profile
         .host
@@ -845,8 +1076,41 @@ fn render_profile_dtb(
         ("@GUEST_INITRD_START@", format!("0x{initrd_start:x}")),
         ("@GUEST_INITRD_END@", format!("0x{initrd_end:x}")),
         ("@GUEST_BOOTARGS@", command_line.to_string()),
+        (
+            "@GUEST_GPU_NODE@",
+            if profile
+                .target
+                .as_ref()
+                .and_then(|t| t.devices.as_ref())
+                .is_some_and(|devices| devices.iter().any(|d| d == "gpu"))
+            {
+                include_str!("../../kernel/agentos-root-task/virtio-gpu-guest.dts.inc").to_string()
+            } else {
+                String::new()
+            },
+        ),
+        (
+            "@GUEST_INPUT_NODE@",
+            if profile
+                .target
+                .as_ref()
+                .and_then(|t| t.devices.as_ref())
+                .is_some_and(|devices| devices.iter().any(|d| d == "input"))
+            {
+                include_str!("../../kernel/agentos-root-task/virtio-input-guest.dts.inc")
+                    .to_string()
+            } else {
+                String::new()
+            },
+        ),
     ];
-    let template_path = confined_repo_path(repo_root, &build.template)?;
+    let template_path = confined_repo_path(
+        repo_root,
+        build
+            .template
+            .as_deref()
+            .context("FDT adapter requires template")?,
+    )?;
     let template = render_dts_template(&fs::read_to_string(&template_path)?, &substitutions)?;
     let overlay_path = output_dir.join("guest-overlay.dts");
     fs::write(&overlay_path, template)?;
@@ -1086,6 +1350,17 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         required(&target.boot_protocol, "target.boot_protocol")?,
         &["fdt-direct", "uefi", "process"],
     )?;
+    if profile
+        .host
+        .as_ref()
+        .and_then(|h| h.build.as_ref())
+        .is_some_and(|b| b.adapter == "uefi-artifacts")
+    {
+        ensure!(
+            target.boot_protocol.as_deref() == Some("uefi"),
+            "uefi-artifacts requires the uefi boot protocol"
+        );
+    }
     enum_value(
         required(&target.kernel_format, "target.kernel_format")?,
         &["linux-image", "raw", "elf", "uefi"],
@@ -1141,8 +1416,8 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         .and_then(|b| b.command_line.as_ref())
         .context("boot.command_line is required")?;
     ensure!(
-        cmdline.len() <= 255 && cmdline.is_ascii(),
-        "boot.command_line must be at most 255 ASCII bytes"
+        cmdline.len() <= 255 && cmdline.is_ascii() && !cmdline.contains('\0'),
+        "boot.command_line must be at most 255 ASCII bytes without NUL"
     );
     let media_initrd_path = profile.boot.as_ref().unwrap().media_initrd_path.as_deref();
     if let Some(path) = media_initrd_path {
@@ -1164,8 +1439,9 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         );
     }
 
-    for name in ["kernel", "dtb"] {
-        validate_artifact(profile, name, status == Status::Runtime)?;
+    validate_artifact(profile, "kernel", status == Status::Runtime)?;
+    if profile.artifacts.contains_key("dtb") || target.boot_protocol.as_deref() != Some("uefi") {
+        validate_artifact(profile, "dtb", status == Status::Runtime)?;
     }
     if profile.artifacts.contains_key("initrd") {
         validate_artifact(profile, "initrd", status == Status::Runtime)?;
@@ -1198,7 +1474,7 @@ fn validate(profile: &Profile, placement: Option<&str>) -> Result<()> {
         "at least one placement is required"
     );
     for (name, value) in &profile.placements {
-        validate_placement(name, value)?;
+        validate_placement(name, value, profile.artifacts.contains_key("dtb"))?;
         validate_artifact_windows(profile, name, value)?;
     }
     if let Some(name) = placement {
@@ -1287,9 +1563,13 @@ fn validate_selected_placements<'a>(
 
 fn validate_artifact_windows(profile: &Profile, name: &str, p: &Placement) -> Result<()> {
     let kernel_address = p.kernel_load_address.unwrap();
-    let dtb_address = p.dtb_load_address.unwrap();
+    let dtb_address = p.dtb_load_address.unwrap_or(0);
     let kernel_size = profile.artifacts["kernel"].max_bytes.unwrap();
-    let dtb_size = profile.artifacts["dtb"].max_bytes.unwrap();
+    let dtb_size = profile
+        .artifacts
+        .get("dtb")
+        .and_then(|a| a.max_bytes)
+        .unwrap_or(0);
     ensure!(
         !ranges_overlap(kernel_address, kernel_size, dtb_address, dtb_size),
         "placement {name:?} kernel and DTB maximum windows overlap"
@@ -1309,6 +1589,9 @@ fn validate_artifact_windows(profile: &Profile, name: &str, p: &Placement) -> Re
 }
 
 fn ranges_overlap(a: u64, a_size: u64, b: u64, b_size: u64) -> bool {
+    if a_size == 0 || b_size == 0 {
+        return false;
+    }
     match (a.checked_add(a_size), b.checked_add(b_size)) {
         (Some(a_end), Some(b_end)) => a < b_end && b < a_end,
         _ => true,
@@ -1349,7 +1632,7 @@ fn validate_artifact(profile: &Profile, name: &str, pinned: bool) -> Result<()> 
     Ok(())
 }
 
-fn validate_placement(name: &str, p: &Placement) -> Result<()> {
+fn validate_placement(name: &str, p: &Placement, has_dtb: bool) -> Result<()> {
     ensure!(
         !name.is_empty() && name.len() <= 63,
         "invalid placement name"
@@ -1377,6 +1660,13 @@ fn validate_placement(name: &str, p: &Placement) -> Result<()> {
         ("kernel_load_address", p.kernel_load_address),
         ("dtb_load_address", p.dtb_load_address),
     ] {
+        if field == "dtb_load_address" && !has_dtb {
+            ensure!(
+                address.unwrap_or(0) == 0 && p.dtb_sha256.is_none(),
+                "placement without a DTB must not specify its address or hash"
+            );
+            continue;
+        }
         let address = address.with_context(|| format!("placement.{field} is required"))?;
         ensure!(
             address >= gpa && address < gpa + ram,
@@ -1394,6 +1684,44 @@ fn validate_placement(name: &str, p: &Placement) -> Result<()> {
 
 fn validate_host(host: Option<&Host>) -> Result<()> {
     let Some(host) = host else { return Ok(()) };
+    if let Some(seed) = &host.seed {
+        enum_value(&seed.adapter, &["nocloud-debian-v1"])?;
+        for path in [&seed.root_ext4, &seed.disk_raw] {
+            ensure!(
+                !path.is_empty() && path.len() <= 255,
+                "invalid seed source path"
+            );
+            confined_repo_path(Path::new("."), path)?;
+        }
+        ensure!(
+            seed.root_ext4 != seed.disk_raw,
+            "seed sources must be distinct"
+        );
+        ensure!(
+            seed.partition_offset > 0 && seed.partition_offset % 512 == 0,
+            "seed partition offset must be positive and sector aligned"
+        );
+        let qemu = host.qemu.as_ref().context("seed requires host.qemu")?;
+        ensure!(
+            qemu.media.iter().filter(|media| media.writable).count() == 1,
+            "seed requires exactly one writable disk"
+        );
+        let ssh = qemu.ssh.as_ref().context("seed requires host.qemu.ssh")?;
+        ensure!(
+            ssh.account == "debian",
+            "NoCloud adapter requires the Debian account"
+        );
+        crate::cmd_seed_guest::validate_guest_address(
+            ssh.guest_address
+                .as_deref()
+                .context("NoCloud seed requires a guest address")?
+                .parse()?,
+        )?;
+        ensure!(
+            host.provision.is_empty(),
+            "NoCloud seed cannot also use console provisioning"
+        );
+    }
     if let Some(qemu) = &host.qemu {
         validate_qemu(qemu)?;
     }
@@ -1527,8 +1855,28 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
         );
     }
     if let Some(build) = &host.build {
-        enum_value(&build.adapter, &["linux-merge", "fdt-template"])?;
-        validate_repo_relative(&build.template, "host.build.template")?;
+        enum_value(
+            &build.adapter,
+            &["linux-merge", "fdt-template", "uefi-artifacts"],
+        )?;
+        if build.adapter == "uefi-artifacts" {
+            ensure!(
+                build.template.is_none()
+                    && build.base.is_none()
+                    && build.bootargs.is_none()
+                    && build.initrd_total_bytes.is_none()
+                    && build.media_initrd_cache.is_none(),
+                "uefi-artifacts does not accept FDT template fields"
+            );
+        } else {
+            validate_repo_relative(
+                build
+                    .template
+                    .as_deref()
+                    .context("FDT adapter requires template")?,
+                "host.build.template",
+            )?;
+        }
         validate_repo_relative(&build.acquire_dir, "host.build.acquire_dir")?;
         match (build.adapter.as_str(), build.base.as_deref()) {
             ("linux-merge", Some(base)) => {
@@ -1536,6 +1884,7 @@ fn validate_host(host: Option<&Host>) -> Result<()> {
             }
             ("linux-merge", None) => anyhow::bail!("linux-merge requires host.build.base"),
             ("fdt-template", None) => {}
+            ("uefi-artifacts", None) => {}
             ("fdt-template", Some(_)) => {
                 anyhow::bail!("fdt-template does not accept host.build.base")
             }
@@ -1695,6 +2044,32 @@ fn valid_env_name(value: &str) -> bool {
         })
 }
 
+pub(crate) fn frame_pixel_expectation(step: &RecipeStep) -> Result<(usize, usize, Vec<[u8; 3]>)> {
+    let x: usize = step.args.get("x").context("frame x missing")?.parse()?;
+    let y: usize = step.args.get("y").context("frame y missing")?.parse()?;
+    let hex = step.args.get("rgb").context("frame RGB missing")?;
+    ensure!(
+        x < 1024 && y < 768,
+        "frame coordinate exceeds supported bounds"
+    );
+    ensure!(
+        !hex.is_empty()
+            && hex.len() <= 96
+            && hex.len() % 6 == 0
+            && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        "frame RGB must contain 1..16 RGB hex triples"
+    );
+    let mut pixels = Vec::new();
+    for i in (0..hex.len()).step_by(6) {
+        pixels.push([
+            u8::from_str_radix(&hex[i..i + 2], 16)?,
+            u8::from_str_radix(&hex[i + 2..i + 4], 16)?,
+            u8::from_str_radix(&hex[i + 4..i + 6], 16)?,
+        ]);
+    }
+    Ok((x, y, pixels))
+}
+
 fn validate_host_action(step: &RecipeStep) -> Result<()> {
     let (required_args, optional_args): (&[&str], &[&str]) = match step.action.as_str() {
         "stage-url" => (
@@ -1702,18 +2077,26 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             &["override_env", "sha512"],
         ),
         "download-tar-member" => (&["url", "member", "output"], &[]),
+        "build-static-linux-elf" => (&["source", "output", "architecture"], &[]),
         "extract-iso-file" => (&["source", "member", "output"], &["min_bytes"]),
         "extract-arm64-linux-image" | "extract-arm64-elf-image" => {
             (&["source", "member", "output"], &[])
         }
-        "build-initramfs-file" => (&["output", "path", "mode", "content"], &["compression"]),
+        "build-initramfs-file" => (
+            &["output", "path", "mode"],
+            &["compression", "content", "content_file", "content_sha256"],
+        ),
         "append-initramfs-file" => (
-            &["source", "output", "path", "mode", "content"],
-            &["compression"],
+            &["source", "output", "path", "mode"],
+            &["compression", "content", "content_file", "content_sha256"],
         ),
         "convert-qcow2-raw" => (&["source", "output"], &[]),
         "extract-gpt-partition" => (&["source", "output", "index"], &["sector_size"]),
         "extract-ext4-file" => (&["source", "output", "path"], &[]),
+        "install-gpt-ext4-file" => (
+            &["source", "output", "index", "path", "content"],
+            &["sector_size"],
+        ),
         "normalize-arm64-linux-image" => (&["source", "output"], &[]),
         "build-linux-probe-initramfs" => (&["output"], &[]),
         "download" | "verify-sha256" => (&["artifact"], &[]),
@@ -1725,6 +2108,8 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         "wait-ssh" => (&["account"], &["marker"]),
         "run-ssh" => (&["recipe"], &[]),
         "assert-virtio" => (&["devices"], &["scope", "console_io"]),
+        "assert-frame-pixels" => (&["x", "y", "rgb"], &[]),
+        "assert-ssh-output" => (&["command", "stdout"], &[]),
         _ => return Ok(()),
     };
     for key in required_args {
@@ -1739,6 +2124,17 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             required_args.contains(&key.as_str()) || optional_args.contains(&key.as_str()),
             "host action {:?} has unknown argument {key:?}",
             step.action
+        );
+    }
+    if step.action == "assert-frame-pixels" {
+        frame_pixel_expectation(step)?;
+    }
+    if step.action == "assert-ssh-output" {
+        ensure!(
+            step.args["command"].len() <= 4096
+                && !step.args["command"].contains('\0')
+                && step.args["stdout"].len() <= 4096,
+            "SSH assertion command and expected output must be bounded text"
         );
     }
     if matches!(step.action.as_str(), "stage-url" | "download-tar-member") {
@@ -1768,6 +2164,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             | "convert-qcow2-raw"
             | "extract-gpt-partition"
             | "extract-ext4-file"
+            | "install-gpt-ext4-file"
             | "normalize-arm64-linux-image"
     ) {
         let keys: &[&str] = match step.action.as_str() {
@@ -1783,10 +2180,39 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             )?;
         }
     }
+    if step.action == "build-static-linux-elf" {
+        validate_repo_relative(&step.args["source"], "native helper source")?;
+        validate_repo_relative(&step.args["output"], "native helper output")?;
+        ensure!(
+            step.args["source"].ends_with(".c"),
+            "native helper source must be C"
+        );
+        enum_value(&step.args["architecture"], &["x86_64", "aarch64"])?;
+    }
     if matches!(
         step.action.as_str(),
         "build-initramfs-file" | "append-initramfs-file"
     ) {
+        ensure!(
+            step.args.contains_key("content") != step.args.contains_key("content_file"),
+            "initramfs requires exactly one of content or content_file"
+        );
+        if let Some(path) = step.args.get("content_file") {
+            validate_repo_relative(path, "initramfs content_file")?;
+            let hash = step
+                .args
+                .get("content_sha256")
+                .context("content_file requires content_sha256")?;
+            ensure!(
+                hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+                "content_sha256 must contain 64 hexadecimal digits"
+            );
+        } else {
+            ensure!(
+                !step.args.contains_key("content_sha256"),
+                "content_sha256 requires content_file"
+            );
+        }
         ensure!(
             u32::from_str_radix(&step.args["mode"], 8).is_ok_and(|mode| mode <= 0o777),
             "initramfs file mode must be octal and at most 0777"
@@ -1795,7 +2221,10 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             enum_value(compression, &["none", "zstd"])?;
         }
     }
-    if step.action == "extract-gpt-partition" {
+    if matches!(
+        step.action.as_str(),
+        "extract-gpt-partition" | "install-gpt-ext4-file"
+    ) {
         ensure!(
             step.args["index"]
                 .parse::<u32>()
@@ -1806,7 +2235,10 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             enum_value(sector_size, &["512", "4096"])?;
         }
     }
-    if step.action == "extract-ext4-file" {
+    if matches!(
+        step.action.as_str(),
+        "extract-ext4-file" | "install-gpt-ext4-file"
+    ) {
         let path = Path::new(&step.args["path"]);
         ensure!(
             path.is_absolute()
@@ -1817,6 +2249,16 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
                     .bytes()
                     .all(|byte| { byte.is_ascii_alphanumeric() || b"/_+.-".contains(&byte) }),
             "extract-ext4-file path must be confined and absolute"
+        );
+    }
+    if step.action == "install-gpt-ext4-file" {
+        ensure!(
+            !step.args["content"].is_empty() && step.args["content"].len() <= 65536,
+            "installed configuration must contain 1..65536 bytes"
+        );
+        ensure!(
+            step.args["source"] != step.args["output"],
+            "disk source and output must differ"
         );
     }
     if step.action == "assert-virtio" {
@@ -1840,7 +2282,7 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
     let target = profile.target.as_ref().unwrap();
     let placement = &profile.placements[placement_name];
     let kernel = &profile.artifacts["kernel"];
-    let dtb = &profile.artifacts["dtb"];
+    let dtb = profile.artifacts.get("dtb");
     let initrd = profile.artifacts.get("initrd");
     let id = profile.id.as_ref().unwrap();
     let command_line = profile
@@ -1910,17 +2352,21 @@ fn compile(profile: &Profile, canonical: &str, placement_name: &str) -> Result<V
         placement.ram_size.unwrap(),
         placement.kernel_load_address.unwrap(),
         placement.kernel_entry_address.unwrap_or(0),
-        placement.dtb_load_address.unwrap(),
+        placement.dtb_load_address.unwrap_or(0),
         placement.initrd_load_address.unwrap_or(0),
         kernel.max_bytes.unwrap(),
-        dtb.max_bytes.unwrap(),
+        dtb.and_then(|a| a.max_bytes).unwrap_or(0),
         initrd.and_then(|a| a.max_bytes).unwrap_or(0),
     ] {
         push_u64(&mut out, value);
     }
     out.extend_from_slice(&Sha256::digest(canonical.as_bytes()));
     out.extend_from_slice(&artifact_hash(kernel, placement, "kernel")?);
-    out.extend_from_slice(&artifact_hash(dtb, placement, "dtb")?);
+    if let Some(dtb) = dtb {
+        out.extend_from_slice(&artifact_hash(dtb, placement, "dtb")?);
+    } else {
+        out.extend_from_slice(&[0; 32]);
+    }
     if let Some(initrd) = initrd {
         out.extend_from_slice(&artifact_hash(initrd, placement, "initrd")?);
     } else {
@@ -2040,6 +2486,223 @@ mod tests {
     use super::*;
 
     #[test]
+    fn x86_secondary_manifest_requires_independent_slot_identity() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (primary, _) = resolve(&root, Path::new("debian-amd64.toml"), &mut Vec::new()).unwrap();
+        let (secondary, canonical) = resolve(
+            &root,
+            Path::new("debian-amd64-secondary.toml"),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        validate_x86_slot_profile(&secondary, X86BuildSlot::Secondary).unwrap();
+        assert!(validate_x86_slot_profile(&secondary, X86BuildSlot::Primary).is_err());
+        assert!(validate_x86_slot_profile(&primary, X86BuildSlot::Secondary).is_err());
+        for field in 0..4 {
+            let mut mixed = secondary.clone();
+            let target = mixed.target.as_mut().unwrap();
+            match field {
+                0 => target.guest_id = Some(0),
+                1 => target.control_type = Some(1),
+                2 => target.network_client = Some(0),
+                _ => target.block_media = Some(0),
+            }
+            assert!(validate_x86_slot_profile(&mixed, X86BuildSlot::Secondary).is_err());
+        }
+        let manifest = compile(&secondary, &canonical, "default").unwrap();
+        assert_eq!(manifest.len(), MANIFEST_SIZE);
+        assert_eq!(&manifest[16..20], &1u32.to_le_bytes());
+        assert_eq!(&manifest[28..30], &1u16.to_le_bytes());
+        assert_eq!(&manifest[30..32], &1u16.to_le_bytes());
+        assert_eq!(&manifest[244..248], &2u32.to_le_bytes());
+    }
+
+    #[test]
+    fn x86_boot_selection_rejects_unsupported_resource_requests() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (profile, _) = resolve(&root, Path::new("debian-amd64.toml"), &mut Vec::new()).unwrap();
+        validate_x86_boot_profile(&profile).unwrap();
+        let mut bad = profile.clone();
+        bad.target.as_mut().unwrap().vcpus = Some(2);
+        validate_x86_boot_profile(&bad).unwrap();
+        bad.target.as_mut().unwrap().vcpus = Some(3);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.target.as_mut().unwrap().guest_id = Some(1);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.target.as_mut().unwrap().autostart = Some(false);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.placements.get_mut("default").unwrap().ram_size = Some(0x80200000);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.placements.get_mut("default").unwrap().vmm_hva_base = Some(0x40000000);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile.clone();
+        bad.placements
+            .get_mut("default")
+            .unwrap()
+            .kernel_entry_address = Some(0x200000);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+        let mut bad = profile;
+        bad.target.as_mut().unwrap().network_client = Some(1);
+        assert!(validate_x86_boot_profile(&bad).is_err());
+    }
+
+    #[test]
+    fn x86_cpu_requests_match_fixed_target_exposure() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) =
+            resolve(&root, Path::new("debian-amd64-2g.toml"), &mut Vec::new()).unwrap();
+        validate_x86_boot_profile(&profile).unwrap();
+        let features = profile
+            .target
+            .as_ref()
+            .unwrap()
+            .cpu_features
+            .as_ref()
+            .unwrap();
+        assert_eq!(features.required, ["fp", "simd"]);
+        assert_eq!(
+            features.prohibited,
+            ["crypto", "rng", "vector", "nested-virt"]
+        );
+        for feature in ["fp", "simd", "crypto", "rng", "vector", "nested-virt"] {
+            let exposed = ["fp", "simd"].contains(&feature);
+            profile.target.as_mut().unwrap().cpu_features = Some(CpuFeatures {
+                version: Some(CPU_FEATURES_VERSION),
+                required: vec![feature.into()],
+                prohibited: vec![],
+            });
+            assert_eq!(validate_x86_boot_profile(&profile).is_ok(), exposed);
+            profile.target.as_mut().unwrap().cpu_features = Some(CpuFeatures {
+                version: Some(CPU_FEATURES_VERSION),
+                required: vec![],
+                prohibited: vec![feature.into()],
+            });
+            assert_eq!(validate_x86_boot_profile(&profile).is_ok(), !exposed);
+        }
+    }
+
+    #[test]
+    fn x86_boot_selection_accepts_second_ram_gib_and_rejects_misalignment() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) =
+            resolve(&root, Path::new("debian-amd64-2g.toml"), &mut Vec::new()).unwrap();
+        assert_eq!(profile.placements["default"].ram_size, Some(0x80000000));
+        for ram in [0x40200000, 0x60000000, 0x80000000] {
+            profile.placements.get_mut("default").unwrap().ram_size = Some(ram);
+            validate_x86_boot_profile(&profile).unwrap();
+        }
+        profile.placements.get_mut("default").unwrap().ram_size = Some(0x80000001);
+        assert!(validate_x86_boot_profile(&profile).is_err());
+        profile.placements.get_mut("default").unwrap().ram_size = Some(0x60001000);
+        assert!(validate_x86_boot_profile(&profile).is_err());
+    }
+
+    #[test]
+    fn uefi_acquisition_has_no_fdt_template() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) =
+            resolve(&root, Path::new("debian-amd64.toml"), &mut Vec::new()).unwrap();
+        validate(&profile, None).unwrap();
+        profile
+            .host
+            .as_mut()
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .template = Some("fake.dts".into());
+        assert!(validate(&profile, None).is_err());
+        profile
+            .host
+            .as_mut()
+            .unwrap()
+            .build
+            .as_mut()
+            .unwrap()
+            .template = None;
+        profile.target.as_mut().unwrap().boot_protocol = Some("fdt-direct".into());
+        assert!(validate(&profile, None)
+            .unwrap_err()
+            .to_string()
+            .contains("uefi-artifacts requires"));
+    }
+
+    #[test]
+    fn uefi_is_not_silently_prepared_as_an_fdt_bundle() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (_, canonical) =
+            resolve(&root, Path::new("ubuntu-live.toml"), &mut Vec::new()).unwrap();
+        let mut source: toml::Value = toml::from_str(&canonical).unwrap();
+        source["target"]["boot_protocol"] = toml::Value::String("uefi".into());
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("uefi.toml"),
+            toml::to_string(&source).unwrap(),
+        )
+        .unwrap();
+        let output = temp.path().join("bundle");
+        let error = prepare_bundle(
+            temp.path(),
+            Path::new("uefi.toml"),
+            "default",
+            temp.path(),
+            &output,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("require the fdt-direct boot protocol"),
+            "{error:#}"
+        );
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn uefi_without_dtb_has_canonical_absent_fields() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) =
+            resolve(&root, Path::new("ubuntu-live.toml"), &mut Vec::new()).unwrap();
+        let target = profile.target.as_mut().unwrap();
+        target.architecture = Some("x86-64".into());
+        target.boot_protocol = Some("uefi".into());
+        target.kernel_format = Some("uefi".into());
+        target.entry_from_image = Some(false);
+        profile.artifacts.remove("dtb");
+        for p in profile.placements.values_mut() {
+            p.dtb_load_address = None;
+            p.dtb_sha256 = None;
+            p.kernel_entry_address = p.kernel_load_address;
+        }
+        validate(&profile, Some("default")).unwrap();
+        let manifest = compile(&profile, "uefi-without-dtb-test", "default").unwrap();
+        assert_eq!(manifest.len(), MANIFEST_SIZE);
+        assert_eq!(&manifest[72..80], &[0; 8]); // DTB load address
+        assert_eq!(&manifest[96..104], &[0; 8]); // DTB maximum bytes
+        assert_eq!(&manifest[176..208], &[0; 32]); // DTB hash
+        profile
+            .placements
+            .get_mut("default")
+            .unwrap()
+            .dtb_load_address = Some(0x4000_0000);
+        assert!(validate(&profile, None).is_err());
+        profile
+            .placements
+            .get_mut("default")
+            .unwrap()
+            .dtb_load_address = None;
+        profile.placements.get_mut("default").unwrap().dtb_sha256 = Some("a5".repeat(32));
+        assert!(validate(&profile, None).is_err());
+        profile.placements.get_mut("default").unwrap().dtb_sha256 = None;
+        profile.target.as_mut().unwrap().boot_protocol = Some("fdt-direct".into());
+        assert!(validate(&profile, None).is_err());
+    }
+
+    #[test]
     fn merge_replaces_scalars_and_preserves_tables() {
         let mut base: toml::Value = toml::from_str("[a]\nx=1\ny=2\n").unwrap();
         let child: toml::Value = toml::from_str("[a]\nx=3\n").unwrap();
@@ -2144,6 +2807,47 @@ mod tests {
     }
 
     #[test]
+    fn nocloud_seed_contract_binds_sources_and_provisioning() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("guest-profiles");
+        let path = Path::new("debian-arm64-nocloud.toml");
+        let (profile, _) = resolve(&root, path, &mut Vec::new()).unwrap();
+        let host = profile.host.unwrap();
+        assert!(validate_host(Some(&host)).is_ok());
+        let seed = host_profile_plan(&root, path).unwrap().seed.unwrap();
+        assert_eq!(seed.partition_offset, 134217728);
+        assert_eq!(
+            seed.root_ext4,
+            "build/guest-images/debian-arm64-nocloud/root.ext4"
+        );
+        for bad_path in ["", "/tmp/root.ext4", "../root.ext4", "build/../root.ext4"] {
+            let mut invalid = host.clone();
+            invalid.seed.as_mut().unwrap().root_ext4 = bad_path.into();
+            assert!(validate_host(Some(&invalid)).is_err(), "{bad_path}");
+        }
+        let mut invalid = host.clone();
+        invalid.seed.as_mut().unwrap().partition_offset = 513;
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host.clone();
+        invalid.seed.as_mut().unwrap().adapter = "unknown".into();
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host.clone();
+        invalid.qemu.as_mut().unwrap().ssh.as_mut().unwrap().account = "root".into();
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host.clone();
+        invalid.qemu.as_mut().unwrap().media.clear();
+        assert!(validate_host(Some(&invalid)).is_err());
+        let mut invalid = host;
+        invalid.provision.push(RecipeStep {
+            action: "write-console".into(),
+            args: BTreeMap::new(),
+        });
+        assert!(validate_host(Some(&invalid)).is_err());
+    }
+
+    #[test]
     fn host_recipes_are_bounded() {
         let steps = (0..=MAX_RECIPE_STEPS)
             .map(|_| RecipeStep {
@@ -2156,6 +2860,7 @@ mod tests {
             id: Some("bounded".to_string()),
             status: Some(Status::Abstract),
             host: Some(Host {
+                seed: None,
                 qemu: None,
                 console: None,
                 desktop: None,
@@ -2167,6 +2872,41 @@ mod tests {
             ..Profile::default()
         };
         assert!(validate(&profile, None).is_err());
+    }
+
+    #[test]
+    fn initramfs_binary_recipe_requires_one_payload_and_a_pin() {
+        for action in ["build-initramfs-file", "append-initramfs-file"] {
+            let mut step = RecipeStep {
+                action: action.into(),
+                args: BTreeMap::from([
+                    ("output".into(), "initrd".into()),
+                    ("path".into(), "init".into()),
+                    ("mode".into(), "0755".into()),
+                    ("content_file".into(), "helper".into()),
+                    ("content_sha256".into(), "ab".repeat(32)),
+                ]),
+            };
+            if action == "append-initramfs-file" {
+                step.args.insert("source".into(), "base".into());
+            }
+            assert!(validate_host_action(&step).is_ok());
+            step.args.insert("content_file".into(), "../helper".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.insert("content_file".into(), "helper".into());
+            step.args.insert("content".into(), "text".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.remove("content");
+            step.args.remove("content_sha256");
+            assert!(validate_host_action(&step).is_err());
+            step.args.insert("content_sha256".into(), "invalid".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.remove("content_file");
+            step.args.insert("content".into(), "text".into());
+            assert!(validate_host_action(&step).is_err());
+            step.args.remove("content_sha256");
+            assert!(validate_host_action(&step).is_ok());
+        }
     }
 
     #[test]
@@ -2215,6 +2955,7 @@ mod tests {
             probe_timeout_secs: Some(30),
         };
         let host = Host {
+            seed: None,
             qemu: None,
             console: Some(console.clone()),
             desktop: None,
@@ -2256,6 +2997,71 @@ mod tests {
             .iter()
             .any(|step| step.action == "build-initramfs-file"));
         assert_eq!(acquire.last().unwrap().action, "extract-arm64-linux-image");
+    }
+
+    #[test]
+    fn nocloud_accepts_a_distinct_guest_address_and_rejects_service_addresses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (mut profile, _) = resolve(
+            &root,
+            Path::new("debian-arm64-nocloud.toml"),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let host = profile.host.as_mut().unwrap();
+        host.qemu
+            .as_mut()
+            .unwrap()
+            .ssh
+            .as_mut()
+            .unwrap()
+            .guest_address = Some("10.0.2.16".into());
+        assert!(validate_host(Some(host)).is_ok());
+        host.qemu
+            .as_mut()
+            .unwrap()
+            .ssh
+            .as_mut()
+            .unwrap()
+            .guest_address = Some("10.0.2.2".into());
+        assert!(validate_host(Some(host)).is_err());
+        host.qemu
+            .as_mut()
+            .unwrap()
+            .ssh
+            .as_mut()
+            .unwrap()
+            .guest_address = None;
+        assert!(validate_host(Some(host)).is_err());
+    }
+
+    #[test]
+    fn seeded_graphics_inherits_provisioning_and_bounds_ssh_assertions() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let path = resolve_alias(&root, "debian-nocloud-graphics-input").unwrap();
+        let plan = host_profile_plan(&root, &path).unwrap();
+        assert!(plan.seed.is_some());
+        assert!(plan.provision.is_empty());
+        assert!(plan.console.interaction.is_empty());
+        assert_eq!(
+            plan.qemu.as_ref().unwrap().ssh.as_ref().unwrap().account,
+            "debian"
+        );
+        let mut assertion = plan
+            .test
+            .iter()
+            .find(|s| s.action == "assert-ssh-output")
+            .unwrap()
+            .clone();
+        assert!(validate_host_action(&assertion).is_ok());
+        assertion.args.insert("command".into(), "x".repeat(4097));
+        assert!(validate_host_action(&assertion).is_err());
+        assertion
+            .args
+            .insert("command".into(), "bad\0command".into());
+        assert!(validate_host_action(&assertion).is_err());
+        assertion.args.remove("stdout");
+        assert!(validate_host_action(&assertion).is_err());
     }
 
     #[test]

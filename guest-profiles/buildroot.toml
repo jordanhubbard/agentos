@@ -36,6 +36,15 @@ args = { devices = "net,block,console", scope = "emulated" }
 
 [host.console]
 adapter = "expect"
+success = ["# "]
+require = ["Welcome to Buildroot"]
+probe_line = "ifconfig eth0 10.0.2.15 up && ping -c 1 -W 5 10.0.2.2 && printf 'agentos-net-%s\\n' roundtrip"
+probe_marker = "agentos-net-roundtrip"
+probe_timeout_secs = 60
+
+[[host.console.interaction]]
+when = ["login:"]
+send = "root\r"
 
 [host.build]
 adapter = "linux-merge"

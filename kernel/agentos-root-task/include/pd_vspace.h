@@ -53,6 +53,12 @@ typedef struct {
 pd_vspace_result_t pd_vspace_create(seL4_CPtr pd_cnode,
                                      seL4_CPtr asid_pool);
 
+/* ARM guest paging: every paging object, including intermediate tables added
+ * by later mapping calls, comes from paging_pool. No global-pool fallback.
+ * Root must retain paging_pool until its final mapping call for this VSpace. */
+pd_vspace_result_t pd_vspace_create_private(seL4_CPtr asid_pool,
+                                             seL4_CPtr paging_pool);
+
 /*
  * pd_vspace_load_elf — load an ELF image into a VSpace and map a stack.
  *
@@ -131,3 +137,9 @@ seL4_Error pd_vspace_map_reserved_region(seL4_CPtr vspace,
 seL4_Error pd_vspace_map_device_frame(seL4_CPtr vspace,
                                        seL4_CPtr frame_cap,
                                        seL4_Word vaddr);
+
+/* Explicit uncached MMIO mapping. Shared DMA RAM keeps the platform's
+ * ordinary coherent memory attributes. */
+seL4_Error pd_vspace_map_uncached_device_frame(seL4_CPtr vspace,
+                                                seL4_CPtr frame_cap,
+                                                seL4_Word vaddr);

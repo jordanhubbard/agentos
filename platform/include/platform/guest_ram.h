@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef struct aos_guest_ram {
     uint64_t  gpa_base; /* guest physical / IPA of RAM */
@@ -35,5 +36,20 @@ void *aos_gpa_to_hva_configured(uint64_t gpa, size_t len);
 
 /* Configure the window and install it as libvmm's process-wide GPA hook. */
 void aos_vmm_guest_ram_bind(uint64_t gpa_base, uintptr_t hva_base, size_t size);
+
+/* Target authority from guest_ram_caps.h. Caller must first stop
+ * every vCPU and drain every device reference to guest RAM. Release is
+ * retryable after partial failure. Rebuild requires a successful release;
+ * on failure release again before retrying. No execution state is changed. */
+bool aos_vmm_guest_ram_release(size_t size);
+/* Reconstruction is currently ARM-only. x86 release also revokes ROM. */
+bool aos_vmm_guest_ram_rebuild(uint64_t gpa_base, uintptr_t hva_base, size_t size);
+
+#ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
+/* Preboot only: overwrite all RAM, revoke, retype, verify every byte and
+ * restore/verify boot images through the supplied qualification callback. */
+bool aos_vmm_guest_ram_recycle_test(uint64_t gpa_base, uintptr_t hva_base,
+                                   size_t size, bool (*restore_images)(void));
+#endif
 
 #endif /* AOS_PLATFORM_GUEST_RAM_H */

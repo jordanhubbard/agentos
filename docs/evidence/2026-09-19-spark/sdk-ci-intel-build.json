@@ -1,0 +1,29 @@
+{
+  "status": "kernel reproduction passed; distribution archive installation rejected",
+  "source_revision": "844eebd6582f5af950e5284e0a77dda0a0da4082",
+  "host": "madmax x86_64, isolated Ubuntu 24.04 Docker container",
+  "base_image_id": "sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254",
+  "sdk_version": "2.3.1-agentos-e60776ac-cr2",
+  "upstream_sources": {
+    "microkit": "ec86afdcd662b5976d11d4994acf1b11a2979882",
+    "sel4": "e60776acc31097ca063806c257f07a3ec05eacf8"
+  },
+  "scope": "Fresh source checkouts and SDK build outputs using the workflow dependency pins; package and install Make targets. Container paths differ from hosted Actions. No Intel VMX runtime test was run inside the build container.",
+  "dependency_failures_retained": [
+    "Initial ARM configuration could not find qemu-system-aarch64.",
+    "After adding QEMU and dtc, DTB extraction needed ipxe-qemu's efi-virtio.rom.",
+    "Hardware generation then needed unversioned cross-cpp names for the pinned GCC 13 packages."
+  ],
+  "corrected_build": {
+    "container": "agentos-sdk-ci-844eebd6-qemu3",
+    "terminal_exit": 2,
+    "kernel_checks": "All three cr2-kernels.sha256 entries matched, both remotely and against the downloaded extracted SDK on Spark.",
+    "package": "Completed; installer rejected the overall archive hash before extraction.",
+    "actual_archive_sha256": "d89cf03c7c0875e0fb56ef55682b9440e50c357a83a2042701264f25cea5aa10",
+    "expected_archive_sha256": "6a7db9fbb4b0480bad0d66ef2408d7ade71000ce894fac1323bb8397387d1eee",
+    "content_comparison": "Six generated headers differ only in their first-line absolute source-path comments. Unused Microkit loader/monitor/library artifacts also differ. Kernel bytes match; full bundle byte reproducibility is not established."
+  },
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/sdk-ci-intel",
+  "receipts_archive_sha256": "54bee1cafd2ee33e04161f0a5e17b914f003c8638ea763bbdd692fddd99d3328",
+  "remaining": "Resolve target-bundle reproducibility and reverify installation without bypassing the pinned archive checksum. Hosted CI, default SDK adoption and final release acceptance remain pending."
+}

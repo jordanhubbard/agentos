@@ -26,8 +26,10 @@ typedef struct aos_guest_vmm_runtime {
     void (*quiesce_timer)(void);
     /*
      * Release every per-guest execution resource after a successful suspend.
-     * A failed teardown leaves the guest suspended so it cannot be reported
-     * as either runnable or dead. NULL is a successful no-op for existing
+     * The runtime enters DESTROYING before calling this callback. Failure
+     * retains that non-resumable state; retries must safely continue partial
+     * cleanup. Guest mappings must remain valid until all device work that
+     * can access them is drained. NULL is a successful no-op for existing
      * terminal-only VMMs that have no resources to release here.
      */
     bool (*teardown)(void);
@@ -48,6 +50,19 @@ typedef struct aos_guest_vmm_runtime {
  */
 bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
                                  const aos_guest_vmm_runtime_t *runtime);
+
+enum aos_guest_restart_result {
+    AOS_GUEST_RESTART_FAILED,
+    AOS_GUEST_RESTART_WAIT,
+    AOS_GUEST_RESTART_RUNNING,
+};
+/* Owning coordinator only, between execution entries. Reuse the lifecycle
+ * transitions without changing guest identity. WAIT retains stopped execution
+ * while the caller services device completions and retries. FAILED never
+ * authorizes entry; failed reconstruction remains DEAD and failed start READY.
+ * The caller must reject competing lifecycle operations until this completes. */
+enum aos_guest_restart_result aos_guest_vmm_restart_step(
+    const aos_guest_vmm_runtime_t *runtime);
 
 /* Handle the common SEND_INPUT and CONSOLE_DRAIN wire protocol. */
 bool aos_guest_vmm_console_rpc(const sel4_msg_t *req, sel4_msg_t *rep,

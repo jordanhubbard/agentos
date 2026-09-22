@@ -22,7 +22,8 @@
  *     uses the direct relay API below.
  *   - Sessions expire after CC_SESSION_TIMEOUT_TICKS of inactivity.
  *   - Multiple concurrent sessions are supported (CC_MAX_SESSIONS).
- *   - The CC PD does not initiate communication; it only responds to PPCs.
+ *   - Session IPC responds to PPCs. Binary socket connections first receive
+ *     the server greeting described below.
  *
  * Direct relay API (Phase 5a):
  *   MSG_CC_LIST_GUESTS       → CC handle registry + vm_manager INFO
@@ -55,6 +56,23 @@
 #pragma once
 #include "../agentos.h"
 
+/* Binary socket bootstrap (not MSG_CC_CONNECT session allocation): the host
+ * MUST read a complete 4112-byte greeting before sending any bytes. CC emits
+ * it only after transport reset and acceptance of disconnected-input releases.
+ * Greeting words: MAGIC, VERSION, generation low, generation high; payload zero.
+ * The generation is nonzero and never reused during a CC process lifetime.
+ * Host sends CONNECTION_SYNC, VERSION, generation low/high, with zero payload.
+ * CC replies CC_OK, VERSION, generation low/high, with zero payload. Only then
+ * may commands be sent. Invalid or partial bootstrap closes/reset the stream;
+ * no command is dispatched before synchronization. This is ordering, not
+ * authentication. Legacy peers fail closed; there is no legacy fallback.
+ * On any ambiguous command/reply failure, close without replaying the command.
+ * Each frame direction has a bounded deadline; partial progress cannot renew it.
+ * A failed bootstrap may be retried on a fresh socket before any command is sent.
+ */
+#define CC_CONNECTION_MAGIC 0x43435244u
+#define CC_CONNECTION_VERSION 1u
+
 /* MSG_CC_INSPECT: MR1=AOS_INSPECT_VERSION, MR2=MR3=0; no input payload.
  * Reply MR0=CC_OK, MR1=sizeof(aos_inspect_snapshot_t), MR2=flags, MR3=version;
  * the packed snapshot is in shmem. On error, no payload is returned.
@@ -72,7 +90,45 @@
  * the existing privileged CC transport, not a per-client credential system. */
 
 /* ─── Channel IDs ────────────────────────────────────────────────────────── */
+/* MSG_CC_FRAME_CAPTURE, graphics images (and focused framebuffer tests) only:
+ * MR1=public guest handle for CAPTURE, otherwise zero; MR2=MR3=0.
+ * Shmem contains aos_fb_observer_request_t (framebuffer_observer.h), with
+ * version=1, operation=CAPTURE/READ/RELEASE/READ_PACKED, id=client=0. CC resolves the guest
+ * handle to its private slot; callers cannot name a raw slot or surface.
+ * READ length is at most 4056 bytes. Optional READ_PACKED requests up to
+ * 65536 pixel-aligned snapshot bytes and returns an encoded nonempty prefix
+ * in at most 4056 bytes; see framebuffer_observer.h for its exact encoding.
+ * Legacy CC peers reject READ_PACKED with CC_ERR_INVALID_ARG. All unused request fields must be zero.
+ * Reply MR0=CC_OK for a valid service response, MR1=40+payload bytes,
+ * MR2=observer status, MR3=observer version. Shmem contains the 40-byte
+ * aos_fb_observer_response_t (id=0) followed by READ's XRGB8888 bytes or
+ * READ_PACKED's header and encoded payload. Response length is wire bytes.
+ * A nonzero observer status returns no pixels. CAPTURE returns an immutable
+ * tightly packed image's dimensions, committed sequence and nonzero cookie.
+ * A subsequent successful CAPTURE replaces the previous snapshot. RELEASE
+ * invalidates its cookie. Cookies do not confer any surface-write authority.
+ * This is one serialized stream over the existing privileged CC transport.
+ * No graphics service: CC_ERR_RELAY_FAULT. Invalid/dead handles:
+ * CC_ERR_BAD_HANDLE. Other wire errors: CC_ERR_INVALID_ARG.
+ * The GUEST_OS=none focused framebuffer test image alone substitutes native
+ * handles 0xfb000000 and 0xfb000001 for guest resolution. Production images
+ * never recognize these as native handles. */
+
 #define CC_PD_CH_CONTROLLER  CH_CC_PD
+
+/* MSG_CC_INPUT_SUBMIT, GUEST_INPUT images only:
+ * MR1=public live guest handle, MR2=MR3=0. Shmem contains the 544-byte
+ * aos_input_request_t from platform/input.h; id=client=reserved=0. CC resolves
+ * the public handle to a private client and assigns a request ID. The service
+ * validates the complete keyboard/pointer batch and accepts all or none.
+ * Reply MR0=CC_OK for a valid service response, MR1=16, MR2=input status,
+ * Version 2 with count=0 requests retained release of all held keys/buttons
+ * for the selected device. Its acknowledgment does not mean guest consumption.
+ * MR3=request version; shmem contains aos_input_response_t with id=0. WOULD_BLOCK
+ * accepts zero events and allows a retry. Transport failure is not an input
+ * acknowledgment and must not be retried blindly (key transitions matter).
+ * Absent service: CC_ERR_RELAY_FAULT; invalid/dead handle: CC_ERR_BAD_HANDLE.
+ * This uses the existing privileged CC transport, not a new credential API. */
 
 /* ─── Configuration ──────────────────────────────────────────────────────── */
 #define CC_MAX_SESSIONS         8u
@@ -85,21 +141,7 @@
  * Device-visible physical addresses and cc_pd CPU virtual addresses are
  * deliberately distinct; DMA addresses must never be dereferenced as pointers.
  */
-#define CC_VIRTIO_STARTUP_MAGIC   0x43435651u /* "CCVQ" */
-#define CC_VIRTIO_STARTUP_VERSION 1u
-#define CC_VIRTIO_MMIO_VA         0x10002000UL
-#define CC_VIRTIO_STARTUP_VA      0x10003000UL
-#define CC_VIRTIO_QUEUE_VA        0x10006000UL
-#define CC_VIRTIO_TX_BUFFER_VA    0x10007000UL
-#define CC_VIRTIO_RX_BUFFER_VA    0x10008000UL
-
-typedef struct __attribute__((packed)) cc_virtio_startup {
-    uint32_t magic;
-    uint32_t version;
-    uint64_t queue_pa;
-    uint64_t tx_buffer_pa;
-    uint64_t rx_buffer_pa;
-} cc_virtio_startup_t;
+#include "cc_transport.h"
 
 /* ─── Command types ──────────────────────────────────────────────────────── */
 
@@ -368,6 +410,13 @@ struct cc_reply_restore {
 };
 
 /* ─── MSG_CC_LOG_STREAM ──────────────────────────────────────────────────── */
+
+/* MR3 address mode. Legacy mode zero retains the slot API below. Mode one
+ * addresses an active public guest handle directly: MR1=handle, MR2=0.
+ * The reply echoes that handle in MR2 and never allocates a log slot. This
+ * avoids ambiguity when a public handle equals another stream's slot number.
+ * Unknown modes and nonzero reserved MR2 are rejected. */
+#define CC_LOG_ADDRESS_HANDLE 1u
 
 /*
  * Drain a guest's serial output as ASCII bytes (agentos-vsi).  cc_pd resolves

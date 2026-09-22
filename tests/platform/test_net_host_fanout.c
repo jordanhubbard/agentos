@@ -179,6 +179,48 @@ int main(void)
                     memcmp(arp + 22u, iface_mac, 6u) == 0,
                     "QEMU egress rewrites Ethernet and ARP source identities");
 
-    printf("1..11\n");
+    /* Host mode omits device I/O; this checks send admission and accounting.
+     * A PCI binding must not be rejected merely because it uses no IRQ. */
+    sel4_msg_t sent = {0};
+    data_wr32(sent.data, 4, sizeof(arp));
+    uint32_t tx_before = clients[healthy].tx_pkts;
+    hw_present = true;
+    net_host_transport.pci = true;
+    failed += check(handle_net_send_nic(&clients[healthy], healthy, &sent) == SEL4_ERR_OK &&
+                    clients[healthy].tx_pkts == tx_before + 1u &&
+                    data_rd32(sent.data, 0) == NET_OK,
+                    "initialized PCI NIC accepts a bounded raw send");
+
+    /* Retire a client with unread RX, then reuse the driver slot more times
+     * than the handle table can hold. A peer's pending data must survive. */
+    uint32_t peer_head = freebsd_ring->rx_head;
+    uint32_t old_slot = clients[healthy].shmem_slot;
+    int lifecycle_ok = 1;
+    for (uint32_t cycle = 0u; cycle < NET_MAX_CLIENTS * 2u; cycle++) {
+        sel4_msg_t close_req = {0}, close_rep = {0};
+        close_req.opcode = MSG_NET_CLOSE;
+        close_req.length = 4u;
+        data_wr32(close_req.data, 0u, healthy);
+        if (net_pd_dispatch_one(0u, &close_req, &close_rep) != SEL4_ERR_OK ||
+            data_rd32(close_rep.data, 0u) != NET_OK ||
+            slot_ring(old_slot)->magic != 0u) {
+            lifecycle_ok = 0;
+            break;
+        }
+        healthy = open_client(0u);
+        if (healthy >= NET_MAX_CLIENTS ||
+            clients[healthy].shmem_slot != old_slot ||
+            slot_ring(old_slot)->rx_head != 0u ||
+            slot_ring(old_slot)->rx_tail != 0u || active_clients != 3u ||
+            freebsd_ring->rx_head != peer_head) {
+            lifecycle_ok = 0;
+            break;
+        }
+        slot_ring(old_slot)->rx_head = sizeof(frame) + 2u;
+    }
+    failed += check(lifecycle_ok,
+                    "raw close/reopen retires pending RX without leaking slots or changing peers");
+
+    printf("1..13\n");
     return failed == 0 ? 0 : 1;
 }

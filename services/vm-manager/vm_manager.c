@@ -44,6 +44,13 @@
 #include "contracts/vm_manager_contract.h"
 #include "system_desc.h"
 #include <platform/guest_memory_layout.h>
+#ifdef AGENTOS_X86_MANAGED_START
+#include "contracts/x86_vtx_proof.h"
+#endif
+#if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
+#include <platform/guest_scheduling.h>
+#include <platform/guest_gic_mapping.h>
+#endif
 /* vm_manager.h includes the guest-neutral slot multiplexer contract. */
 #include "vm_manager.h"
 
@@ -67,6 +74,8 @@ static uint32_t g_vm_flags[VM_MAX_SLOTS];
 static seL4_CPtr g_primary_vmm_ep;
 static seL4_CPtr g_secondary_vmm_ep;
 static seL4_CPtr g_slot_vmm_ep[VM_MAX_SLOTS];
+static uint32_t g_slot_guest_id[VM_MAX_SLOTS];
+static bool g_slot_guest_bound[VM_MAX_SLOTS];
 
 /* ── Additional IPC opcodes (extend vmm_mux.h's OP_VM_* set) ──────────── */
 #define OP_VM_SET_QUOTA    0x30u
@@ -188,7 +197,11 @@ static uint32_t dedicated_vmm_os_type(uint32_t vm_type)
 
 static uintptr_t dedicated_ram_base(uint32_t vm_type, uint8_t slot_id)
 {
-#if defined(AGENTOS_GUEST_DUAL)
+#if defined(AGENTOS_X86_MANAGED_START)
+    (void)vm_type;
+    (void)slot_id;
+    return AOS_X86_FIRMWARE_RAM_VA;
+#elif defined(AGENTOS_GUEST_DUAL)
     if (vm_type == VM_PROFILE_SECONDARY)
         return AOS_SECONDARY_GUEST_RAM_BASE;
     if (vm_type == VM_PROFILE_PRIMARY)
@@ -201,9 +214,14 @@ static uintptr_t dedicated_ram_base(uint32_t vm_type, uint8_t slot_id)
 
 static uint32_t dedicated_ram_capacity_mb(uint32_t vm_type)
 {
+#ifdef AGENTOS_X86_MANAGED_START
+    (void)vm_type;
+    return AOS_X86_FIRMWARE_RAM >> 20;
+#else
     return vm_type == VM_PROFILE_SECONDARY
          ? AOS_SECONDARY_GUEST_RAM_MB
          : AOS_PRIMARY_GUEST_RAM_MB;
+#endif
 }
 
 static uint8_t dedicated_slot_for_type(uint32_t vm_type)
@@ -230,9 +248,22 @@ static uint32_t dedicated_guest_rpc(uint8_t slot_id, uint32_t opcode,
             req.data[i] = payload[i];
     }
     req.length = payload_len;
+    if (opcode != MSG_GUEST_CREATE) {
+        if (!g_slot_guest_bound[slot_id] || payload_len < 4u)
+            return VM_ERR;
+        /* Manager slots and public handles are not the coordinator's ID.
+         * Bind every later request to the identity returned by CREATE. */
+        rep_u32(&req, 0u, g_slot_guest_id[slot_id]);
+    }
     sel4_call(g_slot_vmm_ep[slot_id], &req, &rep);
     if (rep.opcode != GUEST_OK)
         return VM_ERR;
+    if (opcode == MSG_GUEST_CREATE) {
+        if (rep.length != 8u || msg_u32(&rep, 0u) != GUEST_OK)
+            return VM_ERR;
+        g_slot_guest_id[slot_id] = msg_u32(&rep, 4u);
+        g_slot_guest_bound[slot_id] = true;
+    }
     if (out != (sel4_msg_t *)0)
         *out = rep;
     return VM_OK;
@@ -289,7 +320,11 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
     /* Dedicated VMM frames are provisioned by the root task before launch.
      * Report the actual mapped capacity, never an unfulfilled request size. */
     slot->ram_size = (size_t)capacity_mb << 20;
+#ifdef AGENTOS_X86_MANAGED_START
+    slot->ram_paddr = 0u;
+#else
     slot->ram_paddr = ram_base;
+#endif
     slot->vcpu_id = (uint32_t)slot_id;
     vm_label_copy(slot->label,
                   vm_type == VM_PROFILE_SECONDARY ? "secondary" : "primary",
@@ -298,6 +333,8 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
     g_vm_types[slot_id] = (uint8_t)vm_type;
     g_vm_flags[slot_id] = flags;
     g_slot_vmm_ep[slot_id] = ep;
+    g_slot_guest_id[slot_id] = 0u;
+    g_slot_guest_bound[slot_id] = false;
     g_mux.slot_count++;
     g_mux.active_slot = slot_id;
 
@@ -311,9 +348,15 @@ static int dedicated_create(uint32_t vm_type, uint32_t ram_mb,
         if (dedicated_guest_rpc(slot_id, MSG_GUEST_CREATE, payload,
                                 (uint32_t)sizeof(payload),
                                 (sel4_msg_t *)0) != VM_OK ||
+#if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
+            !aos_guest_gic_prepare(ep == g_secondary_vmm_ep ? 1u : 0u) ||
+            !aos_guest_scheduling_configure(ep == g_secondary_vmm_ep ? 1u : 0u) ||
+#endif
             dedicated_guest_call(slot_id, MSG_GUEST_BOOT,
                                  VM_SLOT_RUNNING) != VM_OK) {
             g_slot_vmm_ep[slot_id] = 0u;
+            g_slot_guest_id[slot_id] = 0u;
+            g_slot_guest_bound[slot_id] = false;
             g_vm_types[slot_id] = VM_PROFILE_PRIMARY;
             g_vm_flags[slot_id] = 0u;
             slot->state = VM_SLOT_FREE;
@@ -335,6 +378,8 @@ static uint32_t dedicated_destroy(uint8_t slot_id)
 
     g_mux.slots[slot_id].state = VM_SLOT_FREE;
     g_slot_vmm_ep[slot_id] = 0u;
+    g_slot_guest_id[slot_id] = 0u;
+    g_slot_guest_bound[slot_id] = false;
     g_vm_types[slot_id] = VM_PROFILE_PRIMARY;
     g_vm_flags[slot_id] = 0u;
     if (g_mux.slot_count > 0u)
@@ -954,7 +999,7 @@ void vm_manager_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     vmm_mux_init(&g_mux);
 
-#if defined(AGENTOS_GUEST_PRIMARY)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_X86_MANAGED_START)
     g_primary_vmm_ep = (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP;
 #else
     g_primary_vmm_ep = 0u;
@@ -974,6 +1019,8 @@ void vm_manager_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
         g_vm_types[i]             = VM_PROFILE_PRIMARY;
         g_vm_flags[i]             = 0u;
         g_slot_vmm_ep[i]          = 0u;
+        g_slot_guest_id[i]        = 0u;
+        g_slot_guest_bound[i]     = false;
     }
     g_sched_current = 0;
 

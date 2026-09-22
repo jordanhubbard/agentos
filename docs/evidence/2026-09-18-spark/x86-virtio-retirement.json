@@ -1,0 +1,61 @@
+{
+  "schema": "agentos.x86_virtio_retirement.v1",
+  "runtime_commit": "a4c7f88c1",
+  "accepted": false,
+  "scope": "Private x86 bus retirement after successful guest teardown",
+  "spark": {
+    "host": "Sanitizer tests pass with inaccessible old devices, IOAPIC and RAM; two fresh registration cycles pass",
+    "host_and_link_log_sha256": "4b747fbdd4584b8274e1422b07ed2b94354d6a4879795e1bd241ab9dad021574",
+    "make_gate": "passed, terminal exit 0",
+    "gate_log_sha256": "0c384d93d0306c85bcfa12c10816ed226ccbe21ead98bdafd2e9bc15eeb015ac"
+  },
+  "intel": {
+    "initial_result": "Target reported teardown proof failure reason 0x544452, detail 0; fixture stopped after this explicit failure",
+    "initial_run_stem": "jTfUBr",
+    "initial_log_sha256": "a4a6db3d63d4fbe206ff2f6689d9dde663249d528c6635ed4d65e358f9862f42",
+    "diagnostic_reruns": "Three runs with private stage-number diagnostics and no intermediate IPC passed, terminal exit 0; latest run used committed diagnostic image 98587603df49b1ac0b15d40da1fb968a1f67997e",
+    "diagnostic_log_sha256": [
+      "7727fa99e19d151763d3829f5d1b9abd3ee378f78864cc1aab3f0c1a8ecedb98",
+      "bd1fa5e91ce625efe481c8aa15d1a698aaecd7c32afa3d35a6829ef8c97ec5db",
+      "4ae66f0ac902b1edb0b312cd5013f51c7a856e851b6bc30c5a06236910bdc9f2"
+    ],
+    "original_repeat": "Original a4c7f88 without stage diagnostics also passed, terminal exit 0",
+    "original_repeat_log_sha256": "d0704e3dd9e2f8c5c92eab33ebcc9e5870c73089bff36d3cc3cb5b1f03c582ec"
+  },
+  "historical_investigation": {
+    "task": "task_8c6afd5682bc4b8ba858f4cdc5e44ef8",
+    "description": "Failure recurred on b5824a0 with terminal stage 120, identifying the first serial reconstruction sequence after successful network and block checks. The first five finer diagnostic runs passed without explaining it. A later replay of 7d39f5f reproduced validated BUSY at detach; serial-detach-race.json records that failure and corrected-revision regression. Older coarse failures remain retained without exact retroactive attribution",
+    "localized_failure_log_sha256": "14ccfddc39a718c7cf46535fccdfe516ef5e842b3a35dbfbb6734f536f59f695",
+    "localized_failure_run_stem": "5OXGZ3",
+    "localized_failure_spark_gate": "b5824a0 full make gate passed, terminal exit 0",
+    "localized_failure_spark_gate_log_sha256": "ec99f082fd0752b3ba94d3d1659dbd4381a396ed9c0612f26666920e41e04889",
+    "serial_diagnostics_commit": "7d39f5f",
+    "serial_diagnostics_result": "Host suite, firmware link and five Intel qualifications passed, all terminal exit 0",
+    "serial_diagnostics_host_log_sha256": "a36abef9b17b4c8b1f6c48a82a6b18c48c85aced18a4eee6704c2c16bb967763",
+    "serial_diagnostics_link_log_sha256": "307b5ec071753968a61b20544ed6739c99fb9b2b9fcc78c16bc2c0c3f5b2433c",
+    "serial_diagnostics_intel_log_sha256": [
+      "bc8f7bdd9a737122e958bec322b6c6a649685ee6c4be88029f1d3b2014c89914",
+      "14937fd360672952f1f37019d8c22c98a355f8072d9077ab8885388f65715db9",
+      "c7c03059edeace02790ec4250513f94e40eaa4b51fa203c919269d7e925e8a5b",
+      "a36ac58a2ad6fced2254326cec724839d7c2bca914b7da4dfe2a5296f792b54b",
+      "394d68609a5ac3560fb75baf37b968debffd1124c7d9bbe925d1d301b1ae6d80"
+    ],
+    "busy_retry_correction": {
+      "commit": "cd96e65",
+      "change": "Qualification caller retries only validated BUSY detach replies, at most 64 attempts with Yield between attempts; revocation still requires OK",
+      "evidence_scope": "Contract and service host tests establish BUSY as transient while an admitted frontend operation completes. This does not establish that BUSY caused the original stage-120 failure",
+      "result": "Host suite, firmware link, full Spark make gate and Intel qualification passed, all terminal exit 0",
+      "host_and_link_log_sha256": "c9f463bc53d20a20ddef83a542713335b15303f0e3387bbc7ddd34a492c9f3ff",
+      "spark_gate_log_sha256": "52f4cb986373423dd06b228fe2f4ec0f7c32f26478a45c8e5da36c0d030c407e",
+      "intel_log_sha256": "4bad07964d095029462adf62f3adee1aae98f9c7b55509584e0a97bf8d3e83ed"
+    },
+    "stage_legend": "1 lifecycle/GPA; 10..17 retired bus slots; 20 stale execution caps; 100/200 network entry; 110/210 block; 120/220 serial; 130..132/230..232 pool reuse; 140/240 execution and RAM/ROM reconstruction",
+    "network_stage_legend": "Base 1000 + generation * 100, plus: 1 rebind; 2 hardware backend; 3 initial queues; 4 completion polling exhausted; 5 TX consumption; 6 RX descriptor; 7 ARP type and IP addresses; 8 destination MACs; 9 detach; 10 revoke; 11 stale frame capability",
+    "serial_stage_legend": "120..125 plus pass * 100: rebind, enqueue, consumption timeout, detach framing, revoke, stale capability. A valid detach error reply reports 3200 + pass * 100 + service status. Pass is zero-based"
+  },
+  "limitations": [
+    "Late IRQ rejection and fresh bus registrations are host tests; native proof checks retired MMIO slots and disabled GPA translation",
+    "This receipt's stopped-resource scope does not qualify device adoption or a second guest boot; subsequent managed integration is recorded in x86-recreation-transaction.json",
+    "Required checks and canonical integration remain pending"
+  ]
+}

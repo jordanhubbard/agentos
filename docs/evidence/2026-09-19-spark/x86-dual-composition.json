@@ -1,0 +1,27 @@
+{
+  "schema": "agentos.x86_dual_composition.v1",
+  "date": "2026-09-19",
+  "code_revision": "cf17e8c",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "gate": {
+    "source_tree_clean": true,
+    "command": "make gate",
+    "exit": 0,
+    "log_sha256": "dee443881aada8bacdff20e620ff4b8666f9174099774ba2256d66bc3a5846b9"
+  },
+  "build": "Opt-in 13-PD image built with separate secondary coordinator and runner pair",
+  "host_test": "make test-host passed, including compiled default and dual topology checks",
+  "earlier_two_media_run": {
+    "code_revision": "1b4094d",
+    "result": "FAIL: missing initialization marker",
+    "archive": "1b4094d-two-media-failed.tar.gz",
+    "archive_sha256": "0e0b2b81a01e0d221dc38039f3b7d65d960caaf4b78fef84ef2720ceb43a7aa3",
+    "observation_limit": "log_drain_write fallback is disabled by release SDK CONFIG_PRINTING; x86 composition has no log-drain PD"
+  },
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership",
+  "limitations": [
+    "No native concurrent guest boot or lifecycle acceptance",
+    "No independent persistent storage acceptance",
+    "No canonical merge or release acceptance"
+  ]
+}

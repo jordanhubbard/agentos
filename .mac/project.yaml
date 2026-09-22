@@ -11,6 +11,9 @@ toolchain:
     - git
     - clang
     - gcc
+    - cargo
+    - rustc
+    - rustfmt
 bootstrap:
   command: "true"
   creates: []

@@ -1,0 +1,19 @@
+{
+  "agentos_revision": "1a4bb3821b31927b405c691d3ad42e5b54d9cd15",
+  "batches": 4,
+  "excludes": [
+    "physical input devices",
+    "peer guest isolation",
+    "guest recreation"
+  ],
+  "helper_sha256": "2ba0315a3bc89917f9bd4762fd54a25cb0d250635dd34830cf02c2c8b981e517",
+  "keyboard_events": 4,
+  "pointer_events": 7,
+  "profile": "debian-input-aarch64",
+  "release_mode": "server-held-state",
+  "schema": "agentos.guest_input.v1",
+  "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+  "source_tree_clean": true,
+  "status": "pass",
+  "stderr": "/tmp/agentos-v04-input-release-api/build/tmp/agentos-qemu-yZjuK1.input-release.stderr"
+}

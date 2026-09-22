@@ -14,7 +14,7 @@ AGENTOS_BOARD ?= qemu_virt_riscv64
 # We use these headers only — libmicrokit is NOT linked.
 # The board package provides arch-specific seL4 API headers (sel4/sel4.h, etc.)
 REPO_ROOT_MK  := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
-SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK_VERSION ?= $(strip $(shell cat "$(REPO_ROOT_MK)/tools/sdk/default-version"))
 SEL4_SDK      ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 SEL4_PROFILE  ?= release
 SEL4_INC_DIR  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/include
@@ -110,7 +110,7 @@ ROOT_TASK_SRCS += src/system_desc_aarch64.c
 CFLAGS_ROOT_TASK := $(CFLAGS) -DBOARD_$(AGENTOS_BOARD)
 ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_aarch64.o
 else ifeq ($(ARCH),x86_64)
-ROOT_TASK_SRCS += src/system_desc_x86_64.c
+ROOT_TASK_SRCS += src/system_desc_x86_64.c src/x86_host_pci.c
 CFLAGS_ROOT_TASK := $(CFLAGS)
 ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_x86_64.o
 else
@@ -121,15 +121,370 @@ endif
 
 ROOT_TASK_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/rt_%.o, $(ROOT_TASK_SRCS))
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
+ifeq ($(ARCH),x86_64)
+ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
+endif
 
 ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
+  # Build each coordinator and its canonical adapters in a separate directory.
+  # This selector does not add a secondary PD to the system descriptor.
+  X86_VMM_SLOT ?= primary
+  ifeq ($(X86_VMM_SLOT),secondary)
+    CFLAGS += -DAGENTOS_GUEST_SECONDARY=1
+  else ifneq ($(X86_VMM_SLOT),primary)
+    $(error X86_VMM_SLOT must be primary or secondary)
+  endif
   CFLAGS += -DAGENTOS_X86_VTX=1
   CFLAGS_ROOT_TASK += -DAGENTOS_X86_VTX=1
+  ifeq ($(X86_DUAL_GUEST),1)
+    ifneq ($(X86_VMM_SLOT),primary)
+      $(error X86_DUAL_GUEST requires the primary outer build slot)
+    endif
+    ifneq ($(X86_CC_PCI)$(X86_SECONDARY_BLOCK),11)
+      $(error X86_DUAL_GUEST requires X86_CC_PCI=1 and X86_SECONDARY_BLOCK=1)
+    endif
+    ifneq ($(X86_LINUX_LOGIN),1)
+      $(error X86_DUAL_GUEST requires X86_LINUX_LOGIN=1 and prepared Linux profiles)
+    endif
+    ifeq ($(strip $(X86_SECONDARY_BOOT_PROFILE_BIN)),)
+      $(error X86_DUAL_GUEST requires X86_SECONDARY_BOOT_PROFILE_BIN)
+    endif
+    ifeq ($(strip $(X86_SECONDARY_BOOT_PROFILE_SHA256)),)
+      $(error X86_DUAL_GUEST requires X86_SECONDARY_BOOT_PROFILE_SHA256)
+    endif
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_DUAL_GUEST=1
+    $(BUILD_DIR)/vm_manager.o $(BUILD_DIR)/cc_pd.o $(BUILD_DIR)/net_virt.o $(BUILD_DIR)/blk_virt.o $(BUILD_DIR)/serial_virt.pd.o: CFLAGS += -DAGENTOS_GUEST_SECONDARY=1
+  endif
+  ifeq ($(X86_SECONDARY_BLOCK),1)
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_SECONDARY_BLOCK=1
+  endif
+  ifeq ($(X86_LINUX_LOGIN),1)
+    ifneq ($(X86_FIRMWARE_RESET),1)
+      $(error X86_LINUX_LOGIN requires X86_FIRMWARE_RESET=1)
+    endif
+    ifeq ($(strip $(X86_BOOT_KERNEL)),)
+      $(error X86_LINUX_LOGIN requires X86_BOOT_KERNEL)
+    endif
+    ifeq ($(strip $(X86_BOOT_INITRD)),)
+      $(error X86_LINUX_LOGIN requires X86_BOOT_INITRD)
+    endif
+    ifeq ($(strip $(X86_BOOT_CMDLINE_FILE)),)
+      $(error X86_LINUX_LOGIN requires X86_BOOT_CMDLINE_FILE)
+    endif
+    ifeq ($(X86_USERSPACE_PROOF),1)
+      $(error X86_LINUX_LOGIN conflicts with X86_USERSPACE_PROOF)
+    endif
+    CFLAGS += -DAGENTOS_X86_LINUX_LOGIN=1
+    ifneq ($(strip $(X86_BOOT_SNAPSHOT_SECONDS)),)
+      CFLAGS += -DAOS_X86_BOOT_SNAPSHOT_SECONDS=$(X86_BOOT_SNAPSHOT_SECONDS)
+    endif
+  endif
+  ifeq ($(X86_USERSPACE_PROOF),1)
+    ifneq ($(X86_FIRMWARE_RESET),1)
+      $(error X86_USERSPACE_PROOF requires X86_FIRMWARE_RESET=1)
+    endif
+    ifeq ($(strip $(X86_BOOT_KERNEL)),)
+      $(error X86_USERSPACE_PROOF requires X86_BOOT_KERNEL)
+    endif
+    ifeq ($(strip $(X86_BOOT_INITRD)),)
+      $(error X86_USERSPACE_PROOF requires X86_BOOT_INITRD)
+    endif
+    CFLAGS += -DAGENTOS_X86_USERSPACE_PROOF=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_USERSPACE_PROOF=1
+    X86_MANAGED_START := 1
+    ifeq ($(X86_LIFECYCLE_TRACE),1)
+      CFLAGS += -DAGENTOS_X86_LIFECYCLE_TRACE=1
+    endif
+    ifeq ($(X86_LIFECYCLE_WITNESS),1)
+      CFLAGS += -DAGENTOS_X86_LIFECYCLE_WITNESS=1
+    endif
+  endif
+  ifeq ($(X86_CC_PCI),1)
+    X86_MANAGED_START := 1
+    ifeq ($(X86_USERSPACE_PROOF),1)
+      $(error X86_CC_PCI conflicts with the native X86_USERSPACE_PROOF client)
+    endif
+    CFLAGS += -DAGENTOS_X86_CC_PCI=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_CC_PCI=1
+    # CC exposes a dynamically created primary guest, never an auto-boot entry.
+    $(BUILD_DIR)/cc_pd.o: CFLAGS += -DAGENTOS_GUEST_PRIMARY=1 -DAGENTOS_GUEST_MANAGED_BOOT=1
+  endif
+  ifeq ($(X86_MANAGED_START),1)
+    ifneq ($(X86_FIRMWARE_RESET),1)
+      $(error X86_MANAGED_START requires X86_FIRMWARE_RESET=1)
+    endif
+    CFLAGS += -DAGENTOS_X86_MANAGED_START=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_MANAGED_START=1
+  endif
+  ifeq ($(X86_GUEST_FAULT_PROOF),1)
+    CFLAGS += -DAGENTOS_X86_GUEST_FAULT_PROOF=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_GUEST_FAULT_PROOF=1
+    ROOT_TASK_OBJS += $(BUILD_DIR)/x86_fault_guest_blob.o
+  endif
+  ifeq ($(X86_FIRMWARE_MODES),1)
+    CFLAGS += -DAGENTOS_X86_FIRMWARE_MODES=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_FIRMWARE_MODES=1
+  endif
+  ifeq ($(X86_FIRMWARE_RESET),1)
+    CFLAGS += -DAGENTOS_X86_FIRMWARE_MODES=1 -DAGENTOS_X86_FIRMWARE_RESET=1
+    CFLAGS_ROOT_TASK += -DAGENTOS_X86_FIRMWARE_RESET=1
+    ROOT_TASK_OBJS += $(BUILD_DIR)/x86_firmware.o
+    ifneq ($(strip $(X86_BOOT_KERNEL)),)
+      CFLAGS += -DAGENTOS_X86_BOOT_KERNEL=1
+    endif
+    ifneq ($(strip $(X86_BOOT_KERNEL)$(filter 1,$(X86_CC_PCI))),)
+      X86_BOOT_RAM_BYTES ?= 0x10000000u
+      CFLAGS += -DAOS_X86_FIRMWARE_RAM=$(X86_BOOT_RAM_BYTES)
+      CFLAGS_ROOT_TASK += -DAOS_X86_FIRMWARE_RAM=$(X86_BOOT_RAM_BYTES)
+      ifneq ($(X86_BOOT_RAM_BYTES),0x10000000u)
+        CFLAGS += -DAOS_X86_FIRMWARE_ROM_VA=0x100000000ull
+        CFLAGS_ROOT_TASK += -DAOS_X86_FIRMWARE_ROM_VA=0x100000000ull
+      endif
+    endif
+  endif
+endif
+
+ifeq ($(X86_GUEST_FAULT_PROOF),1)
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_event.o
+$(BUILD_DIR)/x86_event.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_event.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_fault_guest_code.o: $(REPO_ROOT_MK)/tests/platform/x86_fault_guest.S
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c -target x86_64-unknown-elf $< -o $@
+$(BUILD_DIR)/x86_fault_guest.bin: $(BUILD_DIR)/x86_fault_guest_code.o
+	$(LD) --image-base=0 -Ttext=0x1000 --oformat=binary $< -o $@
+$(BUILD_DIR)/x86_fault_guest_blob.o: $(BUILD_DIR)/x86_fault_guest.bin
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 --rename-section .data=.rodata,alloc,load,readonly,data,contents x86_fault_guest.bin x86_fault_guest_blob.o
+endif
+
+ifeq ($(X86_FIRMWARE_RESET),1)
+ifneq ($(strip $(X86_BOOT_PROFILE_BIN)),)
+ifeq ($(strip $(X86_BOOT_KERNEL)),)
+$(error X86_BOOT_PROFILE_BIN requires X86_BOOT_KERNEL)
+endif
+ifeq ($(strip $(X86_BOOT_INITRD)),)
+$(error X86_BOOT_PROFILE_BIN requires X86_BOOT_INITRD)
+endif
+ifeq ($(strip $(X86_BOOT_CMDLINE_FILE)),)
+$(error X86_BOOT_PROFILE_BIN requires X86_BOOT_CMDLINE_FILE)
+endif
+CFLAGS += -DAGENTOS_X86_BOOT_PROFILE=1
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_boot_profile.o $(BUILD_DIR)/x86_profile.o $(BUILD_DIR)/x86_profile_validate.o $(BUILD_DIR)/x86_profile_sha256.o
+$(BUILD_DIR)/x86_boot_profile.o: FORCE
+	@mkdir -p $(BUILD_DIR)
+	@cp "$(X86_BOOT_PROFILE_BIN)" "$(BUILD_DIR)/x86_boot_profile.bin"
+	@test "$$(wc -c < "$(BUILD_DIR)/x86_boot_profile.bin")" -eq 640
+	@printf '%s  %s\n' '$(X86_BOOT_PROFILE_SHA256)' '$(BUILD_DIR)/x86_boot_profile.bin' | sha256sum -c -
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents x86_boot_profile.bin x86_boot_profile.o
+$(BUILD_DIR)/x86_profile.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_profile.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_profile_validate.o: $(REPO_ROOT_MK)/platform/guest-vmm/profile.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_profile_sha256.o: $(REPO_ROOT_MK)/libs/pd-support/sha256_mini.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+endif
+ifneq ($(strip $(X86_BOOT_KERNEL)),)
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_boot_kernel.o
+$(BUILD_DIR)/x86_boot_kernel.o: FORCE
+	@mkdir -p $(BUILD_DIR)
+	@test -n "$(X86_BOOT_KERNEL_SHA256)" || { echo 'Set X86_BOOT_KERNEL_SHA256'; exit 1; }
+	@cp "$(X86_BOOT_KERNEL)" "$(BUILD_DIR)/x86_boot_kernel.bin"
+	@test "$$(wc -c < "$(BUILD_DIR)/x86_boot_kernel.bin")" -gt 0 -a "$$(wc -c < "$(BUILD_DIR)/x86_boot_kernel.bin")" -le 67108864
+	@printf '%s  %s\n' '$(X86_BOOT_KERNEL_SHA256)' '$(BUILD_DIR)/x86_boot_kernel.bin' | sha256sum -c -
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents x86_boot_kernel.bin x86_boot_kernel.o
+ifneq ($(strip $(X86_BOOT_INITRD)),)
+  CFLAGS += -DAGENTOS_X86_BOOT_INITRD=1
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_boot_initrd.o
+$(BUILD_DIR)/x86_boot_initrd.o: FORCE
+	@mkdir -p $(BUILD_DIR)
+	@test -n "$(X86_BOOT_INITRD_SHA256)" || { echo 'Set X86_BOOT_INITRD_SHA256'; exit 1; }
+	@cp "$(X86_BOOT_INITRD)" "$(BUILD_DIR)/x86_boot_initrd.bin"
+	@test "$$(wc -c < "$(BUILD_DIR)/x86_boot_initrd.bin")" -gt 0 -a "$$(wc -c < "$(BUILD_DIR)/x86_boot_initrd.bin")" -le 67108864
+	@printf '%s  %s\n' '$(X86_BOOT_INITRD_SHA256)' '$(BUILD_DIR)/x86_boot_initrd.bin' | sha256sum -c -
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents x86_boot_initrd.bin x86_boot_initrd.o
+endif
+ifneq ($(strip $(X86_BOOT_CMDLINE_FILE)),)
+  CFLAGS += -DAGENTOS_X86_BOOT_CMDLINE=1
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_boot_cmdline.o
+$(BUILD_DIR)/x86_boot_cmdline.o: FORCE
+	@mkdir -p $(BUILD_DIR)
+	@test -n "$(X86_BOOT_CMDLINE_SHA256)" || { echo 'Set X86_BOOT_CMDLINE_SHA256'; exit 1; }
+	@cp "$(X86_BOOT_CMDLINE_FILE)" "$(BUILD_DIR)/x86_boot_cmdline.bin"
+	@test "$$(wc -c < "$(BUILD_DIR)/x86_boot_cmdline.bin")" -gt 0 -a "$$(wc -c < "$(BUILD_DIR)/x86_boot_cmdline.bin")" -le 4096
+	@printf '%s  %s\n' '$(X86_BOOT_CMDLINE_SHA256)' '$(BUILD_DIR)/x86_boot_cmdline.bin' | sha256sum -c -
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents x86_boot_cmdline.bin x86_boot_cmdline.o
+endif
+else
+ifneq ($(strip $(X86_BOOT_INITRD)$(X86_BOOT_CMDLINE_FILE)),)
+$(error X86_BOOT_INITRD and X86_BOOT_CMDLINE_FILE require X86_BOOT_KERNEL)
+endif
+endif
+$(BUILD_DIR)/x86_cpu.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_cpu.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_cpu.o
+$(BUILD_DIR)/x86_config.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_config.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_config.o
+$(BUILD_DIR)/x86_rtc.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_rtc.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_rtc.o
+$(BUILD_DIR)/x86_apic.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_apic.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_memory.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_apic.o $(BUILD_DIR)/x86_memory.o
+$(BUILD_DIR)/x86_ioapic.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_ioapic.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_ioapic.o
+# The firmware VMM uses the shared transport core, with diagnostics routed
+# through the existing freestanding printf implementation in m3_bare_metal.
+$(BUILD_DIR)/x86_virtio.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_virtio.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
+$(BUILD_DIR)/x86_virtio_mmio.o: $(REPO_ROOT_MK)/libvmm/src/virtio/mmio.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
+$(BUILD_DIR)/x86_virtio_gpa.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpa.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_virtio.o $(BUILD_DIR)/x86_virtio_mmio.o $(BUILD_DIR)/x86_virtio_gpa.o
+# The VCPU can be revoked while this native thread continues serving IPC.
+# Do not emit FPU/SIMD instructions in that path, even for integer copies.
+# Track this Makefile so changes to these per-object flags rebuild the code.
+$(BUILD_DIR)/x86_teardown.o: $(REPO_ROOT_MK)/platform/guest-vmm/teardown.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_release_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_release_memory.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_teardown.o $(BUILD_DIR)/x86_release_memory.o
+$(BUILD_DIR)/x86_rebuild_memory.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_rebuild_memory.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_rebuild_memory.o
+$(BUILD_DIR)/x86_recreate.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_recreate.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_recreate.o
+$(BUILD_DIR)/x86_serial_rebind.o: $(REPO_ROOT_MK)/platform/serial-virt/rebind_client.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_serial_rebind.o
+$(BUILD_DIR)/x86_blk_rebind.o: $(REPO_ROOT_MK)/platform/blk-virt/rebind_client.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_blk_rebind.o
+$(BUILD_DIR)/x86_net_rebind.o: $(REPO_ROOT_MK)/platform/net-virt/rebind_client.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_net_rebind.o
+# Retain the verified native firmware source for managed guest reconstruction.
+ifeq ($(X86_MANAGED_START),1)
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_firmware.o
+endif
+$(BUILD_DIR)/x86_control.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_control.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_runtime.o: $(REPO_ROOT_MK)/platform/guest-vmm/runtime.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_control.o $(BUILD_DIR)/x86_runtime.o
+$(BUILD_DIR)/x86_lifecycle_probe.o: $(REPO_ROOT_MK)/tests/platform/x86_lifecycle_probe.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/x86_lifecycle_probe.elf: $(BUILD_DIR)/x86_lifecycle_probe.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: LDFLAGS += --defsym=printf_=printf
+# Keep the MMIO console path; unused PCI entry points are separate sections.
+X86_SERIAL_CFLAGS = $(CFLAGS) -Wno-sign-compare \
+    -I$(REPO_ROOT_MK)/libvmm/include \
+    -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include \
+    -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include/microkit \
+    -I$(REPO_ROOT_MK)/libvmm/dep/sddf/include/sddf/util/custom_libc
+$(BUILD_DIR)/x86_console_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/console.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_console.o: $(REPO_ROOT_MK)/platform/serial-virt/vmm_virtio_console.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_serial_endpoint.o: $(REPO_ROOT_MK)/platform/serial-virt/endpoint.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_console_backend.o $(BUILD_DIR)/x86_vmm_console.o $(BUILD_DIR)/x86_serial_endpoint.o $(BUILD_DIR)/serial_pump.pd.o
+$(BUILD_DIR)/x86_block_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/block.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_block.o: $(REPO_ROOT_MK)/platform/blk-virt/vmm_virtio_blk.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_net_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/net.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_net.o: $(REPO_ROOT_MK)/platform/net-virt/vmm_virtio_net.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_net_backend.o $(BUILD_DIR)/x86_vmm_net.o
+$(BUILD_DIR)/x86_fsmalloc.o: $(REPO_ROOT_MK)/libvmm/dep/sddf/util/fsmalloc.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_bitarray.o: $(REPO_ROOT_MK)/libvmm/dep/sddf/util/bitarray.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_block_backend.o $(BUILD_DIR)/x86_vmm_block.o $(BUILD_DIR)/x86_fsmalloc.o $(BUILD_DIR)/x86_bitarray.o
+$(BUILD_DIR)/guest_vmm_primary.elf: LDFLAGS += --gc-sections
+$(BUILD_DIR)/x86_acpi.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_acpi.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_acpi.o
+$(BUILD_DIR)/x86_event.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_event.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_event.o
+$(BUILD_DIR)/x86_string.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_string.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_string.o
+$(BUILD_DIR)/x86_firmware_vmm.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_firmware.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only -I$(REPO_ROOT_MK)/libvmm/include $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_firmware_vmm.o
+.PHONY: verify-x86-firmware
+verify-x86-firmware:
+	@test -n "$(X86_FIRMWARE_IMAGE)" -a -n "$(X86_FIRMWARE_SHA256)" || \
+		{ echo 'Set X86_FIRMWARE_IMAGE and X86_FIRMWARE_SHA256'; exit 1; }
+	@test "$$(wc -c < "$(X86_FIRMWARE_IMAGE)")" -eq 4194304 || \
+		{ echo 'Firmware reset currently requires a full 4 MiB OVMF image'; exit 1; }
+	@printf '%s  %s\n' '$(X86_FIRMWARE_SHA256)' '$(X86_FIRMWARE_IMAGE)' | sha256sum -c -
+
+$(BUILD_DIR)/x86_firmware.o: verify-x86-firmware
+	@mkdir -p $(BUILD_DIR)
+	@cp "$(X86_FIRMWARE_IMAGE)" "$(BUILD_DIR)/x86_firmware.bin"
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf64-x86-64 -B i386:x86-64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		x86_firmware.bin x86_firmware.o
 endif
 
 $(BUILD_DIR)/rt_inspect_snapshot.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/rt_virtio_pci_caps.o: $(REPO_ROOT_MK)/platform/blk-virt/virtio_pci_caps.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS_ROOT_TASK) -c $< -o $@
 
 $(BUILD_DIR)/inspect_snapshot.pd.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
 	@mkdir -p $(BUILD_DIR)
@@ -227,12 +582,12 @@ PD_PERFCOUNTERS_SRCS     := $(REPO_ROOT_MK)/services/legacy-pds/perf_counters.c 
 PD_TIMEPARTITION_SRCS    := $(REPO_ROOT_MK)/services/legacy-pds/time_partition.c src/m3_bare_metal.c src/log.c
 PD_TRACERECORDER_SRCS    := $(REPO_ROOT_MK)/services/legacy-pds/trace_recorder.c src/m3_bare_metal.c src/log.c
 PD_NAMESERVER_SRCS       := $(REPO_ROOT_MK)/services/nameserver/nameserver.c src/m3_bare_metal.c src/log.c
-PD_VIRTIO_BLK_SRCS       := $(REPO_ROOT_MK)/services/block-driver/virtio_blk.c src/m3_bare_metal.c src/log.c
+PD_VIRTIO_BLK_SRCS       := $(REPO_ROOT_MK)/services/block-driver/virtio_blk.c $(REPO_ROOT_MK)/services/block-driver/virtio_host_transport.c src/m3_bare_metal.c src/log.c
 PD_VFS_SERVER_SRCS       := $(REPO_ROOT_MK)/services/legacy-pds/vfs_server.c src/m3_bare_metal.c src/log.c
 PD_SPAWN_SERVER_SRCS     := $(REPO_ROOT_MK)/services/legacy-pds/spawn_server.c $(REPO_ROOT_MK)/libs/pd-support/sha256_mini.c src/m3_bare_metal.c src/log.c
 PD_APP_SLOT_SRCS         := $(REPO_ROOT_MK)/services/legacy-pds/app_slot.c $(REPO_ROOT_MK)/libs/pd-support/sha256_mini.c src/m3_bare_metal.c src/log.c
 PD_NET_SERVER_SRCS       := $(REPO_ROOT_MK)/services/net-service/lwip_sys.c $(REPO_ROOT_MK)/services/net-service/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_server.c → services/net-server/ (E9-S3)
-PD_NET_PD_SRCS           := $(REPO_ROOT_MK)/services/net-service/lwip_sys.c $(REPO_ROOT_MK)/services/net-service/lwip_shim.c src/m3_bare_metal.c src/log.c   # net_pd.c → services/net-service/ (E9-S3)
+PD_NET_PD_SRCS           := $(REPO_ROOT_MK)/services/net-service/lwip_sys.c $(REPO_ROOT_MK)/services/net-service/lwip_shim.c $(REPO_ROOT_MK)/services/block-driver/virtio_host_transport.c src/m3_bare_metal.c src/log.c   # net_pd.c → services/net-service/ (E9-S3)
 PD_NET_VIRT_SRCS         := src/m3_bare_metal.c src/log.c   # net_virt.c + net_virt_pump.c → platform/net-virt/
 PD_BLK_VIRT_SRCS         := src/m3_bare_metal.c src/log.c   # blk_virt.c + blk_virt_pump.c → platform/blk-virt/
 PD_SERIAL_VIRT_SRCS      := src/m3_bare_metal.c src/log.c
@@ -251,7 +606,7 @@ PD_TERM_SERVER_SRCS      := $(REPO_ROOT_MK)/services/legacy-pds/term_server.c sr
 PD_BLOCK_PD_SRCS         := $(REPO_ROOT_MK)/services/block-driver/block_pd.c src/m3_bare_metal.c src/log.c
 PD_FB_PD_SRCS            := $(REPO_ROOT_MK)/services/legacy-pds/framebuffer_pd.c src/m3_bare_metal.c src/log.c
 PD_USB_PD_SRCS           := $(REPO_ROOT_MK)/services/legacy-pds/usb_pd.c src/m3_bare_metal.c src/log.c
-PD_CC_PD_SRCS            := $(REPO_ROOT_MK)/services/command-console/cc_pd.c $(REPO_ROOT_MK)/services/command-console/cc_vm_client.c $(REPO_ROOT_MK)/services/command-console/cc_retry_cache.c src/m3_bare_metal.c src/log.c
+PD_CC_PD_SRCS            := $(REPO_ROOT_MK)/services/command-console/cc_pd.c $(REPO_ROOT_MK)/services/command-console/cc_vm_client.c $(REPO_ROOT_MK)/services/command-console/cc_retry_cache.c $(REPO_ROOT_MK)/services/command-console/cc_serial_control.c src/m3_bare_metal.c src/log.c
 PD_GPU_SCHED_SRCS        := $(REPO_ROOT_MK)/services/legacy-pds/gpu_sched.c $(REPO_ROOT_MK)/services/legacy-pds/gpu_shmem.c src/m3_bare_metal.c src/log.c
 PD_IRQ_PD_SRCS           := $(REPO_ROOT_MK)/services/legacy-pds/irq_pd.c src/m3_bare_metal.c src/log.c
 PD_TIMER_PD_SRCS         := $(REPO_ROOT_MK)/services/legacy-pds/timer_pd.c src/m3_bare_metal.c src/log.c
@@ -364,6 +719,36 @@ ifdef SEL4_TEST_IMAGE
   IMAGES += test_runner.elf
 endif
 
+ifdef GUEST_INPUT
+  ifneq ($(ARCH),aarch64)
+    $(error GUEST_INPUT requires aarch64)
+  endif
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+    $(error GUEST_INPUT cannot be combined with focused test images)
+  endif
+  ifeq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+    $(error GUEST_INPUT requires a guest profile)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_INPUT=1
+  CFLAGS += -DAGENTOS_GUEST_INPUT=1
+  IMAGES += input_virt.elf
+endif
+
+ifdef GUEST_GRAPHICS
+  ifneq ($(ARCH),aarch64)
+    $(error GUEST_GRAPHICS requires aarch64)
+  endif
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+    $(error GUEST_GRAPHICS cannot be combined with focused test images)
+  endif
+  ifeq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+    $(error GUEST_GRAPHICS requires a guest profile)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_GRAPHICS=1
+  CFLAGS += -DAGENTOS_GUEST_GRAPHICS=1
+  IMAGES += framebuffer_queue.elf
+endif
+
 ifdef FRAMEBUFFER_TEST
   ifneq ($(ARCH),aarch64)
     $(error FRAMEBUFFER_TEST requires aarch64)
@@ -378,6 +763,18 @@ ifdef FRAMEBUFFER_TEST
     CFLAGS += -DAGENTOS_FRAMEBUFFER_ISOLATION_PROBE=$(FRAMEBUFFER_ISOLATION_PROBE)
   endif
   IMAGES += framebuffer_queue.elf framebuffer_client0.elf framebuffer_client1.elf
+endif
+
+ifdef DISPLAY_RAMFB
+  ifneq ($(ARCH),aarch64)
+    $(error DISPLAY_RAMFB requires aarch64)
+  endif
+  ifeq ($(strip $(FRAMEBUFFER_TEST)$(GUEST_GRAPHICS)),)
+    $(error DISPLAY_RAMFB requires FRAMEBUFFER_TEST or GUEST_GRAPHICS)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_DISPLAY_RAMFB=1
+  CFLAGS += -DAGENTOS_DISPLAY_RAMFB=1
+  IMAGES += display_ramfb.elf
 endif
 
 ifdef NATIVE_RUST_TEST
@@ -427,12 +824,22 @@ $(BUILD_DIR)/operator_protocol.o: $(REPO_ROOT_MK)/platform/operator-session/sess
 $(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
+# SDK paths and compile definitions are part of this stamp. Invalidate all
+# existing objects when they change; new objects already compile from source.
+# Otherwise an SDK switch can link old syscall/object-type definitions into
+# a new root task. EXTRA_PREREQS needs concrete targets, not a pattern binding.
+# EXTRA_PREREQS preserves recipes' $< / $^ source lists; private prevents the
+# dependency from being inherited by the stamp's own recipe.
+$(ROOT_TASK_OBJS) $(wildcard $(BUILD_DIR)/*.o): private .EXTRA_PREREQS = $(GUEST_CONFIG_STAMP)
 ifeq ($(LOG_RING_TEST),1)
   CFLAGS += -DAGENTOS_LOG_RING_TEST=1
 endif
 ifdef LOG_ISOLATION_PROBE
   CFLAGS += -DAGENTOS_LOG_ISOLATION_PROBE=$(LOG_ISOLATION_PROBE)
   CFLAGS_ROOT_TASK += -DAGENTOS_LOG_ISOLATION_PROBE=$(LOG_ISOLATION_PROBE)
+endif
+ifdef GUEST_GIC_FAILURE_PROBE
+  CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_GIC_FAILURE_PROBE=$(GUEST_GIC_FAILURE_PROBE)
 endif
 ifeq ($(OPERATOR_TEST),1)
   CFLAGS += -DAGENTOS_OPERATOR_TEST=1
@@ -449,6 +856,9 @@ endif
 
 # AArch64: include the configured profile-backed VMM slots.
 ifeq ($(ARCH),aarch64)
+  ifeq ($(GUEST_MANAGED_BOOT),1)
+    CFLAGS += -DAGENTOS_GUEST_MANAGED_BOOT=1
+  endif
   ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
     CFLAGS += -DAGENTOS_GUEST_PRIMARY=1
     CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_PRIMARY=1
@@ -475,6 +885,15 @@ ifeq ($(ARCH),aarch64)
 else ifeq ($(ARCH),x86_64)
   # Include linux_vmm stub so the image can reference it
   IMAGES += guest_vmm_primary.elf
+  ifeq ($(X86_FIRMWARE_RESET),1)
+    IMAGES += x86_runner.elf x86_runner_ap.elf
+    ifeq ($(X86_DUAL_GUEST),1)
+      IMAGES += guest_vmm_secondary.elf x86_secondary_runner.elf x86_secondary_runner_ap.elf
+    endif
+  endif
+  ifeq ($(X86_USERSPACE_PROOF),1)
+    IMAGES += x86_lifecycle_probe.elf
+  endif
 else ifeq ($(ARCH),riscv64)
   # RISC-V 64: process-in-PD VMMs (no hypervisor extension)
   IMAGES += guest_vmm_primary.elf guest_vmm_secondary.elf
@@ -512,7 +931,7 @@ IMAGE_FILE  := $(BUILD_DIR)/agentos.img
 check-sel4-sdk:
 	@test -f "$(SEL4_INC_DIR)/sel4/sel4.h" -a \
 	      -f "$(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/elf/sel4.elf" || \
-		{ echo "ERROR: SEL4_SDK=$(SEL4_SDK) is not a Microkit 2.1.0 SDK; set SEL4_SDK to the external SDK directory."; exit 1; }
+		{ echo "ERROR: SEL4_SDK=$(SEL4_SDK) lacks $(AGENTOS_BOARD)/$(SEL4_PROFILE) kernel or headers."; exit 1; }
 
 build: check-sel4-sdk $(IMAGE_FILE) $(BUILD_DIR)/root_task.elf
 
@@ -538,7 +957,15 @@ $(BUILD_DIR)/vibe_engine.o: $(SERVICES_DIR)/vibe-engine/vibe_engine.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
+ifeq ($(X86_FIRMWARE_RESET),1)
+$(BUILD_DIR)/serial_pd.elf: $(BUILD_DIR)/serial_uart.pd.o $(BUILD_DIR)/serial_pump.pd.o
+$(BUILD_DIR)/serial_uart.pd.o: $(REPO_ROOT_MK)/platform/serial-virt/uart.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/serial_pd.o: $(SERVICES_DIR)/serial-mux/serial_x86.c
+else
 $(BUILD_DIR)/serial_pd.o: $(SERVICES_DIR)/serial-mux/serial_pd.c
+endif
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -695,9 +1122,36 @@ $(BUILD_DIR)/rust_pd_memory.o: $(REPO_ROOT)/libs/rust-pd/runtime/memory.c
 
 $(BUILD_DIR)/framebuffer_service.o: $(REPO_ROOT)/platform/framebuffer/service.c
 	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/display_service.o: $(REPO_ROOT)/platform/display/service.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/display_producer.o: $(REPO_ROOT)/platform/display/producer.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/ramfb.o: $(REPO_ROOT)/platform/display/ramfb.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/ramfb_mmio.o: $(REPO_ROOT)/platform/display/ramfb_mmio.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/ramfb_pd.o: $(REPO_ROOT)/platform/display/ramfb_pd.c $(GUEST_CONFIG_STAMP)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/display_ramfb.elf: $(BUILD_DIR)/ramfb_pd.o $(BUILD_DIR)/ramfb.o $(BUILD_DIR)/ramfb_mmio.o $(BUILD_DIR)/display_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+$(BUILD_DIR)/input_service.o: $(REPO_ROOT)/platform/input-virt/service.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/input_rebind_service.o: $(REPO_ROOT)/platform/input-virt/rebind_service.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/input_virt.o: $(REPO_ROOT)/platform/input-virt/input_virt.c $(GUEST_CONFIG_STAMP)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/input_virt.elf: $(BUILD_DIR)/input_virt.o $(BUILD_DIR)/input_service.o $(BUILD_DIR)/input_rebind_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/framebuffer_queue.o: $(REPO_ROOT)/platform/framebuffer/framebuffer_pd.c
 	$(CC) $(CFLAGS) -c $< -o $@
-$(BUILD_DIR)/framebuffer_queue.elf: $(BUILD_DIR)/framebuffer_queue.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+$(BUILD_DIR)/framebuffer_observer.o: $(REPO_ROOT)/platform/framebuffer/observer.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/framebuffer_queue.o: $(GUEST_CONFIG_STAMP)
+$(BUILD_DIR)/framebuffer_rebind.o: $(REPO_ROOT)/platform/framebuffer/rebind.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/framebuffer_rebind_endpoint.o: $(REPO_ROOT)/platform/framebuffer/rebind_endpoint.c
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD_DIR)/framebuffer_queue.elf: $(BUILD_DIR)/framebuffer_queue.o $(BUILD_DIR)/framebuffer_rebind.o $(BUILD_DIR)/framebuffer_rebind_endpoint.o $(BUILD_DIR)/framebuffer_service.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/display_producer.o $(BUILD_DIR)/display_service.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 $(BUILD_DIR)/framebuffer_client0.o: $(REPO_ROOT)/tests/platform/framebuffer_client_pd.c $(GUEST_CONFIG_STAMP)
 	$(CC) $(CFLAGS) -DFB_TEST_CLIENT=0 -c $< -o $@
@@ -901,7 +1355,7 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 $(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)
@@ -1019,10 +1473,43 @@ endif
 # The regular board retains its passive stub. The distinct VTX board builds
 # only the narrow VMX/EPT HLT-exit proof, not a general guest VMM.
 ifeq ($(ARCH),x86_64)
-ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
-$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c
+$(BUILD_DIR)/x86_runner.pd.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner_pd.c $(REPO_ROOT_MK)/platform/include/platform/x86_runner_native.h $(REPO_ROOT_MK)/platform/include/platform/x86_runner.h $(REPO_ROOT_MK)/kernel/agentos-root-task/include/contracts/x86_runner.h Makefile
 	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) -DARCH_X86_64 $< -o $@
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_runner.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner.c $(REPO_ROOT_MK)/platform/include/platform/x86_runner.h $(REPO_ROOT_MK)/kernel/agentos-root-task/include/contracts/x86_runner.h Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_runner_client.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_runner_client.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+$(BUILD_DIR)/x86_smp.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_smp.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only $< -o $@
+ifeq ($(X86_FIRMWARE_RESET),1)
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_runner_client.o $(BUILD_DIR)/x86_runner.o $(BUILD_DIR)/x86_smp.o
+endif
+$(BUILD_DIR)/x86_runner.elf: $(BUILD_DIR)/x86_runner.pd.o $(BUILD_DIR)/x86_runner.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+$(BUILD_DIR)/x86_runner_ap.elf: $(BUILD_DIR)/x86_runner.elf
+	cp $< $@
+ifeq ($(X86_DUAL_GUEST),1)
+# Each runner ELF is loaded into its own native VSpace/TCB by root.
+$(BUILD_DIR)/x86_secondary_runner.elf $(BUILD_DIR)/x86_secondary_runner_ap.elf: $(BUILD_DIR)/x86_runner.elf
+	cp $< $@
+# Share the immutable guest payload and RAM size, but compile the coordinator
+# and its adapters independently with the secondary identity and manifest.
+$(BUILD_DIR)/guest_vmm_secondary.elf: FORCE
+	$(MAKE) BUILD_DIR=$(abspath $(BUILD_DIR)/secondary) \
+		X86_DUAL_GUEST=0 X86_VMM_SLOT=secondary \
+		X86_BOOT_PROFILE_BIN=$(X86_SECONDARY_BOOT_PROFILE_BIN) \
+		X86_BOOT_PROFILE_SHA256=$(X86_SECONDARY_BOOT_PROFILE_SHA256) \
+		$(abspath $(BUILD_DIR)/secondary)/guest_vmm_primary.elf
+	cp $(abspath $(BUILD_DIR)/secondary)/guest_vmm_primary.elf $@
+endif
+ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
+$(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/x86_vtx_proof.c $(GUEST_CONFIG_STAMP) Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -mgeneral-regs-only -DARCH_X86_64 $< -o $@
 else
 $(BUILD_DIR)/guest_vmm_primary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm.c
 	@mkdir -p $(BUILD_DIR)
@@ -1044,9 +1531,16 @@ endif
 SYSTEM_TOML_DEFAULT := $(abspath $(CURDIR)/agentos.toml)
 ifdef FRAMEBUFFER_TEST
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-framebuffer-test.toml)
-$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml) $(GUEST_CONFIG_STAMP)
 	@mkdir -p $(BUILD_DIR)
 	{ cat $<; printf '\n[[pd]]\nname = "framebuffer_queue"\npriority = 215\n'; printf '\n[[pd]]\nname = "framebuffer_client0"\npriority = 214\n'; printf '\n[[pd]]\nname = "framebuffer_client1"\npriority = 214\n'; } > $@
+	$(if $(strip $(DISPLAY_RAMFB)),printf '\n[[pd]]\nname = "display_ramfb"\npriority = 216\n' >> $@,true)
+else ifneq ($(strip $(GUEST_GRAPHICS)$(GUEST_INPUT)),)
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-guest-graphics.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml) $(GUEST_CONFIG_STAMP)
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; $(if $(strip $(GUEST_GRAPHICS)),printf '\n[[pd]]\nname = "framebuffer_queue"\npriority = 215\n';,) $(if $(strip $(GUEST_INPUT)),printf '\n[[pd]]\nname = "input_virt"\npriority = 215\n';,) $(if $(strip $(GUEST_SECONDARY_PROFILE)),printf '\n[[pd]]\nname = "guest_vmm_secondary"\npriority = 250\n';,) } > $@
+	$(if $(strip $(DISPLAY_RAMFB)),printf '\n[[pd]]\nname = "display_ramfb"\npriority = 216\n' >> $@,true)
 else ifdef NATIVE_RUST_TEST
 SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-native-rust-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
@@ -1096,8 +1590,31 @@ endif
 _BOARD_TOML := ../../boards/$(BOARD_NAME)/agentos.toml
 _BOARD_TOML_NONEMPTY := $(shell [ -s "$(_BOARD_TOML)" ] && printf '%s' "$(_BOARD_TOML)")
 SYSTEM_TOML := $(if $(_BOARD_TOML_NONEMPTY),$(_BOARD_TOML_NONEMPTY),$(SYSTEM_TOML_DEFAULT))
+ifeq ($(AGENTOS_BOARD),x86_64_generic_vtx)
+ifeq ($(X86_FIRMWARE_RESET),1)
+SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml
+ifeq ($(X86_CC_PCI),1)
+SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/cc.toml
+else ifeq ($(X86_MANAGED_START),1)
+SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-managed-$(X86_USERSPACE_PROOF).toml)
+$(SYSTEM_TOML): $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml Makefile
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; \
+	  $(if $(filter 1,$(X86_USERSPACE_PROOF)),printf '\n[[pd]]\nname = "x86_lifecycle_probe"\npriority = 251\n';) \
+	  printf '\n[[pd]]\nname = "vm_manager"\npriority = 220\n'; } > $@
+endif
+endif
+endif
 
 # Kernel ELF: pulled directly from the Microkit SDK release package
+ifeq ($(X86_DUAL_GUEST),1)
+_X86_SINGLE_SYSTEM_TOML := $(SYSTEM_TOML)
+SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-dual.toml)
+$(SYSTEM_TOML): $(_X86_SINGLE_SYSTEM_TOML) Makefile
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "x86_secondary_runner"\npriority = 250\n\n[[pd]]\nname = "x86_secondary_runner_ap"\npriority = 250\n\n[[pd]]\nname = "guest_vmm_secondary"\npriority = 250\n'; } > $@
+endif
+
 KERNEL_ELF  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/elf/sel4.elf
 
 # On AArch64, loader.elf is also a build artifact (needed at QEMU launch time).

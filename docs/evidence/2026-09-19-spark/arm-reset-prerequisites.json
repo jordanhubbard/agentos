@@ -1,0 +1,18 @@
+{
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "runs": [
+    {
+      "revision": "3da2f59",
+      "command": "make test-guest-graphics-input gate QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12258",
+      "make_exit": 0,
+      "log_sha256": "c23c878b25b31c462c1ae2efecb9f9fdde6b96031987807201c7a462385ff352"
+    },
+    {
+      "revision": "e3c6a7b",
+      "command": "make gate QEMU_TEST_SSH_PORT=12260",
+      "make_exit": 0,
+      "log_sha256": "250b2aa26c1a82f7b36f37d5e43e3e31686370a566f002e6b245b7984694c714"
+    }
+  ],
+  "limits": "Regression of initial boot, graphics/input and canonical OS gates. Neither revision enables the complete ARM reset callback; no managed second-boot or final release acceptance claim."
+}

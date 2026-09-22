@@ -54,17 +54,29 @@
 #include "system_desc.h"
 #include "contracts/native_rust_probe.h"
 #include <platform/guest_memory_layout.h>
+#ifdef AGENTOS_GUEST_INPUT
+#define AOS_INPUT_PD_EXTRA 1u
+#else
+#define AOS_INPUT_PD_EXTRA 0u
+#endif
+#ifdef AGENTOS_DISPLAY_RAMFB
+#define AOS_DISPLAY_PD_EXTRA 1u
+#else
+#define AOS_DISPLAY_PD_EXTRA 0u
+#endif
 
 /* agentos-8f5: a target contract-runner PD is appended only in test images,
  * together with the event_bus PD whose contract it exercises. */
 #ifdef AGENTOS_FRAMEBUFFER_TEST
-#define AOS_TEST_PD_EXTRA 3u
+#define AOS_TEST_PD_EXTRA (3u + AOS_INPUT_PD_EXTRA + AOS_DISPLAY_PD_EXTRA)
+#elif defined(AGENTOS_GUEST_GRAPHICS)
+#define AOS_TEST_PD_EXTRA (1u + AOS_INPUT_PD_EXTRA + AOS_DISPLAY_PD_EXTRA)
 #elif defined(AGENTOS_SEL4_TEST_IMAGE)
-#define AOS_TEST_PD_EXTRA 2u
+#define AOS_TEST_PD_EXTRA (2u + AOS_INPUT_PD_EXTRA)
 #elif defined(AGENTOS_NATIVE_RUST_TEST)
-#define AOS_TEST_PD_EXTRA 2u
+#define AOS_TEST_PD_EXTRA (2u + AOS_INPUT_PD_EXTRA)
 #else
-#define AOS_TEST_PD_EXTRA 0u
+#define AOS_TEST_PD_EXTRA AOS_INPUT_PD_EXTRA
 #endif
 
 /* Default image: nameserver, log_drain, serial_pd, virtio_blk,
@@ -86,18 +98,10 @@
 
 /* VMM wakeups use send-only notifications granted by root, not their
  * lifecycle endpoints. */
-#define AOS_BLK_VIRT_INIT_EP_COUNT 4u
+#define AOS_BLK_VIRT_INIT_EP_COUNT 2u
 
-/* net_virt holds: nameserver, log_drain, serial (diagnostics through
- * serial_pd), net_pd, plus one listen EP per configured VMM so it can NBSend
- * NET_SVC_EVENT_RX_READY to the client whose RX queue it filled. */
-#if defined(AGENTOS_GUEST_PRIMARY) && defined(AGENTOS_GUEST_SECONDARY)
-#define AOS_NET_VIRT_INIT_EP_COUNT 6u
-#elif defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_GUEST_SECONDARY)
-#define AOS_NET_VIRT_INIT_EP_COUNT 5u
-#else
-#define AOS_NET_VIRT_INIT_EP_COUNT 4u
-#endif
+/* Guest data wakeups use root-minted send-only notification caps. */
+#define AOS_NET_VIRT_INIT_EP_COUNT 2u
 
 #if defined(AGENTOS_GUEST_DUAL)
 #define AOS_VM_MANAGER_INIT_EP_COUNT 4u
@@ -225,8 +229,6 @@ const system_desc_t system_desc_aarch64 = {
             .init_ep_count  = AOS_BLK_VIRT_INIT_EP_COUNT,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_VIRTIO_BLK, PD_CNODE_SLOT_VIRTIO_BLK_EP },
             },
             .irq_count = 0u,
@@ -271,8 +273,8 @@ const system_desc_t system_desc_aarch64 = {
          * net_pd).  Moves frames between the guest sDDF queues in the shared
          * net frame and net_pd's RAW contract.  Sits just below net_pd because
          * it Calls into it, and above every guest-control PD.  VMMs reach it
-         * only by ATTACH (once) and NBSend kicks; it reaches them by NBSend
-         * RX_READY on the listen EPs below. */
+         * by ATTACH (once); data wakeups use root-granted send-only
+         * notification capabilities in both directions. */
         {
             .name           = "net_virt",
             .elf_path       = "net_virt.elf",
@@ -283,15 +285,7 @@ const system_desc_t system_desc_aarch64 = {
             .init_ep_count  = AOS_NET_VIRT_INIT_EP_COUNT,
             .init_eps = {
                 { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
-                { SVC_ID_SERIAL,     PD_CNODE_SLOT_SERIAL_EP     },
                 { SVC_ID_NET_PD,     PD_CNODE_SLOT_NET_PD_EP     },
-#if defined(AGENTOS_GUEST_PRIMARY)
-                { SVC_ID_GUEST_VMM_PRIMARY,   PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP },
-#endif
-#if defined(AGENTOS_GUEST_SECONDARY)
-                { SVC_ID_GUEST_VMM_SECONDARY, PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP },
-#endif
             },
             .irq_count = 0u,
             .irqs = { },
@@ -318,12 +312,9 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority = 203u,
             .self_svc_id = SVC_ID_SERIAL_VIRT,
-            .init_ep_count = 3u,
-            .init_eps = {
-                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
-                { SVC_ID_LOG_DRAIN, PD_CNODE_SLOT_LOG_DRAIN_EP },
-                { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
-            },
+            /* Diagnostics use the root-provisioned log ring and send-only
+             * notification. The mux calls neither UART nor other services. */
+            .init_ep_count = 0u,
         },
 
         /* Guest VMM (prio 250; VM-exit latency is latency-critical).
@@ -334,7 +325,7 @@ const system_desc_t system_desc_aarch64 = {
             .name           = "guest_vmm_secondary",
             .elf_path       = "guest_vmm_secondary.elf",
             .stack_size     = 0x10000u,
-            .cnode_size_bits = 10u,
+            .cnode_size_bits = 12u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
             /* No net_pd or virtio_blk EP: the VMM reaches the network only
@@ -362,7 +353,7 @@ const system_desc_t system_desc_aarch64 = {
             .name           = "guest_vmm_primary",
             .elf_path       = "guest_vmm_primary.elf",
             .stack_size     = 0x10000u,
-            .cnode_size_bits = 10u,  /* 1024 slots — IRQ handler caps + microkit layout */
+            .cnode_size_bits = 12u,  /* guest RAM pools and rebuild slots */
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_PRIMARY,
             /* No net_pd or virtio_blk EP: the VMM reaches the network only
@@ -401,7 +392,7 @@ const system_desc_t system_desc_aarch64 = {
             .name           = "guest_vmm_secondary",
             .elf_path       = "guest_vmm_secondary.elf",
             .stack_size     = 0x10000u,
-            .cnode_size_bits = 10u,
+            .cnode_size_bits = 12u,
             .priority       = 250u,
             .self_svc_id    = SVC_ID_GUEST_VMM_SECONDARY,
             /* No net_pd or virtio_blk EP: the VMM reaches the network only
@@ -467,6 +458,10 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 10u,
             .priority       = 164u,
             .self_svc_id    = SVC_ID_CC_PD,
+            .irq_count      = 1u,
+            .irqs = {
+                { .irq_number = 50u, .ntfn_badge = 1u, .name = "virtio-serial" },
+            },
             .init_ep_count  = AOS_CC_INIT_EP_COUNT
 #ifdef AGENTOS_NATIVE_RUST_TEST
                 + 1u
@@ -529,15 +524,40 @@ const system_desc_t system_desc_aarch64 = {
             },
         },
 
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_GUEST_INPUT
+        {
+            .name = "input_virt",
+            .elf_path = "input_virt.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 10u,
+            .priority = 215u,
+            .self_svc_id = SVC_ID_INPUT_VIRT,
+        },
+#endif
+#if defined(AGENTOS_FRAMEBUFFER_TEST) || defined(AGENTOS_GUEST_GRAPHICS)
         {
             .name = "framebuffer_queue",
             .elf_path = "framebuffer_queue.elf",
             .stack_size = 0x4000u,
-            .cnode_size_bits = 8u,
+            .cnode_size_bits = 10u,
             .priority = 215u,
             .self_svc_id = SVC_ID_FRAMEBUFFER_QUEUE,
+#ifdef AGENTOS_DISPLAY_RAMFB
+            .init_ep_count = 1u,
+            .init_eps = {{ SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP }},
+#endif
         },
+#ifdef AGENTOS_DISPLAY_RAMFB
+        {
+            .name = "display_ramfb", .elf_path = "display_ramfb.elf",
+            .stack_size = 0x4000u, .cnode_size_bits = 8u,
+            .priority = 216u, .self_svc_id = SVC_ID_DISPLAY_RAMFB,
+            .init_ep_count = 1u,
+            .init_eps = {{ SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP }},
+        },
+#endif
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_TEST
         {
             .name = "framebuffer_client0",
             .elf_path = "framebuffer_client0.elf",

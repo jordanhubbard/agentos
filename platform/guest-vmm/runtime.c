@@ -32,6 +32,10 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             rep->opcode = GUEST_ERR_BAD_OS_TYPE;
             return true;
         }
+        if (*runtime->state == GUEST_STATE_DESTROYING) {
+            rep->opcode = GUEST_ERR_BAD_STATE;
+            return true;
+        }
         if (*runtime->state == GUEST_STATE_DEAD) {
             /*
              * A VMM remains terminal unless it explicitly supplies reset
@@ -48,6 +52,12 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
             }
             *runtime->started = false;
             *runtime->state = GUEST_STATE_READY;
+        }
+        /* CREATE hands stopped objects to the manager for preparation before
+         * BOOT. Never let a retry reconfigure a live or suspended guest. */
+        if (*runtime->state != GUEST_STATE_READY || *runtime->started) {
+            rep->opcode = GUEST_ERR_BAD_STATE;
+            return true;
         }
         rep_u32(rep, 0u, GUEST_OK);
         rep_u32(rep, 4u, runtime->guest_id);
@@ -117,21 +127,20 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
         } else {
             if (*runtime->state != GUEST_STATE_DEAD) {
                 if (*runtime->state != GUEST_STATE_SUSPENDED &&
+                    *runtime->state != GUEST_STATE_DESTROYING &&
                     (runtime->suspend == NULL || !runtime->suspend())) {
                     rep->opcode = GUEST_ERR_NOT_READY;
                     return true;
                 }
-                if (*runtime->state != GUEST_STATE_SUSPENDED) {
+                if (*runtime->state != GUEST_STATE_SUSPENDED &&
+                    *runtime->state != GUEST_STATE_DESTROYING) {
                     if (runtime->quiesce_timer != NULL) {
                         runtime->quiesce_timer();
                     }
-                    /*
-                     * Suspend has already detached the execution context.
-                     * If teardown then fails, retain that truthful state
-                     * rather than falsely reporting RUNNING or READY.
-                     */
-                    *runtime->state = GUEST_STATE_SUSPENDED;
                 }
+                /* Cleanup may revoke only some resources before failing.
+                 * A subsequent RESUME must never use that partial context. */
+                *runtime->state = GUEST_STATE_DESTROYING;
                 if (runtime->teardown != NULL && !runtime->teardown()) {
                     rep->opcode = GUEST_ERR_NOT_READY;
                     return true;
@@ -145,6 +154,35 @@ bool aos_guest_vmm_lifecycle_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
     default:
         return false;
     }
+}
+
+enum aos_guest_restart_result aos_guest_vmm_restart_step(
+    const aos_guest_vmm_runtime_t *runtime)
+{
+    if (!runtime || !runtime->state || !runtime->started || !runtime->suspend ||
+        !runtime->teardown || !runtime->reset || !runtime->start)
+        return AOS_GUEST_RESTART_FAILED;
+    sel4_msg_t request = {.opcode = MSG_GUEST_DESTROY, .length = 8u}, reply = {0};
+    rep_u32(&request, 0u, runtime->guest_id);
+    if (*runtime->state == GUEST_STATE_RUNNING ||
+        *runtime->state == GUEST_STATE_DESTROYING) {
+        if (!aos_guest_vmm_lifecycle_rpc(&request, &reply, runtime) || reply.opcode != GUEST_OK)
+            return AOS_GUEST_RESTART_WAIT;
+    }
+    if (*runtime->state == GUEST_STATE_DEAD) {
+        request.opcode = MSG_GUEST_CREATE;
+        request.length = 4u;
+        rep_u32(&request, 0u, runtime->os_type);
+        if (!aos_guest_vmm_lifecycle_rpc(&request, &reply, runtime) || reply.opcode != GUEST_OK)
+            return AOS_GUEST_RESTART_FAILED;
+    }
+    if (*runtime->state != GUEST_STATE_READY) return AOS_GUEST_RESTART_FAILED;
+    request.opcode = MSG_GUEST_BOOT;
+    rep_u32(&request, 0u, runtime->guest_id);
+    if (!aos_guest_vmm_lifecycle_rpc(&request, &reply, runtime) || reply.opcode != GUEST_OK ||
+        *runtime->state != GUEST_STATE_RUNNING || !*runtime->started)
+        return AOS_GUEST_RESTART_FAILED;
+    return AOS_GUEST_RESTART_RUNNING;
 }
 
 bool aos_guest_vmm_console_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
@@ -202,6 +240,10 @@ bool aos_guest_vmm_console_rpc(const sel4_msg_t *req, sel4_msg_t *rep,
         }
         if (*runtime->state == GUEST_STATE_DEAD) {
             rep->opcode = GUEST_ERR_DEAD;
+            return true;
+        }
+        if (*runtime->state == GUEST_STATE_DESTROYING) {
+            rep->opcode = GUEST_ERR_BAD_STATE;
             return true;
         }
         uint32_t capacity = msg_u32(req, 4u);

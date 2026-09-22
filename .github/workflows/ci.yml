@@ -8,14 +8,28 @@ on:
   # security checks.
   pull_request: {}
 
+# A newer revision supersedes only its own PR. Preserve every main/master push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   # runner.* contexts are not available at workflow scope. GitHub-hosted
   # Ubuntu jobs are isolated, so a fixed temporary path is both valid here
   # and consistent with every SDK cache/download step below.
-  SEL4_SDK: /tmp/microkit-sdk-2.1.0
+  SEL4_SDK_VERSION: 2.3.1-agentos-e60776ac-cr2
+  SEL4_SDK: /tmp/microkit-sdk-2.3.1-agentos-e60776ac-cr2
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
+  sdk-candidate:
+    uses: ./.github/workflows/sdk-candidate.yml
+    permissions:
+      contents: read
   # ---------------------------------------------------------------------------
   # Rust workspace tests (excludes WASM-only crates)
   # ---------------------------------------------------------------------------
@@ -24,11 +38,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install guest image conversion tools
+      - name: Install guest image and native helper tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y qemu-utils
+          sudo apt-get install -y qemu-utils clang lld llvm
           qemu-img --version
+          llvm-objcopy --version
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
@@ -81,95 +96,6 @@ jobs:
             echo "No committed agentos.system found — skipping diff"
           fi
 
-  build-and-test:
-    name: Build & boot test (${{ matrix.board }})
-    runs-on: ubuntu-24.04
-    needs: validate-topology
-
-    strategy:
-      fail-fast: false
-      matrix:
-        board:
-          - qemu_virt_aarch64
-          - x86_64_generic
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # -----------------------------------------------------------------------
-      # Toolchain
-      # -----------------------------------------------------------------------
-      - name: Install clang / lld
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            clang lld llvm \
-            qemu-system-arm qemu-system-x86 \
-            curl
-
-      # -----------------------------------------------------------------------
-      # Microkit SDK
-      # -----------------------------------------------------------------------
-      - name: Cache Microkit SDK
-        id: cache-sdk
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SEL4_SDK }}
-          key: microkit-sdk-2.1.0-linux-x86-64
-
-      - name: Download Microkit SDK
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL \
-            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o /tmp/microkit-sdk.tar.gz
-          mkdir -p "$(dirname "$SEL4_SDK")"
-          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
-          rm /tmp/microkit-sdk.tar.gz
-
-      # -----------------------------------------------------------------------
-      # Topology validation (Rust gen-sdf)
-      # Runs on every PR touching topology.yaml or agentos.system.
-      # Fails if validation errors are found; shows SDF diff if regenerated.
-      # -----------------------------------------------------------------------
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Validate topology.yaml
-        run: |
-          cargo run -p gen-sdf -- tools/topology.yaml --validate-only
-          echo "✓ topology.yaml validated"
-
-      - name: Check generated SDF matches checked-in agentos.system
-        run: |
-          cargo run -p gen-sdf -- tools/topology.yaml -o /tmp/agentos_generated.system
-          if diff -u kernel/agentos-root-task/agentos.system \
-                     /tmp/agentos_generated.system > /tmp/sdf_diff.txt 2>&1; then
-            echo "✓ agentos.system is up to date with topology.yaml"
-          else
-            echo "⚠ agentos.system differs from what Rust gen-sdf would generate:"
-            cat /tmp/sdf_diff.txt
-            echo "(Note: diff is informational — CI does not fail on SDF content drift)"
-          fi
-
-      # -----------------------------------------------------------------------
-      # Build & test
-      # -----------------------------------------------------------------------
-      - name: Build and run boot tests
-        run: make test BOARD=${{ matrix.board }} GUEST_OS=none
-        timeout-minutes: 8
-
-      # -----------------------------------------------------------------------
-      # Artifacts
-      # -----------------------------------------------------------------------
-      - name: Upload image
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: agentos-${{ matrix.board }}
-          path: build/${{ matrix.board }}/agentos.img
-          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # Guest I/O proof: emulated virtio-net packet through linux_vmm (not GUEST_OS=none)
@@ -177,7 +103,7 @@ jobs:
   guest-net-proof:
     name: Guest virtio-net packet proof (buildroot)
     runs-on: ubuntu-24.04
-    needs: validate-topology
+    needs: [validate-topology, sdk-candidate]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -195,22 +121,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Cache Microkit SDK
-        id: cache-sdk-net
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SEL4_SDK }}
-          key: microkit-sdk-2.1.0-linux-x86-64
-
-      - name: Download Microkit SDK
-        if: steps.cache-sdk-net.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL \
-            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o /tmp/microkit-sdk.tar.gz
-          mkdir -p "$(dirname "$SEL4_SDK")"
-          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
-          rm /tmp/microkit-sdk.tar.gz
+      - name: Install verified SDK artifact
+        uses: ./.github/actions/install-sdk
 
       - name: Prove guest packet through emulated virtio-net
         timeout-minutes: 20
@@ -233,7 +145,7 @@ jobs:
   guest-blk-proof:
     name: Guest virtio-blk I/O proof (buildroot)
     runs-on: ubuntu-24.04
-    needs: validate-topology
+    needs: [validate-topology, sdk-candidate]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -251,22 +163,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Cache Microkit SDK
-        id: cache-sdk-blk
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SEL4_SDK }}
-          key: microkit-sdk-2.1.0-linux-x86-64
-
-      - name: Download Microkit SDK
-        if: steps.cache-sdk-blk.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL \
-            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o /tmp/microkit-sdk.tar.gz
-          mkdir -p "$(dirname "$SEL4_SDK")"
-          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
-          rm /tmp/microkit-sdk.tar.gz
+      - name: Install verified SDK artifact
+        uses: ./.github/actions/install-sdk
 
       - name: Prove guest I/O through emulated virtio-blk
         timeout-minutes: 20
@@ -301,7 +199,7 @@ jobs:
   ubuntu-agentos-virtio-proof:
     name: Ubuntu agentOS VirtIO net + blk + console proof
     runs-on: ubuntu-24.04
-    needs: validate-topology
+    needs: [validate-topology, sdk-candidate]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -319,22 +217,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Cache Microkit SDK
-        id: cache-sdk-ubuntu-virtio
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SEL4_SDK }}
-          key: microkit-sdk-2.1.0-linux-x86-64
-
-      - name: Download Microkit SDK
-        if: steps.cache-sdk-ubuntu-virtio.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL \
-            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o /tmp/microkit-sdk.tar.gz
-          mkdir -p "$(dirname "$SEL4_SDK")"
-          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
-          rm /tmp/microkit-sdk.tar.gz
+      - name: Install verified SDK artifact
+        uses: ./.github/actions/install-sdk
 
       - name: Cache Ubuntu ISO
         uses: actions/cache@v4
@@ -368,23 +252,30 @@ jobs:
   native-rust-proof:
     name: Native Rust PD runtime and network isolation proof
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    needs: sdk-candidate
+    # This serial suite builds distinct isolation images, including 16 framebuffer
+    # modes. Allow a cold build to finish without adding more runner jobs.
+    timeout-minutes: 40
+    env:
+      CCACHE_MAXSIZE: 512M
+      # The root Makefile prepends LLVM_BIN for nested target builds.
+      MAKEFLAGS: LLVM_BIN=/usr/lib/ccache
     steps:
       - uses: actions/checkout@v4
       - name: Install target build tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clang lld llvm qemu-system-arm device-tree-compiler curl
+          sudo apt-get install -y --no-install-recommends clang lld llvm qemu-system-arm device-tree-compiler curl ccache
+          # Reuse identical compilations across probe modes within this job.
+          # ccache still checks compiler options and preprocessed source.
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$RUNNER_TEMP/native-proof-ccache" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-none
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/cache@v4
-        with:
-          path: ${{ env.SEL4_SDK }}
-          key: microkit-sdk-2.1.0-linux-x86-64
-      - name: Prepare SDK
-        run: make sdk
+      - name: Install verified SDK artifact
+        uses: ./.github/actions/install-sdk
       - name: Verify Rust IPC bridge and native target
         run: |
           mkdir -p build/evidence/native-rust
@@ -474,10 +365,14 @@ jobs:
             build/tmp/agentos-qemu-*
           if-no-files-found: error
 
+      - name: Report native compiler cache usage
+        if: always()
+        run: ccache --show-stats
+
   contract-tests:
     name: Phase 5 contract tests (qemu_virt_aarch64)
     runs-on: ubuntu-24.04
-    needs: validate-topology
+    needs: [validate-topology, sdk-candidate]
 
     steps:
       - name: Checkout
@@ -491,22 +386,8 @@ jobs:
             qemu-system-arm \
             curl
 
-      - name: Cache Microkit SDK
-        id: cache-sdk-ct
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SEL4_SDK }}
-          key: microkit-sdk-2.1.0-linux-x86-64
-
-      - name: Download Microkit SDK
-        if: steps.cache-sdk-ct.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL \
-            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o /tmp/microkit-sdk.tar.gz
-          mkdir -p "$(dirname "$SEL4_SDK")"
-          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
-          rm /tmp/microkit-sdk.tar.gz
+      - name: Install verified SDK artifact
+        uses: ./.github/actions/install-sdk
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -528,39 +409,6 @@ jobs:
           path: build/qemu_virt_aarch64/agentos.img
           if-no-files-found: ignore
 
-  # ---------------------------------------------------------------------------
-  # Dedicated QEMU boot test — x86_64 root-task smoke path
-  # ---------------------------------------------------------------------------
-  boot-test:
-    name: QEMU boot test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y qemu-system-x86 \
-            clang lld llvm device-tree-compiler curl
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Cache Microkit SDK
-        id: cache-sdk-bt
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SEL4_SDK }}
-          key: microkit-sdk-2.1.0-linux-x86-64
-      - name: Download Microkit SDK
-        if: steps.cache-sdk-bt.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL \
-            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o /tmp/microkit-sdk.tar.gz
-          mkdir -p "$(dirname "$SEL4_SDK")"
-          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
-          rm /tmp/microkit-sdk.tar.gz
-      - name: Boot test
-        timeout-minutes: 8
-        run: make test TARGET_ARCH=x86_64 GUEST_OS=none
 
   # ---------------------------------------------------------------------------
   # MANDATORY dual-arch OS-claim gate (agentos-46q)
@@ -583,7 +431,7 @@ jobs:
     # below adds stronger evidence without invalidating branch protection.
     name: Dual-arch OS-claim gate (aarch64 + x86_64, GUEST_OS=none)
     runs-on: ubuntu-24.04
-    needs: validate-topology
+    needs: [validate-topology, sdk-candidate]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -599,22 +447,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Cache Microkit SDK
-        id: cache-sdk-gate
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.SEL4_SDK }}
-          key: microkit-sdk-2.1.0-linux-x86-64
-
-      - name: Download Microkit SDK
-        if: steps.cache-sdk-gate.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL \
-            https://github.com/seL4/microkit/releases/download/2.1.0/microkit-sdk-2.1.0-linux-x86-64.tar.gz \
-            -o /tmp/microkit-sdk.tar.gz
-          mkdir -p "$(dirname "$SEL4_SDK")"
-          tar -xzf /tmp/microkit-sdk.tar.gz -C "$(dirname "$SEL4_SDK")"
-          rm /tmp/microkit-sdk.tar.gz
+      - name: Install verified SDK artifact
+        uses: ./.github/actions/install-sdk
 
       # TARGET/QEMU test #1 — aarch64.  Required for any OS-level claim.
       - name: GATE — make test TARGET_ARCH=aarch64 GUEST_OS=none
@@ -758,11 +592,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install guest image conversion tools
+      - name: Install guest image and native helper tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y qemu-utils
+          sudo apt-get install -y qemu-utils clang lld llvm
           qemu-img --version
+          llvm-objcopy --version
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

@@ -35,6 +35,9 @@
 
 #include "boot_info.h"       /* seL4_BootInfo, seL4_Yield, object type constants */
 #include "contracts/guest_execution_caps.h"
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+#include "x86_guest_objects.h"
+#endif
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
 #include "contracts/x86_vtx_proof.h"
 #endif
@@ -50,15 +53,43 @@
 #include "agentos.h"         /* sel4_dbg_puts                                    */
 #include "contracts/cc_contract.h" /* cc_pd VirtIO startup ABI                    */
 #include <platform/blk_host_layout.h> /* host block MMIO/shared DMA layout       */
+#include "x86_host_pci.h"
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#include "contracts/queue_rebind_caps.h"
+#include <platform/serial_uart.h>
+#ifdef AGENTOS_GUEST_INPUT
+#include <platform/input.h>
+#define INPUT_PEERS (AOS_INPUT_CLIENTS + 1u)
+static seL4_CPtr g_input_frames[INPUT_PEERS];
+/* CC and service wait independently; VMM input wakes use their bound objects. */
+static seL4_CPtr g_input_notify[2];
+_Static_assert(PD_CNODE_SLOT_INPUT_WAIT > PD_CNODE_SLOT_FB_PEER_NOTIFY + 2u &&
+               PD_CNODE_SLOT_INPUT_PEER_NOTIFY + INPUT_PEERS <= PD_IRQHANDLER_SLOT_BASE,
+               "input caps must not overlap framebuffer or IRQ slots");
+#endif
+#if defined(AGENTOS_FRAMEBUFFER_TEST) || defined(AGENTOS_GUEST_GRAPHICS)
+#define AGENTOS_FRAMEBUFFER_ENABLED 1
 #include <platform/framebuffer.h>
+#include <platform/framebuffer_observer.h>
 #include <platform/framebuffer_isolation_probe.h>
-static seL4_CPtr g_framebuffer_frames[AOS_FB_CLIENTS];
-static seL4_CPtr g_framebuffer_arena[AOS_FB_ARENA_FRAMES];
+#define FB_PEERS (AOS_FB_CLIENTS + 1u)
+#define FB_ARENA_FRAMES (AOS_FB_ARENA_FRAMES + AOS_FB_SNAPSHOT_FRAMES)
+static seL4_CPtr g_framebuffer_frames[FB_PEERS];
+static seL4_CPtr g_framebuffer_arena[FB_ARENA_FRAMES];
+/* Dedicated objects: a framebuffer wait must not consume a VMM's bound
+ * network/block/console wakeups while servicing a synchronous GPU command. */
+static seL4_CPtr g_framebuffer_notify[FB_PEERS + 1u];
 #endif
 #include <contracts/serial_virt_contract.h>
+#ifdef AGENTOS_DISPLAY_RAMFB
+#include <platform/display_layout.h>
+static seL4_CPtr g_display_banks[4],g_display_dma,g_display_queue,g_display_mmio;
+static seL4_CPtr g_display_notify[2];
+_Static_assert(PD_CNODE_SLOT_DISPLAY_WAIT>PD_CNODE_SLOT_INPUT_PEER_NOTIFY+2u &&
+               PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY<PD_IRQHANDLER_SLOT_BASE,
+               "display notification slots overlap existing capabilities");
+#endif
 #include <contracts/blk_virt_contract.h>
 #include <platform/vmm_isolation_probe.h>
 #include <platform/native_net_isolation_probe.h>
@@ -66,10 +97,10 @@ static seL4_CPtr g_framebuffer_arena[AOS_FB_ARENA_FRAMES];
 #include <platform/log_isolation_probe.h>
 #ifdef AGENTOS_LOG_RINGS
 #include <platform/log_ring.h>
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
 _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
                PD_CNODE_SLOT_FB_PEER_NOTIFY > AOS_LOG_NOTIFY_CAP &&
-               PD_CNODE_SLOT_FB_PEER_NOTIFY + AOS_FB_CLIENTS <= PD_IRQHANDLER_SLOT_BASE,
+               PD_CNODE_SLOT_FB_PEER_NOTIFY + FB_PEERS <= PD_IRQHANDLER_SLOT_BASE,
                "framebuffer caps must not overlap logs or IRQ handlers");
 #endif
 #endif
@@ -124,7 +155,7 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #define ROOT_PROBE_WRITE AOS_VMM_PROBE_WRITE
 #define ROOT_PROBE_MESSAGE AOS_VMM_PROBE_MESSAGE
 #endif
-#ifdef ROOT_FAULT_PROBE
+#if defined(ROOT_FAULT_PROBE) || defined(__aarch64__)
 #include "serial_log.h"
 #endif
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
@@ -199,7 +230,7 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  * the VMM thread's buffer — seL4 forbids two TCBs on one IPC page, and a
  * guest VMFault would clobber in-flight VMM syscalls. L1 for
  * [0x10000000, 0x11FFFFF] is already installed with the VMM IPC mapping. */
-#define VMM_GUEST_IPC_BUF_VA      0x0000000010002000UL
+#define VMM_GUEST_IPC_BUF_VA      AOS_GUEST_IPC_BUFFER_VA
 
 /* Active PD scheduling defaults.
  *
@@ -212,6 +243,19 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  */
 #define PD_DEFAULT_SC_BUDGET_US   10000u
 #define PD_DEFAULT_SC_PERIOD_US   1000000u
+/* Frame transfers repeatedly wake/preempt a service. A one-second period
+ * and minimum refill storage turn those short exchanges into long sleeps.
+ * Keep a finite 10% CPU ceiling with a short replenishment period. */
+#define FRAMEBUFFER_SC_BUDGET_US  1000u
+#define FRAMEBUFFER_SC_PERIOD_US  10000u
+/* CC relays bulk framebuffer data as well as control traffic. Retain the
+ * qualified 1 ms / 10 ms cadence and finite 10% CPU ceiling. The shorter
+ * 100 us / 1 ms candidate failed combined SDK qualification; see the
+ * sdk-cadence-control receipt. Priority and refill storage are unchanged. */
+#define CC_SC_BUDGET_US           1000u
+#define CC_SC_PERIOD_US           10000u
+_Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
+               "CC scheduling must retain a finite 10 percent CPU ceiling");
 /*
  * Each VMM gets one sched context for the VMM PD and one for the guest vCPU.
  * A 90% budget works for a single guest but overcommits the single-core QEMU
@@ -244,8 +288,83 @@ static seL4_Word g_cap_base;  /* set to bi->empty.start in root_task_main */
  */
 #define PD_IPC_BUF_VA    0x0000000010000000UL
 
+#include "contracts/guest_ram_caps.h"
+#include "contracts/guest_paging_caps.h"
+#include "contracts/guest_queue_caps.h"
+#include "contracts/guest_graphics_caps.h"
+#include "contracts/guest_scheduling_caps.h"
+#include "contracts/guest_gic_caps.h"
+_Static_assert(VMM_GUEST_PRIORITY == AOS_GUEST_SCHED_PRIORITY &&
+               VMM_SC_BUDGET_US == AOS_GUEST_SCHED_BUDGET_US &&
+               VMM_SC_PERIOD_US == AOS_GUEST_SCHED_PERIOD_US,
+               "root and runtime guest scheduling policy must agree");
+_Static_assert(AOS_GUEST_SCHED_EXCHANGE_CAP >= AOS_GUEST_GRAPHICS_POOL_BASE + AOS_GUEST_GRAPHICS_POOL_COUNT &&
+               AOS_GUEST_SCHED_EXCHANGE_CAP < AOS_GUEST_RAM_POOL_BASE,
+               "scheduling exchange must not overlap guest pool caps");
+#if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
+static seL4_CPtr g_guest_sched_exchange[AOS_GUEST_SCHED_CLIENTS];
+static seL4_CPtr g_guest_sched_control[AOS_GUEST_SCHED_CLIENTS];
+static seL4_CPtr g_guest_gic_mapping[AOS_GUEST_SCHED_CLIENTS];
+#endif
+_Static_assert(AOS_GUEST_GRAPHICS_POOL_BASE > AOS_GUEST_QUEUE_TEST_COPY &&
+               AOS_GUEST_GRAPHICS_POOL_BASE + AOS_GUEST_GRAPHICS_POOL_COUNT <= AOS_GUEST_RAM_POOL_BASE,
+               "graphics pool caps must not overlap queue test slots or RAM pools");
+#ifdef AGENTOS_GUEST_GRAPHICS
+static seL4_CPtr g_guest_graphics_pools[2][AOS_GUEST_GRAPHICS_POOL_COUNT];
+_Static_assert(AOS_FB_ARENA_BYTES ==
+               AOS_GUEST_GRAPHICS_ARENA_FRAMES * AOS_FB_CLIENT_STRIDE,
+               "private graphics pools must cover exactly one guest arena");
+#endif
+_Static_assert(AOS_GUEST_QUEUE_POOL_BASE > AOS_GUEST_ASID_POOL_CAP &&
+               AOS_GUEST_QUEUE_POOL_BASE + AOS_GUEST_QUEUE_POOL_COUNT <= AOS_GUEST_QUEUE_TEST_FRAME &&
+               AOS_GUEST_QUEUE_TEST_COPY < AOS_GUEST_RAM_POOL_BASE,
+               "guest queue pool and test slots must not overlap other grants");
+#if defined(__aarch64__) || (defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET))
+static seL4_CPtr g_guest_queue_pools[2][AOS_GUEST_QUEUE_POOL_COUNT];
+
+static seL4_Error allocate_private_guest_frame(seL4_CPtr *pool, seL4_CPtr *frame)
+{
+    seL4_Error err = ut_alloc_cap(seL4_UntypedObject, seL4_ARCH_LargePageBits, pool);
+    if (err != seL4_NoError) return err;
+    *frame = ut_alloc_slot();
+    if (*frame == seL4_CapNull) return seL4_NotEnoughMemory;
+    return seL4_Untyped_Retype(*pool, seL4_ARCH_LargePageObject, 0u,
+        seL4_CapInitThreadCNode, 0u, 0u, *frame, 1u);
+}
+#endif
+
+static seL4_Error allocate_guest_queue_frame(unsigned kind, unsigned client,
+                                            seL4_CPtr *frame)
+{
+#if defined(__aarch64__) || (defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET))
+    _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_QUEUE_POOL_BITS,
+                   "one large queue frame per private pool");
+    if (kind >= AOS_GUEST_QUEUE_POOL_COUNT) return seL4_InvalidArgument;
+    if (client < 2u) {
+        return allocate_private_guest_frame(&g_guest_queue_pools[client][kind], frame);
+    }
+#else
+    (void)kind;
+    (void)client;
+#endif
+    return ut_alloc_cap(seL4_ARCH_LargePageObject, 0u, frame);
+}
+
+static seL4_Error allocate_guest_graphics_frame(unsigned client, unsigned index,
+                                                seL4_CPtr *frame)
+{
+#if defined(__aarch64__) && defined(AGENTOS_GUEST_GRAPHICS)
+    _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_GRAPHICS_POOL_BITS,
+                   "one large graphics frame per private pool");
+    if (index >= AOS_GUEST_GRAPHICS_POOL_COUNT) return seL4_InvalidArgument;
+    if (client < 2u)
+        return allocate_private_guest_frame(&g_guest_graphics_pools[client][index], frame);
+#endif
+    return ut_alloc_cap(seL4_ARCH_LargePageObject, 0u, frame);
+}
+
 #define AOS_MAX_GUEST_RAM_REGIONS 4u
-#define AOS_MAX_GUEST_LARGE_FRAMES 1024u
+#define AOS_MAX_GUEST_LARGE_FRAMES AOS_GUEST_RAM_MAX_FRAMES
 
 typedef struct guest_ram_reservation {
     uint32_t pd_index;
@@ -255,6 +374,7 @@ typedef struct guest_ram_reservation {
 } guest_ram_reservation_t;
 
 static seL4_CPtr g_guest_large_frames[AOS_MAX_GUEST_LARGE_FRAMES];
+static seL4_CPtr g_guest_ram_pools[AOS_MAX_GUEST_LARGE_FRAMES];
 static seL4_CPtr g_guest_large_frame_aliases[AOS_MAX_GUEST_LARGE_FRAMES];
 static guest_ram_reservation_t
     g_guest_ram_reservations[AOS_MAX_GUEST_RAM_REGIONS];
@@ -692,6 +812,8 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  */
 #define GIC_VCPU_IF_PA   0x08040000UL
 #define GIC_VCPU_IF_VA   0x08010000UL
+_Static_assert(GIC_VCPU_IF_VA == AOS_GUEST_GIC_IPA,
+               "initial and reconstructed guest GIC addresses must agree");
 
 /* QEMU virt virtio-mmio transports.
  *
@@ -719,6 +841,88 @@ static seL4_CPtr g_serial_shmem_frame_cap = seL4_CapNull;
 static seL4_CPtr g_virtio_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_host_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_blk_shared_frame_cap = seL4_CapNull;
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+#ifdef AGENTOS_X86_SECONDARY_BLOCK
+#define X86_HOST_BLOCK_COUNT 2u
+#else
+#define X86_HOST_BLOCK_COUNT 1u
+#endif
+static seL4_CPtr g_x86_blk_frames[X86_HOST_BLOCK_COUNT][AOS_VIRTIO_PCI_REGIONS];
+static seL4_CPtr g_x86_net_frames[AOS_VIRTIO_PCI_REGIONS];
+#ifdef AGENTOS_X86_CC_PCI
+static seL4_CPtr g_x86_cc_frames[AOS_VIRTIO_PCI_REGIONS];
+static cc_virtio_pci_startup_t g_x86_cc_startup;
+
+/* Boot-only provisioning. The caller must not start CC after any failure.
+ * Partial allocations remain in root; DMA is enabled only after all mappings
+ * and the read-only startup record have been installed successfully. */
+static bool provision_x86_cc(seL4_CPtr vspace)
+{
+    cc_virtio_pci_startup_t startup = g_x86_cc_startup;
+    seL4_CPtr dma[3] = {0};
+    uint64_t pa[3] = {0};
+    const seL4_Word va[3] = {CC_VIRTIO_QUEUE_VA, CC_VIRTIO_TX_BUFFER_VA,
+                              CC_VIRTIO_RX_BUFFER_VA};
+    for (unsigned i = 0; i < 3u; i++) {
+        if (ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &dma[i]) != seL4_NoError)
+            return false;
+        seL4_ARCH_Page_GetAddress_t address = seL4_ARCH_Page_GetAddress(dma[i]);
+        if (address.error != seL4_NoError) return false;
+        pa[i] = address.paddr;
+    }
+    startup.dma.queue_pa = pa[0];
+    startup.dma.tx_buffer_pa = pa[1];
+    startup.dma.rx_buffer_pa = pa[2];
+    if (!cc_virtio_pci_startup_valid(&startup)) return false;
+    for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+        seL4_CPtr copy = ut_alloc_slot();
+        if (!copy || seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                seL4_CapInitThreadCNode, g_x86_cc_frames[r], 64u, seL4_AllRights) != seL4_NoError ||
+            pd_vspace_map_uncached_device_frame(vspace, copy,
+                CC_VIRTIO_PCI_VA + r * CC_VIRTIO_PAGE_BYTES) != seL4_NoError)
+            return false;
+    }
+    for (unsigned i = 0; i < 3u; i++)
+        if (pd_vspace_map_device_frame(vspace, dma[i], va[i]) != seL4_NoError)
+            return false;
+    seL4_CPtr frame = 0;
+    if (ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame) != seL4_NoError ||
+        pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame,
+                                   RT_VQ_SCRATCH_VA) != seL4_NoError) return false;
+    *(volatile cc_virtio_pci_startup_t *)RT_VQ_SCRATCH_VA = startup;
+    AGENTOS_MEMORY_FENCE();
+    if (seL4_ARCH_Page_Unmap(frame) != seL4_NoError) return false;
+    seL4_CPtr reader = ut_alloc_slot();
+    if (!reader || seL4_CNode_Copy(seL4_CapInitThreadCNode, reader, 64u,
+            seL4_CapInitThreadCNode, frame, 64u,
+            seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError ||
+        pd_vspace_map_device_frame(vspace, reader, CC_VIRTIO_STARTUP_VA) != seL4_NoError)
+        return false;
+    return aos_x86_host_pci_enable(AOS_X86_HOST_CONSOLE);
+}
+#endif
+#endif
+
+static seL4_Error allocate_block_dma(const aos_blk_pci_set_t *pci)
+{
+    _Static_assert(AGENTOS_BLK_SHARED_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "host block DMA layout must match the SDK large frame");
+    seL4_Error err = ut_alloc_cap(seL4_ARCH_LargePageObject, 0u, &g_blk_shared_frame_cap);
+    if (err != seL4_NoError) return err;
+    seL4_ARCH_Page_GetAddress_t address = seL4_ARCH_Page_GetAddress(g_blk_shared_frame_cap);
+    if (address.error != seL4_NoError) return address.error;
+    err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
+                                     g_blk_shared_frame_cap, RT_BLK_SCRATCH_VA);
+    if (err != seL4_NoError) return err;
+    agentos_blk_shared_meta_t *meta = (agentos_blk_shared_meta_t *)RT_BLK_SCRATCH_VA;
+    *meta = (agentos_blk_shared_meta_t){
+        .magic = AGENTOS_BLK_SHARED_MAGIC, .version = pci ? 3u : 1u,
+        .paddr = address.paddr, .size = AGENTOS_BLK_SHARED_SIZE,
+    };
+    if (pci) *(aos_blk_pci_set_t *)(RT_BLK_SCRATCH_VA + AOS_BLK_PCI_INFO_OFF) = *pci;
+    AGENTOS_MEMORY_FENCE();
+    return seL4_ARCH_Page_Unmap(g_blk_shared_frame_cap);
+}
 /* Shared sDDF block region: guest request/response queues and data cells,
  * mapped wholly into blk_virt, with one client frame mapped into each VMM. */
 static seL4_CPtr g_blk_virt_frame_caps[AOS_BLK_SHMEM_FRAMES];
@@ -726,6 +930,16 @@ static seL4_CPtr g_serial_virt_frames[AOS_SERIAL_FRAMES];
 static seL4_CPtr g_pd_notifications[SYSTEM_MAX_PDS];
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
 static seL4_CPtr g_x86_vtx_proof_endpoint = seL4_CapNull;
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+#include <platform/x86_runner_ownership.h>
+static aos_x86_runner_owner_t g_x86_runner_owners[] = {
+    {.coordinator = SVC_ID_GUEST_VMM_PRIMARY,
+     .service = {SVC_ID_X86_RUNNER, SVC_ID_X86_AP_RUNNER}},
+    {.coordinator = SVC_ID_GUEST_VMM_SECONDARY,
+     .service = {SVC_ID_X86_SECONDARY_RUNNER, SVC_ID_X86_SECONDARY_AP_RUNNER}},
+};
+#define X86_RUNNER_OWNER_COUNT (sizeof(g_x86_runner_owners) / sizeof(g_x86_runner_owners[0]))
+#endif
 #endif
 #ifdef AGENTOS_LOG_RINGS
 static seL4_CPtr g_log_frames[AOS_LOG_CLIENTS];
@@ -781,6 +995,26 @@ static seL4_Error provision_log_config(const pd_desc_t *pd, uint32_t index,
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_shared_frame_caps[AOS_NET_SHMEM_FRAMES];
 static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
+static seL4_Error allocate_network_dma(const aos_net_pci_info_t *pci)
+{
+    _Static_assert(AGENTOS_NET_HOST_DMA_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "host network DMA layout must match the SDK large frame");
+    seL4_Error err = ut_alloc_cap(seL4_ARCH_LargePageObject, 0u, &g_net_dma_frame_cap);
+    if (err != seL4_NoError) return err;
+    seL4_ARCH_Page_GetAddress_t address = seL4_ARCH_Page_GetAddress(g_net_dma_frame_cap);
+    if (address.error != seL4_NoError) return address.error;
+    err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
+                                     g_net_dma_frame_cap, RT_BLK_SCRATCH_VA);
+    if (err != seL4_NoError) return err;
+    agentos_net_host_dma_meta_t *meta = (void *)RT_BLK_SCRATCH_VA;
+    *meta = (agentos_net_host_dma_meta_t){
+        .magic = AGENTOS_NET_HOST_DMA_MAGIC, .version = pci ? 2u : 1u,
+        .paddr = address.paddr, .size = AGENTOS_NET_HOST_DMA_SIZE,
+    };
+    if (pci) *(aos_net_pci_info_t *)(RT_BLK_SCRATCH_VA + AOS_NET_PCI_INFO_OFF) = *pci;
+    AGENTOS_MEMORY_FENCE();
+    return seL4_ARCH_Page_Unmap(g_net_dma_frame_cap);
+}
 static seL4_CPtr g_host_secondary_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
 
@@ -887,6 +1121,31 @@ static void dbg_hex(seL4_Word v)
     dbg_puts(buf);
 }
 
+#if defined(__aarch64__)
+/* The UART has already moved to serial_pd when guest mappings are created.
+ * Failure diagnostics must use that driver, just like root fault probes. */
+static void report_guest_gic_failure(const char *message)
+{
+    serial_log_t log = {0};
+    seL4_CPtr frame = ut_alloc_slot();
+    if (frame == seL4_CapNull || g_serial_shmem_frame_cap == seL4_CapNull ||
+        seL4_CNode_Copy(seL4_CapInitThreadCNode, frame, 64u,
+            seL4_CapInitThreadCNode, g_serial_shmem_frame_cap,
+            64u, seL4_AllRights) != seL4_NoError ||
+        pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame,
+            AGENTOS_SERIAL_SHMEM_VA) != seL4_NoError) return;
+    log.ep = ep_alloc_for_service(SVC_ID_SERIAL);
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 1
+    serial_log_puts(&log, "[rt] GIC failure probe: missing frame\n");
+#elif AGENTOS_GUEST_GIC_FAILURE_PROBE == 2
+    serial_log_puts(&log, "[rt] GIC failure probe: page mapping\n");
+#elif AGENTOS_GUEST_GIC_FAILURE_PROBE == 3
+    serial_log_puts(&log, "[rt] GIC failure probe: capability copy\n");
+#endif
+    serial_log_puts(&log, message);
+}
+#endif
+
 static int name_eq(const char *a, const char *b)
 {
     while (*a && *b && *a == *b) { a++; b++; }
@@ -897,6 +1156,15 @@ static int pd_is_guest_vmm(const pd_desc_t *pd)
 {
     return pd->self_svc_id == SVC_ID_GUEST_VMM_PRIMARY ||
            pd->self_svc_id == SVC_ID_GUEST_VMM_SECONDARY;
+}
+
+static int pd_is_serial_frontend(const pd_desc_t *pd)
+{
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET) && !defined(AGENTOS_X86_CC_PCI)
+    return pd->self_svc_id == SVC_ID_SERIAL;
+#else
+    return pd->self_svc_id == SVC_ID_CC_PD;
+#endif
 }
 
 static int pd_is_secondary_guest_vmm(const pd_desc_t *pd)
@@ -938,9 +1206,16 @@ static seL4_Error reserve_guest_ram_frames(const system_desc_t *sys)
             reservation->frame_count = (uint16_t)count;
             for (uint32_t frame = 0u; frame < count; frame++) {
                 seL4_Error err = ut_alloc_cap(
-                    (uint32_t)seL4_ARCH_LargePageObject, 0u,
-                    &g_guest_large_frames[next_frame]);
+                    seL4_UntypedObject, seL4_ARCH_LargePageBits,
+                    &g_guest_ram_pools[next_frame]);
                 if (err != seL4_NoError) return err;
+                seL4_Word frame_slot = ut_alloc_slot();
+                if (frame_slot == seL4_CapNull) return seL4_NotEnoughMemory;
+                err = seL4_Untyped_Retype(g_guest_ram_pools[next_frame],
+                    seL4_ARCH_LargePageObject, 0u,
+                    seL4_CapInitThreadCNode, 0u, 0u, frame_slot, 1u);
+                if (err != seL4_NoError) return err;
+                g_guest_large_frames[next_frame] = frame_slot;
                 next_frame++;
             }
             g_guest_ram_reservation_count++;
@@ -965,9 +1240,13 @@ guest_ram_reservation_for(uint32_t pd_index, uint8_t mr_index)
 
 static seL4_Error map_guest_ram_reservation(
     const guest_ram_reservation_t *reservation,
+    seL4_CPtr vmm_cnode, seL4_Word cnode_bits,
     seL4_CPtr vmm_vspace, seL4_CPtr guest_vspace,
     seL4_Word hva_base, seL4_Word gpa_base, int writable)
 {
+    if (cnode_bits != AOS_GUEST_RAM_CNODE_BITS ||
+        reservation->frame_count > AOS_GUEST_RAM_MAX_FRAMES)
+        return seL4_InvalidArgument;
     seL4_Error err = pd_vspace_map_reserved_region(
         guest_vspace, gpa_base,
         &g_guest_large_frames[reservation->first_frame],
@@ -986,10 +1265,95 @@ static seL4_Error map_guest_ram_reservation(
         g_guest_large_frame_aliases[reservation->first_frame + i] =
             (seL4_CPtr)alias_slot;
     }
-    return pd_vspace_map_reserved_region(
+    err = pd_vspace_map_reserved_region(
         vmm_vspace, hva_base,
         &g_guest_large_frame_aliases[reservation->first_frame],
         reservation->frame_count, writable);
+    if (err != seL4_NoError) return err;
+
+    const seL4_CPtr sources[] = {vmm_cnode, vmm_vspace, guest_vspace};
+    const seL4_Word slots[] = {AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_RAM_VMM_VSPACE, AOS_GUEST_RAM_GUEST_VSPACE};
+    for (uint32_t i = 0u; i < 3u; i++) {
+        err = seL4_CNode_Copy(vmm_cnode, slots[i], cnode_bits,
+            seL4_CapInitThreadCNode, sources[i], 64u, seL4_AllRights);
+        if (err != seL4_NoError) return err;
+    }
+    for (uint32_t i = 0u; i < reservation->frame_count; i++) {
+        err = seL4_CNode_Move(vmm_cnode, AOS_GUEST_RAM_POOL_BASE + i,
+            cnode_bits, seL4_CapInitThreadCNode,
+            g_guest_ram_pools[reservation->first_frame + i], 64u);
+        if (err != seL4_NoError) return err;
+        g_guest_ram_pools[reservation->first_frame + i] = seL4_CapNull;
+    }
+    return seL4_NoError;
+}
+#endif
+
+#ifdef AGENTOS_DISPLAY_RAMFB
+static seL4_Error display_allocate(void)
+{
+    seL4_CPtr pool;
+    seL4_Error err=ut_alloc_cap(seL4_UntypedObject,23u,&pool);
+    if (err!=seL4_NoError) return err;
+    for (unsigned i=0;i<4;++i) {
+        g_display_banks[i]=ut_alloc_slot();
+        if (!g_display_banks[i] || (i && g_display_banks[i]!=g_display_banks[0]+i))
+            return seL4_NotEnoughMemory;
+    }
+    err=seL4_Untyped_Retype(pool,seL4_ARM_LargePageObject,0,
+        seL4_CapInitThreadCNode,0,0,g_display_banks[0],4);
+    if (err!=seL4_NoError) return err;
+    uint64_t bank_pa=0;
+    for (unsigned i=0;i<4;++i) {
+        seL4_ARCH_Page_GetAddress_t address=seL4_ARCH_Page_GetAddress(g_display_banks[i]);
+        if (address.error) return address.error;
+        if (!i) bank_pa=address.paddr;
+        if (address.paddr!=bank_pa+(uint64_t)i*0x200000u) return seL4_InvalidArgument;
+    }
+    err=ut_alloc_cap(seL4_ARM_LargePageObject,0,&g_display_dma);
+    if (err==seL4_NoError) err=ut_alloc_cap(seL4_ARM_LargePageObject,0,&g_display_queue);
+    if (err==seL4_NoError) err=ut_alloc_device_cap(AOS_DISPLAY_FWCFG_PA,&g_display_mmio);
+    for (unsigned i=0;i<2 && err==seL4_NoError;++i)
+        err=ut_alloc_cap(seL4_NotificationObject,seL4_NotificationBits,&g_display_notify[i]);
+    if (err!=seL4_NoError) return err;
+    seL4_ARCH_Page_GetAddress_t address=seL4_ARCH_Page_GetAddress(g_display_dma);
+    if (address.error) return address.error;
+    err=pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,g_display_dma,RT_BLK_SCRATCH_VA);
+    if (err!=seL4_NoError) return err;
+    *(aos_display_meta_t *)RT_BLK_SCRATCH_VA=(aos_display_meta_t){
+        .magic=AOS_DISPLAY_META_MAGIC,.version=1,.dma_physical=address.paddr,
+        .bank_physical={bank_pa,bank_pa+AOS_DISPLAY_BANK_STRIDE},
+        .bank_bytes=AOS_DISPLAY_BANK_STRIDE};
+    __asm__ volatile("dsb sy" ::: "memory");
+    return seL4_ARCH_Page_Unmap(g_display_dma);
+}
+static seL4_Error display_map(seL4_CPtr vspace,seL4_CPtr frame,seL4_Word va)
+{
+    seL4_Word copy=ut_alloc_slot();
+    if (!copy) return seL4_NotEnoughMemory;
+    seL4_Error err=seL4_CNode_Copy(seL4_CapInitThreadCNode,copy,64,
+        seL4_CapInitThreadCNode,frame,64,seL4_AllRights);
+    return err==seL4_NoError ? pd_vspace_map_device_frame(vspace,copy,va) : err;
+}
+static seL4_Error display_grant(const pd_desc_t *pd,seL4_CPtr cnode,seL4_CPtr vspace)
+{
+    const unsigned driver=pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
+    const unsigned own=driver ? 0 : 1;
+    seL4_Error err=display_map(vspace,g_display_queue,AOS_DISPLAY_QUEUE_VA);
+    if (err==seL4_NoError) err=seL4_CNode_Copy(cnode,PD_CNODE_SLOT_DISPLAY_WAIT,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,g_display_notify[own],64,
+        seL4_CapRights_new(0,0,1,0));
+    if (err==seL4_NoError) err=seL4_CNode_Copy(cnode,PD_CNODE_SLOT_DISPLAY_PEER_NOTIFY,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,g_display_notify[1-own],64,
+        seL4_CapRights_new(0,0,0,1));
+    if (driver) {
+        if (err==seL4_NoError) err=display_map(vspace,g_display_dma,AOS_DISPLAY_DMA_VA);
+        if (err==seL4_NoError) err=display_map(vspace,g_display_mmio,AOS_DISPLAY_MMIO_VA);
+        for (unsigned i=0;i<4 && err==seL4_NoError;++i)
+            err=display_map(vspace,g_display_banks[i],AOS_DISPLAY_BANK_VA+i*0x200000u);
+    }
+    return err;
 }
 #endif
 
@@ -1125,6 +1489,24 @@ static seL4_CPtr schedcontrol_for_node(const seL4_BootInfo *bi, seL4_Word node)
 }
 #endif
 
+#if defined(__aarch64__) || defined(AGENTOS_X86_FIRMWARE_RESET)
+static seL4_Error create_guest_asid_pool(seL4_CPtr *asid_pool)
+{
+    seL4_CPtr backing = seL4_CapNull;
+    seL4_Error err = ut_alloc_cap(seL4_UntypedObject, seL4_ASIDPoolBits, &backing);
+    if (err != seL4_NoError) return err;
+    *asid_pool = ut_alloc_slot();
+    if (*asid_pool == seL4_CapNull) return seL4_NotEnoughMemory;
+#if defined(__aarch64__)
+    return seL4_ARM_ASIDControl_MakePool(seL4_CapASIDControl, backing,
+        seL4_CapInitThreadCNode, *asid_pool, 64u);
+#else
+    return seL4_X86_ASIDControl_MakePool(seL4_CapASIDControl, backing,
+        seL4_CapInitThreadCNode, *asid_pool, 64u);
+#endif
+}
+#endif
+
 #if defined(__aarch64__)
 static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
                                         uint32_t         pd_index,
@@ -1144,6 +1526,24 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return seL4_InvalidCapability;
     }
 
+    _Static_assert(AOS_GUEST_EXECUTION_POOL_CAP > AOS_GUEST_RAM_GUEST_VSPACE &&
+                   AOS_GUEST_IPC_FRAME_CAP < AOS_GUEST_RAM_POOL_BASE,
+                   "execution authority must not overlap guest RAM slots");
+    _Static_assert(seL4_TCBBits <= AOS_GUEST_EXECUTION_POOL_BITS - 2u &&
+                   seL4_ARM_VCPUBits <= AOS_GUEST_EXECUTION_POOL_BITS - 2u &&
+                   seL4_PageBits <= AOS_GUEST_EXECUTION_POOL_BITS - 2u,
+                   "guest execution objects must fit their private pool");
+#ifdef CONFIG_KERNEL_MCS
+    _Static_assert(seL4_MinSchedContextBits <= AOS_GUEST_EXECUTION_POOL_BITS - 2u,
+                   "guest scheduling context must fit its private pool");
+#endif
+    if (pd->cnode_size_bits != AOS_GUEST_RAM_CNODE_BITS)
+        return seL4_InvalidArgument;
+    seL4_CPtr execution_pool = seL4_CapNull;
+    seL4_Error err = ut_alloc_cap(seL4_UntypedObject,
+        AOS_GUEST_EXECUTION_POOL_BITS, &execution_pool);
+    if (err != seL4_NoError) return err;
+
     seL4_Word guest_tcb_slot = ut_alloc_slot();
     seL4_Word guest_vcpu_slot = ut_alloc_slot();
     if (guest_tcb_slot == seL4_CapNull ||
@@ -1152,11 +1552,8 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return seL4_NotEnoughMemory;
     }
 
-    seL4_Error err = ut_alloc(seL4_TCBObject,
-                               0u,
-                               seL4_CapInitThreadCNode,
-                               guest_tcb_slot,
-                               64u);
+    err = seL4_Untyped_Retype(execution_pool, seL4_TCBObject, 0u,
+        seL4_CapInitThreadCNode, 0u, 0u, guest_tcb_slot, 1u);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest TCB alloc err=");
         dbg_hex((seL4_Word)err);
@@ -1164,11 +1561,8 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return err;
     }
 
-    err = ut_alloc(seL4_ARM_VCPUObject,
-                   0u,
-                   seL4_CapInitThreadCNode,
-                   guest_vcpu_slot,
-                   64u);
+    err = seL4_Untyped_Retype(execution_pool, seL4_ARM_VCPUObject, 0u,
+        seL4_CapInitThreadCNode, 0u, 0u, guest_vcpu_slot, 1u);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest VCPU alloc err=");
         dbg_hex((seL4_Word)err);
@@ -1176,8 +1570,10 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return err;
     }
 
-    seL4_CPtr guest_ipc_cap = seL4_CapNull;
-    err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &guest_ipc_cap);
+    seL4_CPtr guest_ipc_cap = ut_alloc_slot();
+    if (guest_ipc_cap == seL4_CapNull) return seL4_NotEnoughMemory;
+    err = seL4_Untyped_Retype(execution_pool, seL4_ARM_SmallPageObject, 0u,
+        seL4_CapInitThreadCNode, 0u, 0u, guest_ipc_cap, 1u);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest IPC frame alloc err=");
         dbg_hex((seL4_Word)err);
@@ -1218,11 +1614,9 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
         return seL4_NotEnoughMemory;
     }
 
-    err = ut_alloc(seL4_SchedContextObject,
-                   seL4_MinSchedContextBits,
-                   seL4_CapInitThreadCNode,
-                   guest_sc_slot,
-                   64u);
+    err = seL4_Untyped_Retype(execution_pool, seL4_SchedContextObject,
+        seL4_MinSchedContextBits, seL4_CapInitThreadCNode, 0u, 0u,
+        guest_sc_slot, 1u);
     if (err != seL4_NoError) {
         dbg_puts("[rt] VMM guest SC alloc err=");
         dbg_hex((seL4_Word)err);
@@ -1329,7 +1723,36 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
     }
     cap_acct_record(seL4_CapNull, (seL4_CPtr)guest_sc_slot,
                     seL4_SchedContextObject, pd_index, pd->name);
+    unsigned owner = pd_is_secondary_guest_vmm(pd) ? 1u : 0u;
+    seL4_CPtr exchange = seL4_CapNull;
+    err = ut_alloc_cap(seL4_CapTableObject, AOS_GUEST_SCHED_EXCHANGE_BITS, &exchange);
+    if (err != seL4_NoError) return err;
+    seL4_CPtr objects[AOS_GUEST_SCHED_OBJECTS] = {guest_tcb_slot, guest_sc_slot, self_ep};
+    for (unsigned slot = 0; slot < AOS_GUEST_SCHED_OBJECTS; slot++) {
+        err = seL4_CNode_Copy(exchange, slot, AOS_GUEST_SCHED_EXCHANGE_BITS,
+            seL4_CapInitThreadCNode, objects[slot], 64u, seL4_AllRights);
+        if (err != seL4_NoError) return err;
+    }
+    err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_EXCHANGE_CAP,
+        pd->cnode_size_bits, seL4_CapInitThreadCNode, exchange, 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+    err = seL4_CNode_Copy(exchange, AOS_GUEST_GIC_VSPACE_EXCHANGE_SLOT,
+        AOS_GUEST_SCHED_EXCHANGE_BITS, seL4_CapInitThreadCNode,
+        guest_vspace, 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+    g_guest_sched_exchange[owner] = exchange;
+    g_guest_sched_control[owner] = schedcontrol_for_node(bi, sched_node_for_pd(pd));
 #endif
+
+    err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_IPC_FRAME_CAP,
+        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+        guest_ipc_cap, 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+    err = seL4_CNode_Move(pd_cnode, AOS_GUEST_EXECUTION_POOL_CAP,
+        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+        execution_pool, 64u);
+    if (err != seL4_NoError) return err;
+    dbg_puts("[rt] private guest execution pool delegated to owning VMM\n");
 
     dbg_puts("[rt] VMM guest caps installed tcb=");
     dbg_hex((seL4_Word)guest_tcb_slot);
@@ -1350,9 +1773,182 @@ static seL4_Error setup_vmm_guest_vcpu(const pd_desc_t *pd,
  * four further frames form its long-mode guest page-table walk. Their EPT
  * mappings have no host-device capability or guest I/O authority.
  */
-static seL4_Error setup_x86_vtx_proof(const pd_desc_t *pd, uint32_t pd_index,
-                                      seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb)
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+#include "contracts/x86_runner.h"
+extern const uint8_t _binary_x86_firmware_bin_start[];
+extern const uint8_t _binary_x86_firmware_bin_end[];
+
+static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
+                                    seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb,
+                                    seL4_CPtr vmm_vspace)
 {
+    /* The runner is provisioned first with its own native address space and
+     * IPC buffer. Only its owning coordinator receives this invocation cap. */
+    aos_x86_runner_owner_t *runners = aos_x86_runner_owner(
+        g_x86_runner_owners, X86_RUNNER_OWNER_COUNT, pd->self_svc_id);
+    if (!runners || !runners->tcb[0] || !runners->tcb[1])
+        return seL4_InvalidCapability;
+    vmm_tcb = runners->tcb[0];
+    seL4_CPtr runner_ep = ep_alloc_for_service(runners->service[0]);
+    if (runner_ep == seL4_CapNull) return seL4_NotEnoughMemory;
+    seL4_Error runner_err = seL4_CNode_Mint(pd_cnode,AOS_X86_RUNNER_ENDPOINT_CAP,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,runner_ep,64u,
+        seL4_CapRights_new(1u,0u,0u,1u),AOS_X86_RUNNER_OWNER_BADGE);
+    if (runner_err != seL4_NoError) return runner_err;
+    runner_ep=ep_alloc_for_service(runners->service[1]);
+    if (runner_ep==seL4_CapNull) return seL4_NotEnoughMemory;
+    runner_err=seL4_CNode_Mint(pd_cnode,AOS_X86_AP_RUNNER_ENDPOINT_CAP,
+        pd->cnode_size_bits,seL4_CapInitThreadCNode,runner_ep,64u,
+        seL4_CapRights_new(1u,0u,0u,1u),AOS_X86_RUNNER_OWNER_BADGE);
+    if (runner_err!=seL4_NoError) return runner_err;
+    if (!pd_is_guest_vmm(pd) ||
+        pd->cnode_size_bits != AOS_GUEST_RAM_CNODE_BITS ||
+        (uintptr_t)_binary_x86_firmware_bin_end -
+        (uintptr_t)_binary_x86_firmware_bin_start != AOS_X86_FIRMWARE_BYTES) {
+        return seL4_InvalidArgument;
+    }
+    seL4_CPtr objects[AOS_X86_GUEST_OBJECT_COUNT] = {0};
+    seL4_CPtr object_pool = seL4_CapNull;
+    seL4_Error err = ut_alloc_cap(seL4_UntypedObject,
+        AOS_X86_GUEST_OBJECT_POOL_BITS, &object_pool);
+    if (err != seL4_NoError) return err;
+    for (unsigned i = 0u; i < AOS_X86_GUEST_OBJECT_COUNT; i++) {
+        objects[i] = ut_alloc_slot();
+        if (objects[i] == seL4_CapNull) return seL4_NotEnoughMemory;
+    }
+    seL4_CPtr cpu_pool=ut_alloc_slot();
+    if (cpu_pool==seL4_CapNull) return seL4_NotEnoughMemory;
+    seL4_CPtr ap_pool=ut_alloc_slot();
+    if (ap_pool==seL4_CapNull) return seL4_NotEnoughMemory;
+    err = aos_x86_guest_objects_retype(object_pool, seL4_CapInitThreadCNode, objects, cpu_pool, ap_pool);
+    if (err != seL4_NoError) return err;
+    (void)cap_acct_record(object_pool,cpu_pool,seL4_UntypedObject,pd_index,pd->name);
+    (void)cap_acct_record(object_pool,ap_pool,seL4_UntypedObject,pd_index,pd->name);
+    for (unsigned i = 0u; i < AOS_X86_GUEST_OBJECT_COUNT; i++)
+        (void)cap_acct_record(i==0u ? cpu_pool : i==6u ? ap_pool : object_pool, objects[i],
+            aos_x86_guest_object_type(i), pd_index, pd->name);
+    const seL4_Word attr = seL4_X86_EPT_Default_VMAttributes;
+    seL4_CPtr guest_asid_pool = seL4_CapNull;
+    err = create_guest_asid_pool(&guest_asid_pool);
+    if (err != seL4_NoError) return err;
+    err = aos_x86_guest_objects_map(guest_asid_pool, objects);
+    if (err != seL4_NoError) return err;
+
+    _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_RAM_FRAME_BITS,
+                   "x86 RAM pool must contain exactly one large frame");
+    _Static_assert(AOS_X86_FIRMWARE_BYTES ==
+                   (AOS_X86_GUEST_ROM_FRAMES << AOS_GUEST_RAM_FRAME_BITS),
+                   "ROM pool count must cover the firmware exactly");
+    const seL4_Word page_bytes = 1u << AOS_GUEST_RAM_FRAME_BITS;
+    const unsigned ram_frames = AOS_X86_FIRMWARE_RAM / page_bytes;
+    /* Root initializes private guest frames through one temporary mapping.
+     * ROM has no guest write permission. No host device or MMIO is mapped. */
+    for (unsigned i = 0u; i < (AOS_X86_FIRMWARE_RAM + AOS_X86_FIRMWARE_BYTES) / page_bytes; i++) {
+        seL4_CPtr frame, pool;
+        seL4_CPtr pool_slot = aos_x86_guest_memory_pool_slot(ram_frames, i);
+        if (!pool_slot) return seL4_RangeError;
+        const seL4_Word offset = (seL4_Word)i * page_bytes;
+        const int rom = offset >= AOS_X86_FIRMWARE_RAM;
+        const seL4_Word rom_offset = rom ? offset - AOS_X86_FIRMWARE_RAM : 0u;
+        const seL4_Word gpa = rom ? AOS_X86_FIRMWARE_BASE + rom_offset : offset;
+        err = ut_alloc_cap(seL4_UntypedObject, AOS_GUEST_RAM_FRAME_BITS, &pool);
+        if (err != seL4_NoError) return err;
+        frame = ut_alloc_slot();
+        if (frame == seL4_CapNull) return seL4_NotEnoughMemory;
+        err = aos_x86_guest_frame_retype(pool, seL4_CapInitThreadCNode, frame);
+        if (err != seL4_NoError) return err;
+        (void)cap_acct_record(pool, frame, seL4_X86_LargePageObject, pd_index, pd->name);
+        err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame, 0x70000000u);
+        if (err != seL4_NoError) return err;
+        volatile uint8_t *dst = (volatile uint8_t *)0x70000000u;
+        for (seL4_Word n = 0u; n < page_bytes; n++) {
+            dst[n] = rom ? _binary_x86_firmware_bin_start[rom_offset + n] : 0u;
+        }
+        AGENTOS_MEMORY_FENCE();
+        err = seL4_X86_Page_Unmap(frame);
+        if (err != seL4_NoError) return err;
+        /* VMM owns private guest RAM for emulated I/O and may inspect ROM.
+         * ROM stays read-only. It gets no host-device mapping. */
+        seL4_CPtr copy = ut_alloc_slot();
+        if (copy == seL4_CapNull) return seL4_NotEnoughMemory;
+        err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                              seL4_CapInitThreadCNode, frame, 64u,
+                              seL4_CapRights_new(0u, 0u, 1u, !rom));
+        if (err != seL4_NoError) return err;
+        (void)cap_acct_record(frame, copy, seL4_X86_LargePageObject, pd_index, pd->name);
+        err = pd_vspace_map_device_frame(vmm_vspace, copy,
+                rom ? AOS_X86_FIRMWARE_ROM_VA + rom_offset : AOS_X86_FIRMWARE_RAM_VA + offset);
+        if (err != seL4_NoError) return err;
+        err = seL4_X86_Page_MapEPT(frame, objects[1], gpa,
+                                   rom ? seL4_CapRights_new(0u, 0u, 1u, 0u) : seL4_AllRights, attr);
+        if (err != seL4_NoError) return err;
+        err = seL4_CNode_Move(pd_cnode, pool_slot, pd->cnode_size_bits,
+            seL4_CapInitThreadCNode, pool, 64u);
+        if (err != seL4_NoError) return err;
+    }
+    const seL4_CPtr sources[] = {pd_cnode, vmm_vspace, objects[1], vmm_tcb};
+    const seL4_Word slots[] = {AOS_GUEST_RAM_SELF_CNODE,
+        AOS_GUEST_RAM_VMM_VSPACE, AOS_GUEST_RAM_GUEST_VSPACE, AOS_X86_VMM_SELF_TCB_CAP};
+    for (unsigned i = 0; i < sizeof(sources) / sizeof(sources[0]); i++) {
+        err = seL4_CNode_Copy(pd_cnode, slots[i], pd->cnode_size_bits,
+            seL4_CapInitThreadCNode, sources[i], 64u, seL4_AllRights);
+        if (err != seL4_NoError) return err;
+    }
+    dbg_puts("[rt] x86 private RAM and ROM pools delegated to owning VMM\n");
+    const unsigned queue_owner = pd_is_secondary_guest_vmm(pd) ? 1u : 0u;
+    for (unsigned kind = 0; kind < AOS_GUEST_QUEUE_INPUT; kind++) {
+        seL4_CPtr *pool = &g_guest_queue_pools[queue_owner][kind];
+        if (*pool == seL4_CapNull) return seL4_InvalidCapability;
+        err = seL4_CNode_Move(pd_cnode, AOS_GUEST_QUEUE_POOL_BASE + kind,
+            pd->cnode_size_bits, seL4_CapInitThreadCNode, *pool, 64u);
+        if (err != seL4_NoError) return err;
+        *pool = seL4_CapNull;
+    }
+    dbg_puts("[rt] x86 private device queue pools delegated to owning VMM\n");
+    err = seL4_CNode_Move(pd_cnode, AOS_X86_GUEST_ASID_POOL_CAP,
+        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode, guest_asid_pool, 64u);
+    if (err != seL4_NoError) return err;
+    err = seL4_X86_VCPU_SetTCB(objects[0], vmm_tcb);
+    if (err != seL4_NoError) return err;
+    err = seL4_TCB_SetEPTRoot(vmm_tcb, objects[1]);
+    if (err != seL4_NoError) return err;
+    err = seL4_CNode_Copy(pd_cnode, AOS_GUEST_VCPU_CAP_BASE,
+                          (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                          objects[0], 64u, seL4_AllRights);
+    if (err != seL4_NoError) return err;
+    err = seL4_CNode_Move(pd_cnode,AOS_X86_VCPU_POOL_CAP,
+        (uint8_t)pd->cnode_size_bits,seL4_CapInitThreadCNode,cpu_pool,64u);
+    if (err != seL4_NoError) return err;
+    err=seL4_X86_VCPU_SetTCB(objects[6],runners->tcb[1]);
+    if (err!=seL4_NoError) return err;
+    err=seL4_TCB_SetEPTRoot(runners->tcb[1],objects[1]);
+    if (err!=seL4_NoError) return err;
+    err=seL4_CNode_Copy(pd_cnode,AOS_GUEST_VCPU_CAP_BASE+1u,pd->cnode_size_bits,
+        seL4_CapInitThreadCNode,objects[6],64u,seL4_AllRights);
+    if (err!=seL4_NoError) return err;
+    err=seL4_CNode_Copy(pd_cnode,AOS_X86_AP_RUNNER_TCB_CAP,pd->cnode_size_bits,
+        seL4_CapInitThreadCNode,runners->tcb[1],64u,seL4_AllRights);
+    if (err!=seL4_NoError) return err;
+    err=seL4_CNode_Move(pd_cnode,AOS_X86_AP_VCPU_POOL_CAP,pd->cnode_size_bits,
+        seL4_CapInitThreadCNode,ap_pool,64u);
+    if (err!=seL4_NoError) return err;
+    err = seL4_CNode_Move(pd_cnode, AOS_X86_GUEST_OBJECT_POOL_CAP,
+        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode, object_pool, 64u);
+    if (err != seL4_NoError) return err;
+    dbg_puts("[rt] x86 private VCPU and EPT pool delegated to owning VMM\n");
+    dbg_puts("[rt] x86 VMX EPT proof provisioned\n");
+    dbg_puts("[rt] x86 OVMF private RAM and read-only ROM provisioned\n");
+    return seL4_NoError;
+}
+#endif
+
+static seL4_Error setup_x86_vtx_proof(const pd_desc_t *pd, uint32_t pd_index,
+                                      seL4_CPtr pd_cnode, seL4_CPtr vmm_tcb,
+                                      seL4_CPtr vmm_vspace)
+{
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+    return setup_x86_firmware(pd, pd_index, pd_cnode, vmm_tcb, vmm_vspace);
+#endif
     seL4_CPtr vcpu = seL4_CapNull;
     seL4_CPtr ept_pml4 = seL4_CapNull;
     seL4_CPtr ept_pdpt = seL4_CapNull;
@@ -1363,8 +1959,9 @@ static seL4_Error setup_x86_vtx_proof(const pd_desc_t *pd, uint32_t pd_index,
     seL4_CPtr guest_pdpt = seL4_CapNull;
     seL4_CPtr guest_pd = seL4_CapNull;
     seL4_CPtr guest_pt = seL4_CapNull;
-    const seL4_X86_VMAttributes ept_attr =
-        (seL4_X86_VMAttributes)seL4_X86_EPT_Default_VMAttributes;
+    /* The EPT wire value is unchanged; SDK 2.3 corrects the syscall's enum
+     * type from ordinary VM attributes to EPT attributes. */
+    const seL4_Word ept_attr = seL4_X86_EPT_Default_VMAttributes;
 
     if (!pd_is_guest_vmm(pd) || pd->self_svc_id != SVC_ID_GUEST_VMM_PRIMARY) {
         return seL4_InvalidArgument;
@@ -1402,6 +1999,12 @@ static seL4_Error setup_x86_vtx_proof(const pd_desc_t *pd, uint32_t pd_index,
         guest_code[i] = 0u;
     }
     guest_code[0] = 0xf4u; /* HLT */
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+    extern const uint8_t _binary_x86_fault_guest_bin_start[], _binary_x86_fault_guest_bin_end[];
+    size_t fault_bytes=(size_t)(_binary_x86_fault_guest_bin_end-_binary_x86_fault_guest_bin_start);
+    if (!fault_bytes || fault_bytes>4096u) return seL4_InvalidArgument;
+    for (size_t i=0;i<fault_bytes;i++) guest_code[i]=_binary_x86_fault_guest_bin_start[i];
+#endif
     AGENTOS_MEMORY_FENCE();
     err = seL4_X86_Page_Unmap((seL4_X86_Page)guest_page);
     if (err != seL4_NoError) return err;
@@ -1665,57 +2268,9 @@ void root_task_main(const seL4_BootInfo *bi)
         }
     }
 
-    {
-        seL4_Error blk_err =
-            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
-                         &g_blk_shared_frame_cap);
-        seL4_Word blk_shared_pa = 0u;
-        if (blk_err == seL4_NoError) {
-            seL4_ARCH_Page_GetAddress_t r =
-                seL4_ARCH_Page_GetAddress(g_blk_shared_frame_cap);
-            blk_shared_pa = r.paddr;
-            blk_err = pd_vspace_map_device_frame(
-                seL4_CapInitThreadVSpace, g_blk_shared_frame_cap,
-                RT_BLK_SCRATCH_VA);
-        }
-        if (blk_err == seL4_NoError) {
-            agentos_blk_shared_meta_t *meta =
-                (agentos_blk_shared_meta_t *)RT_BLK_SCRATCH_VA;
-            meta->magic = AGENTOS_BLK_SHARED_MAGIC;
-            meta->version = 1u;
-            meta->paddr = (uint64_t)blk_shared_pa;
-            meta->size = AGENTOS_BLK_SHARED_SIZE;
-            AGENTOS_MEMORY_FENCE();
-            seL4_ARCH_Page_Unmap(g_blk_shared_frame_cap);
-        }
-        dbg_puts("[rt] blk shared frame pa=");
-        dbg_hex(blk_shared_pa);
-        dbg_puts(" err=");
-        dbg_hex((seL4_Word)blk_err);
-        dbg_puts("\n");
-    }
-
-    {
-        /* Shared sDDF block region (AOS_BLK_SHMEM_VA): one large page per
-         * AOS_BLK_SHMEM_FRAMES, zero-filled by retype, mapped below into the
-         * guest VMMs and blk_virt.  A failed frame leaves the whole array
-         * null so no PD gets a partial region. */
-        seL4_Error blk_err = seL4_NoError;
-        for (uint32_t f = 0u; f < AOS_BLK_SHMEM_FRAMES; f++) {
-            blk_err = ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
-                                   &g_blk_virt_frame_caps[f]);
-            if (blk_err != seL4_NoError) {
-                for (uint32_t g = 0u; g < AOS_BLK_SHMEM_FRAMES; g++) {
-                    g_blk_virt_frame_caps[g] = seL4_CapNull;
-                }
-                break;
-            }
-        }
-        dbg_puts("[rt] blk_virt shared region frames=");
-        dbg_hex((seL4_Word)AOS_BLK_SHMEM_FRAMES);
-        dbg_puts(" err=");
-        dbg_hex((seL4_Word)blk_err);
-        dbg_puts("\n");
+    if (allocate_block_dma(NULL) != seL4_NoError) {
+        dbg_puts("[rt] block DMA allocation failed; refusing startup\n");
+        return;
     }
 
     {
@@ -1729,50 +2284,9 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
     }
 
-    {
-        seL4_Error net_err = seL4_NoError;
-        for (uint32_t f = 0u; f < AOS_NET_SHMEM_FRAMES; ++f) {
-            net_err = ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
-                                   &g_net_shared_frame_caps[f]);
-            if (net_err != seL4_NoError) {
-                for (uint32_t n = 0u; n < AOS_NET_SHMEM_FRAMES; ++n)
-                    g_net_shared_frame_caps[n] = seL4_CapNull;
-                break;
-            }
-        }
-        dbg_puts("[rt] net agentOS shared frame err=");
-        dbg_hex((seL4_Word)net_err);
-        dbg_puts("\n");
-    }
-
-    {
-        seL4_Error net_err =
-            ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
-                         &g_net_dma_frame_cap);
-        seL4_Word net_dma_pa = 0u;
-        if (net_err == seL4_NoError) {
-            seL4_ARCH_Page_GetAddress_t r =
-                seL4_ARCH_Page_GetAddress(g_net_dma_frame_cap);
-            net_dma_pa = r.paddr;
-            net_err = pd_vspace_map_device_frame(
-                seL4_CapInitThreadVSpace, g_net_dma_frame_cap,
-                RT_BLK_SCRATCH_VA);
-        }
-        if (net_err == seL4_NoError) {
-            agentos_net_host_dma_meta_t *meta =
-                (agentos_net_host_dma_meta_t *)RT_BLK_SCRATCH_VA;
-            meta->magic = AGENTOS_NET_HOST_DMA_MAGIC;
-            meta->version = AGENTOS_NET_HOST_DMA_VERSION;
-            meta->paddr = (uint64_t)net_dma_pa;
-            meta->size = AGENTOS_NET_HOST_DMA_SIZE;
-            AGENTOS_MEMORY_FENCE();
-            seL4_ARCH_Page_Unmap(g_net_dma_frame_cap);
-        }
-        dbg_puts("[rt] net private DMA frame pa=");
-        dbg_hex(net_dma_pa);
-        dbg_puts(" err=");
-        dbg_hex((seL4_Word)net_err);
-        dbg_puts("\n");
+    if (allocate_network_dma(NULL) != seL4_NoError) {
+        dbg_puts("[rt] network DMA allocation failed; refusing startup\n");
+        return;
     }
 #endif
 
@@ -1812,6 +2326,136 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 
     const system_desc_t *sys = SYSTEM_DESC;
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+    aos_virtio_pci_layout_t host_net_layout;
+    unsigned host_net_stage = aos_x86_host_pci_discover(AOS_X86_HOST_NET, &host_net_layout);
+    if (host_net_stage) {
+        dbg_puts("[rt] x86 host network PCI discovery failed stage=");
+        dbg_hex(host_net_stage);
+        dbg_puts("\n");
+        return;
+    }
+    aos_net_pci_info_t net_pci = {
+        .magic = AOS_NET_PCI_INFO_MAGIC, .version = 1u,
+        .notify_multiplier = host_net_layout.notify_multiplier,
+    };
+    for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+        dbg_puts("[rt] x86 host network region pa=");
+        dbg_hex(host_net_layout.region[r].paddr);
+        dbg_puts(" length=");
+        dbg_hex(host_net_layout.region[r].length);
+        dbg_puts("\n");
+        net_pci.offset[r] = (uint32_t)(host_net_layout.region[r].paddr & 4095u);
+        net_pci.length[r] = host_net_layout.region[r].length;
+        if (net_pci.length[r] > 4096u - net_pci.offset[r]) {
+            dbg_puts("[rt] network PCI capability exceeds mapped page; refusing startup\n");
+            return;
+        }
+    }
+    dbg_puts("[rt] x86 host network PCI discovery verified\n");
+    aos_virtio_pci_layout_t host_block_layout[X86_HOST_BLOCK_COUNT];
+    aos_blk_pci_set_t block_pci = {
+        .magic = AOS_BLK_PCI_INFO_MAGIC, .version = 2u,
+        .count = X86_HOST_BLOCK_COUNT,
+    };
+    for (unsigned media = 0; media < X86_HOST_BLOCK_COUNT; media++) {
+        unsigned stage = aos_x86_host_pci_discover(media ?
+            AOS_X86_HOST_SECONDARY_BLOCK : AOS_X86_HOST_BLOCK, &host_block_layout[media]);
+        if (stage) {
+            dbg_puts("[rt] x86 host block PCI discovery failed media=");
+            dbg_hex(media);
+            dbg_puts(" stage=");
+            dbg_hex(stage);
+            dbg_puts("\n");
+            return;
+        }
+        aos_blk_pci_info_t *info = &block_pci.media[media];
+        *info = (aos_blk_pci_info_t){.magic = AOS_BLK_PCI_INFO_MAGIC, .version = 1u,
+            .notify_multiplier = host_block_layout[media].notify_multiplier};
+        for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+            info->offset[r] = (uint32_t)(host_block_layout[media].region[r].paddr & 4095u);
+            info->length[r] = host_block_layout[media].region[r].length;
+        }
+    }
+    if (!aos_blk_pci_set_valid(&block_pci)) {
+        dbg_puts("[rt] block PCI capability exceeds mapped page; refusing startup\n");
+        return;
+    }
+    /* Device watermarks advance monotonically. Order all device pages across
+     * both drivers, while refusing any page shared between device classes. */
+#ifdef AGENTOS_X86_CC_PCI
+    aos_virtio_pci_layout_t host_cc_layout;
+    if (aos_x86_host_pci_discover(AOS_X86_HOST_CONSOLE, &host_cc_layout)) {
+        dbg_puts("[rt] CC PCI discovery failed; refusing startup\n");
+        return;
+    }
+    g_x86_cc_startup.dma.magic = CC_VIRTIO_STARTUP_MAGIC;
+    g_x86_cc_startup.dma.version = CC_VIRTIO_STARTUP_PCI_VERSION;
+    g_x86_cc_startup.notify_multiplier = host_cc_layout.notify_multiplier;
+    for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+        g_x86_cc_startup.offset[r] = host_cc_layout.region[r].paddr & 4095u;
+        g_x86_cc_startup.length[r] = host_cc_layout.region[r].length;
+    }
+#endif
+    const aos_virtio_pci_layout_t *layouts[] = {&host_block_layout[0], &host_net_layout,
+#ifdef AGENTOS_X86_SECONDARY_BLOCK
+        &host_block_layout[1],
+#endif
+#ifdef AGENTOS_X86_CC_PCI
+        &host_cc_layout,
+#endif
+    };
+    seL4_CPtr *frames[] = {g_x86_blk_frames[0], g_x86_net_frames,
+#ifdef AGENTOS_X86_SECONDARY_BLOCK
+        g_x86_blk_frames[1],
+#endif
+#ifdef AGENTOS_X86_CC_PCI
+        g_x86_cc_frames,
+#endif
+    };
+    const unsigned devices = sizeof(layouts) / sizeof(layouts[0]);
+    for (unsigned d = 0; d < devices; d++)
+        for (unsigned e = d + 1; e < devices; e++)
+            for (unsigned a = 0; a < AOS_VIRTIO_PCI_REGIONS; a++)
+                for (unsigned b = 0; b < AOS_VIRTIO_PCI_REGIONS; b++)
+                    if ((layouts[d]->region[a].paddr >> 12) ==
+                        (layouts[e]->region[b].paddr >> 12)) {
+                        dbg_puts("[rt] PCI device classes share a page; refusing startup\n");
+                        return;
+                    }
+    for (unsigned allocation = 0; allocation < devices * AOS_VIRTIO_PCI_REGIONS; allocation++) {
+        unsigned next = AOS_VIRTIO_PCI_REGIONS, owner = 0;
+        uint64_t page = UINT64_MAX;
+        for (unsigned d = 0; d < devices; d++) {
+            for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+                uint64_t candidate = layouts[d]->region[r].paddr & ~UINT64_C(4095);
+                if (!frames[d][r] && candidate < page) {
+                    page = candidate;
+                    next = r;
+                    owner = d;
+                }
+            }
+        }
+        if (next == AOS_VIRTIO_PCI_REGIONS) break;
+        if (ut_alloc_device_cap(page, &frames[owner][next]) != seL4_NoError) {
+            dbg_puts("[rt] PCI device frame grant failed; refusing startup\n");
+            return;
+        }
+        for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS; r++) {
+            if ((layouts[owner]->region[r].paddr & ~UINT64_C(4095)) == page)
+                frames[owner][r] = frames[owner][next];
+        }
+    }
+    if (allocate_block_dma(&block_pci) != seL4_NoError) {
+        dbg_puts("[rt] block DMA allocation failed; refusing startup\n");
+        return;
+    }
+    dbg_puts("[rt] x86 host block PCI resources verified\n");
+    if (allocate_network_dma(&net_pci) != seL4_NoError) {
+        dbg_puts("[rt] network DMA allocation failed; refusing startup\n");
+        return;
+    }
+#endif
     static aos_inspect_view_t inspect_view;
     seL4_CPtr inspect_cc_vspace = seL4_CapNull;
     seL4_CPtr inspect_operator_vspace = seL4_CapNull;
@@ -1829,6 +2473,7 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("[rt] early guest RAM large-page reservation err=");
         dbg_hex((seL4_Word)reserve_err);
         dbg_puts("\n");
+        if (reserve_err != seL4_NoError) return;
     }
 #endif
 
@@ -1839,9 +2484,15 @@ void root_task_main(const seL4_BootInfo *bi)
     uint32_t net_virt_index = SYSTEM_MAX_PDS;
     uint32_t native_net_index = SYSTEM_MAX_PDS;
     uint32_t log_drain_index = SYSTEM_MAX_PDS;
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_GUEST_INPUT
+    uint32_t input_service=SYSTEM_MAX_PDS;
+    uint32_t input_clients[INPUT_PEERS];
+    for (uint32_t f=0;f<INPUT_PEERS;++f) input_clients[f]=SYSTEM_MAX_PDS;
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
     uint32_t fb_service = SYSTEM_MAX_PDS;
-    uint32_t fb_clients[AOS_FB_CLIENTS] = { SYSTEM_MAX_PDS, SYSTEM_MAX_PDS };
+    uint32_t fb_clients[FB_PEERS];
+    for (uint32_t f = 0; f < FB_PEERS; ++f) fb_clients[f] = SYSTEM_MAX_PDS;
 #endif
     for (uint32_t i = 0; i < sys->pd_count; i++) {
         const pd_desc_t *pd = &sys->pds[i];
@@ -1850,16 +2501,24 @@ void root_task_main(const seL4_BootInfo *bi)
         if (pd->self_svc_id == SVC_ID_NET_VIRT) net_virt_index = i;
         if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) native_net_index = i;
         if (pd->self_svc_id == SVC_ID_LOG_DRAIN) log_drain_index = i;
-#ifdef AGENTOS_FRAMEBUFFER_TEST
+#ifdef AGENTOS_GUEST_INPUT
+        if (pd->self_svc_id == SVC_ID_INPUT_VIRT) input_service=i;
+        if (pd_is_guest_vmm(pd)) input_clients[pd_is_secondary_guest_vmm(pd) ? 1u : 0u]=i;
+        if (pd->self_svc_id == SVC_ID_CC_PD) input_clients[AOS_INPUT_CLIENTS]=i;
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE) fb_service = i;
+#ifdef AGENTOS_FRAMEBUFFER_TEST
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST0) fb_clients[0] = i;
         if (pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST1) fb_clients[1] = i;
+#else
+        if (pd_is_guest_vmm(pd)) fb_clients[pd_is_secondary_guest_vmm(pd) ? 1u : 0u] = i;
+#endif
+        if (pd->self_svc_id == SVC_ID_CC_PD) fb_clients[AOS_FB_OBSERVER_CLIENT] = i;
 #endif
         if (pd->irq_count || pd_is_guest_vmm(pd) ||
-#ifdef AGENTOS_FRAMEBUFFER_TEST
-            pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE ||
-            pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST0 ||
-            pd->self_svc_id == SVC_ID_FRAMEBUFFER_TEST1 ||
+#ifdef AGENTOS_X86_CC_PCI
+            pd->self_svc_id == SVC_ID_CC_PD ||
 #endif
             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
             pd->self_svc_id == SVC_ID_LOG_DRAIN ||
@@ -1877,35 +2536,88 @@ void root_task_main(const seL4_BootInfo *bi)
             g_pd_notifications[i] = (seL4_CPtr)PD_SLOT_NTFN(i);
         }
     }
-#ifdef AGENTOS_FRAMEBUFFER_TEST
-    if (fb_service == SYSTEM_MAX_PDS || fb_clients[0] == SYSTEM_MAX_PDS ||
-        fb_clients[1] == SYSTEM_MAX_PDS) return;
-    for (uint32_t f = 0; f < AOS_FB_ARENA_FRAMES; ++f) {
-        if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+#ifdef AGENTOS_GUEST_INPUT
+    if (input_service==SYSTEM_MAX_PDS || input_clients[AOS_INPUT_CLIENTS]==SYSTEM_MAX_PDS ||
+        (input_clients[0]==SYSTEM_MAX_PDS && input_clients[1]==SYSTEM_MAX_PDS)) return;
+    for (uint32_t f=0;f<2;++f)
+        if (ut_alloc_cap(seL4_NotificationObject,seL4_NotificationBits,
+                         &g_input_notify[f])!=seL4_NoError) {
+            dbg_puts("[rt] input notification allocation failed; refusing boot\n");
+            return;
+        }
+    for (uint32_t f=0;f<INPUT_PEERS;++f)
+        if (allocate_guest_queue_frame(AOS_GUEST_QUEUE_INPUT,f,&g_input_frames[f])!=seL4_NoError) {
+            dbg_puts("[rt] input queue allocation failed; refusing boot\n");
+            return;
+        }
+#endif
+#ifdef AGENTOS_DISPLAY_RAMFB
+    if (display_allocate()!=seL4_NoError) {
+        dbg_puts("[rt] display allocation failed; refusing boot\n");
+        return;
+    }
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
+    if (fb_service == SYSTEM_MAX_PDS ||
+        (fb_clients[0] == SYSTEM_MAX_PDS && fb_clients[1] == SYSTEM_MAX_PDS)) return;
+    for (uint32_t f = 0; f <= FB_PEERS; ++f) {
+        if (ut_alloc_cap(seL4_NotificationObject, seL4_NotificationBits,
+                         &g_framebuffer_notify[f]) != seL4_NoError) {
+            dbg_puts("[rt] framebuffer notification allocation failed; refusing boot\n");
+            return;
+        }
+    }
+    for (uint32_t f = 0; f < FB_ARENA_FRAMES; ++f) {
+        if (allocate_guest_graphics_frame(f / AOS_GUEST_GRAPHICS_ARENA_FRAMES,
+                         AOS_GUEST_GRAPHICS_ARENA_INDEX + f % AOS_GUEST_GRAPHICS_ARENA_FRAMES,
                          &g_framebuffer_arena[f]) != seL4_NoError) {
             dbg_puts("[rt] framebuffer arena allocation failed; refusing boot\n");
             return;
         }
     }
-    for (uint32_t f = 0; f < AOS_FB_CLIENTS; ++f) {
-        if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+    for (uint32_t f = 0; f < FB_PEERS; ++f) {
+        if (allocate_guest_graphics_frame(f, AOS_GUEST_GRAPHICS_QUEUE_INDEX,
                          &g_framebuffer_frames[f]) != seL4_NoError) {
             dbg_puts("[rt] framebuffer queue allocation failed; refusing boot\n");
             return;
         }
     }
 #endif
-#if defined(__aarch64__)
+    _Static_assert(AOS_SERIAL_FRAME_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "serial queue pages must match the architecture large-page object");
+    _Static_assert(AOS_BLK_SHMEM_FRAME_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "block queue pages must match the architecture large-page object");
+    _Static_assert(AOS_NET_SHMEM_FRAME_SIZE == (1UL << seL4_ARCH_LargePageBits),
+                   "network queue pages must match the architecture large-page object");
+    if (net_virt_index != SYSTEM_MAX_PDS) {
+        for (uint32_t f = 0; f < AOS_NET_SHMEM_FRAMES; f++) {
+            if (allocate_guest_queue_frame(AOS_GUEST_QUEUE_NET, f,
+                             &g_net_shared_frame_caps[f]) != seL4_NoError) {
+                dbg_puts("[rt] network queue allocation failed; refusing partial boot\n");
+                return;
+            }
+        }
+    }
+    if (blk_virt_index != SYSTEM_MAX_PDS) {
+        for (uint32_t f = 0; f < AOS_BLK_SHMEM_FRAMES; f++) {
+            const uint32_t first = AOS_BLK_CLIENT_BASE / AOS_BLK_SHMEM_FRAME_SIZE;
+            if (allocate_guest_queue_frame(AOS_GUEST_QUEUE_BLOCK,
+                             f >= first ? f - first : 2u,
+                             &g_blk_virt_frame_caps[f]) != seL4_NoError) {
+                dbg_puts("[rt] block queue allocation failed; refusing partial boot\n");
+                return;
+            }
+        }
+    }
     if (serial_virt_index != SYSTEM_MAX_PDS) {
         for (uint32_t f = 0; f < AOS_SERIAL_FRAMES; f++) {
-            if (ut_alloc_cap(seL4_ARM_LargePageObject, 0u,
+            if (allocate_guest_queue_frame(AOS_GUEST_QUEUE_SERIAL, f,
                              &g_serial_virt_frames[f]) != seL4_NoError) {
                 dbg_puts("[rt] serial queue allocation failed; refusing partial boot\n");
                 return;
             }
         }
     }
-#endif
 
 #ifdef AGENTOS_LOG_RINGS
     if (log_drain_index == SYSTEM_MAX_PDS || sys->pd_count > AOS_LOG_CLIENTS) {
@@ -1973,15 +2685,25 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_CPtr vspace = vr_create.vspace_cap;
 #if defined(__aarch64__)
         seL4_CPtr guest_vspace = seL4_CapNull;
+        seL4_CPtr guest_paging_pool = seL4_CapNull;
+        seL4_CPtr guest_asid_pool = seL4_CapNull;
         if (pd_is_guest_vmm(pd)) {
+            _Static_assert(AOS_GUEST_PAGING_POOL_CAP > AOS_GUEST_IPC_FRAME_CAP &&
+                AOS_GUEST_ASID_POOL_CAP < AOS_GUEST_RAM_POOL_BASE,
+                "paging grants must not overlap execution or RAM slots");
+            if (ut_alloc_cap(seL4_UntypedObject, AOS_GUEST_PAGING_POOL_BITS,
+                    &guest_paging_pool) != seL4_NoError ||
+                create_guest_asid_pool(&guest_asid_pool) != seL4_NoError) {
+                dbg_puts("[rt] private guest paging allocation failed; stopping boot\n");
+                return;
+            }
             pd_vspace_result_t guest_vr =
-                pd_vspace_create(seL4_CapInitThreadCNode,
-                                 seL4_CapInitThreadASIDPool);
+                pd_vspace_create_private(guest_asid_pool, guest_paging_pool);
             if (guest_vr.error != 0) {
                 dbg_puts("[rt] guest vspace_create fail err=");
                 dbg_hex((seL4_Word)guest_vr.error);
                 dbg_puts("\n");
-                continue;
+                return;
             }
             guest_vspace = guest_vr.vspace_cap;
         }
@@ -2104,8 +2826,21 @@ void root_task_main(const seL4_BootInfo *bi)
          */
 #ifdef CONFIG_KERNEL_MCS
         {
+            const bool frame_service=pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE ||
+                                     pd->self_svc_id==SVC_ID_DISPLAY_RAMFB;
+            const bool cc_service=pd->self_svc_id==SVC_ID_CC_PD;
+            const bool execution_runner=pd->self_svc_id==SVC_ID_X86_RUNNER ||
+                                        pd->self_svc_id==SVC_ID_X86_AP_RUNNER ||
+                                        pd->self_svc_id==SVC_ID_X86_SECONDARY_RUNNER ||
+                                        pd->self_svc_id==SVC_ID_X86_SECONDARY_AP_RUNNER;
+            const bool frequent_refills=frame_service || cc_service || execution_runner
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+                || pd_is_guest_vmm(pd)
+#endif
+                ;
+            const seL4_Word sc_bits=seL4_MinSchedContextBits+(frequent_refills ? 3u : 0u);
             seL4_Error sc_err = ut_alloc(seL4_SchedContextObject,
-                                          seL4_MinSchedContextBits,
+                                          sc_bits,
                                           seL4_CapInitThreadCNode,
                                           PD_SLOT_SC(i),
                                           64u);
@@ -2118,17 +2853,31 @@ void root_task_main(const seL4_BootInfo *bi)
 
             seL4_Word sc_budget = PD_DEFAULT_SC_BUDGET_US;
             seL4_Word sc_period = PD_DEFAULT_SC_PERIOD_US;
-            if (pd_is_guest_vmm(pd)) {
+            if (pd_is_guest_vmm(pd) || execution_runner) {
                 sc_budget = VMM_SC_BUDGET_US;
                 sc_period = VMM_SC_PERIOD_US;
+            } else if (frame_service) {
+                sc_budget = FRAMEBUFFER_SC_BUDGET_US;
+                sc_period = FRAMEBUFFER_SC_PERIOD_US;
+            } else if (cc_service) {
+                sc_budget = CC_SC_BUDGET_US;
+                sc_period = CC_SC_PERIOD_US;
             }
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+            /* Polling device drivers must not wait the default one-second
+             * refill after Yield. Bound each to 1 ms per 10 ms period. */
+            if (pd->self_svc_id == SVC_ID_SERIAL || pd->self_svc_id == SVC_ID_NET_PD) {
+                sc_budget = 1000u;
+                sc_period = 10000u;
+            }
+#endif
 
             sc_err = seL4_SchedControl_ConfigureFlags(
                          schedcontrol_for_node(bi, sched_node_for_pd(pd)),
                          (seL4_SchedContext)PD_SLOT_SC(i),
                          sc_budget,
                          sc_period,
-                         0u,           /* extra_refills */
+                         frequent_refills ? seL4_MaxExtraRefills(sc_bits) : 0u,
                          0u,           /* badge */
                          0u);          /* flags */
             if (sc_err != seL4_NoError) {
@@ -2183,7 +2932,31 @@ void root_task_main(const seL4_BootInfo *bi)
 
         dbg_puts("[rt] pd SC bound, starting\n");
 
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+        if (pd->self_svc_id == SVC_ID_SERIAL &&
+            seL4_X86_IOPortControl_Issue(seL4_CapIOPortControl,
+                AOS_SERIAL_UART_PORT,AOS_SERIAL_UART_PORT+7u,pd_cnode,
+                AOS_SERIAL_UART_CAP_SLOT,pd->cnode_size_bits) != seL4_NoError) {
+            dbg_puts("[rt] serial UART port grant failed; refusing PD start\n");
+            continue;
+        }
+#endif
         seL4_CPtr pd_ntfn_cap = g_pd_notifications[i];
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
+        if (i == fb_service) pd_ntfn_cap = g_framebuffer_notify[FB_PEERS];
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+        if (i == input_service) pd_ntfn_cap = g_input_notify[0];
+#endif
+        if (pd->self_svc_id == SVC_ID_CC_PD && pd->irq_count > 0u) {
+            if (pd_ntfn_cap == seL4_CapNull ||
+                seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_CC_IRQ_WAIT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, pd_ntfn_cap,
+                    64u, seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError) {
+                dbg_puts("[rt] CC IRQ wait grant failed; refusing PD start\n");
+                continue;
+            }
+        }
         if (pd_ntfn_cap != seL4_CapNull) {
             seL4_Error ntfn_err = seL4_TCB_BindNotification(tr.tcb_cap, pd_ntfn_cap);
             if (ntfn_err != seL4_NoError) {
@@ -2192,18 +2965,91 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
-#ifdef AGENTOS_FRAMEBUFFER_TEST
-        if (i == fb_service || i == fb_clients[0] || i == fb_clients[1]) {
+#ifdef AGENTOS_GUEST_INPUT
+        uint32_t input_own=INPUT_PEERS+1u;
+        if (i==input_service) input_own=INPUT_PEERS;
+        for (uint32_t f=0;f<INPUT_PEERS;++f)
+            if (i==input_clients[f]) input_own=f;
+        if (input_own<=INPUT_PEERS) {
+            seL4_Error err=seL4_NoError;
+            if (input_own<AOS_INPUT_CLIENTS) {
+                seL4_CPtr input_ep=ep_alloc_for_service(SVC_ID_INPUT_VIRT);
+                if (input_ep==seL4_CapNull ||
+                    seL4_CNode_Mint(pd_cnode,PD_CNODE_SLOT_INPUT_VIRT_EP,
+                        pd->cnode_size_bits,seL4_CapInitThreadCNode,input_ep,64u,
+                        seL4_CapRights_new(1,1,0,1),virt_client_badge(input_own))!=seL4_NoError) {
+                    dbg_puts("[rt] input rebind endpoint grant failed; refusing boot\n");
+                    return;
+                }
+            }
+            if (input_own>=AOS_INPUT_CLIENTS)
+                err=seL4_CNode_Copy(pd_cnode,PD_CNODE_SLOT_INPUT_WAIT,pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode,g_input_notify[input_own==INPUT_PEERS ? 0 : 1],
+                    64u,seL4_CapRights_new(0,0,1,0));
+            for (uint32_t f=0;f<INPUT_PEERS && err==seL4_NoError;++f) {
+                if (i!=input_service && i!=input_clients[f]) continue;
+                seL4_CPtr notify=g_input_notify[0];
+                seL4_Word badge=(seL4_Word)1u<<f;
+                seL4_Word slot=PD_CNODE_SLOT_INPUT_PEER_NOTIFY;
+                if (i==input_service) {
+                    slot+=f;
+                    notify=f==AOS_INPUT_CLIENTS ? g_input_notify[1] :
+                        (input_clients[f]==SYSTEM_MAX_PDS ? seL4_CapNull : g_pd_notifications[input_clients[f]]);
+                    badge=f==AOS_INPUT_CLIENTS ? 1u : AOS_INPUT_VMM_WAKE_BADGE;
+                }
+                if (notify!=seL4_CapNull)
+                    err=seL4_CNode_Mint(pd_cnode,slot,pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode,notify,64u,seL4_CapRights_new(0,0,0,1),badge);
+                if (err!=seL4_NoError) break;
+                seL4_Word copy=ut_alloc_slot();
+                if (copy==seL4_CapNull) { err=seL4_NotEnoughMemory; break; }
+                err=seL4_CNode_Copy(seL4_CapInitThreadCNode,copy,64u,
+                    seL4_CapInitThreadCNode,g_input_frames[f],64u,seL4_AllRights);
+                if (err==seL4_NoError)
+                    err=pd_vspace_map_device_frame(vspace,copy,AOS_INPUT_SHMEM_VA+f*AOS_INPUT_FRAME_SIZE);
+            }
+            if (err!=seL4_NoError) {
+                dbg_puts("[rt] input queue/capability grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+#endif
+#ifdef AGENTOS_DISPLAY_RAMFB
+        if ((pd->self_svc_id==SVC_ID_DISPLAY_RAMFB || pd->self_svc_id==SVC_ID_FRAMEBUFFER_QUEUE) &&
+            display_grant(pd,pd_cnode,vspace)!=seL4_NoError) {
+            dbg_puts("[rt] display mapping failed; refusing boot\n");
+            return;
+        }
+#endif
+#ifdef AGENTOS_FRAMEBUFFER_ENABLED
+        uint32_t fb_own = FB_PEERS + 1u;
+        if (i == fb_service) fb_own = FB_PEERS;
+        for (uint32_t f = 0; f < FB_PEERS; ++f)
+            if (i == fb_clients[f]) fb_own = f;
+        if (fb_own <= FB_PEERS) {
+#ifdef AGENTOS_GUEST_GRAPHICS
+            if (fb_own<AOS_FB_CLIENTS) {
+                seL4_CPtr fb_ep=ep_alloc_for_service(SVC_ID_FRAMEBUFFER_QUEUE);
+                if (fb_ep==seL4_CapNull ||
+                    seL4_CNode_Mint(pd_cnode,PD_CNODE_SLOT_FB_REBIND_EP,
+                        pd->cnode_size_bits,seL4_CapInitThreadCNode,fb_ep,64u,
+                        seL4_CapRights_new(1,1,0,1),virt_client_badge(fb_own))!=seL4_NoError) {
+                    dbg_puts("[rt] graphics rebind endpoint grant failed; refusing boot\n");
+                    return;
+                }
+            }
+#endif
             seL4_Error err = seL4_CNode_Copy(pd_cnode, PD_CNODE_SLOT_FB_WAIT,
-                pd->cnode_size_bits, seL4_CapInitThreadCNode, g_pd_notifications[i],
+                pd->cnode_size_bits, seL4_CapInitThreadCNode, g_framebuffer_notify[fb_own],
                 64u, seL4_CapRights_new(0, 0, 1, 0));
-            for (uint32_t f = 0; f < AOS_FB_CLIENTS && err == seL4_NoError; ++f) {
+            for (uint32_t f = 0; f < FB_PEERS && err == seL4_NoError; ++f) {
                 if (i != fb_service && i != fb_clients[f]) continue;
-                uint32_t peer = i == fb_service ? fb_clients[f] : fb_service;
+                uint32_t peer = i == fb_service ? f : FB_PEERS;
                 seL4_Word slot = PD_CNODE_SLOT_FB_PEER_NOTIFY + (i == fb_service ? f : 0);
-                err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
-                    seL4_CapInitThreadCNode, g_pd_notifications[peer], 64u,
-                    seL4_CapRights_new(0, 0, 0, 1), (seL4_Word)1u << f);
+                if (i != fb_service || fb_clients[f] != SYSTEM_MAX_PDS)
+                    err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode, g_framebuffer_notify[peer], 64u,
+                        seL4_CapRights_new(0, 0, 0, 1), (seL4_Word)1u << f);
                 if (err != seL4_NoError) break;
                 seL4_Word copy = ut_alloc_slot();
                 if (copy == seL4_CapNull) { err = seL4_NotEnoughMemory; break; }
@@ -2214,7 +3060,7 @@ void root_task_main(const seL4_BootInfo *bi)
                         AOS_FB_SHMEM_VA + f * AOS_FB_CLIENT_STRIDE);
             }
             if (i == fb_service) {
-                for (uint32_t f = 0; f < AOS_FB_ARENA_FRAMES && err == seL4_NoError; ++f)
+                for (uint32_t f = 0; f < FB_ARENA_FRAMES && err == seL4_NoError; ++f)
                     err = pd_vspace_map_device_frame(vspace, g_framebuffer_arena[f],
                         AOS_FB_ARENA_VA + f * AOS_FB_CLIENT_STRIDE);
             }
@@ -2226,7 +3072,7 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
         if (serial_virt_index != SYSTEM_MAX_PDS) {
             seL4_Error signal_err = seL4_NoError;
-            if (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
+            if (pd_is_guest_vmm(pd) || pd_is_serial_frontend(pd) ||
                 pd->self_svc_id == SVC_ID_OPERATOR_SESSION) {
                 seL4_Word badge = pd_is_guest_vmm(pd) ?
                     (1u << (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) :
@@ -2282,6 +3128,30 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
+        if (net_virt_index != SYSTEM_MAX_PDS) {
+            seL4_Error signal_err = seL4_NoError;
+            if (pd_is_guest_vmm(pd)) {
+                signal_err = seL4_CNode_Mint(pd_cnode,
+                    PD_CNODE_SLOT_NET_VIRT_NOTIFY, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_pd_notifications[net_virt_index],
+                    64u, seL4_CapRights_new(0, 0, 0, 1),
+                    1u << (pd_is_secondary_guest_vmm(pd) ? 1u : 0u));
+            } else if (pd->self_svc_id == SVC_ID_NET_VIRT) {
+                for (uint32_t v = 0; v < sys->pd_count && signal_err == seL4_NoError; v++) {
+                    if (!pd_is_guest_vmm(&sys->pds[v])) continue;
+                    seL4_Word slot = pd_is_secondary_guest_vmm(&sys->pds[v]) ?
+                        PD_CNODE_SLOT_NET_SECONDARY_NOTIFY : PD_CNODE_SLOT_NET_PRIMARY_NOTIFY;
+                    signal_err = seL4_CNode_Mint(pd_cnode, slot, pd->cnode_size_bits,
+                        seL4_CapInitThreadCNode, g_pd_notifications[v], 64u,
+                        seL4_CapRights_new(0, 0, 0, 1), NET_VIRT_VMM_WAKE_BADGE);
+                }
+            }
+            if (signal_err != seL4_NoError) {
+                dbg_puts("[rt] network signal grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+
         if (blk_virt_index != SYSTEM_MAX_PDS) {
             seL4_Error signal_err = seL4_NoError;
             if (pd_is_guest_vmm(pd)) {
@@ -2332,7 +3202,7 @@ void root_task_main(const seL4_BootInfo *bi)
             } else if (pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE &&
                        ep_spec->service_id == SVC_ID_NET_VIRT) {
                 badge = VIRT_NET_BADGE_NATIVE;
-            } else if (pd->self_svc_id == SVC_ID_CC_PD &&
+            } else if (pd_is_serial_frontend(pd) &&
                        ep_spec->service_id == SVC_ID_SERIAL_VIRT) {
                 badge = SERIAL_VIRT_FRONTEND_BADGE;
             } else if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION &&
@@ -2342,6 +3212,21 @@ void root_task_main(const seL4_BootInfo *bi)
             ep_mint_badge(service_ep, badge,
                            pd_cnode, ep_spec->cnode_slot,
                            pd->cnode_size_bits);
+        }
+
+        if (pd->self_svc_id == SVC_ID_SERIAL_VIRT ||
+            pd->self_svc_id == SVC_ID_NET_VIRT ||
+            pd->self_svc_id == SVC_ID_BLK_VIRT ||
+            pd->self_svc_id == SVC_ID_INPUT_VIRT ||
+            pd->self_svc_id == SVC_ID_FRAMEBUFFER_QUEUE) {
+            if (pd->cnode_size_bits != AOS_QUEUE_SERVICE_CNODE_BITS ||
+                seL4_CNode_Copy(pd_cnode, AOS_QUEUE_SERVICE_CNODE, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, pd_cnode, 64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_QUEUE_SERVICE_VSPACE, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, vspace, 64u, seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] queue reconstruction authority failed\n");
+                return;
+            }
         }
 
         /* ── 4g.4: Distribute device MMIO frame caps ────────────────────────
@@ -2427,7 +3312,8 @@ void root_task_main(const seL4_BootInfo *bi)
                             ? AOS_PRIMARY_GUEST_GPA_BASE
                             : AOS_SECONDARY_GUEST_GPA_BASE;
                     mr_err = map_guest_ram_reservation(
-                        reservation, vspace, guest_vspace,
+                        reservation, pd_cnode, pd->cnode_size_bits,
+                        vspace, guest_vspace,
                         (seL4_Word)mr->vaddr, guest_gpa,
                         (int)mr->writable);
                 }
@@ -2447,6 +3333,10 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts(" err=");
                 dbg_hex((seL4_Word)mr_err);
                 dbg_puts("\n");
+                /* Never start a VMM with partial mappings or missing pool
+                 * authority. Root provisioning is an all-or-stop boundary. */
+                if (pd_is_guest_vmm(pd) && name_eq(mr->name, "guest_ram"))
+                    return;
             }
         }
 
@@ -2457,12 +3347,11 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "log_drain") ||
              pd_is_guest_vmm(pd) ||
              name_eq(pd->name, "cc_pd") ||
-             name_eq(pd->name, "net_virt") ||
-             name_eq(pd->name, "blk_virt") ||
-             name_eq(pd->name, "serial_virt") ||
              name_eq(pd->name, "native_rust_client") ||
              name_eq(pd->name, "framebuffer_client0") ||
              name_eq(pd->name, "framebuffer_client1") ||
+             name_eq(pd->name, "display_ramfb") ||
+             name_eq(pd->name, "framebuffer_queue") ||
              name_eq(pd->name, "test_runner"))) {
             seL4_Word serial_copy = ut_alloc_slot();
             seL4_Error serial_err = seL4_NotEnoughMemory;
@@ -2481,6 +3370,59 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
+        /* Queue ownership is architecture-independent. Only serial_virt
+         * sees every client page; no client receives another client's page. */
+        if (serial_virt_index != SYSTEM_MAX_PDS &&
+            (pd_is_guest_vmm(pd) || pd_is_serial_frontend(pd) ||
+             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
+             pd->self_svc_id == SVC_ID_SERIAL_VIRT)) {
+            seL4_Error serial_err = seL4_NoError;
+            for (uint32_t f = 0; f < AOS_SERIAL_FRAMES && serial_err == seL4_NoError; f++) {
+                if (pd_is_guest_vmm(pd) &&
+                    f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
+                if (pd_is_serial_frontend(pd) && f != AOS_SERIAL_FRONTEND_FRAME) continue;
+                if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION && f != SERIAL_VIRT_OPERATOR_CLIENT) continue;
+                seL4_Word copy = ut_alloc_slot();
+                serial_err = seL4_NotEnoughMemory;
+                if (copy != seL4_CapNull) {
+                    serial_err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                        seL4_CapInitThreadCNode, g_serial_virt_frames[f], 64u, seL4_AllRights);
+                    if (serial_err == seL4_NoError)
+                        serial_err = pd_vspace_map_device_frame(vspace, copy,
+                            AOS_SERIAL_SHMEM_VA + f * AOS_SERIAL_FRAME_SIZE);
+                }
+            }
+            if (serial_err != seL4_NoError) {
+                dbg_puts("[rt] serial page mapping failed; refusing PD start\n");
+                continue;
+            }
+        }
+
+        /* blk_virt maps all block pages; each VMM maps only its own client.
+         * No device DMA window, private disk page or peer page enters a VMM. */
+        if (blk_virt_index != SYSTEM_MAX_PDS &&
+            (pd->self_svc_id == SVC_ID_BLK_VIRT || pd_is_guest_vmm(pd))) {
+            seL4_Error blk_err = seL4_NoError;
+            for (uint32_t f = 0; f < AOS_BLK_SHMEM_FRAMES && blk_err == seL4_NoError; f++) {
+                if (pd_is_guest_vmm(pd) &&
+                    f != AOS_BLK_CLIENT_BASE / AOS_BLK_SHMEM_FRAME_SIZE +
+                        (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
+                seL4_Word copy = ut_alloc_slot();
+                blk_err = seL4_NotEnoughMemory;
+                if (copy != seL4_CapNull) {
+                    blk_err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                        seL4_CapInitThreadCNode, g_blk_virt_frame_caps[f], 64u, seL4_AllRights);
+                    if (blk_err == seL4_NoError)
+                        blk_err = pd_vspace_map_device_frame(vspace, copy,
+                            AOS_BLK_SHMEM_VA + (seL4_Word)f * AOS_BLK_SHMEM_FRAME_SIZE);
+                }
+            }
+            if (blk_err != seL4_NoError) {
+                dbg_puts("[rt] block queue mapping failed; refusing PD start\n");
+                continue;
+            }
+        }
+
         /* ── 4g.4.6b: Map GICv2 vCPU interface for VMM guests ───────────── */
 #if defined(__aarch64__)
         /*
@@ -2489,27 +3431,48 @@ void root_task_main(const seL4_BootInfo *bi)
          * at 0x08040000. Without this pass-through mapping the guest faults as
          * soon as it writes GICC_PMR during IRQ setup.
          */
-        if (g_gic_vcpu_frame_cap != seL4_CapNull &&
-            pd_is_guest_vmm(pd)) {
+        if (pd_is_guest_vmm(pd)) {
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 1
+            g_gic_vcpu_frame_cap = seL4_CapNull;
+#endif
+            if (g_gic_vcpu_frame_cap == seL4_CapNull) {
+                report_guest_gic_failure("[rt] missing guest GIC vCPU frame; refusing boot\n");
+                return;
+            }
             seL4_Word gic_copy = ut_alloc_slot();
             seL4_Error gic_err = seL4_NotEnoughMemory;
+            seL4_CPtr gic_source = g_gic_vcpu_frame_cap;
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 3
+            gic_source = seL4_CapNull;
+#endif
             if (gic_copy != seL4_CapNull) {
                 gic_err = seL4_CNode_Copy(
                     seL4_CapInitThreadCNode, gic_copy,               64u,
-                    seL4_CapInitThreadCNode, g_gic_vcpu_frame_cap,   64u,
+                    seL4_CapInitThreadCNode, gic_source,            64u,
                     seL4_AllRights);
             }
             dbg_puts("[rt] VMM GIC vCPU CNode_Copy err=");
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
             if (gic_err == seL4_NoError) {
-                gic_err = pd_vspace_map_device_frame(guest_vspace,
+                seL4_CPtr mapping_vspace = guest_vspace;
+#if AGENTOS_GUEST_GIC_FAILURE_PROBE == 2
+                mapping_vspace = seL4_CapNull;
+#endif
+                gic_err = pd_vspace_map_device_frame(mapping_vspace,
                                                       (seL4_CPtr)gic_copy,
                                                       GIC_VCPU_IF_VA);
             }
             dbg_puts("[rt] VMM GIC vCPU map err=");
             dbg_hex((seL4_Word)gic_err);
             dbg_puts("\n");
+            if (gic_err != seL4_NoError) {
+                report_guest_gic_failure("[rt] guest GIC vCPU mapping failed; refusing boot\n");
+                return;
+            }
+#ifdef CONFIG_KERNEL_MCS
+            g_guest_gic_mapping[pd_is_secondary_guest_vmm(pd) ? 1u : 0u] = gic_copy;
+#endif
         }
 #endif
 
@@ -2556,6 +3519,8 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("\n");
         }
 
+#endif
+
         /* The driver DMA window is shared by virtio_blk and blk_virt only.
          * No VMM maps it: guest block data reaches the driver through the
          * blk_virt queues (docs/TCB.md invariant 2). */
@@ -2580,69 +3545,39 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" blk shared map err=");
             dbg_hex((seL4_Word)blk_err);
             dbg_puts("\n");
-        }
-
-        /* blk_virt maps the region; each VMM maps only its client page.
-         * Keep the private RAM disk and other clients out of its VSpace.
-         * Each frame cap is copied because a frame cap maps exactly once. */
-        if (g_blk_virt_frame_caps[0] != seL4_CapNull &&
-            (name_eq(pd->name, "blk_virt") || pd_is_guest_vmm(pd))) {
-            seL4_Error blk_err = seL4_NoError;
-            for (uint32_t f = 0u; f < AOS_BLK_SHMEM_FRAMES &&
-                                  blk_err == seL4_NoError; f++) {
-                if (pd_is_guest_vmm(pd) &&
-                    f != AOS_BLK_CLIENT_BASE / AOS_BLK_SHMEM_FRAME_SIZE +
-                             (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) {
-                    continue;
-                }
-                seL4_Word frame_copy = ut_alloc_slot();
-                blk_err = seL4_NotEnoughMemory;
-                if (frame_copy != seL4_CapNull) {
-                    blk_err = seL4_CNode_Copy(
-                        seL4_CapInitThreadCNode, frame_copy, 64u,
-                        seL4_CapInitThreadCNode, g_blk_virt_frame_caps[f],
-                        64u, seL4_AllRights);
-                    if (blk_err == seL4_NoError) {
-                        blk_err = pd_vspace_map_device_frame(
-                            vspace, (seL4_CPtr)frame_copy,
-                            AOS_BLK_SHMEM_VA +
-                                (seL4_Word)f * AOS_BLK_SHMEM_FRAME_SIZE);
-                    }
-                }
-            }
-            dbg_puts("[rt] ");
-            dbg_puts(pd->name);
-            dbg_puts(" blk_virt shared region map err=");
-            dbg_hex((seL4_Word)blk_err);
-            dbg_puts("\n");
-        }
-
-        /* Only serial_virt sees both guest pages, operator and frontend. */
-        if (serial_virt_index != SYSTEM_MAX_PDS &&
-            (pd_is_guest_vmm(pd) || pd->self_svc_id == SVC_ID_CC_PD ||
-             pd->self_svc_id == SVC_ID_OPERATOR_SESSION ||
-             pd->self_svc_id == SVC_ID_SERIAL_VIRT)) {
-            seL4_Error serial_err = seL4_NoError;
-            for (uint32_t f = 0; f < AOS_SERIAL_FRAMES && serial_err == seL4_NoError; f++) {
-                if (pd_is_guest_vmm(pd) &&
-                    f != (pd_is_secondary_guest_vmm(pd) ? 1u : 0u)) continue;
-                if (pd->self_svc_id == SVC_ID_CC_PD && f != AOS_SERIAL_FRONTEND_FRAME) continue;
-                if (pd->self_svc_id == SVC_ID_OPERATOR_SESSION && f != SERIAL_VIRT_OPERATOR_CLIENT) continue;
-                seL4_Word copy = ut_alloc_slot();
-                serial_err = seL4_NotEnoughMemory;
-                if (copy != seL4_CapNull) {
-                    serial_err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
-                        seL4_CapInitThreadCNode, g_serial_virt_frames[f], 64u, seL4_AllRights);
-                    if (serial_err == seL4_NoError)
-                        serial_err = pd_vspace_map_device_frame(vspace, copy,
-                            AOS_SERIAL_SHMEM_VA + f * AOS_SERIAL_FRAME_SIZE);
-                }
-            }
-            if (serial_err != seL4_NoError) {
-                dbg_puts("[rt] serial page mapping failed; refusing PD start\n");
+            if (blk_err != seL4_NoError) {
+                dbg_puts("[rt] block DMA mapping failed; refusing PD start\n");
                 continue;
             }
         }
+
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+        if (pd->self_svc_id == SVC_ID_VIRTIO_BLK) {
+            seL4_Error err = seL4_NoError;
+            for (unsigned media = 0; media < X86_HOST_BLOCK_COUNT && err == seL4_NoError; media++) {
+                for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS && err == seL4_NoError; r++) {
+                    seL4_CPtr copy = ut_alloc_slot();
+                    err = seL4_NotEnoughMemory;
+                    if (copy) {
+                        err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                            seL4_CapInitThreadCNode, g_x86_blk_frames[media][r], 64u, seL4_AllRights);
+                        if (err == seL4_NoError)
+                            err = pd_vspace_map_uncached_device_frame(vspace, copy,
+                                AOS_BLK_PCI_MEDIA_REGION_VA(media, r));
+                    }
+                }
+            }
+            bool enabled = err == seL4_NoError;
+            for (unsigned media = 0; media < X86_HOST_BLOCK_COUNT && enabled; media++)
+                enabled = aos_x86_host_pci_enable(media ?
+                    AOS_X86_HOST_SECONDARY_BLOCK : AOS_X86_HOST_BLOCK);
+            if (!enabled) {
+                dbg_puts("[rt] block PCI mapping/enable failed; refusing driver start\n");
+                continue;
+            }
+            dbg_puts("[rt] x86 host block driver resources mapped\n");
+        }
+#endif
 
         /* VMMs map their own queue page, the NIC driver maps its transfer
          * page, and only net_virt maps both tiers. */
@@ -2676,11 +3611,15 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" agentOS net shared map err=");
             dbg_hex((seL4_Word)net_err);
             dbg_puts("\n");
-            if (net_err != seL4_NoError) continue;
+            if (net_err != seL4_NoError) {
+                dbg_puts("[rt] network queue mapping failed; refusing PD start\n");
+                continue;
+            }
         }
 
         if (name_eq(pd->name, "net_pd")) {
             seL4_Error net_err = seL4_NotEnoughMemory;
+#if defined(__aarch64__)
             if (g_host_net_mmio_frame_cap != seL4_CapNull) {
                 seL4_Word net_mmio_copy = ut_alloc_slot();
                 if (net_mmio_copy != seL4_CapNull) {
@@ -2699,7 +3638,24 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] net_pd host MMIO map err=");
             dbg_hex((seL4_Word)net_err);
             dbg_puts("\n");
-
+            if (net_err != seL4_NoError) continue;
+#elif defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+            net_err = seL4_NoError;
+            for (unsigned r = 0; r < AOS_VIRTIO_PCI_REGIONS && net_err == seL4_NoError; r++) {
+                seL4_CPtr copy = ut_alloc_slot();
+                net_err = seL4_NotEnoughMemory;
+                if (copy) {
+                    net_err = seL4_CNode_Copy(seL4_CapInitThreadCNode, copy, 64u,
+                        seL4_CapInitThreadCNode, g_x86_net_frames[r], 64u, seL4_AllRights);
+                    if (net_err == seL4_NoError)
+                        net_err = pd_vspace_map_uncached_device_frame(vspace, copy,
+                                                                    AOS_NET_PCI_REGION_VA(r));
+                }
+            }
+            if (net_err != seL4_NoError) continue;
+#else
+            continue;
+#endif
             net_err = seL4_NotEnoughMemory;
             if (g_net_dma_frame_cap != seL4_CapNull) {
                 seL4_Word net_dma_copy = ut_alloc_slot();
@@ -2718,8 +3674,15 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] net_pd private DMA map err=");
             dbg_hex((seL4_Word)net_err);
             dbg_puts("\n");
-        }
+            if (net_err != seL4_NoError) continue;
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+            if (!aos_x86_host_pci_enable(AOS_X86_HOST_NET)) {
+                dbg_puts("[rt] network PCI enable failed; refusing driver start\n");
+                continue;
+            }
+            dbg_puts("[rt] x86 host network driver resources mapped\n");
 #endif
+        }
 
         /* ── 4g.4.7: Set up VirtIO serial transport for cc_pd ───────────────── */
         /*
@@ -2735,6 +3698,13 @@ void root_task_main(const seL4_BootInfo *bi)
          *      only the three device-visible physical addresses.
          */
         if (name_eq(pd->name, "cc_pd")) {
+#if defined(__x86_64__) && defined(AGENTOS_X86_CC_PCI)
+            if (!provision_x86_cc(vspace)) {
+                dbg_puts("[rt] CC PCI provisioning failed; refusing PD start\n");
+                continue;
+            }
+            dbg_puts("[rt] x86 CC PCI transport resources mapped\n");
+#else
             /* 1. Allocate + map VirtIO MMIO device page */
             seL4_CPtr cc_virtio_cap = seL4_CapNull;
             {
@@ -2820,6 +3790,7 @@ void root_task_main(const seL4_BootInfo *bi)
                 }
             }
 
+#endif
         }
 
         /* ── 4g.4.9: EventBus ring RAM region (agentos-gom) ─────────────────
@@ -2919,6 +3890,44 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif /* CONFIG_KERNEL_MCS */
 
         /* ── 4h: Record all new caps in the accounting tree ─────────────── */
+#if defined(__aarch64__) && defined(CONFIG_KERNEL_MCS)
+        if (pd->self_svc_id == SVC_ID_VM_MANAGER) {
+            if (pd->cnode_size_bits != AOS_GUEST_SCHED_MANAGER_BITS) return;
+            seL4_CPtr authority = seL4_CapNull;
+            if (ut_alloc_cap(seL4_TCBObject, 0u, &authority) != seL4_NoError ||
+                seL4_TCB_SetMCPriority(authority, seL4_CapInitThreadTCB,
+                    AOS_GUEST_SCHED_PRIORITY) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_AUTHORITY,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, authority,
+                    64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_MANAGER_CNODE,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, pd_cnode,
+                    64u, seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] guest scheduling manager authority failed; stopping boot\n");
+                return;
+            }
+            for (unsigned owner = 0; owner < AOS_GUEST_SCHED_CLIENTS; owner++) {
+                if (!g_guest_sched_exchange[owner]) continue;
+                if (seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_EXCHANGE_BASE + owner,
+                        pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        g_guest_sched_exchange[owner], 64u, seL4_AllRights) != seL4_NoError ||
+                    seL4_CNode_Copy(pd_cnode, AOS_GUEST_SCHED_CONTROL_BASE + owner,
+                        pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        g_guest_sched_control[owner], 64u, seL4_AllRights) != seL4_NoError) {
+                    dbg_puts("[rt] guest scheduling exchange grant failed; stopping boot\n");
+                    return;
+                }
+                if (!g_guest_gic_mapping[owner] ||
+                    seL4_CNode_Move(pd_cnode, AOS_GUEST_GIC_FRAME_BASE + owner,
+                        pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        g_guest_gic_mapping[owner], 64u) != seL4_NoError) {
+                    dbg_puts("[rt] guest GIC manager grant failed; stopping boot\n");
+                    return;
+                }
+                g_guest_gic_mapping[owner] = seL4_CapNull;
+            }
+        }
+#endif
         cap_acct_record(seL4_CapNull, pd_cnode, seL4_CapTableObject,   i, pd->name);
         cap_acct_record(seL4_CapNull, vspace,   seL4_ARM_VSpaceObject, i, pd->name);
 #if defined(__aarch64__)
@@ -2961,26 +3970,142 @@ void root_task_main(const seL4_BootInfo *bi)
                                                       self_ep,
                                                       bi);
             if (vm_err != seL4_NoError) {
-                dbg_puts("[rt] WARN: VMM guest cap setup failed for ");
+                dbg_puts("[rt] VMM guest cap setup failed for ");
                 dbg_puts(pd->name);
                 dbg_puts(" err=");
                 dbg_hex((seL4_Word)vm_err);
                 dbg_puts("\n");
+                return;
             }
+            /* Guest IPC mapping is the final root paging operation. Moving
+             * these sole management caps now preserves the private allocator
+             * until all page tables have been created. */
+            if (seL4_CNode_Move(pd_cnode, AOS_GUEST_PAGING_POOL_CAP,
+                    (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    guest_paging_pool, 64u) != seL4_NoError ||
+                seL4_CNode_Move(pd_cnode, AOS_GUEST_ASID_POOL_CAP,
+                    (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    guest_asid_pool, 64u) != seL4_NoError) {
+                dbg_puts("[rt] private guest paging delegation failed; stopping boot\n");
+                return;
+            }
+            unsigned owner = pd_is_secondary_guest_vmm(pd) ? 1u : 0u;
+            unsigned queue_count = AOS_GUEST_QUEUE_INPUT;
+#ifdef AGENTOS_GUEST_INPUT
+            queue_count = AOS_GUEST_QUEUE_POOL_COUNT;
+#endif
+            for (unsigned kind = 0; kind < queue_count; kind++) {
+                seL4_CPtr *pool = &g_guest_queue_pools[owner][kind];
+                if (*pool == seL4_CapNull ||
+                    seL4_CNode_Move(pd_cnode, AOS_GUEST_QUEUE_POOL_BASE + kind,
+                        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        *pool, 64u) != seL4_NoError) {
+                    dbg_puts("[rt] private guest queue delegation failed; stopping boot\n");
+                    return;
+                }
+                *pool = seL4_CapNull;
+            }
+            dbg_puts("[rt] private guest queue pools delegated to owning VMM\n");
+#ifdef AGENTOS_GUEST_GRAPHICS
+            for (unsigned index = 0; index < AOS_GUEST_GRAPHICS_POOL_COUNT; index++) {
+                seL4_CPtr *pool = &g_guest_graphics_pools[owner][index];
+                if (*pool == seL4_CapNull ||
+                    seL4_CNode_Move(pd_cnode, AOS_GUEST_GRAPHICS_POOL_BASE + index,
+                        (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                        *pool, 64u) != seL4_NoError) {
+                    dbg_puts("[rt] private guest graphics delegation failed; stopping boot\n");
+                    return;
+                }
+                *pool = seL4_CapNull;
+            }
+#endif
         }
 #endif
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
         if (pd_is_guest_vmm(pd)) {
             seL4_Error vm_err = setup_x86_vtx_proof(pd, i, pd_cnode,
-                                                     tr.tcb_cap);
+                                                     tr.tcb_cap, vspace);
             if (vm_err != seL4_NoError) {
                 dbg_puts("[rt] x86 VMX EPT proof provisioning FAILED err=");
                 dbg_hex((seL4_Word)vm_err);
                 dbg_puts("\n");
                 return;
             }
-            g_x86_vtx_proof_endpoint = self_ep;
+            /* Qualification reports must not compete with the VMM for
+             * lifecycle calls on its service endpoint. The reporter gets
+             * send authority only, without receive or capability transfer. */
+            seL4_CPtr report_endpoint = seL4_CapNull;
+#ifdef AGENTOS_X86_DUAL_GUEST
+            /* One root-owned receiver observes either coordinator's startup
+             * failure. Each sender has a root-assigned identity and no receive
+             * or grant rights. Separate unconsumed receivers hide failures. */
+            if (g_x86_vtx_proof_endpoint == seL4_CapNull)
+                vm_err = ut_alloc_cap(seL4_EndpointObject, 0u,
+                                      &g_x86_vtx_proof_endpoint);
+            report_endpoint = g_x86_vtx_proof_endpoint;
+            if (vm_err == seL4_NoError) {
+                vm_err = seL4_CNode_Mint(pd_cnode, AOS_X86_VTX_REPORT_CAP,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    report_endpoint, 64u, seL4_CapRights_new(0u, 0u, 0u, 1u),
+                    pd->self_svc_id);
+            }
+#else
+            vm_err = ut_alloc_cap(seL4_EndpointObject, 0u, &report_endpoint);
+            if (!pd_is_secondary_guest_vmm(pd))
+                g_x86_vtx_proof_endpoint = report_endpoint;
+            if (vm_err == seL4_NoError) {
+                vm_err = seL4_CNode_Copy(pd_cnode, AOS_X86_VTX_REPORT_CAP,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    report_endpoint, 64u,
+                    seL4_CapRights_new(0u, 0u, 0u, 1u));
+            }
+#endif
+            if (vm_err != seL4_NoError) {
+                dbg_puts("[rt] private VMX report endpoint setup failed; stopping boot\n");
+                return;
+            }
+#if defined(AGENTOS_X86_USERSPACE_PROOF) || defined(AGENTOS_X86_DUAL_GUEST)
+            /* Root waits here during qualification, rather than on its
+             * normal fault endpoint. Fail immediately on a native VMM fault
+             * instead of silently blocking both the VMM and test client. */
+            seL4_CPtr fault_report = ut_alloc_slot();
+            seL4_Word fault_badge = AOS_X86_LIFECYCLE_FAULT_BADGE;
+#ifdef AGENTOS_X86_DUAL_GUEST
+            fault_badge = AOS_X86_DUAL_FAULT_BADGE | pd->self_svc_id;
+#endif
+            aos_x86_runner_owner_t *runners = aos_x86_runner_owner(
+                g_x86_runner_owners, X86_RUNNER_OWNER_COUNT, pd->self_svc_id);
+            if (!runners || !runners->tcb[0] || !runners->tcb[1] ||
+                fault_report == seL4_CapNull ||
+                seL4_CNode_Mint(seL4_CapInitThreadCNode, fault_report, 64u,
+                    seL4_CapInitThreadCNode, g_x86_vtx_proof_endpoint, 64u,
+                    seL4_AllRights, fault_badge) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(tr.tcb_cap, seL4_CapInitThreadTCB,
+                    255u, pd->priority, PD_SLOT_SC(i), fault_report) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(runners->tcb[0], seL4_CapInitThreadTCB,
+                    255u, 250u, PD_SLOT_SC(runners->pd_index[0]), fault_report) != seL4_NoError ||
+                seL4_TCB_SetSchedParams(runners->tcb[1], seL4_CapInitThreadTCB,
+                    255u, 250u, PD_SLOT_SC(runners->pd_index[1]), fault_report) != seL4_NoError) {
+                dbg_puts("[rt] lifecycle native fault reporter setup failed\n");
+                return;
+            }
+#endif
         }
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        if (pd->self_svc_id == SVC_ID_X86_LIFECYCLE_PROBE) {
+            /* The client can report failure without perturbing successful
+             * IPC scheduling. Its badge can never satisfy the success path. */
+            if (g_x86_vtx_proof_endpoint == seL4_CapNull ||
+                seL4_CNode_Mint(pd_cnode, AOS_X86_VTX_REPORT_CAP,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    g_x86_vtx_proof_endpoint, 64u,
+                    seL4_CapRights_new(0u, 0u, 0u, 1u),
+                    AOS_X86_LIFECYCLE_FAILURE_BADGE) != seL4_NoError) {
+                dbg_puts("[rt] lifecycle failure reporter setup failed; stopping boot\n");
+                return;
+            }
+        }
+#endif
 #endif
         {
             dbg_puts("[rt] pd entry=");
@@ -2988,11 +4113,16 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts(" sp=");
             dbg_hex(vr.stack_top);
             dbg_puts("\n");
+            seL4_Word nameserver_slot = 0u;
+            for (unsigned e = 0; e < pd->init_ep_count; e++) {
+                if (pd->init_eps[e].service_id == SVC_ID_NAMESERVER)
+                    nameserver_slot = pd->init_eps[e].cnode_slot;
+            }
             seL4_Error reg_err = pd_tcb_set_regs(tr.tcb_cap,
                                                    vr.entry_point,
                                                    vr.stack_top,
                                                    self_ep_slot,
-                                                   (seL4_Word)PD_CNODE_SLOT_NAMESERVER_EP);
+                                                   nameserver_slot);
             if (reg_err != seL4_NoError) {
                 dbg_puts("[rt] pd set_regs fail err=");
                 dbg_hex((seL4_Word)reg_err);
@@ -3007,6 +4137,18 @@ void root_task_main(const seL4_BootInfo *bi)
                 dbg_puts("\n");
             } else {
                 dbg_puts("[rt] pd started ok\n");
+#if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
+                if (reg_err == seL4_NoError &&
+                    (pd->self_svc_id == SVC_ID_X86_RUNNER ||
+                     pd->self_svc_id == SVC_ID_X86_AP_RUNNER ||
+                     pd->self_svc_id == SVC_ID_X86_SECONDARY_RUNNER ||
+                     pd->self_svc_id == SVC_ID_X86_SECONDARY_AP_RUNNER) &&
+                    !aos_x86_runner_register(g_x86_runner_owners,
+                        X86_RUNNER_OWNER_COUNT, pd->self_svc_id, tr.tcb_cap, i)) {
+                    dbg_puts("[rt] x86 runner ownership registration failed; stopping boot\n");
+                    return;
+                }
+#endif
                 if (reg_err == seL4_NoError && inspect_view.thread_count < AOS_INSPECT_MAX_THREADS) {
                     aos_inspect_thread_t *t = &inspect_view.threads[inspect_view.thread_count++];
                     t->pd_index = i;
@@ -3055,6 +4197,9 @@ void root_task_main(const seL4_BootInfo *bi)
                 (uint64_t)g_guest_ram_reservations[i].frame_count << seL4_ARCH_LargePageBits;
 #elif defined(__x86_64__)
         inspect_view.arch = AOS_INSPECT_ARCH_X86_64;
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+        inspect_view.guest_ram_bytes = AOS_X86_FIRMWARE_RAM;
+#endif
 #elif defined(__riscv)
         inspect_view.arch = AOS_INSPECT_ARCH_RISCV64;
 #endif
@@ -3104,8 +4249,9 @@ void root_task_main(const seL4_BootInfo *bi)
 
 #if defined(__x86_64__) && defined(AGENTOS_X86_VTX)
     /*
-     * The VMM uses its self endpoint to report the exact exit observed after
-     * VM entry.  Validate the complete small protocol before emitting the
+     * The VMM uses its private report endpoint for the exact exit observed
+     * after VM entry. Never receive on its lifecycle service endpoint.
+     * Validate the complete small protocol before emitting the
      * qualification marker, then resume normal root fault handling.
      */
     if (g_x86_vtx_proof_endpoint == seL4_CapNull) {
@@ -3116,17 +4262,138 @@ void root_task_main(const seL4_BootInfo *bi)
         seL4_Word badge = 0u;
         seL4_MessageInfo_t tag =
             seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
+#ifdef AGENTOS_X86_DUAL_GUEST
+        dbg_puts("[rt] x86 coordinator report service=");
+        dbg_hex(badge);
+        dbg_puts("\n");
+#endif
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+        unsigned lifecycle_traces = 0u;
+        while (badge == 0u && seL4_MessageInfo_get_label(tag) == AOS_X86_LIFECYCLE_TRACE_LABEL &&
+               seL4_MessageInfo_get_length(tag) == 4u && lifecycle_traces++ < 33u) {
+            seL4_Word trace[4];
+            for (unsigned i = 0; i < 4u; i++) trace[i] = seL4_GetMR(i);
+            dbg_puts("[rt] x86 lifecycle opcode="); dbg_hex(trace[0]);
+            dbg_puts(" status="); dbg_hex(trace[1]);
+            dbg_puts(" state="); dbg_hex(trace[2]);
+            dbg_puts(" started="); dbg_hex(trace[3]); dbg_puts("\n");
+            tag = seL4_Wait(g_x86_vtx_proof_endpoint, &badge);
+        }
+#endif
         seL4_Word status = seL4_GetMR(0);
         seL4_Word reason = seL4_GetMR(1);
         seL4_Word rip = seL4_GetMR(2);
         seL4_Word instruction_len = seL4_GetMR(3);
+#if defined(AGENTOS_X86_USERSPACE_PROOF) || defined(AGENTOS_X86_DUAL_GUEST)
+        if (badge == AOS_X86_LIFECYCLE_FAULT_BADGE ||
+            (badge & AOS_X86_DUAL_FAULT_BADGE)) {
+            dbg_puts("[rt] x86 native VMM fault label=");
+            dbg_hex(seL4_MessageInfo_get_label(tag));
+            dbg_puts(" words="); dbg_hex(seL4_MessageInfo_get_length(tag));
+            dbg_puts(" mr0="); dbg_hex(status);
+            dbg_puts(" mr1="); dbg_hex(reason);
+            dbg_puts(" mr2="); dbg_hex(rip);
+            dbg_puts(" mr3="); dbg_hex(instruction_len); dbg_puts("\n");
+        }
+#endif
+#ifdef AGENTOS_X86_FIRMWARE_RESET
         if (seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
+            seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS) {
+            seL4_Word counters[6];
+            for (unsigned i=0; i<6; i++) counters[i]=seL4_GetMR(4+i);
+            seL4_Word snapshot[AOS_X86_FIRMWARE_SNAPSHOT_WORDS];
+            for (unsigned i=0; i<AOS_X86_FIRMWARE_SNAPSHOT_WORDS; i++)
+                snapshot[i]=seL4_GetMR(10+i);
+            seL4_Word chain[AOS_X86_FIRMWARE_CHAIN_WORDS];
+            for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_WORDS; i++)
+                chain[i]=seL4_GetMR(10+AOS_X86_FIRMWARE_SNAPSHOT_WORDS+i);
+            seL4_Word boot[4];
+            for (unsigned i=0; i<4; i++) boot[i]=seL4_GetMR(116+i);
+            dbg_puts("[rt] firmware timer exits="); dbg_hex(counters[0]);
+            dbg_puts(" injections="); dbg_hex(counters[1]);
+            dbg_puts(" eois="); dbg_hex(counters[2]);
+            dbg_puts(" rate_shift="); dbg_hex(counters[3]);
+            dbg_puts(" tsc_hz="); dbg_hex(counters[4]);
+            dbg_puts(" halt_exits="); dbg_hex(counters[5]); dbg_puts("\n");
+            dbg_puts("[rt] firmware boot bytes kernel="); dbg_hex(boot[0]);
+            dbg_puts(" initrd="); dbg_hex(boot[1]);
+            dbg_puts(" cmdline="); dbg_hex(boot[2]);
+            dbg_puts(" last_qualification="); dbg_hex(boot[3]); dbg_puts("\n");
+            if (status == AOS_X86_VTX_PROOF_FAIL && reason == 0x425544u) {
+              for (unsigned set=0; set<2; set++) {
+                const seL4_Word *view=snapshot+set*AOS_X86_FIRMWARE_SNAPSHOT_SET_WORDS;
+                dbg_puts(set ? "[rt] firmware last HLT or PM poll exit\n" :
+                               "[rt] firmware budget exit\n");
+                for (unsigned region=0; region<2; region++) {
+                    unsigned count=region ? AOS_X86_FIRMWARE_STACK_WORDS :
+                                            AOS_X86_FIRMWARE_CODE_WORDS;
+                    unsigned start=4+(region ? AOS_X86_FIRMWARE_CODE_WORDS : 0);
+                    dbg_puts(region ? "[rt] firmware stack snapshot\n" :
+                                      "[rt] firmware code snapshot\n");
+                    for (unsigned i=0; i<count; i++) {
+                        if (!(view[2+region] & (UINT64_C(1) << i))) break;
+                        dbg_puts("[rt] snapshot "); dbg_hex(view[region]+8u*i);
+                        dbg_puts(" = "); dbg_hex(view[start+i]); dbg_puts("\n");
+                    }
+                }
+              }
+              seL4_Word frame=chain[0];
+              for (unsigned i=0; i<AOS_X86_FIRMWARE_CHAIN_FRAMES && i<chain[1]; i++) {
+                  dbg_puts("[rt] firmware observed frame "); dbg_hex(frame);
+                  dbg_puts(" return "); dbg_hex(chain[3+2*i]);
+                  dbg_puts(" next "); dbg_hex(chain[2+2*i]); dbg_puts("\n");
+                  frame=chain[2+2*i];
+              }
+            }
+        }
+#endif
+        if (badge == 0u && seL4_MessageInfo_get_label(tag) == AOS_X86_VTX_PROOF_LABEL &&
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+            seL4_MessageInfo_get_length(tag) == AOS_X86_FIRMWARE_REPORT_WORDS &&
+#else
             seL4_MessageInfo_get_length(tag) == 4u &&
+#endif
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+#ifdef AGENTOS_X86_USERSPACE_PROOF
+            status == AOS_X86_VTX_LIFECYCLE_PASS && reason == 10u &&
+            instruction_len == 3u && rip < 0x0000800000000000ull) {
+            dbg_puts("[rt] x86 Linux ring3 initramfs syscall proof verified\n");
+            dbg_puts("[rt] x86 canonical host network attachment verified\n");
+            dbg_puts("[rt] x86 host block queue read verified\n");
+            dbg_puts("[rt] x86 Linux guest block read verified\n");
+            dbg_puts("[rt] x86 Linux guest network packet roundtrip verified\n");
+            dbg_puts("[rt] x86 terminal teardown and zeroed pool reuse verified\n");
+            dbg_puts("[rt] x86 lifecycle client suspend resume destroy verified\n");
+#else
+            status == AOS_X86_VTX_FIRMWARE_CONFIG &&
+            reason == 30u && rip <= 0xffffffffu &&
+            (instruction_len >> 16) == 0x511u && (instruction_len & (1u << 4))) {
+            dbg_puts("[rt] x86 OVMF PCI configuration and fw_cfg string exit verified\n");
+            dbg_puts("[rt] x86 canonical host network attachment verified\n");
+            dbg_puts("[rt] x86 host block queue read verified\n");
+            dbg_puts("[rt] firmware exit reason="); dbg_hex(reason);
+            dbg_puts(" linear RIP="); dbg_hex(rip);
+            dbg_puts(" qualification="); dbg_hex(instruction_len); dbg_puts("\n");
+#endif
+#else
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+            status == AOS_X86_VTX_GUEST_FAULTS_PASS &&
+#elif defined(AGENTOS_X86_FIRMWARE_MODES)
+            status == AOS_X86_VTX_MODES_PASS &&
+#else
             status == AOS_X86_VTX_PROOF_PASS &&
+#endif
             (reason & 0xffffu) == AOS_X86_VTX_HLT_EXIT_REASON &&
             rip == AOS_X86_VTX_GUEST_RIP &&
             instruction_len == AOS_X86_VTX_HLT_INSTRUCTION_LEN) {
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+            dbg_puts("[rt] x86 guest GP read/write handlers and IRET recovery verified\n");
+#elif defined(AGENTOS_X86_FIRMWARE_MODES)
+            dbg_puts("[rt] x86 VMX real protected long entry modes verified\n");
+#else
             dbg_puts("[rt] x86 VMX EPT HLT exit verified\n");
+#endif
+#endif
         } else {
             dbg_puts("[rt] x86 VMX EPT proof FAILED status=");
             dbg_hex(status);

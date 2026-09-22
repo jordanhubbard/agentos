@@ -22,13 +22,19 @@
 
 #include "contracts/cc_contract.h"
 #include "contracts/guest_contract.h"
+#include "contracts/vibeos_contract.h"
 #include <platform/inspect.h>
 #include <platform/operator_session.h>
+#include <platform/framebuffer_observer.h>
+#include <platform/input.h>
 
 #define AGENTCTL_VERSION "0.2.0"
 #define DEFAULT_CC_SOCK "build/cc_pd.sock"
 #define MY_BADGE 0xA6E70001u
 #define CC_WIRE_SHMEM_SIZE 4096u
+#ifndef CC_FRAME_TIMEOUT_MS
+#define CC_FRAME_TIMEOUT_MS 30000
+#endif
 
 typedef struct {
     uint32_t opcode;
@@ -53,12 +59,16 @@ static void usage(FILE *out)
             "  inspect\n"
             "  session-inspect\n"
             "  list-guests\n"
+            "  create primary|secondary aarch64|x86_64 RAM_MB\n"
             "  guest-status HANDLE\n"
             "  list-devices TYPE [MAX]\n"
             "  device-status TYPE HANDLE\n"
             "  polecats | list-polecats\n"
-            "  log-stream SLOT PD_ID\n"
+            "  log-stream SLOT PD_ID  (one chunk, JSON data_hex preserves bytes)\n"
             "  fb-attach GUEST_HANDLE FB_HANDLE\n"
+            "  frame-capture GUEST_HANDLE OUTPUT.ppm\n"
+            "  input-batch GUEST_HANDLE keyboard|pointer TYPE CODE VALUE [TYPE CODE VALUE ...]\n"
+            "  input-release GUEST_HANDLE keyboard|pointer\n"
             "  send-input GUEST_HANDLE KEYCODE\n"
             "  suspend GUEST_HANDLE\n"
             "  resume GUEST_HANDLE\n"
@@ -88,6 +98,8 @@ static uint32_t parse_u32(const char *s, const char *name)
     return (uint32_t)v;
 }
 
+static bool connection_sync(int fd);
+
 static int connect_cc(void)
 {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -112,33 +124,69 @@ static int connect_cc(void)
         close(fd);
         return -1;
     }
+    if (!connection_sync(fd)) {
+        fprintf(stderr, "agentctl: CC connection synchronization failed\n");
+        close(fd);
+        return -1;
+    }
     return fd;
+}
+
+/* Absolute deadline per frame direction, including partial progress. */
+static bool transfer_full(int fd, void *buf, size_t n, bool writing)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) return false;
+    int64_t deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + CC_FRAME_TIMEOUT_MS;
+    uint8_t *p = buf;
+    while (n > 0) {
+        if (clock_gettime(CLOCK_MONOTONIC, &now)) return false;
+        int64_t left = deadline - ((int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000);
+        if (left <= 0) { errno = ETIMEDOUT; return false; }
+        struct pollfd wait = {.fd = fd, .events = writing ? POLLOUT : POLLIN};
+        int ready = poll(&wait, 1, (int)left);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) return false;
+        if (!ready) { errno = ETIMEDOUT; return false; }
+        int flags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+        if (writing) flags |= MSG_NOSIGNAL;
+#endif
+        ssize_t count = writing ? send(fd, p, n, flags) : recv(fd, p, n, flags);
+        if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (count < 0) return false;
+        if (!count) { errno = ECONNRESET; return false; }
+        p += (size_t)count;
+        n -= (size_t)count;
+    }
+    return true;
 }
 
 static bool write_full(int fd, const void *buf, size_t n)
 {
-    const uint8_t *p = (const uint8_t *)buf;
-    while (n > 0) {
-        ssize_t w = write(fd, p, n);
-        if (w < 0 && errno == EINTR) continue;
-        if (w <= 0) return false;
-        p += (size_t)w;
-        n -= (size_t)w;
-    }
-    return true;
+    return transfer_full(fd, (void *)buf, n, true);
 }
 
 static bool read_full(int fd, void *buf, size_t n)
 {
-    uint8_t *p = (uint8_t *)buf;
-    while (n > 0) {
-        ssize_t r = read(fd, p, n);
-        if (r < 0 && errno == EINTR) continue;
-        if (r <= 0) return false;
-        p += (size_t)r;
-        n -= (size_t)r;
-    }
-    return true;
+    return transfer_full(fd, buf, n, false);
+}
+
+static bool connection_sync(int fd)
+{
+    cc_reply_wire_t greeting, reply;
+    if (!read_full(fd, &greeting, sizeof(greeting)) ||
+        greeting.mr[0] != CC_CONNECTION_MAGIC ||
+        greeting.mr[1] != CC_CONNECTION_VERSION ||
+        !(greeting.mr[2] | greeting.mr[3])) return false;
+    for (unsigned i = 0; i < sizeof(greeting.shmem); ++i)
+        if (greeting.shmem[i]) return false;
+    cc_req_wire_t request = {.opcode = MSG_CC_CONNECTION_SYNC,
+        .mr = {CC_CONNECTION_VERSION, greeting.mr[2], greeting.mr[3]}};
+    if (!write_full(fd, &request, sizeof(request)) ||
+        !read_full(fd, &reply, sizeof(reply))) return false;
+    greeting.mr[0] = CC_OK;
+    return memcmp(&greeting, &reply, sizeof(reply)) == 0;
 }
 
 static bool cc_call(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3,
@@ -160,9 +208,12 @@ static bool cc_call(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3,
     if (fd < 0) return false;
     bool ok = write_full(fd, &req, sizeof(req)) &&
               read_full(fd, reply, sizeof(*reply));
+    int error = errno;
+    if (!ok) shutdown(fd, SHUT_RDWR);
     if (g_stream_fd < 0) close(fd);
     if (!ok) {
-        fprintf(stderr, "agentctl: CC frame I/O failed\n");
+        fprintf(stderr, "agentctl: CC frame I/O failed: %s; delivery is uncertain, request not replayed\n",
+                strerror(error));
     }
     return ok;
 }
@@ -171,6 +222,77 @@ static void print_raw_reply(const cc_reply_wire_t *r)
 {
     printf("{\"mr\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "]}\n",
            r->mr[0], r->mr[1], r->mr[2], r->mr[3]);
+}
+
+static bool frame_call(uint32_t handle, const aos_fb_observer_request_t *query,
+                       aos_fb_observer_response_t *response, uint8_t *pixels)
+{
+    cc_reply_wire_t reply;
+    if (!cc_call(MSG_CC_FRAME_CAPTURE, handle, 0, 0, query, sizeof(*query), &reply))
+        return false;
+    memcpy(response, reply.shmem, sizeof(*response));
+    if (reply.mr[0] != CC_OK || reply.mr[1] < sizeof(*response) ||
+        reply.mr[1] > sizeof(reply.shmem) || reply.mr[3] != AOS_FB_OBSERVER_VERSION ||
+        response->version != AOS_FB_OBSERVER_VERSION || response->id ||
+        response->status != AOS_FB_OBSERVER_OK || reply.mr[2] != response->status ||
+        response->length != reply.mr[1] - sizeof(*response) ||
+        response->length != (query->operation == AOS_FB_CAPTURE_READ ? query->length : 0)) {
+        fprintf(stderr, "agentctl: frame capture failed (CC=%u, observer=%u)\n",
+                reply.mr[0], response->status);
+        return false;
+    }
+    if (response->length) memcpy(pixels, reply.shmem + sizeof(*response), response->length);
+    return true;
+}
+
+static int cmd_frame_capture(uint32_t handle, const char *path)
+{
+    g_stream_fd = connect_cc();
+    if (g_stream_fd < 0) return 1;
+    aos_fb_observer_request_t query = {.version=AOS_FB_OBSERVER_VERSION,
+        .operation=AOS_FB_CAPTURE};
+    aos_fb_observer_response_t snapshot, response;
+    uint8_t *pixels = NULL;
+    int result = 1;
+    if (!frame_call(handle, &query, &snapshot, NULL)) goto done;
+    query.cookie = snapshot.cookie;
+    if (!snapshot.cookie || !snapshot.sequence || !snapshot.width || !snapshot.height ||
+        snapshot.width > AOS_FB_MAX_WIDTH || snapshot.height > AOS_FB_MAX_HEIGHT) goto release;
+    uint32_t bytes = snapshot.width * snapshot.height * AOS_FB_PIXEL_BYTES;
+    pixels = malloc(bytes);
+    if (!pixels) goto release;
+    query.operation = AOS_FB_CAPTURE_READ;
+    for (query.offset = 0; query.offset < bytes; query.offset += query.length) {
+        query.length = bytes - query.offset;
+        if (query.length > CC_WIRE_SHMEM_SIZE - sizeof(response))
+            query.length = CC_WIRE_SHMEM_SIZE - sizeof(response);
+        if (!frame_call(0, &query, &response, pixels + query.offset) ||
+            response.cookie != snapshot.cookie || response.sequence != snapshot.sequence ||
+            response.width != snapshot.width || response.height != snapshot.height) goto release;
+    }
+    /* PPM is a portable raster artifact, not an in-repository viewer. Refuse
+     * to overwrite an existing file; never leave a partial capture on error. */
+    FILE *file = fopen(path, "wx");
+    if (!file) { perror("agentctl: capture output"); goto release; }
+    bool written = fprintf(file, "P6\n%u %u\n255\n", snapshot.width, snapshot.height) > 0;
+    for (uint32_t offset = 0; written && offset < bytes; offset += 4) {
+        const uint8_t rgb[] = {pixels[offset+2], pixels[offset+1], pixels[offset]};
+        written = fwrite(rgb, 1, sizeof(rgb), file) == sizeof(rgb);
+    }
+    if (fclose(file) != 0) written = false;
+    if (!written) { unlink(path); goto release; }
+    printf("{\"width\":%u,\"height\":%u,\"sequence\":%" PRIu64 ",\"bytes\":%u}\n",
+           snapshot.width, snapshot.height, snapshot.sequence, bytes);
+    result = 0;
+release:
+    query.operation = AOS_FB_CAPTURE_RELEASE;
+    query.offset = query.length = 0;
+    if (query.cookie && !frame_call(0, &query, &response, NULL)) result = 1;
+done:
+    free(pixels);
+    close(g_stream_fd);
+    g_stream_fd = -1;
+    return result;
 }
 
 static int cmd_inspect(void)
@@ -265,6 +387,37 @@ static int cmd_status(int argc, char **argv)
     return r.mr[0] == CC_OK ? 0 : 1;
 }
 
+static int cmd_create(int argc, char **argv)
+{
+    if (argc != 3) return 2;
+    struct vibeos_create_req request = {0};
+    _Static_assert(sizeof(request) == 52u, "CC CREATE wire ABI");
+    if (!strcmp(argv[0], "primary")) request.os_type = VIBEOS_PROFILE_PRIMARY;
+    else if (!strcmp(argv[0], "secondary")) request.os_type = VIBEOS_PROFILE_SECONDARY;
+    else {
+        fprintf(stderr, "agentctl: profile must be primary or secondary\n");
+        return 2;
+    }
+    if (!strcmp(argv[1], "aarch64")) request.arch = VIBEOS_ARCH_AARCH64;
+    else if (!strcmp(argv[1], "x86_64")) request.arch = VIBEOS_ARCH_X86_64;
+    else {
+        fprintf(stderr, "agentctl: architecture must be aarch64 or x86_64\n");
+        return 2;
+    }
+    request.ram_mb = parse_u32(argv[2], "ram_mb");
+    if (request.ram_mb < 64u || request.ram_mb > 8192u || (request.ram_mb & 3u)) {
+        fprintf(stderr, "agentctl: RAM_MB must be a multiple of 4 between 64 and 8192\n");
+        return 2;
+    }
+    request.device_flags = VIBEOS_DEV_SERIAL | VIBEOS_DEV_NET | VIBEOS_DEV_BLOCK;
+    cc_reply_wire_t reply;
+    if (!cc_call(MSG_CC_CREATE_GUEST, 0, 0, 0, &request, sizeof(request), &reply)) return 1;
+    printf("{\"ok\":%" PRIu32 ",\"guest_handle\":%" PRIu32
+           ",\"recovery_handle\":%" PRIu32 "}\n",
+           reply.mr[0], reply.mr[1], reply.mr[2]);
+    return reply.mr[0] == CC_OK ? 0 : 1;
+}
+
 static int cmd_list_guests(void)
 {
     cc_reply_wire_t r;
@@ -333,6 +486,65 @@ static int cmd_simple(uint32_t opcode, uint32_t mr1, uint32_t mr2, uint32_t mr3)
     print_raw_reply(&r);
     return r.mr[0] == CC_OK ? 0 : 1;
 }
+
+static int cmd_log_stream(uint32_t slot, uint32_t pd_id)
+{
+    cc_reply_wire_t r;
+    if (!cc_call(MSG_CC_LOG_STREAM, slot, pd_id, 0, NULL, 0, &r)) return 1;
+    if (r.mr[0] != CC_OK) {
+        print_raw_reply(&r);
+        return 1;
+    }
+    if (r.mr[1] > sizeof(r.shmem)) {
+        fprintf(stderr, "agentctl: invalid console reply length: %u\n", r.mr[1]);
+        return 1;
+    }
+    /* Console data is bytes, not necessarily UTF-8 or safe terminal text. */
+    printf("{\"mr\":[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+           "],\"data_hex\":\"", r.mr[0], r.mr[1], r.mr[2], r.mr[3]);
+    for (uint32_t i = 0; i < r.mr[1]; ++i) printf("%02x", (unsigned)r.shmem[i]);
+    puts("\"}");
+    return ferror(stdout) ? 1 : 0;
+}
+
+static int cmd_input(int argc,char **argv,bool release)
+{
+    if (release ? argc!=2 : (argc<5 || (argc-2)%3 ||
+        (unsigned)(argc-2)/3>=AOS_INPUT_BATCH_EVENTS)) return 2;
+    aos_input_request_t query={.version=release ? AOS_INPUT_RELEASE_VERSION : AOS_INPUT_VERSION};
+    uint32_t handle=parse_u32(argv[0],"guest_handle");
+    if (!strcmp(argv[1],"keyboard")) query.device=AOS_INPUT_KEYBOARD;
+    else if (!strcmp(argv[1],"pointer")) query.device=AOS_INPUT_POINTER;
+    else return 2;
+    for (int i=2;i<argc;i+=3) {
+        uint32_t type=parse_u32(argv[i],"event type"),code=parse_u32(argv[i+1],"event code");
+        char *end;
+        errno=0;
+        long long value=strtoll(argv[i+2],&end,0);
+        if (errno || end==argv[i+2] || *end || value<INT32_MIN || value>INT32_MAX ||
+            type>UINT16_MAX || code>UINT16_MAX || !type) return 2;
+        query.events[query.count++]=(aos_input_event_t){(uint16_t)type,(uint16_t)code,(int32_t)value};
+    }
+    if (!release) ++query.count; /* zero-initialized final SYN_REPORT completes the batch */
+    cc_reply_wire_t reply;
+    if (!cc_call(MSG_CC_INPUT_SUBMIT,handle,0,0,&query,sizeof(query),&reply)) return 1;
+    aos_input_response_t response;
+    memcpy(&response,reply.shmem,sizeof(response));
+    if (reply.mr[0]!=CC_OK || reply.mr[1]!=sizeof(response) ||
+        reply.mr[3]!=query.version || response.version!=query.version ||
+        response.id || response.status>AOS_INPUT_WOULD_BLOCK ||
+        reply.mr[2]!=response.status ||
+        response.accepted!=(response.status==AOS_INPUT_OK ? query.count : 0u)) {
+        fprintf(stderr,"agentctl: invalid input response (CC=%u)\n",reply.mr[0]);
+        return 1;
+    }
+    printf("{\"status\":%u,\"accepted\":%u}\n",response.status,response.accepted);
+    /* No implicit retries: a transport failure gives no delivery guarantee. */
+    return response.status==AOS_INPUT_OK ? 0 : 1;
+}
+
+static int cmd_input_batch(int argc,char **argv) { return cmd_input(argc,argv,false); }
+static int cmd_input_release(int argc,char **argv) { return cmd_input(argc,argv,true); }
 
 static int cmd_send_input(int argc, char **argv)
 {
@@ -410,10 +622,15 @@ int main(int argc, char **argv)
     char **args = &argv[i];
 
     if (strcmp(cmd, "inspect") == 0) return n == 0 ? cmd_inspect() : 2;
+    if (strcmp(cmd, "frame-capture") == 0)
+        return n == 2 ? cmd_frame_capture(parse_u32(args[0], "guest_handle"), args[1]) : 2;
+    if (strcmp(cmd,"input-batch")==0) return cmd_input_batch(n,args);
+    if (strcmp(cmd,"input-release")==0) return cmd_input_release(n,args);
     if (strcmp(cmd, "session-inspect") == 0) return n == 0 ? cmd_session_inspect() : 2;
     if (strcmp(cmd, "connect") == 0) return cmd_connect();
     if (strcmp(cmd, "status") == 0) return cmd_status(n, args);
     if (strcmp(cmd, "list-guests") == 0) return cmd_list_guests();
+    if (strcmp(cmd, "create") == 0) return cmd_create(n, args);
     if (strcmp(cmd, "guest-status") == 0) return cmd_guest_status(n, args);
     if (strcmp(cmd, "list-devices") == 0) return cmd_list_devices(n, args);
     if (strcmp(cmd, "device-status") == 0 && n >= 2) {
@@ -425,9 +642,8 @@ int main(int argc, char **argv)
         return cmd_simple(MSG_CC_LIST_POLECATS, 0, 0, 0);
     }
     if (strcmp(cmd, "log-stream") == 0 && n >= 2) {
-        return cmd_simple(MSG_CC_LOG_STREAM,
-                          parse_u32(args[0], "slot"),
-                          parse_u32(args[1], "pd_id"), 0);
+        return cmd_log_stream(parse_u32(args[0], "slot"),
+                              parse_u32(args[1], "pd_id"));
     }
     if (strcmp(cmd, "fb-attach") == 0 && n >= 2) {
         return cmd_simple(MSG_CC_ATTACH_FRAMEBUFFER,

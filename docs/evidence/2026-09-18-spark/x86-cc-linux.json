@@ -1,0 +1,56 @@
+{
+  "schema": "agentos.x86_cc_linux.v1",
+  "revision": "85effaeb7a437a46df66cccae32a58073356ae13",
+  "host": "Intel Linux madmax, reached through puck.local",
+  "local_regression_host": "sparky Linux aarch64",
+  "command": "make gate-x86_64-cc-linux SEL4_SDK_VERSION=2.3.0 X86_ROOT_DISK=/tmp/agentos-debian-amd64/boot-24.raw X86_SSH_KEY=/tmp/agentos-debian-amd64/ssh-seed-19/identity X86_SSH_PORT=12224 X86_SSH_KNOWN_HOSTS=/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-LxAV1n.known_hosts X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=600",
+  "result": "passed",
+  "guest": "pinned debian-amd64.toml profile, Debian 13 x86_64",
+  "acceptance": [
+    "Boot handle zero rejected before explicit creation",
+    "Early CREATE returned CC_ERR_RELAY_FAULT; second attempt returned handle 1",
+    "Linux login reached through binary CC over modern PCI VirtIO console and canonical serial queues",
+    "Public-key SSH retained the previously pinned Ed25519 host identity; uname returned x86_64 and sync succeeded",
+    "Linux terminal echoed the exact agentos-cc-input-probe bytes submitted through CC input",
+    "DESTROY succeeded; subsequent status, suspend and resume rejected the stale handle"
+  ],
+  "artifacts": {
+    "intel_run_log": "/tmp/agentos-x86-cc-linux-intel-retry.log on sparky",
+    "intel_run_sha256": "40ca3ac1a2144c187e8872a9ae746a3485474ecc0a2866e34fb8abe52fb02d87",
+    "intel_serial_log": "build/tmp/agentos-qemu-KQmCgm.log on Intel host",
+    "intel_serial_sha256": "56088dda137de580e2c544f525b75ae41a292351f52f66bfc8017a66d929e88f",
+    "intel_console_log": "build/tmp/agentos-qemu-KQmCgm.console.log on Intel host",
+    "intel_console_sha256": "f2cee951785676e80683ab9a60cbe974b467a96ab4be6bd0bb7ab32988d6e077",
+    "intel_input_log": "build/tmp/agentos-qemu-KQmCgm.cc-input.log on Intel host",
+    "intel_input_sha256": "8aa0775e953d228f3885e3f27feac39171ca2f409e32000ebdd80014c98238a4",
+    "root_task_sha256_before_regression_rebuild": "505a774d5f777528b396e5c9b9492834e9bc6d77f3962498b9be8874614f3fa7",
+    "spark_gate_log": "/tmp/agentos-x86-cc-init-gate.log",
+    "spark_gate_sha256": "eb2c0cdfef3cadbeff95aec26b0ba13d1fe53efc474bad00426fa68e864b3bd0",
+    "host_control_test_sha256": "497eae77b1a37f577ad7798235d3f73a09244a2ccdd9e35f40181cb6fb43da0d",
+    "native_regression_log": "/tmp/agentos-x86-cc-init-native.log",
+    "native_regression_sha256": "90adb6aa866fb1d97635d272835675fdb7d0facdbd9abbab70d299a1b98d91a7",
+    "native_regression_serial_log": "build/tmp/agentos-qemu-0Nc9CD.log on Intel host",
+    "native_regression_serial_sha256": "927dd1080d386971685ca4203c33ce95238a33746936627a97712d9b82992f38"
+  },
+  "regressions": {
+    "make_gate_on_spark": "passed",
+    "make_test_x86_control_host": "passed, including early call rejection without state mutation",
+    "make_gate_x86_64_teardown": "passed: native manager lifecycle, Linux ring3, terminal teardown and zeroed pool reuse"
+  },
+  "superseded_attempt": {
+    "revision": "1efb0f0",
+    "result": "failed",
+    "reason": "CREATE arrived during initial block read; the notification-only wait interpreted the manager badge as fatal and parked the VMM",
+    "log": "/tmp/agentos-x86-cc-linux-intel.log",
+    "sha256": "4c78a7ef38105f7d4a82cf4e0334fb9d47724ccd2eaec5d6a0f594b8105196df",
+    "fix": "Initialization wait returns GUEST_ERR_NOT_READY to early callers without executing lifecycle operations; device notification handling remains separate"
+  },
+  "limitations": [
+    "This tests the production CC wire path through the Rust qualification client, not the native agentos_gui application",
+    "Console input evidence is terminal echo, not desktop keyboard or pointer input",
+    "No guest recreation, concurrent writable-disk isolation, or runtime desktop-resource profile acceptance is established",
+    "The profile reserves guest RAM at boot; CREATE does not dynamically size that allocation",
+    "Unexpected fatal VMM errors outside this startup race can still park the VMM",
+    "Required GitHub CI, canonical integration and the full v0.4 release remain pending"
+  ]
+}

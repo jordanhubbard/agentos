@@ -1,0 +1,21 @@
+{
+  "status": "failed before reconstruction: first guest console identity timeout",
+  "source_revision": "85598ed",
+  "host": "Spark Linux AArch64",
+  "sdk": "microkit-sdk-2.3.1-agentos-e60776ac-cr2",
+  "command": "make test-debian-managed-graphics-recreation QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12266",
+  "qemu_stem": "agentos-qemu-nfy3El",
+  "observations": [
+    "Guest console reached network-online and cloud-init modules:config at guest uptime 1777 seconds, but the console identity assertion did not pass before the configured deadline.",
+    "Make reported failure and both the QEMU and xtask processes were confirmed absent before any new run.",
+    "No destroy or reconstruction checkpoint was reached. This result neither proves nor disproves the earlier graphics reconstruction fault.",
+    "A separate same-revision diagnostic was started with QEMU_TEST_TIMEOUT=3600 to reach the reconstruction checkpoints. It does not replace this failed result or establish a release pass."
+  ],
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/graphics-85598ed-startup-timeout",
+  "sha256": {
+    "test.log": "10014de15a917104e97bc2e656f3b12128233d03438c9d3ff3820c371ee31660",
+    "agentos-qemu-nfy3El.first.console.log": "9713844ba00687488e12045cbb5602ac233276580e58bd7af214615e1ebc2802",
+    "agentos-qemu-nfy3El.log": "4d01746f66544e43aa0be9afbf293613721e2ef6dab64e25633c14304b95c3b8"
+  },
+  "limits": "No graphics, input, disk witness, or managed reconstruction acceptance from this run. Host load was inspected only after termination and cannot establish the cause of slow startup."
+}

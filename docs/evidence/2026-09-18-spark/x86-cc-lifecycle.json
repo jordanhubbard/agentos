@@ -1,0 +1,50 @@
+{
+  "qualification": "External CC lifecycle of the Intel firmware guest",
+  "runtime_revision": "27b70c4a507c40b4e3974ea5da4ad7b1147de8b9",
+  "spark": {
+    "command": "make gate",
+    "result": "PASS, exit 0",
+    "log_sha256": "c4588aca065f7671ad8cef57755b66bb45fa86a8c8cd154ad7bdabe710bf3354"
+  },
+  "intel_cc": {
+    "host": "madmax Intel Linux via puck.local",
+    "sdk": "2.3.0",
+    "command": "make run-x86_64-cc with the pinned OVMF fixture",
+    "pid": 3770791,
+    "result": "External agentctl CREATE, status, suspend, status, resume, delayed status, destroy and empty inventory passed",
+    "observations": [
+      "Boot inspection reported memory.guest_ram_bytes=268435456 and eight x86 PDs",
+      "CREATE primary x86_64 64 returned public handle 1 and no recovery handle",
+      "Guest status reported state 4 (running), then 5 (suspended), then 4 after resume",
+      "Guest remained controllable after an additional 30-second observation interval",
+      "DESTROY returned CC_OK and LIST returned zero guests",
+      "Status and RESUME for old handle 1 returned CC_ERR_BAD_HANDLE (6)",
+      "A new CREATE after terminal teardown returned CC_ERR_RELAY_FAULT (8), no public or recovery handle; recreation is not implemented"
+    ],
+    "client_first_log_sha256": "c9a0d62e80aeddd3a4927da5e69f64262a83ef525fcc10acfc0de1e9e3fee55b",
+    "client_destroy_log_sha256": "c5e6f5e7c5f3cea8eb1279c52d9e0e02086b8b0c43917efb0e03ed5873214335",
+    "launch_log_sha256": "d4ec899e1826ac6f9f395c815dfb20b2c0e856b498eacc779fc494709984128a",
+    "root_task_sha256": "13dc40f68c60a5f42a4f8d429526974800ed15f49c62deeb11088aa2098aef0f",
+    "artifacts": "build/evidence/x86-cc-27b70c4 on Intel host",
+    "cleanup": "Guest destroyed; QEMU explicitly terminated and launcher exited 0"
+  },
+  "native_regression": {
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 with pinned OVMF/kernel/initrd and QEMU_TEST_TIMEOUT=600",
+    "result": "PASS, exit 0; Linux ring3, native manager lifecycle, stale capabilities and zeroed pool reuse",
+    "pid": 3781331,
+    "stem": "agentos-qemu-oTfJq8",
+    "log_sha256": "69af6787642f859390747cf9b2066b6f2a9e9bc69f984f60ab1453bcbaa249b4",
+    "serial_sha256": "530ec48752ed710d90cb56f3450c973b68ef994319cd3d9c5d19cc0b2423846b"
+  },
+  "diagnosis": {
+    "initial_composition": "32 MiB default could not admit the public CC minimum of 64 MiB; CC now defaults to a 256 MiB reservation",
+    "initial_destroy_failure": "At 2d80509 the qualification-only 65536-exit budget parked the VMM and DESTROY timed out. CC mode now uses caller-controlled lifetime; bounded native qualification is unchanged",
+    "failed_launch_log_sha256": "b021112265ae4a9b7b0052c39cc74e8b9ca8cb7f1c412be9ed5e85a1c337a945"
+  },
+  "limits": [
+    "External lifecycle used OVMF, not a Linux distribution; the separate native regression is not external Linux-console evidence",
+    "Empty console replies do not qualify bidirectional guest console I/O",
+    "Guest recreation, external GUI acceptance and abrupt-disconnect input release remain open",
+    "Required GitHub CI, canonical integration and v0.4 release remain pending"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "revision": "87dd76e",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "command": "make gate",
+  "exit_code": 0,
+  "status": "passed",
+  "log": "/tmp/agentos-graphics-quiesce-full-gate.log",
+  "log_sha256": "320b9edf890b12cf4f1374ef5e8ef8a38d80f9d98465c2297bb0fa335cdc3e44",
+  "scope": "Host tests including actual GPU/input quiescence and retryable framebuffer cleanup, both backend SDK builds, both root architectures, ARM canonical guest I/O",
+  "limits": [
+    "Device quiescence is not yet wired into production teardown.",
+    "The seeded graphics target receipt is from 65940ec, before these quiescence changes.",
+    "Guest recreation and complete resource reclamation remain unqualified."
+  ]
+}

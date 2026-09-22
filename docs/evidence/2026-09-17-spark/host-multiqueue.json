@@ -1,0 +1,77 @@
+{
+  "qualification": "Independent host virtio queue handles",
+  "runtime_revision": "a071907c3a385a7751e057d02441f729935d839a",
+  "sdk_version": "2.3.0",
+  "checks": [
+    {
+      "host": "Spark ARM64",
+      "command": "make test-virtio-host-transport test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/host-multiqueue-a071907/focused.log",
+      "sha256": "8b182930f502cfbd52c9e95b2371635b5ef56e873c1c0155bd87e5ffa1bb1ef1"
+    },
+    {
+      "host": "Spark ARM64",
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS",
+      "log": "build/evidence/host-multiqueue-a071907/gate.log",
+      "sha256": "1f1b470fe603a985aec17813ec7ac3c6240f600ee34964e5e8963cb2d1089cd2"
+    },
+    {
+      "host": "madmax Intel Linux via puck.local",
+      "command": "make gate-x86_64-storage SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+      "result": "PASS",
+      "log": "build/evidence/host-multiqueue-a071907/intel.log",
+      "sha256": "2ac0928b95354ce3a9120f6aa0ce2258cf3302aa97fe23b4edf771a050d56dfa"
+    }
+  ],
+  "intel_receipt": {
+    "disk": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-t4BamW/disk.img",
+    "phases": [
+      {
+        "artifacts": {
+          "agentos.img": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-t4BamW/write/agentos.img",
+            "sha256": "0c17dca6c08483f94eb764c6403f3da815514adcb10ad543d21fdc5a28fd897a"
+          },
+          "root_task.elf": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-t4BamW/write/root_task.elf",
+            "sha256": "ce0a5631898acecb4082382d4f14c45b4054563bff55cbd76d93f0b324c67690"
+          }
+        },
+        "disk_sha256": "e5617c82288dc536b1b6d18642aa98b33546a26d53dd01626da22b8f6976865f",
+        "initrd_sha256": "1577b1858f3ec5e20588f7fedc148fb4b99f99cf6ec152a6fa8a7bcab548c420",
+        "phase": "write",
+        "result": "PASS"
+      },
+      {
+        "artifacts": {
+          "agentos.img": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-t4BamW/verify/agentos.img",
+            "sha256": "d534e8a464b63cd14ffaf49af7d231ac3789eecdcbc2a87e7c7b9c61259ae9ff"
+          },
+          "root_task.elf": {
+            "path": "/tmp/agentos-v04-intel-discovery/build/tmp/x86-storage-t4BamW/verify/root_task.elf",
+            "sha256": "8840206003930e59f40e9c9f41a8d66ecab2be9eaf5bb254fd251fc4138b5542"
+          }
+        },
+        "disk_sha256": "e5617c82288dc536b1b6d18642aa98b33546a26d53dd01626da22b8f6976865f",
+        "initrd_sha256": "37a0e5fc68065d8bc3f630fa2d199e1188fe6cd9fdf39db7b73390fa39ba9703",
+        "phase": "verify",
+        "result": "PASS"
+      }
+    ],
+    "scope": "Single guest, two complete platform cold boots; no concurrent isolation or guest lifecycle reset claim"
+  },
+  "observations": [
+    "Host register fixtures exercise independent MMIO and PCI RX/TX queue handles. PCI queue notification offsets differ and unrelated notification slots remain untouched.",
+    "Tests require failed configuration to preserve the output handle, reject a different transport owner and invalidate handles on a status reset, including after a fresh queue bind.",
+    "The single-queue block wrapper passed the full Spark gate and actual Intel guest write/fsync/read-only cold-boot verification.",
+    "No Intel qualification QEMU remained after completion."
+  ],
+  "limitations": [
+    "The NIC driver has not adopted this API yet. Simultaneous hardware RX/TX queues and PCI NIC traffic are not qualified.",
+    "Callers serialize register accesses and discard queue handles when rebinding the transport. Resetting status is not DMA revocation or resource reclamation.",
+    "Canonical integration, Debian, GUI and v0.4 release remain incomplete."
+  ]
+}

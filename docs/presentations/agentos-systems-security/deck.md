@@ -24,9 +24,10 @@ agentOS boots on seL4 and places the root task, system services, VMMs, and
 agents in separate protection domains. Linux and FreeBSD are workloads above
 that boundary.
 
-Each agent, service and VMM receives explicit authority. Revocation and resource
-reclamation must also be implemented and tested; destroyed guest slots cannot
-yet be recreated in the same image.
+Each agent, service and VMM receives explicit authority. Scoped AArch64 and
+Intel Debian tests now destroy and recreate guests in the same image, with
+fresh handles and preserved disk witnesses. That is not yet a claim about
+every guest type or physical platform.
 
 > Speaker notes: Do not use numbered rings. On AArch64, seL4 is EL2,
 > agentOS PDs are EL0, and guest kernels are EL1 in guest VSpaces.
@@ -118,8 +119,9 @@ Console uses a separate serial_virt PD. A native Rust PD reaches the same
 canonical NIC through its own client page beside a live Ubuntu guest.
 
 > Speaker notes: The key security distinction is emulation versus passthrough.
-> Cite the virtio host tests and target evidence specifically. Do not imply the
-> future display path is already at this maturity.
+> Cite the virtio host tests and target evidence specifically.
+> AArch64 display/input now have separate guest-visible qualification; physical
+> GPU ownership and performance require additional evidence.
 > Detailed current and target diagrams: `docs/security-architecture.md`.
 > Each VMM maps only its own network and block client pages. The native client
 > maps a third network page; driver transfers use a fourth. Target fault probes
@@ -130,9 +132,9 @@ canonical NIC through its own client page beside a live Ubuntu guest.
 
 ## 6. Two foreign kernels, one capability system
 
-**Current release gate under qualification**
+**Default scenario qualified at a recorded revision**
 
-One AArch64 agentOS instance can create Linux and FreeBSD guests through
+One AArch64 agentOS instance can create pinned Debian and FreeBSD guests through
 CC-PD and `vm_manager`. The acceptance gate requires both to
 remain live and accept distinct key-only SSH sessions concurrently.
 
@@ -142,8 +144,9 @@ A second kernel is not a screenshot feature. It tests whether lifecycle,
 memory, console, network, and block abstractions are actually guest-neutral.
 
 > Speaker notes: The gate is `make demo-test`; retain its exact transcript
-> before changing this page to “proven in release.” The open qualification work
-> is MAC task `task_73b8e18d4e71424fb8223d7e555b1831`.
+> before changing this page to “proven in release.” The default scenario passed
+> at `67c2fe04`; see `debian-default-scenario.json`. Release integration remains
+> pending, and managed Debian reconstruction is a separate proof.
 
 ---
 
@@ -242,9 +245,10 @@ source contract
 
 `make test-host` is a fast filter. `make gate` proves both stub-boot targets
 and guest network, block, and console behavior. `make demo-test` must pass
-before claiming concurrent authenticated dual-guest SSH. It passed at
-`d3da13e1`, including FreeBSD suspend/resume; `docs/TCB.md` records the retained
-image hash. A release still requires evidence for its exact revision.
+before claiming concurrent authenticated dual-guest SSH. The Debian/FreeBSD
+scenario passed at `67c2fe04`, including FreeBSD suspend/resume. The full
+default-SDK gate passed at `b2b86f5c`. A release still requires evidence for
+its exact revision.
 
 > Speaker notes: This page is deliberately about epistemology. “Tests pass”
 > means little unless the audience knows what layer the tests execute.
@@ -275,7 +279,7 @@ Required proof:
 
 ## 13. Real display virtualization follows the service boundary
 
-**0.4 milestone — planned**
+**AArch64 guest-visible qualification**
 
 ```text
 guest DRM / input drivers
@@ -291,8 +295,11 @@ The guest receives standard virtual devices. It does not receive the host
 framebuffer, GPU MMIO, or interrupts. External tools consume exported frames
 through a documented API.
 
-> Speaker notes: Current `framebuffer_pd` maturity is predominantly host-tested
-> surface management. State that limitation before showing the planned path.
+> Speaker notes: Two independent managed-recreation runs at `adcf5a80` passed
+> exact frame pixels, evdev events, held/disconnected-input release and disk
+> witnesses in both generations. GUI main includes the tested native IPC
+> consumer. These are software QEMU/X11 results, not physical GPU qualification
+> or an input-to-render latency claim.
 
 ---
 
@@ -300,21 +307,20 @@ through a documented API.
 
 **0.4 through 0.6 milestones — critical path**
 
-The reduced x86_64 root-task topology already supports build and smoke work.
-Guest support still requires:
+Intel Linux with nested VMX now runs Debian userspace through generated ACPI,
+pinned UEFI and canonical network, block and console services. Scoped tests
+cover managed recreation, bounded 2 GiB memory, two virtual CPUs, persistent
+writes and independent media.
 
-1. VMX/vCPU and EPT-backed guest isolation;
-2. interrupt virtualization and x86 boot descriptions;
-3. architecture-neutral guest flavors;
-4. canonical virtio net, block, and console reuse;
-5. persistent Arch Linux, authenticated SSH, and desktop-class resources;
-6. graphics/input and a Hyprland-class compositor on the generic x86 path;
-7. an official reproducible Omarchy artifact, encrypted installation, desktop,
-   update, and recovery evidence before an Omarchy support claim.
+Later milestones still require persistent Arch Linux, x86 graphics/input and a
+Hyprland-class compositor. Official Omarchy additionally requires reproducible
+artifacts, encrypted installation, update and recovery evidence.
 
-> Speaker notes: Do not call the present x86 target “guest support.” The
-> acceptance line is userspace execution plus device, lifecycle, and isolation
-> evidence.
+> Speaker notes: Keep the generic x86 root smoke distinct from the Intel VMX
+> guest tests. The SDK uses an approved scoped CR2 preservation patch; its
+> source, recipe and hashes ship together. Two vCPUs do not establish parallel
+> execution on two host cores, arbitrary CPU-feature support or physical
+> power-loss durability. Read the revision-specific Intel receipt limits.
 
 ---
 

@@ -18,7 +18,7 @@ SDDF_ABS       := $(LIBVMM_ABS)/dep/sddf
 DTC            := dtc
 
 # BOARD_DIR: seL4 SDK board package containing include/ and lib/.
-SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK_VERSION ?= $(strip $(shell cat "$(AGENTOS_ROOT)/tools/sdk/default-version"))
 SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 SEL4_PROFILE ?= release
 BOARD_DIR ?= $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)
@@ -60,6 +60,19 @@ VMM_CFLAGS := \
     -MD -MP \
     -target aarch64-none-elf
 
+ifdef GUEST_RAM_RECYCLE_TEST
+VMM_CFLAGS += -DAGENTOS_GUEST_RAM_RECYCLE_TEST=1
+endif
+ifdef GUEST_QUEUE_RECYCLE_TEST
+VMM_CFLAGS += -DAGENTOS_GUEST_QUEUE_RECYCLE_TEST=1
+endif
+ifeq ($(GUEST_MANAGED_BOOT),1)
+VMM_CFLAGS += -DAGENTOS_GUEST_MANAGED_BOOT=1
+endif
+ifdef GUEST_BLOCK_DRAIN_TEST
+VMM_CFLAGS += -DAGENTOS_GUEST_BLOCK_DRAIN_TEST=1
+endif
+
 ifneq ($(filter dual-primary dual-secondary,$(GUEST_PLACEMENT)),)
 VMM_CFLAGS += -DAGENTOS_GUEST_DUAL=1
 endif
@@ -89,6 +102,29 @@ $(error VMM_SLOT must be primary or secondary, got '$(VMM_SLOT)')
 endif
 
 VMM_CONFIG_STAMP := $(BUILD_DIR)/vmm-$(VMM_SLOT).stamp
+ifdef GUEST_INPUT
+VMM_CFLAGS += -DAGENTOS_GUEST_INPUT=1
+GUEST_INPUT_OBJS := $(BUILD_DIR)/vmm_virtio_input.$(VMM_SLOT).o $(BUILD_DIR)/input_queue.$(VMM_SLOT).o $(BUILD_DIR)/input_rebind.$(VMM_SLOT).o
+endif
+$(BUILD_DIR)/input_rebind.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/input-virt/rebind_client.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/vmm_virtio_input.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/input-virt/vmm_virtio_input.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/input_queue.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/input-virt/service.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+ifdef GUEST_GRAPHICS
+VMM_CFLAGS += -DAGENTOS_GUEST_GRAPHICS=1
+GUEST_GPU_OBJS := $(BUILD_DIR)/gpu_framebuffer.$(VMM_SLOT).o $(BUILD_DIR)/vmm_virtio_gpu.$(VMM_SLOT).o $(BUILD_DIR)/gpu_queue.$(VMM_SLOT).o $(BUILD_DIR)/graphics_rebind.$(VMM_SLOT).o
+endif
+$(BUILD_DIR)/graphics_rebind.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/framebuffer/rebind_client.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/gpu_framebuffer.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/gpu-virt/framebuffer_adapter.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/vmm_virtio_gpu.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/gpu-virt/vmm_virtio_gpu.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/gpu_queue.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/framebuffer/service.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
 
 $(VMM_CONFIG_STAMP): FORCE
 	@mkdir -p $(BUILD_DIR)
@@ -169,7 +205,17 @@ VMM_PD_ENTRY_OBJ   := $(BUILD_DIR)/pd_entry.$(VMM_SLOT).vmm.o
 VMM_VIRTIO_NET_OBJ := $(BUILD_DIR)/vmm_virtio_net.$(VMM_SLOT).o
 GPA_TRANSLATE_OBJ  := $(BUILD_DIR)/gpa_translate.$(VMM_SLOT).o
 VMM_GUEST_RAM_OBJ  := $(BUILD_DIR)/vmm_guest_ram.$(VMM_SLOT).o
-GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o
+VMM_GUEST_PAGING_OBJ := $(BUILD_DIR)/vmm_guest_paging.$(VMM_SLOT).o
+VMM_GUEST_EXECUTION_OBJ := $(BUILD_DIR)/vmm_guest_execution.$(VMM_SLOT).o
+GUEST_VMM_RUNTIME_OBJ := $(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o $(BUILD_DIR)/guest_teardown.$(VMM_SLOT).o $(BUILD_DIR)/arm_recreate.$(VMM_SLOT).o $(BUILD_DIR)/net_rebind.$(VMM_SLOT).o $(BUILD_DIR)/blk_rebind.$(VMM_SLOT).o $(BUILD_DIR)/serial_rebind.$(VMM_SLOT).o
+$(BUILD_DIR)/net_rebind.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/net-virt/rebind_client.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/blk_rebind.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/blk-virt/rebind_client.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/serial_rebind.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/serial-virt/rebind_client.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/arm_recreate.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/guest-vmm/arm_recreate.c $(VMM_CONFIG_STAMP)
+	clang $(VMM_CFLAGS) -c $< -o $@
 GUEST_SERIAL_OBJS := $(BUILD_DIR)/serial_pump.$(VMM_SLOT).o $(BUILD_DIR)/serial_endpoint.$(VMM_SLOT).o
 GUEST_VMM_LOOP_OBJ := $(BUILD_DIR)/guest_vmm_loop.$(VMM_SLOT).o
 GUEST_PROFILE_VALIDATE_OBJ := $(BUILD_DIR)/guest_profile_validate.$(VMM_SLOT).o
@@ -223,6 +269,14 @@ $(GPA_TRANSLATE_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/gpa_translate.c $(VMM_C
 	@echo "[VMM] Compiling gpa_translate.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
+$(VMM_GUEST_PAGING_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_paging.c $(VMM_CONFIG_STAMP)
+	@mkdir -p $(BUILD_DIR)
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(VMM_GUEST_EXECUTION_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_execution.c $(VMM_CONFIG_STAMP)
+	@mkdir -p $(BUILD_DIR)
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
 $(VMM_GUEST_RAM_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_ram.c $(VMM_CONFIG_STAMP) \
                       $(AGENTOS_ROOT)/platform/include/platform/guest_ram.h \
                       $(LIBVMM_ABS)/include/libvmm/virtio/gpa.h
@@ -230,10 +284,16 @@ $(VMM_GUEST_RAM_OBJ): $(AGENTOS_ROOT)/platform/guest-ram/vmm_guest_ram.c $(VMM_C
 	@echo "[VMM] Compiling vmm_guest_ram.c..."
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
-$(GUEST_VMM_RUNTIME_OBJ): $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c $(VMM_CONFIG_STAMP) \
+$(BUILD_DIR)/guest_vmm_runtime.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/guest-vmm/runtime.c $(VMM_CONFIG_STAMP) \
                          $(AGENTOS_ROOT)/platform/include/platform/guest_vmm_runtime.h
 	@mkdir -p $(BUILD_DIR)
 	@echo "[VMM] Compiling shared guest VMM runtime..."
+	clang $(VMM_CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/guest_teardown.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/guest-vmm/teardown.c $(VMM_CONFIG_STAMP) \
+                         $(AGENTOS_ROOT)/platform/include/platform/guest_teardown.h \
+                         $(KERNEL_SRC_DIR)/include/contracts/guest_execution_caps.h
+	@mkdir -p $(BUILD_DIR)
 	clang $(VMM_CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/serial_pump.$(VMM_SLOT).o: $(AGENTOS_ROOT)/platform/serial-virt/pump.c $(VMM_CONFIG_STAMP)
@@ -287,8 +347,8 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 	                             $(VMM_PD_ENTRY_OBJ) \
 	                             $(VMM_VIRTIO_NET_OBJ) \
 	                             $(GPA_TRANSLATE_OBJ) \
-	                             $(VMM_GUEST_RAM_OBJ) \
-	                             $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) \
+	                             $(VMM_GUEST_RAM_OBJ) $(VMM_GUEST_PAGING_OBJ) $(VMM_GUEST_EXECUTION_OBJ) \
+	                             $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
 	                             $(GUEST_VMM_LOOP_OBJ) \
 	                             $(GUEST_PROFILE_VALIDATE_OBJ) \
 	                             $(GUEST_BOOT_OBJ) \
@@ -302,8 +362,8 @@ $(BUILD_DIR)/guest_vmm_primary.elf: FORCE \
 	ld.lld -T$(BOARD_DIR)/lib/microkit.ld \
 		-L$(BOARD_DIR)/lib \
 		$(VMM_PD_ENTRY_OBJ) $(GUEST_VMM_PRIMARY_OBJ) $(GPU_SHMEM_FULL_OBJ) \
-		$(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
-		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) \
+		$(VMM_VIRTIO_NET_OBJ) $(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) $(VMM_GUEST_PAGING_OBJ) $(VMM_GUEST_EXECUTION_OBJ) \
+		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) \
 		$(GUEST_BOOT_OBJ) \
@@ -350,8 +410,8 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
                                $(BUILD_DIR)/guest_secondary_profile.o \
                                $(VMM_VIRTIO_NET_OBJ) \
                                $(GPA_TRANSLATE_OBJ) \
-                               $(VMM_GUEST_RAM_OBJ) \
-                               $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) \
+                               $(VMM_GUEST_RAM_OBJ) $(VMM_GUEST_PAGING_OBJ) $(VMM_GUEST_EXECUTION_OBJ) \
+                               $(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
                                $(GUEST_VMM_LOOP_OBJ) \
                                $(GUEST_PROFILE_VALIDATE_OBJ) \
                                $(GUEST_BOOT_OBJ) \
@@ -365,8 +425,8 @@ $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o \
 		$(VMM_PD_ENTRY_OBJ) $(BUILD_DIR)/guest_vmm_secondary.o $(GPU_SHMEM_FULL_OBJ) \
 		$(BUILD_DIR)/guest_secondary_images.o \
 		$(VMM_VIRTIO_NET_OBJ) \
-		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) \
-		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) \
+		$(GPA_TRANSLATE_OBJ) $(VMM_GUEST_RAM_OBJ) $(VMM_GUEST_PAGING_OBJ) $(VMM_GUEST_EXECUTION_OBJ) \
+		$(GUEST_VMM_RUNTIME_OBJ) $(GUEST_SERIAL_OBJS) $(GUEST_GPU_OBJS) $(GUEST_INPUT_OBJS) \
 		$(GUEST_VMM_LOOP_OBJ) \
 		$(GUEST_PROFILE_VALIDATE_OBJ) $(BUILD_DIR)/guest_secondary_profile.o \
 		$(GUEST_BOOT_OBJ) \
@@ -384,6 +444,8 @@ vmm-clean:
 	rm -f $(BUILD_DIR)/net_virt_pump.o $(BUILD_DIR)/net_virt_pump.*.o $(BUILD_DIR)/vmm_virtio_net.o $(BUILD_DIR)/vmm_virtio_net.*.o
 	rm -f $(BUILD_DIR)/gpa_translate.o $(BUILD_DIR)/gpa_translate.*.o
 	rm -f $(BUILD_DIR)/vmm_guest_ram.o $(BUILD_DIR)/vmm_guest_ram.*.o
+	rm -f $(BUILD_DIR)/vmm_guest_paging.o $(BUILD_DIR)/vmm_guest_paging.*.o
+	rm -f $(BUILD_DIR)/vmm_guest_execution.o $(BUILD_DIR)/vmm_guest_execution.*.o
 	rm -f $(BUILD_DIR)/guest_vmm_runtime.o $(BUILD_DIR)/guest_vmm_runtime.*.o $(BUILD_DIR)/guest_vmm_loop.*.o
 	rm -f $(BUILD_DIR)/guest_profile_validate.*.o $(BUILD_DIR)/*guest_profile.o
 	rm -f $(BUILD_DIR)/guest_profile_validate.o $(BUILD_DIR)/guest_boot.o $(BUILD_DIR)/guest_boot.*.o

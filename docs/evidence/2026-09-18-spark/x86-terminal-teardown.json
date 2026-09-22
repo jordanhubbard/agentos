@@ -1,0 +1,47 @@
+{
+  "qualification": "x86 terminal guest teardown and zeroed pool reuse",
+  "runtime_revision": "9b73e34198911b7563e549f0e4e3fad8ddf2958d",
+  "source_clean_during_tests": true,
+  "spark": {
+    "gate": "make gate: PASS, exit0; host suite, both architecture boot checks and ARM guest net/block/console proofs",
+    "gate_log_sha256": "8b0aa7bc6e1c5187646ee4703e6a19606df4116d4a26ded510a663fbbe693c42",
+    "focused_test": "make test-x86-teardown-host: PASS; drain/detach ordering, every revoke failure, partial-release retry, protected retired memory, idempotence and invalid extents"
+  },
+  "intel": {
+    "host": "madmax Intel Linux via puck.local",
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600 with pinned OVMF/kernel and generated userspace initrd",
+    "result": "PASS, exit0; canonical console/block/network, Linux ring3 checkpoint, teardown marker, stale VCPU/EPT rejection and two zeroed reuse cycles of every queue/RAM/ROM pool",
+    "ram_bytes": 268435456,
+    "queue_pools": 3,
+    "ram_pools": 128,
+    "rom_pools": 2,
+    "frame_bytes": 2097152,
+    "log_sha256": "a86b925947485f0833bf145ea87cce2dce8fbef0f1d9a4ea36b3b40b4572173b",
+    "serial_log_sha256": "78bd71d2d7dad12a91c70e4eed4c55869ad32ea82ff5134f9fce096fd20d5ed9",
+    "image_sha256": "1e9447b0b0d07bc45e312e5c43027689cb5e55b796d283798d05f0cb4fa2c4b1",
+    "root_task_sha256": "cac180a7b6cfb40ec416d59fd6a2d6d8670a5cfd4ebfa4b465df6d518b4fbf2f",
+    "qemu_pid": 3303700,
+    "qemu_log_stem": "agentos-qemu-1hyOWu",
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/x86-terminal-teardown-9b73e34",
+    "kernel_sha256": "0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+    "initrd_sha256": "43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5"
+  },
+  "debian_regression": {
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600 with retained pinned media/host key/OVMF",
+    "result": "PASS, exit0; pinned Ed25519 public-key SSH, x86_64 and sync",
+    "log_sha256": "2079bafd2b09be2b39211eeddad72edfd7700e56e57e4555f77a7de327f511ac",
+    "serial_log_sha256": "a4399ba413831cebec1e88365400bc179ff8336835c9dd3e4b609de53b21e53c",
+    "console_log_sha256": "8abb2be5a1ecf30befa7d5cd77928573ff471dc3a1bf7d3917a935e87d3eb3b8",
+    "qemu_pid": 3318234,
+    "qemu_log_stem": "agentos-qemu-Zdg3aj"
+  },
+  "earlier_attempt": "3b9bb7c passed Spark gate but Intel compilation failed before QEMU: firmware VMM lacked the libvmm include path. 9b73e34 fixes that rule; both gates then passed.",
+  "limits": [
+    "Probe begins after the qualification-only ring3 checkpoint, not a public lifecycle request",
+    "Scratch frame reuse does not recreate an executing guest",
+    "Management pool/CNode/VSpace authority and VMM thread remain live",
+    "No suspend/resume, concurrent-guest, persistent-close or public lifecycle IPC acceptance claim",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}

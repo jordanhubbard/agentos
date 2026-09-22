@@ -1,0 +1,28 @@
+{
+  "status": "passed",
+  "source_revision": "adcf5a80caeefb1c4f2120a1072e33a28cce0c8a",
+  "source_tree_clean": true,
+  "host": "Spark Linux AArch64",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "commands": ["make gate", "make test-debian-managed-graphics-recreation QEMU_TEST_TIMEOUT=3600"],
+  "make_exit": 0,
+  "guest_handles": [1, 2],
+  "proof": [
+    "The full local OS gate passed before the focused graphics recreation test.",
+    "Both generations passed pinned SSH, profile assertions, two exact guest-written frame pixels, persistent disk witness and successful DESTROY.",
+    "Both generations passed exact keyboard/pointer evdev packets, held-state release, disconnect release, paused disconnect release and paused backpressure checks.",
+    "The replacement CREATE succeeded on its second attempt after one NOT_READY reply; the replacement boot used fresh handle 2.",
+    "The public host-key receipts are byte-identical and the retired handle was rejected. Harness and QEMU are absent after successful exit."
+  ],
+  "frames": [
+    {"handle": 1, "width": 1024, "height": 768, "sequence": 3776, "sha256": "ad15c2d7ae529b74289668f9e50594cb4f02ca2a48be57b5de82da248d581065"},
+    {"handle": 2, "width": 1024, "height": 768, "sequence": 917, "sha256": "68dcf755e16f71c6de1a6c3ea545c6deb41ce341f13e4353cadc4f5cf311794b"}
+  ],
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/graphics-recreation-adcf5a80",
+  "sha256": {
+    "test-and-gate.log": "7b3e4c30cee3bceb1c1960c7776187d470de544c58c8be46aea42a423c89b006",
+    "agentos-qemu-HalbHI.log": "acfd4fa8499f3f631aa57bc47b1b4fef69067c1d9af435946d507fa0daaba5a8",
+    "agentos.img": "31f9df55ee3364612fe75a1ffda7599092150f483c7c9b1d61318e09b8beac37"
+  },
+  "limits": "One successful two-generation graphics run at this revision; earlier failures remain retained. This does not establish the cause of prior intermittent stalls, repeated-run reliability, physical display/input support or final integrated release qualification. Archive excludes private identities and disks."
+}

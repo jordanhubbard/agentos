@@ -1,0 +1,36 @@
+#ifndef AOS_PLATFORM_GUEST_TEARDOWN_H
+#define AOS_PLATFORM_GUEST_TEARDOWN_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* Terminal teardown. The caller must stop guest execution and enter
+ * DESTROYING first. False requires another call while servicing device
+ * completions; execution must never resume. Retains RAM until every backend
+ * has relinquished its references. Acknowledged network detach retires the
+ * virtualizer's queue pointers before execution revocation. Block detach
+ * additionally requires valid, empty request and response queues. ARM releases
+ * paging after RAM; x86 EPT is part of its VCPU object pool, and its RAM release
+ * includes read-only firmware ROM. Service
+ * grants and the VMM's private ASID namespace remain management resources.
+ * Reconstruction must explicitly reset this state before admitting a guest. */
+typedef struct aos_guest_teardown {
+    bool devices_quiesced;
+    bool network_detached;
+    bool block_detached;
+    bool serial_detached;
+    bool input_detached;
+    bool graphics_detached;
+    uint8_t queue_pools_released;
+    uint8_t graphics_pools_released;
+    bool execution_released;
+    bool ram_released;
+    bool paging_released;
+} aos_guest_teardown_t;
+
+bool aos_guest_teardown_step(aos_guest_teardown_t *state, size_t ram_size);
+/* Owning VMM adapter: stop its serial endpoint and await service detach. */
+bool aos_vmm_serial_detach(void);
+
+#endif

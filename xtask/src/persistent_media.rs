@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -73,6 +74,7 @@ pub(crate) fn prepare(source: &Path, directory: &Path, second_boot: bool) -> Res
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&disk)
             .context("refusing to replace an existing persistent proof disk")?;
         let mut input = File::open(&source.path)?;
@@ -106,6 +108,11 @@ mod tests {
         fs::write(&base, b"pristine base").unwrap();
         let work = tempfile::tempdir_in(root.path()).unwrap();
         let disk = prepare(&base, work.path(), false).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&disk).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         require_same_image(&base, &disk).unwrap();
         fs::write(&disk, b"changed disk!").unwrap();
         assert!(require_same_image(&base, &disk).is_err());

@@ -1,0 +1,26 @@
+{
+  "status": "passed full local gate and Ubuntu recreation with a running FreeBSD peer",
+  "source_revision": "d3bd0ea",
+  "source_tree_clean": true,
+  "host": "Spark Linux AArch64",
+  "sdk": "microkit-sdk-2.3.1-agentos-e60776ac-cr2",
+  "command": "make gate test-dual-guest-recreation DUAL_OS_TEST_TIMEOUT=7200",
+  "make_exit": 0,
+  "scenario": "recreation",
+  "guest_handles": {"freebsd": 1, "ubuntu_retired": 2, "ubuntu_recreated": 3},
+  "proof": [
+    "Full make gate passed before the focused peer-recreation target.",
+    "Both initial guests passed concurrent authenticated SSH.",
+    "After Ubuntu destruction, the running FreeBSD peer authenticated and returned exact FreeBSD stdout. The peer remained running while Ubuntu was reconstructed.",
+    "Replacement CREATE returned NOT_READY while deferred reconstruction staged the ISO initrd, then admitted fresh handle 3 after 17 attempts.",
+    "The replacement Ubuntu boot completed all eight console provisioning steps. Both guests then passed concurrent authenticated SSH with exact FreeBSD/Linux stdout.",
+    "Retired-handle status, resume and suspend were rejected; both current guests were destroyed. The combined Make process exited zero."
+  ],
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/ubuntu-peer-d3bd0ea",
+  "qemu_stem": "agentos-qemu-WDYPHr",
+  "sha256": {
+    "gate-and-test.log": "aaf25d0e7b3a499dd75b5d6a9abc14b91368c9727e7d8be5d94cdf2eaef0167f",
+    "serial.log": "7a18a3f869a31934bc1387f115be5170bda387c3d6ad51a0f02261a3ecdf1eab"
+  },
+  "limits": "Revision-specific ARM QEMU qualification of deferred reconstruction with a running peer. Does not prove graphics recreation, continuous peer throughput, concurrent writable-storage stress, final integrated revision or v0.4 release completion. Raw SSH transcripts are retained without private identities or guest disks."
+}

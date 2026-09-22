@@ -1,0 +1,17 @@
+{
+  "revision": "5b2377514c8e5aa7ffb934953ae974630c88b54f",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "command": "make gate",
+  "exit_code": 0,
+  "status": "passed",
+  "log": "/tmp/agentos-execution-pool-full-gate.log",
+  "log_sha256": "3efc9c493f184319928def93fdd964e92e5b117d957db243b53ec3847cdcf070",
+  "scope": "Host suite, both architecture backend builds and root-task boots, ARM canonical guest network, block and bidirectional console after private execution-object allocation and delegation",
+  "limits": [
+    "This gate exercises guest boot using the private execution pool, not pool revocation or reconstruction.",
+    "Production teardown and recreation remain incomplete.",
+    "Guest VSpace, page tables and service queue grants are outside the execution pool.",
+    "No new Intel VMX qualification or concurrent guest isolation claim."
+  ]
+}

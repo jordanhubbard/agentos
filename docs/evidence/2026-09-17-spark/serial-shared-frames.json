@@ -1,0 +1,26 @@
+{
+  "qualification": "Common root serial queue provisioning and ARM isolation regression",
+  "runtime_revision": "3e492d1a1b080ab908619c1a9a8b75fcd1dfe25f",
+  "host": "sparky aarch64 Linux",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "tests": [
+    {
+      "command": "make gate SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS exit 0",
+      "log_sha256": "773f7fa3358f8550d446f72a4a8f218ee5a1839b122e04cf0e1e1db9679a2f9f",
+      "scope": "Host suite, real SDK builds, ARM and reduced x86 root boots, ARM guest net/block/bidirectional console"
+    },
+    {
+      "command": "make test-serial-isolation SEL4_SDK_VERSION=2.3.0",
+      "result": "PASS exit 0; all eight target cases passed",
+      "log_sha256": "9f9e6718207fee05b7ffa621ae66289973a749d6dc0760d77c0a4f3363943e1d",
+      "scope": "Primary and secondary VMM reads/writes to peer and frontend pages produce the expected root-validated data faults"
+    }
+  ],
+  "retained_directory": "build/evidence/serial-shared-3e492d1",
+  "limitations": [
+    "The x86 build admits the common page-allocation/mapping code, but its current topology still has no serial_virt PD.",
+    "No Intel serial queue exchange, physical UART handoff or guest console traffic is claimed.",
+    "The eight isolation cases exercise ARM mappings, not x86 mappings."
+  ]
+}

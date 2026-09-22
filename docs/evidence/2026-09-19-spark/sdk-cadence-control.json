@@ -1,0 +1,69 @@
+{
+  "schema": "agentos.sdk-display-cadence-control.v1",
+  "date_utc": "2026-09-19",
+  "revision": "4dc8e9d187f8569e99c4093901c2fe1c25be0e3b",
+  "status": "control qualified after host retry correction; integration pending",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "change": "CC budget/period restored from 100us/1000us to 1000us/10000us, preserving the 10 percent CPU ceiling",
+  "intel": {
+    "command": "make gate-x86_64-smp",
+    "make_exit_code": 0,
+    "result": "Both managed guest generations passed pinned SSH, two online CPUs, overlapping pinned x87/SSE workers, binary CC input, destroy/recreate and stale handle rejection",
+    "timeout_seconds": 600,
+    "initial_disk_sha256": "fdcdd0dc1a4384cc01d3bfce4a7dd232de4001d01380e06b58b728f24c1daaf3",
+    "kernel_sha256": "0f5e9cf9ed7672fb745371b5f2aa0b20df1a49f24e707b88161c9ee4aefc2f9d",
+    "root_task_sha256": "10c70367be17d8de1c5784a52abe001fbbb97cbcc92b122c8c984d00066d2ab2",
+    "log_sha256": "fec9c0afbf13c2cf797fc1f00f0c22b9b9dc3cc0c12cc2dd8ec6787599ff75ef",
+    "archive": "intel-cadence-control-smp-pass.tar.gz",
+    "archive_sha256": "d1709c18158a8740281149d5286235ad097574816f1565259865a76976b08f68",
+    "limitation": "Host was shared; a load sample is retained. A single successful control does not establish scheduling cadence as the cause of the earlier timeout"
+  },
+  "spark": {
+    "command": "make gate",
+    "make_exit_code": 0,
+    "log_sha256": "77295f095db3b98654b0acc81843e51c7e44a0784070018e938a0b677e54ea6c",
+    "graphics_lifecycle": {
+      "command": "make test-debian-nocloud-graphics-teardown QEMU_TEST_SSH_PORT=12283",
+      "make_exit_code": 2,
+      "passed": ["pinned SSH on third attempt", "graphics setup", "1024x768 frame capture", "all 786432 QEMU scanout pixels match primary framebuffer", "exact keyboard and pointer events", "held input release", "input backpressure"],
+      "frame_capture_seconds": 13,
+      "frame_sha256": "68dcf755e16f71c6de1a6c3ea545c6deb41ce341f13e4353cadc4f5cf311794b",
+      "failure": "During teardown, MSG_CC_LOG_STREAM returned CC_ERR_RELAY_FAULT (8) after network, block and serial detach markers; successful teardown and queue recycling were not established",
+      "log_sha256": "ceffbbd13b7439b73e73e5365f0f34881ffeed6d4bcef7c1fc4acc36d7f466b2",
+      "image_sha256": "c1541fb471c301391bebf10ffb7b3fb1f34f66cad63e37d1b8f361cc144942a5",
+      "archive": "cadence-graphics-teardown-failure.tar.gz",
+      "archive_sha256": "23e561e537ab4f25207e8da494704037d9dde4a8ee63bc64e133c2a32c2249a3"
+    }
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-sdk-display-integration",
+  "spark_graphics_lifecycle_retest": {
+    "revision": "7ee37223d512936921f392720cc9fae2a3a2760c",
+    "command": "make test-debian-nocloud-graphics-teardown QEMU_TEST_SSH_PORT=12283",
+    "make_exit_code": 0,
+    "host_change": "Allow a detached boot-console relay-fault response only during pending destroy retries, still requiring positive destroy acknowledgement and all target markers within unchanged deadlines",
+    "result": "Pinned SSH, exact frame pixels, all scanout pixels, explicit input, held-input release, backpressure, complete teardown, stale lifecycle rejection and queue/paging/execution/graphics pool recycling passed",
+    "frame_capture_seconds": 13,
+    "frame_sha256": "68dcf755e16f71c6de1a6c3ea545c6deb41ce341f13e4353cadc4f5cf311794b",
+    "image_sha256": "c1541fb471c301391bebf10ffb7b3fb1f34f66cad63e37d1b8f361cc144942a5",
+    "log_sha256": "8b877b52a994800170d8d868245f0490397e7d50eb5bd5abfc3a96cb7d206549",
+    "archive": "cadence-graphics-lifecycle-pass.tar.gz",
+    "archive_sha256": "43858f40c67f03bce8b6e35b5776055f07512a6d316d4c42625479c22d3b9d69",
+    "limitation": "Same target image as the preceding failed teardown run; host retry correction only. Pool recycling does not prove a second ARM guest boot or native GUI lifecycle"
+  },
+  "intel_short_cadence_repeat": {
+    "revision": "d31d4446062b43af43d74632942b1b9a92363aa7",
+    "budget_us": 100,
+    "period_us": 1000,
+    "command": "make gate-x86_64-smp QEMU_TEST_TIMEOUT=600",
+    "make_exit_code": 2,
+    "result": "Login prompt reached, but seeded SSH proof exhausted the shared 600-second deadline. One SSH attempt was retained with empty stdout/stderr. The SMP workload was not reached",
+    "baseline_disk_sha256": "fdcdd0dc1a4384cc01d3bfce4a7dd232de4001d01380e06b58b728f24c1daaf3",
+    "root_task_sha256": "5d31b3d347d84b343297a9ae3b4fb414f51d84cddf70f631226e7371e869d63e",
+    "log_sha256": "899956c5ae66f6bbd3df88bb170e3c1ab12ac0d541a8a1b80b431f3fd8c65445",
+    "archive": "intel-100us-repeat-failure.tar.gz",
+    "archive_sha256": "f2b9d148c994af783626ec26dfc117061e3198b7a7f0cea9b96b6b8907d4c4a1",
+    "interpretation": "Second short-cadence failure, now after login rather than before login; root ELF matches the first failed run. The longer-cadence control passed both generations. Shared host load limits causal inference; the short cadence remains unqualified"
+  },
+  "decision": "Restore the longer qualified cadence in the integration candidate; the shorter cadence is not accepted. No definitive causal diagnosis under shared host load",
+  "limitations": "No native GUI rendering or input latency claim, canonical integration, or release qualification. Earlier combined runtime failures remain valid. Default installed SDK is unchanged."
+}

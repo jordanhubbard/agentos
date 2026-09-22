@@ -1,0 +1,30 @@
+{
+  "status": "failed",
+  "scope": "Fresh independently seeded Debian disks in the Intel dual-guest composition",
+  "host": "madmax, Intel i9-14900KF, Linux KVM with nested VMX",
+  "seed_source_revision": "b4f0802c072a9264531c93beb43647c0e9728d3c",
+  "os_image_source_revision": "85ff327",
+  "root_image_sha256": "f49280cdcf8b7ee34acd97af829de4a5893c5161c13ae61da86d373ba8e657b3",
+  "provisioning": {
+    "command": "make seed-guest-root",
+    "primary_address": "10.0.2.15",
+    "secondary_address": "10.0.2.16",
+    "primary_initial_disk_sha256": "0213454dd3547458d15fa23b0b4e039a64950cca9c75421a144bd8ec3710fdfc",
+    "secondary_initial_disk_sha256": "755ed85b475c908c80731ee452ad0a29e23cf0668db6362499bf6de5faf4a740",
+    "result": "Both full raw disks generated with exact seed readback and complete root-region verification. Initial compiler failure from /tmp quota retained; retry using TMPDIR under /var/tmp succeeded."
+  },
+  "observations": [
+    "Initial secondary CREATE returned not-ready; primary CREATE then succeeded with handle 1 and secondary retry with handle 2.",
+    "Both guest kernels booted and mounted their ext4 root filesystems.",
+    "Primary entered emergency mode after timeout waiting for the EFI partition device and failed boot-efi.mount dependency.",
+    "Secondary systemd reported Failed to fork off sandboxing environment for executing generators: Protocol error, then froze execution at guest time 189.486164.",
+    "Source GPT partition IDs match source fstab. Earlier already-provisioned primary guest has the same fstab, the expected /dev/disk/by-partuuid links, and mounted /boot/efi.",
+    "Host load average was 36.64, 20.65, 15.58 during investigation; causal significance is not established."
+  ],
+  "evidence": {
+    "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/b4f0802-fresh-dual-failure.tar.gz",
+    "sha256": "95040975eee19f31b950aed12fdf4c1a8334f686dcafde55a14b51bb0bff7390",
+    "contents": "Console snapshots, QEMU log and arguments, guest list, seed logs including quota failure, initial disk hashes, OS image hash, host load. No private keys or guest disks."
+  },
+  "limits": "No independent SSH or persistent storage acceptance. Earlier two-guest login proof used already-provisioned baseline copies and does not prove fresh concurrent provisioning. QEMU 1385114 and its disks retained for diagnosis; earlier QEMU 1292940 preserved. Root cause remains unconfirmed."
+}

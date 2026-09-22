@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "revision": "a9fe95d",
+  "command": "make test-framebuffer gate QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12258 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+  "make_exit": 0,
+  "log_sha256": "a27547b9a6166980854d6c1f4eed4b0a6c91ba015b7f83e90cf29f027b001446",
+  "proof": "Focused framebuffer target proof exported exact isolated client frames through CC, then canonical full OS regression gate passed.",
+  "limits": "Initial service operation and regression only. Does not exercise graphics pool transfer, a managed second guest boot or final v0.4 acceptance."
+}

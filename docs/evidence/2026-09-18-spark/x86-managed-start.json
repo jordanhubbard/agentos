@@ -1,0 +1,60 @@
+{
+  "qualification": "x86 managed startup through the production VM manager",
+  "runtime_revision": "8ebb8ed7d57ee1fd79adb26277913a546d17b8ae",
+  "automatic_boot_fix_revision": "d563b67e38907466db956da8910fc8412d81eb59",
+  "spark": {
+    "command": "make gate",
+    "sdk": "2.1.0",
+    "result": "PASS, exit 0",
+    "log_sha256": "fca5876060216844f29e9f5ee1f2b0621aea40b1cb1727a58adb5932602da5fe"
+  },
+  "host_entry_regression": {
+    "command": "make test-x86-vmenter-host",
+    "sdk_versions": [
+      "2.1.0",
+      "2.3.0"
+    ],
+    "result": "PASS with address and undefined-behavior sanitizers",
+    "scope": "Startup IPC cannot replace initial VM-entry inputs; fault and notification exits captured with correct bounds"
+  },
+  "intel": {
+    "host": "madmax Intel Linux via puck.local",
+    "sdk": "2.3.0",
+    "command": "make gate-x86_64-teardown with pinned firmware/kernel/initrd and QEMU_TEST_TIMEOUT=600",
+    "result": "PASS, exit 0",
+    "pid": 3620600,
+    "stem": "agentos-qemu-eeo1L5",
+    "log_sha256": "6f770b5defaab79585e6195c31d372119b5d6e1ec8ecc20a737acff0c58d8e88",
+    "serial_sha256": "c2d69b22113e5376c528513686b09b5e157bbb263433ec40805b8cb4e457161e",
+    "assertions": [
+      "Pre-start SUSPEND and RESUME reject; invalid guest ID rejects",
+      "Manager rejects a RAM request exceeding provisioned capacity",
+      "Manager CREATE starts the guest through real CREATE/BOOT calls",
+      "Manager INFO reports running/suspended states, 256 MiB capacity, one vCPU, VMM RAM alias 0x80000000 and guest physical base zero",
+      "Manager repeated PAUSE and RESUME succeed; direct BOOT/CREATE reject while suspended",
+      "Linux reaches ring-3 userspace checkpoint with canonical guest I/O checks",
+      "Manager DESTROY completes; direct repeated DESTROY succeeds and RESUME/CREATE reject dead guest",
+      "Stale execution capabilities reject and all 133 frame pools pass two zeroed retype/revoke cycles"
+    ]
+  },
+  "debian_regression": {
+    "revision": "d563b67e38907466db956da8910fc8412d81eb59",
+    "result": "PASS, exit 0; pinned Ed25519 host-key SSH, x86_64 and sync",
+    "pid": 3630694,
+    "stem": "agentos-qemu-qUix81",
+    "initial_failure": {
+      "revision": "8ebb8ed7d57ee1fd79adb26277913a546d17b8ae",
+      "reason": "Compile-time name collision between automatic lifecycle boot request and boot-image blobs",
+      "log_sha256": "d6c856f611159768c0f4fe82cb67dc91474f751b38553650ad4c26657796cf2b"
+    },
+    "log_sha256": "3f8a88aa86896840eceb57156f8fe068f2adb4a4a2d11bb10ab84cb10c16dac9",
+    "serial_sha256": "2ebc09e8c668bea257b3d737660a2e55a3866c04ff483ea4e5cfaf79f5f3f08b",
+    "console_sha256": "a076d6e3d5e38c5410a7865aeb72cf23c1dd56e7d06457e2933aaffae0e26439"
+  },
+  "limits": [
+    "Guest recreation is not implemented",
+    "External x86 CC/GUI transport is not qualified",
+    "Desktop resource profiles and persistent/concurrent disk acceptance remain open",
+    "Required GitHub CI and canonical integration remain pending"
+  ]
+}

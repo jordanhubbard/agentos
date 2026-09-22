@@ -9,29 +9,26 @@
  * Contract: include/contracts/net_virt_contract.h.
  *
  * Data path (per attached client):
- *   guest TX   VMM enqueues tx_active, NBSends KICK  ->  net_virt dequeues,
+ *   guest TX   VMM enqueues tx_active, signals KICK -> net_virt dequeues,
  *              copies the frame into net_pd's per-client slot, Calls
  *              NET_SVC_OP_RAW_SEND, recycles the buffer to tx_free.
  *   guest RX   net_pd NBSends NET_SVC_EVENT_RX_READY  ->  net_virt reserves
  *              an rx_free buffer, Calls NET_SVC_OP_RAW_RECV, copies the frame
- *              in, enqueues rx_active, NBSends NET_SVC_EVENT_RX_READY to the
+ *              in, enqueues rx_active, signals the bound notification of the
  *              owning VMM, which pushes it into the guest virtq.
  *
  * When net_pd reports no host NIC (hw=0) the clients are wired into the
  * sDDF-shaped hub pump instead (one client: loopback; several: hub), which
  * is what the emulated-scope proof exercises on a board with no NIC.
  *
- * Notifications are NBSend on endpoints and can be dropped when the target
- * is not blocked in Recv.  Every drop is recoverable: the VMM re-kicks on
- * the next guest MMIO exit while tx_active is non-empty and our
- * consumer_signalled flag is 0, and before blocking we rescan every queue
- * and probe net_pd once more (RAW_RECV polls the host ring), so a lost
- * RX_READY from net_pd only costs latency until the next event.
+ * Guest and native queue notifications remain pending until received.
+ * Driver RX_READY still uses endpoint events; before blocking we rescan
+ * queues and probe net_pd once more (RAW_RECV polls the host ring).
  */
 
 #include "agentos.h"
 #include "sel4_ipc.h"
-#include "serial_log.h"
+#include <stdio.h>
 #include "system_desc.h"
 #include "nameserver.h"
 #include <contracts/net_virt_contract.h>
@@ -40,6 +37,9 @@
 #include <platform/net_layout.h>
 #include <platform/net_host_layout.h>
 #include <platform/net_virt_pump.h>
+#include <platform/net_rebind.h>
+#include "contracts/queue_rebind_caps.h"
+#include "boot_info.h"
 
 _Static_assert(AOS_NET_SHMEM_VA == AGENTOS_NET_SHARED_VA,
                "guest net queues and net_pd slots share one frame");
@@ -53,13 +53,14 @@ _Static_assert(sizeof(net_virt_attach_req_t) == 12u,
 _Static_assert(sizeof(net_virt_attach_reply_t) == 20u,
                "net_virt ATTACH reply wire size");
 
-/* Unmapped: log_drain_write falls back to the (release-silent) debug putc.
- * Visible diagnostics go through serial_pd via serial_log_t. */
+/* Root-provisioned log ring; the common debug fallback elsewhere. */
 uintptr_t log_drain_rings_vaddr;
 
 typedef struct {
     uint8_t               attached;
+    uint8_t               retired;
     uint8_t               hw;          /* frames go to net_pd (else hub pump) */
+    uint8_t               raw_open;    /* driver handle exists even if link is down */
     uint8_t               rx_pending;  /* probe net_pd for RX on next service */
     uint8_t               tx_marked;
     uint8_t               rx_marked;
@@ -73,31 +74,21 @@ typedef struct {
 } nv_client_t;
 
 static nv_client_t     g_clients[AOS_NET_QUEUE_CLIENTS];
+static uint32_t        g_generation[AOS_NET_GUEST_CLIENTS];
 static aos_net_virt_t  g_hub;          /* loopback/hub pump for hw-less runs */
 static int             g_hub_marked;
-static serial_log_t    g_log = { .ep = PD_CNODE_SLOT_SERIAL_EP };
 
 /* ── diagnostics ────────────────────────────────────────────────────────── */
 
-static void nv_puts(const char *s)
+static void nv_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void nv_log(const char *fmt, ...)
 {
-    serial_log_puts(&g_log, s);
-}
-
-static void nv_dec(uint32_t v)
-{
-    char buf[12];
-    int i = 11;
-
-    buf[i] = '\0';
-    if (v == 0u) {
-        buf[--i] = '0';
-    }
-    while (v > 0u && i > 0) {
-        buf[--i] = (char)('0' + (v % 10u));
-        v /= 10u;
-    }
-    nv_puts(&buf[i]);
+    char buf[160];
+    va_list args;
+    va_start(args, fmt);
+    (void)vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    agentos_log_info("net_virt", buf);
 }
 
 static uint32_t rd32(const uint8_t *p, uint32_t off)
@@ -140,7 +131,7 @@ static int net_pd_call(uint32_t opcode, uint32_t arg0, uint32_t arg1,
     wr32(req.data, 0u, arg0);
     wr32(req.data, 4u, arg1);
     sel4_call((seL4_CPtr)PD_CNODE_SLOT_NET_PD_EP, &req, rep);
-    return rep->opcode == SEL4_ERR_OK &&
+    return rep->length >= sizeof(uint32_t) && rep->opcode == SEL4_ERR_OK &&
            rd32(rep->data, 0u) == NET_SVC_RAW_OK;
 }
 
@@ -172,11 +163,8 @@ static void nv_notify_vmm(const nv_client_t *c)
         seL4_Signal(PD_CNODE_SLOT_NET_NATIVE_NOTIFY);
         return;
     }
-    seL4_MessageInfo_t event =
-        seL4_MessageInfo_new(NET_SVC_EVENT_RX_READY, 0u, 0u, 0u);
-
     if (c->vmm_ep != 0u) {
-        seL4_NBSend(c->vmm_ep, event);
+        seL4_Signal(c->vmm_ep);
     }
 }
 
@@ -185,14 +173,14 @@ static seL4_CPtr vmm_ep_for_slot(uint32_t vmm_slot)
 #ifdef AGENTOS_NATIVE_RUST_TEST
     if (vmm_slot == NET_VIRT_SLOT_NATIVE) return PD_CNODE_SLOT_NET_NATIVE_NOTIFY;
 #endif
-#if defined(AGENTOS_GUEST_PRIMARY)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_X86_FIRMWARE_RESET)
     if (vmm_slot == NET_VIRT_VMM_SLOT_PRIMARY) {
-        return (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_PRIMARY_EP;
+        return (seL4_CPtr)PD_CNODE_SLOT_NET_PRIMARY_NOTIFY;
     }
 #endif
 #if defined(AGENTOS_GUEST_SECONDARY)
     if (vmm_slot == NET_VIRT_VMM_SLOT_SECONDARY) {
-        return (seL4_CPtr)PD_CNODE_SLOT_GUEST_VMM_SECONDARY_EP;
+        return (seL4_CPtr)PD_CNODE_SLOT_NET_SECONDARY_NOTIFY;
     }
 #endif
     (void)vmm_slot;
@@ -224,13 +212,11 @@ static uint32_t nv_tx_to_net_pd(nv_client_t *c)
                 c->tx_total++;
                 if (!c->tx_marked) {
                     c->tx_marked = 1u;
-                    nv_puts("[net_virt] TX accepted by net_pd\n");
-                    nv_puts("[net_pd] HOST_TX: QEMU bus.16 completion observed\n");
+                    nv_log("TX accepted by net_pd");
+                    nv_log("[net_pd] HOST_TX: QEMU bus.16 completion observed");
                 }
             } else if (!c->tx_marked) {
-                nv_puts("[net_virt] TX rejected by net_pd rc=");
-                nv_dec(rep.opcode);
-                nv_puts("\n");
+                nv_log("TX rejected by net_pd rc=%u", (unsigned)rep.opcode);
             }
         }
         buf.len = 0u;
@@ -285,7 +271,7 @@ static uint32_t nv_rx_from_net_pd(nv_client_t *c)
             len > AGENTOS_NET_SHARED_SIZE - off ||
             !aos_net_buffer_valid(buf.io_or_offset, len)) {
             (void)aos_net_queue_enqueue(c->q.rx_free, c->q.capacity, buf);
-            nv_puts("[net_virt] RX bounds invalid from net_pd\n");
+            nv_log("RX bounds invalid from net_pd");
             break;
         }
         nv_fence();
@@ -301,7 +287,7 @@ static uint32_t nv_rx_from_net_pd(nv_client_t *c)
         c->rx_total++;
         if (!c->rx_marked) {
             c->rx_marked = 1u;
-            nv_puts("[net_virt] RX delivered from net_pd\n");
+            nv_log("RX delivered from net_pd");
         }
     }
     return received;
@@ -366,9 +352,7 @@ static void nv_service(void)
 
             if (moved > 0u && !g_hub_marked) {
                 g_hub_marked = 1;
-                nv_puts("[net_virt] pumped ");
-                nv_dec(moved);
-                nv_puts(" frame(s) TX->RX (hub/loopback: net_pd reports no host NIC)\n");
+                nv_log("pumped %u frame(s) TX->RX (hub/loopback: net_pd reports no host NIC)", (unsigned)moved);
             }
             for (uint32_t i = 0u; i < AOS_NET_QUEUE_CLIENTS; i++) {
                 nv_client_t *c = &g_clients[i];
@@ -418,7 +402,7 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
     } else if (!virt_net_authorized(badge, client_id, vmm_slot) ||
                client_id >= AOS_NET_QUEUE_CLIENTS || vmm_ep == 0u) {
         status = NET_VIRT_ERR_BAD_CLIENT;
-    } else if (g_clients[client_id].attached) {
+    } else if (g_clients[client_id].attached || g_clients[client_id].retired) {
         status = NET_VIRT_ERR_BUSY;
     }
 
@@ -436,9 +420,11 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
             nrep.length >= 18u) {
             uint32_t slot = rd32(nrep.data, 8u);
 
+            c->handle = rd32(nrep.data, 4u);
+            c->raw_open = 1u;
+
             if (slot >= NET_SVC_SLOT_BASE &&
                 slot + NET_SVC_SLOT_SIZE <= AGENTOS_NET_SHARED_SIZE) {
-                c->handle = rd32(nrep.data, 4u);
                 c->slot_off = slot;
                 for (uint32_t i = 0u; i < 6u; i++) {
                     mac[i] = nrep.data[12u + i];
@@ -450,10 +436,10 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
                     hw_state = NET_VIRT_HW_NET_PD;
                 }
             } else {
-                nv_puts("[net_virt] net_pd returned an invalid slot\n");
+                nv_log("net_pd returned an invalid slot");
             }
         } else {
-            nv_puts("[net_virt] net_pd RAW_OPEN failed\n");
+            nv_log("net_pd RAW_OPEN failed");
         }
 
         if (!c->hw) {
@@ -465,20 +451,15 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
         nv_fence();
         c->attached = 1u;
 
-        nv_puts("[net_virt] ATTACH client=");
-        nv_dec(client_id);
-        nv_puts(" vmm_slot=");
-        nv_dec(vmm_slot);
-        nv_puts(" net_pd contract v");
-        nv_dec((uint32_t)NET_SVC_INTERFACE_VERSION);
-        nv_puts(c->hw ? " hw=1\n" : " hw=0 (hub/loopback pump)\n");
+        nv_log("ATTACH client=%u vmm_slot=%u net_pd contract v%u hw=%u%s",
+               (unsigned)client_id, (unsigned)vmm_slot,
+               (unsigned)NET_SVC_INTERFACE_VERSION, (unsigned)c->hw,
+               c->hw ? "" : " (hub/loopback pump)");
         if (c->hw) {
-            nv_puts("[net_pd] HOST_READY: virtio-net bus.16\n");
+            nv_log("[net_pd] HOST_READY: virtio-net bus.16");
         }
     } else {
-        nv_puts("[net_virt] ATTACH rejected status=");
-        nv_dec(status);
-        nv_puts("\n");
+        nv_log("ATTACH rejected status=%u", (unsigned)status);
     }
 
     wr32(rep->data, 0u, status);
@@ -491,7 +472,91 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
     rep->opcode = SEL4_ERR_OK;
 }
 
+static void handle_detach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep)
+{
+    uint32_t client_id = rd32(req->data, 4u);
+    uint32_t slot = rd32(req->data, 8u);
+    uint32_t status = NET_VIRT_OK;
+    if (req->length != sizeof(net_virt_attach_req_t) ||
+        rd32(req->data, 0u) != NET_VIRT_CONTRACT_VERSION) {
+        status = NET_VIRT_ERR_VERSION;
+    } else if (!virt_net_authorized(badge, client_id, slot) ||
+               client_id >= AOS_NET_QUEUE_CLIENTS || !vmm_ep_for_slot(slot)) {
+        status = NET_VIRT_ERR_BAD_CLIENT;
+    } else {
+        nv_client_t *c = &g_clients[client_id];
+        sel4_msg_t close_rep = {0};
+        /* This PD serializes control and pumping. RAW_SEND/RECV are
+         * synchronous copies into the driver's separate transfer page, so
+         * none can retain a client-page reference after returning here. */
+        if (c->attached && c->raw_open &&
+            !net_pd_call(NET_SVC_OP_RAW_CLOSE, c->handle, 0u, &close_rep)) {
+            /* Retain ownership and the queue for a retry. Never report
+             * retirement while the driver still owns this raw session. */
+            status = NET_VIRT_ERR_UNAVAILABLE;
+        } else if (c->attached && !c->hw &&
+                   aos_net_virt_remove_client(&g_hub, &c->q)) {
+            c->raw_open = 0u;
+            status = NET_VIRT_ERR_UNAVAILABLE;
+        } else {
+            *c = (nv_client_t){ .retired = 1u };
+            nv_log("DETACH client=%u queues released", (unsigned)client_id);
+        }
+    }
+    wr32(rep->data, 0u, status);
+    wr32(rep->data, 4u, NET_VIRT_CONTRACT_VERSION);
+    rep->length = sizeof(net_virt_attach_reply_t);
+    rep->opcode = SEL4_ERR_OK;
+}
+
 /* ── main loop ──────────────────────────────────────────────────────────── */
+
+static uint32_t rebind_queue(uint64_t badge, const net_virt_rebind_req_t *req,
+                             net_virt_rebind_reply_t *attachment)
+{
+    if (!virt_client_authorized(badge, req->client, req->client))
+        return NET_VIRT_ERR_BAD_CLIENT;
+    nv_client_t *c = &g_clients[req->client];
+    uint32_t status = aos_net_rebind_validate(badge, req, sizeof(*req),
+        c->attached, c->retired, g_generation[req->client]);
+    if (status != NET_VIRT_OK) return status;
+    /* A successful detach closes the driver session before retiring c. */
+    if (c->raw_open) return NET_VIRT_ERR_BUSY;
+    seL4_CPtr frame = AOS_QUEUE_SERVICE_FRAME_BASE + req->client;
+    if (seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, frame,
+            AOS_QUEUE_SERVICE_CNODE_BITS) != seL4_NoError)
+        return NET_VIRT_ERR_RESOURCE;
+    if (seL4_Untyped_Retype(AOS_QUEUE_SERVICE_RECEIVE, seL4_ARCH_LargePageObject,
+            0u, AOS_QUEUE_SERVICE_CNODE, 0u, 0u, frame, 1u) != seL4_NoError)
+        return NET_VIRT_ERR_RESOURCE;
+    if (seL4_ARCH_Page_Map(frame, AOS_QUEUE_SERVICE_VSPACE,
+            aos_net_rebind_queue_va(req->client), seL4_AllRights,
+            seL4_ARM_Default_VMAttributes) != seL4_NoError) {
+        status = NET_VIRT_ERR_RESOURCE;
+    } else {
+        aos_net_virt_client_t fresh;
+        aos_net_client_bind((uint8_t *)AOS_NET_SHMEM_VA, req->client, &fresh);
+        aos_net_client_init_buffers(&fresh);
+        sel4_msg_t attach = {.length = sizeof(net_virt_attach_req_t)}, reply = {0};
+        wr32(attach.data, 0u, NET_VIRT_CONTRACT_VERSION);
+        wr32(attach.data, 4u, req->client);
+        wr32(attach.data, 8u, req->client);
+        c->retired = 0u;
+        handle_attach(badge, &attach, &reply);
+        status = rd32(reply.data, 0u);
+        if (status == NET_VIRT_OK) {
+            g_generation[req->client] = req->generation;
+            attachment->hw_state = rd32(reply.data, 8u);
+            for (unsigned i = 0; i < sizeof(attachment->mac); i++)
+                attachment->mac[i] = reply.data[12u + i];
+        }
+        else *c = (nv_client_t){.retired = 1u};
+    }
+    if (status != NET_VIRT_OK)
+        (void)seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, frame,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
+    return status;
+}
 
 static void net_virt_run(seL4_CPtr ep)
 {
@@ -499,28 +564,64 @@ static void net_virt_run(seL4_CPtr ep)
         seL4_Word badge = 0u;
         sel4_msg_t req = {0};
         sel4_msg_t rep = {0};
+        (void)seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, AOS_QUEUE_SERVICE_RECEIVE,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
+        seL4_SetCapReceivePath(AOS_QUEUE_SERVICE_CNODE, AOS_QUEUE_SERVICE_RECEIVE,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
 #ifdef CONFIG_KERNEL_MCS
         seL4_MessageInfo_t info = seL4_Recv(ep, &badge, AGENTOS_IPC_REPLY_CAP);
 #else
         seL4_MessageInfo_t info = seL4_Recv(ep, &badge);
 #endif
         seL4_Word label = seL4_MessageInfo_get_label(info);
-        if (badge == NET_VIRT_NATIVE_WAKE_BADGE) {
+        if (badge && !(badge & ~(NET_VIRT_NATIVE_WAKE_BADGE | NET_VIRT_GUEST_WAKE_MASK))) {
             nv_service();
             continue;
         }
 
-        if (label == NET_VIRT_OP_ATTACH) {
+        if (label == NET_VIRT_OP_ATTACH || label == NET_VIRT_OP_DETACH ||
+            label == NET_VIRT_OP_REBIND) {
             _sel4_mrs_to_msg(&req);
-            handle_attach(badge, &req, &rep);
+            bool rebound = false;
+            uint32_t status = NET_VIRT_ERR_VERSION;
+            bool valid = seL4_MessageInfo_get_length(info) == _SEL4_MR_COUNT &&
+                req.opcode == label && req.length <= sizeof(req.data);
+            if (label == NET_VIRT_OP_REBIND) {
+                net_virt_rebind_req_t rebind = {0};
+                net_virt_rebind_reply_t attachment = {0};
+                if (valid && req.length == sizeof(rebind) &&
+                    seL4_MessageInfo_get_extraCaps(info) == 1u &&
+                    seL4_MessageInfo_get_capsUnwrapped(info) == 0u) {
+                    __builtin_memcpy(&rebind, req.data, sizeof(rebind));
+                    status = rebind_queue(badge, &rebind, &attachment);
+                }
+                rebound = status == NET_VIRT_OK;
+                attachment.status = status;
+                attachment.version = NET_VIRT_REBIND_VERSION;
+                attachment.generation = rebind.generation;
+                __builtin_memcpy(rep.data, &attachment, sizeof(attachment));
+                rep.length = sizeof(net_virt_rebind_reply_t);
+                rep.opcode = SEL4_ERR_OK;
+                if (rebound) seL4_SetCap(0, AOS_QUEUE_SERVICE_FRAME_BASE + rebind.client);
+            } else if (valid && seL4_MessageInfo_get_extraCaps(info) == 0u &&
+                       req.length == sizeof(net_virt_attach_req_t)) {
+                if (label == NET_VIRT_OP_ATTACH) handle_attach(badge, &req, &rep);
+                else handle_detach(badge, &req, &rep);
+            } else {
+                wr32(rep.data, 0u, status);
+                wr32(rep.data, 4u, NET_VIRT_CONTRACT_VERSION);
+                rep.length = sizeof(net_virt_attach_reply_t);
+                rep.opcode = SEL4_ERR_OK;
+            }
             _sel4_msg_to_mrs(&rep);
             seL4_MessageInfo_t reply = seL4_MessageInfo_new(
-                (seL4_Word)rep.opcode, 0u, 0u, (seL4_Word)_SEL4_MR_COUNT);
+                (seL4_Word)rep.opcode, 0u, rebound ? 1u : 0u, (seL4_Word)_SEL4_MR_COUNT);
 #ifdef CONFIG_KERNEL_MCS
             seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
 #else
             seL4_Reply(reply);
 #endif
+            seL4_SetCap(0, seL4_CapNull);
             continue;
         }
         if (label == NET_VIRT_EVENT_KICK || label == NET_SVC_EVENT_RX_READY) {
@@ -536,6 +637,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     agentos_log_boot("net_virt");
     aos_net_virt_reset(&g_hub);
     register_with_nameserver(ns_ep);
-    nv_puts("[net_virt] READY: contract v4, isolated capability-bound clients, no device caps\n");
+    nv_log("READY: contract v6, isolated capability-bound clients, no device caps");
     net_virt_run(my_ep);
 }

@@ -11,8 +11,7 @@
 #include <contracts/blk_virt_contract.h>
 #include "sel4_ipc.h"
 #include "system_desc.h"
-#include <libvmm/libvmm.h>
-#include <libvmm/arch/aarch64/vgic/vgic.h>
+#include <libvmm/util/util.h>
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/block.h>
 #include <sddf/blk/queue.h>
@@ -21,6 +20,7 @@
 #include <platform/blk_virt_pump.h>
 #include <platform/blk_host_layout.h>
 #include <platform/vmm_virtio_blk.h>
+#include <platform/blk_rebind.h>
 
 _Static_assert(AOS_BLK_TRANSFER_SIZE == BLK_TRANSFER_SIZE,
                "platform blk transfer size must match sDDF BLK_TRANSFER_SIZE");
@@ -52,6 +52,10 @@ static uint32_t                 g_blk_virt_hw;
 static uint32_t                 g_media_id;
 static uint32_t                 g_resp_total;
 static uint32_t                 g_drain_count;
+static uintptr_t                g_guest_base;
+static unsigned                 g_virq;
+static bool                     g_retired;
+static uint32_t                 g_generation;
 
 static uint32_t blk_rd32(const uint8_t *p, uint32_t off)
 {
@@ -136,8 +140,8 @@ static void blk_virt_kick_if_pending(void)
  *     into guest RAM through the GPA translation API and injects the virq);
  *   - kick blk_virt if the guest (or handle_resp's read-modify-write path)
  *     queued requests and blk_virt asked for kicks.
- * NBSend kicks are lossy; the word stays 0 until blk_virt drains, so a lost
- * kick is repeated on the next exit.
+ * Send-only notification capabilities retain pending kicks until received.
+ * The consumer-signalled word prevents unnecessary repeated notifications.
  */
 static void blk_virt_service(const char *how)
 {
@@ -174,11 +178,67 @@ static void blk_virt_service(const char *how)
     blk_virt_kick_if_pending();
 }
 
+bool aos_vmm_virtio_blk_quiesce(void)
+{
+    if (!g_aos_blk_ready) {
+        return !g_blk_virt_attached ||
+            (blk_queue_empty_req(&g_queue) && blk_queue_empty_resp(&g_queue));
+    }
+    virtio_blk_begin_quiesce(&g_aos_blk);
+    blk_virt_service("lifecycle drain");
+    if (!virtio_blk_is_quiesced(&g_aos_blk)) return false;
+    g_aos_blk_ready = 0;
+    return true;
+}
+
+bool aos_vmm_virtio_blk_detach(void)
+{
+    if (!aos_vmm_virtio_blk_quiesce()) return false;
+    if (!g_blk_virt_attached) return true;
+    sel4_msg_t req = {0}, rep = {0};
+    req.opcode = BLK_VIRT_OP_DETACH;
+    req.length = sizeof(blk_virt_attach_req_t);
+    blk_wr32(req.data, 0u, BLK_VIRT_CONTRACT_VERSION);
+    blk_wr32(req.data, 4u, AOS_BLK_VMM_CLIENT);
+    blk_wr32(req.data, 8u, AOS_BLK_VMM_SLOT);
+    blk_wr32(req.data, 12u, g_media_id);
+    sel4_call((seL4_CPtr)PD_CNODE_SLOT_BLK_VIRT_EP, &req, &rep);
+    if (rep.opcode != SEL4_ERR_OK || rep.length != sizeof(blk_virt_attach_reply_t) ||
+        blk_rd32(rep.data, 0u) != BLK_VIRT_OK ||
+        blk_rd32(rep.data, 4u) != BLK_VIRT_CONTRACT_VERSION) return false;
+    g_blk_virt_attached = 0;
+    g_retired = true;
+    g_aos_client = (aos_blk_virt_client_t){0};
+    g_queue = (blk_queue_handle_t){0};
+    return true;
+}
+
+#ifdef AGENTOS_GUEST_BLOCK_DRAIN_TEST
+static bool blk_test_drain(void)
+{
+    static bool started;
+    if (!started && blk_queue_empty_resp(&g_queue)) return false;
+    if (!started) {
+        started = true;
+        LOG_VMM("guest block drain: pending response before admission stop\n");
+    }
+    if (aos_vmm_virtio_blk_quiesce()) {
+        LOG_VMM("guest block drain: PASS accepted requests complete and queues empty\n");
+        if (aos_vmm_virtio_blk_detach())
+            LOG_VMM("guest block drain: queue detach acknowledged\n");
+    }
+    return true;
+}
+#endif
+
 void aos_vmm_virtio_blk_resp_ready(void)
 {
     if (!g_aos_blk_ready) {
         return;
     }
+#ifdef AGENTOS_GUEST_BLOCK_DRAIN_TEST
+    if (blk_test_drain()) return;
+#endif
     blk_virt_service("RESP_READY");
 }
 
@@ -217,6 +277,21 @@ static bool vmm_blk_read_blocks(uint64_t block, uint16_t count,
     }
     blk_fence();
     return status == BLK_RESP_OK && success_count == count && id == 0u;
+}
+
+bool aos_vmm_virtio_blk_read_boot(uint64_t block, uint16_t count,
+                                  void *destination, size_t capacity,
+                                  aos_vmm_blk_wait_fn wait)
+{
+    size_t bytes = (size_t)count * AOS_BLK_TRANSFER_SIZE;
+    if (!g_aos_blk_ready || g_blk_virt_hw != BLK_VIRT_HW_VIRTIO_BLK ||
+        !destination || capacity < bytes || !count || count > AOS_BLK_DATA_CELLS ||
+        (g_aos_blk.virtio_device.regs.Status & VIRTIO_CONFIG_S_DRIVER_OK) ||
+        block > g_aos_client.info->capacity || count > g_aos_client.info->capacity - block)
+        return false;
+    if (!vmm_blk_read_blocks(block, count, wait)) return false;
+    aos_copy(destination, g_aos_client.data, (uint32_t)bytes);
+    return true;
 }
 
 #define ISO9660_SECTOR_SIZE 2048u
@@ -452,14 +527,19 @@ bool aos_vmm_virtio_blk_load_iso_file(const char *path,
 
 /* ── device bring-up ────────────────────────────────────────────────────── */
 
-void aos_vmm_virtio_blk_init(uint32_t media_id)
+bool aos_vmm_virtio_blk_init_at(uint32_t media_id, uintptr_t guest_base,
+                               unsigned virq, void *shared_region)
 {
-    uint8_t *region = (uint8_t *)AOS_BLK_SHMEM_VA;
+    uint8_t *region = shared_region;
 
+    if (g_blk_virt_attached || g_aos_blk_ready || g_retired || !region || !guest_base ||
+        ((uintptr_t)region & (AOS_BLK_TRANSFER_SIZE-1u)) ||
+        (uintptr_t)region > UINTPTR_MAX-AOS_BLK_SHMEM_SIZE ||
+        (guest_base & (AOS_VIRTIO_BLK_MMIO_SIZE-1u))) return false;
     if (media_id >= AOS_HOST_BLK_MEDIA_COUNT) {
         LOG_VMM_ERR("emulated virtio-blk: invalid host media %u\n",
                     (unsigned)media_id);
-        return;
+        return false;
     }
     g_media_id = media_id;
 
@@ -474,7 +554,7 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
     blk_virt_attach(media_id);
     if (!g_blk_virt_attached) {
         LOG_VMM_ERR("emulated virtio-blk: no virtualizer; device not created\n");
-        return;
+        return false;
     }
 
     blk_queue_init(&g_queue, (blk_req_queue_t *)g_aos_client.req,
@@ -486,9 +566,9 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
      * req_consumer_signalled rule after every guest exit.
      */
     if (!virtio_mmio_blk_init(&g_aos_blk,
-                              AOS_VIRTIO_BLK_GUEST_IPA,
+                              guest_base,
                               AOS_VIRTIO_BLK_MMIO_SIZE,
-                              AOS_VIRTIO_BLK_VIRQ,
+                              virq,
                               (uintptr_t)g_aos_client.data,
                               AOS_BLK_DATA_BYTES,
                               (blk_storage_info_t *)g_aos_client.info,
@@ -496,17 +576,66 @@ void aos_vmm_virtio_blk_init(uint32_t media_id)
                               AOS_BLK_QUEUE_CAPACITY,
                               0)) {
         LOG_VMM_ERR("emulated virtio-blk: virtio_mmio_blk_init failed\n");
-        return;
+        return false;
     }
     /* The extra transfer cell accommodates a maximum-size request beginning
      * at a non-4K sector; blk_virt chunks it through the driver's window. */
     g_aos_blk.config.size_max = AOS_BLK_GUEST_MAX_SEGMENT_SIZE;
 
     g_aos_blk_ready = 1;
+    g_guest_base = guest_base;
+    g_virq = virq;
     LOG_VMM("emulated virtio-blk IPA 0x%lx IRQ %u (sDDF queues to blk_virt, not QEMU; %s media)\n",
-            (unsigned long)AOS_VIRTIO_BLK_GUEST_IPA,
-            (unsigned)AOS_VIRTIO_BLK_VIRQ,
+            (unsigned long)g_guest_base,
+            g_virq,
             g_blk_virt_hw == BLK_VIRT_HW_VIRTIO_BLK ? "host" : "RAM");
+    return true;
+}
+
+bool aos_vmm_virtio_blk_adopt(uint32_t media_id, void *shared_region,
+                            const blk_virt_rebind_reply_t *attachment)
+{
+    if (!g_retired || g_blk_virt_attached || g_aos_blk_ready || !g_guest_base ||
+        media_id != g_media_id || !shared_region ||
+        ((uintptr_t)shared_region & (AOS_BLK_TRANSFER_SIZE - 1u)) ||
+        (uintptr_t)shared_region > UINTPTR_MAX - AOS_BLK_SHMEM_SIZE ||
+        !attachment || attachment->generation <= g_generation ||
+        !aos_blk_rebind_reply_valid(attachment, sizeof(*attachment), attachment->generation))
+        return false;
+    aos_blk_virt_client_t fresh;
+    aos_blk_client_bind(shared_region, AOS_BLK_VMM_CLIENT, &fresh);
+    if (!__atomic_load_n(&fresh.info->ready, __ATOMIC_ACQUIRE) ||
+        !fresh.info->capacity || !fresh.info->sector_size) return false;
+    g_aos_client = fresh;
+    blk_queue_init(&g_queue, (blk_req_queue_t *)g_aos_client.req,
+        (blk_resp_queue_t *)g_aos_client.resp, AOS_BLK_QUEUE_CAPACITY);
+    g_aos_blk = (struct virtio_blk_device){0};
+    g_aos_blk_probed = g_aos_blk_driver_ok = g_aos_blk_pumped = 0;
+    g_resp_total = g_drain_count = 0;
+    g_generation = attachment->generation;
+    g_blk_virt_hw = attachment->hw_state;
+    g_blk_virt_attached = 1;
+    if (!virtio_mmio_blk_init(&g_aos_blk, g_guest_base, AOS_VIRTIO_BLK_MMIO_SIZE,
+            g_virq, (uintptr_t)g_aos_client.data, AOS_BLK_DATA_BYTES,
+            (blk_storage_info_t *)g_aos_client.info, &g_queue,
+            AOS_BLK_QUEUE_CAPACITY, 0)) return false;
+    g_aos_blk.config.size_max = AOS_BLK_GUEST_MAX_SEGMENT_SIZE;
+    g_aos_blk_ready = 1;
+    g_retired = false;
+    return true;
+}
+
+void aos_vmm_virtio_blk_init(uint32_t media_id)
+{
+    (void)aos_vmm_virtio_blk_init_at(media_id,AOS_VIRTIO_BLK_GUEST_IPA,
+                                   AOS_VIRTIO_BLK_VIRQ,(void *)AOS_BLK_SHMEM_VA);
+}
+
+bool aos_vmm_virtio_blk_guest_io_completed(void)
+{
+    return g_aos_blk_ready && g_blk_virt_hw == BLK_VIRT_HW_VIRTIO_BLK &&
+           (g_aos_blk.virtio_device.regs.Status & VIRTIO_CONFIG_S_DRIVER_OK) &&
+           g_resp_total != 0u;
 }
 
 void aos_vmm_virtio_blk_after_fault(void)
@@ -521,14 +650,17 @@ void aos_vmm_virtio_blk_after_fault(void)
     if (!g_aos_blk_probed && (status & VIRTIO_CONFIG_S_ACKNOWLEDGE)) {
         g_aos_blk_probed = 1;
         LOG_VMM("emulated virtio-blk: guest probed IPA 0x%lx (status=0x%x)\n",
-                (unsigned long)AOS_VIRTIO_BLK_GUEST_IPA, (unsigned)status);
+                (unsigned long)g_guest_base, (unsigned)status);
     }
     if (!g_aos_blk_driver_ok && (status & VIRTIO_CONFIG_S_DRIVER_OK)) {
         g_aos_blk_driver_ok = 1;
         LOG_VMM("emulated virtio-blk: guest DRIVER_OK virq %u capacity %u blocks\n",
-                (unsigned)AOS_VIRTIO_BLK_VIRQ,
+                g_virq,
                 (unsigned)g_aos_client.info->capacity);
     }
 
+#ifdef AGENTOS_GUEST_BLOCK_DRAIN_TEST
+    if (blk_test_drain()) return;
+#endif
     blk_virt_service("after guest exit");
 }

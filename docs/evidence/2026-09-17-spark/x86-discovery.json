@@ -1,0 +1,39 @@
+{
+  "qualification": "Absent legacy hardware discovery and Linux boot endpoint",
+  "revision": "fc1a9041a63d786c4815855a259cfb819c55ee6b",
+  "intel": {
+    "host": "madmax Intel i9-14900KF nested KVM",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+    "inputs": "256 MiB private guest RAM; no initrd, root filesystem or command line",
+    "result": "FAIL exit 2: unchanged 65536-exit budget, then 300-second harness timeout",
+    "reason": "0x425544",
+    "rip": "0xffffffffa0913232",
+    "detail": "0x0001000000000034",
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/discovery-fc1a904",
+    "image_sha256": "ec24dcb8f84883aff638ffc329ef896b6fb56361458c3faace7220b7477ee0b1",
+    "root_task_sha256": "7873646d854f020f44360a00b41dfee0267658ef5d0ec874461c9c558fb515c0",
+    "gate_log_sha256": "e0e72aec40b07f5ec59c307ddd457d1c9370daed1731e5a84e25932a8efb7882",
+    "termination": "Harness timed out and terminated owned QEMU; no surviving test process",
+    "endpoint_analysis": {
+      "method": "Match captured guest instruction bytes and current stack returns against the pinned decompressed kernel",
+      "vmlinux_sha256": "4db6544b1e74d66b8cea6345de7215482e465ded64e681c4b5e5d2fcfae43444",
+      "kaslr_offset": "0x1e200000",
+      "static_rip": "0xffffffff82713232, TSC delay loop",
+      "static_stack_returns": ["0xffffffff8271315d", "0xffffffff81214a87", "0xffffffff81214b17", "0xffffffff83f1065a"],
+      "panic_call": "0xffffffff83f10655 calls 0xffffffff81214ab0 with format address 0xffffffff82ed49a0 and stack buffer at RBP-0x50",
+      "format": "VFS: Unable to mount root fs on %s",
+      "stack_argument": "unknown-block(0,0), captured at 0xffffd13480013e38",
+      "conclusion": "Kernel reached the missing-root-filesystem panic and its terminal delay loop. This is postmortem evidence, not console output or a passing Linux-userspace gate."
+    }
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "result": "PASS exit 0",
+    "artifact_directory": "build/evidence/discovery-fc1a904",
+    "image_sha256": "cb39a0041ae5362d988148e084bdae28eddef526dc3eb5c6580513f174b706df",
+    "gate_log_sha256": "3d93c713925136c8a2c553e0eb44da01608a68dcf9292150f4d824abda725235"
+  },
+  "host_checks": "x86 configuration tests passed under ASan/UBSan",
+  "limitations": ["No Linux userspace proof", "No x86 canonical device I/O proof", "Absent UART probes do not implement a console", "Required GitHub checks remain queued"],
+  "mac_task": "task_75911bb6a76445858108b916d8192b73"
+}

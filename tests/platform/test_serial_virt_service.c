@@ -1,6 +1,9 @@
+#define _GNU_SOURCE
 #include <platform/serial_virt_service.h>
+#include <platform/serial_frontend.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 
 _Alignas(8) static uint8_t pages[2 * AOS_SERIAL_CLIENTS][AOS_SERIAL_FRONTEND_STRIDE];
 static unsigned checks, failures;
@@ -12,9 +15,13 @@ static void check(int result, const char *name)
 
 int main(void)
 {
+    void *retired_page = mmap(NULL, AOS_SERIAL_FRAME_SIZE,
+        PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (retired_page == MAP_FAILED) return 1;
     aos_serial_virt_service_t service = {0};
     for (unsigned i = 0; i < AOS_SERIAL_CLIENTS; i++) {
         service.guest[i] = aos_serial_channel_at((uintptr_t)pages[i]);
+        if (i == 0) service.guest[i] = aos_serial_channel_at((uintptr_t)retired_page);
         service.frontend[i] = aos_serial_channel_at((uintptr_t)pages[i + AOS_SERIAL_CLIENTS]);
         if (i >= 2) continue;
         memcpy(service.guest[i].from_guest.data, i ? "XYZ" : "abc", 3);
@@ -89,6 +96,133 @@ int main(void)
           !memcmp(service.frontend[2].from_guest.data, "reply", 5) &&
           !memcmp(service.guest[2].to_guest.data, "insp", 4),
           "operator exchange is isolated and survives a malformed guest queue");
+    req.client = 1; req.role = SERIAL_VIRT_ROLE_VMM;
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_AUTHORITY && service.guest_attached[1],
+          "foreign detach preserves peer attachment");
+    req.client = 0; req.role = SERIAL_VIRT_ROLE_FRONTEND;
+    check(aos_serial_virt_detach(&service, SERIAL_VIRT_FRONTEND_BADGE, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_AUTHORITY && service.guest_attached[0],
+          "frontend cannot retire guest queues");
+    req.client = 2; req.role = SERIAL_VIRT_ROLE_OPERATOR;
+    check(aos_serial_virt_detach(&service, SERIAL_VIRT_OPERATOR_BADGE, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_AUTHORITY && service.guest_attached[2],
+          "guest detach contract excludes operator channel");
+    req.client = 0; req.role = SERIAL_VIRT_ROLE_VMM;
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)-1) ==
+          SERIAL_VIRT_ERR_PROTOCOL && service.guest_attached[0],
+          "short detach preserves attachment");
+    req.version++;
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_VERSION && service.guest_attached[0],
+          "wrong detach version preserves attachment");
+    req.version = SERIAL_VIRT_CONTRACT_VERSION;
+    check(aos_serial_frontend_begin(&service.frontend[0]) == AOS_SERIAL_PUMP_OK,
+          "frontend can admit an operation before retirement");
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_ERR_BUSY && service.guest_attached[0] && !service.guest_retired[0],
+          "detach waits for admitted frontend access before forgetting guest pointers");
+    aos_serial_frontend_end(&service.frontend[0]);
+    uint8_t late = 'x'; uint32_t late_count = 99;
+    uint32_t old_tail = service.frontend[0].to_guest.queue->tail;
+    uint32_t old_head = service.frontend[0].from_guest.queue->head;
+    check(aos_serial_frontend_write(&service.frontend[0], &late, 1) == AOS_SERIAL_PUMP_INVALID &&
+          aos_serial_frontend_read(&service.frontend[0], &late, 1, &late_count) == AOS_SERIAL_PUMP_INVALID &&
+          !late_count && service.frontend[0].to_guest.queue->tail == old_tail &&
+          service.frontend[0].from_guest.queue->head == old_head,
+          "ending an admitted operation preserves retirement and rejects late I/O without cursor changes");
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_OK && !service.guest_attached[0] && service.guest_retired[0] &&
+          !service.guest[0].meta && !service.guest[0].from_guest.queue &&
+          !service.frontend[0].meta->attached,
+          "terminal detach forgets guest pointers without waiting for unread bytes");
+    check(mprotect(retired_page, AOS_SERIAL_FRAME_SIZE, PROT_NONE) == 0,
+          "retired guest page becomes inaccessible");
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) ==
+          SERIAL_VIRT_OK && aos_serial_virt_attach(&service, VIRT_CLIENT_BADGE_PRIMARY,
+              &req, sizeof(req)) == SERIAL_VIRT_ERR_BUSY,
+          "detach is idempotent and reattachment is refused");
+    service.guest[1].from_guest.data[3] = '!';
+    service.guest[1].from_guest.queue->tail = 4;
+    service.guest[2].from_guest.data[5] = '?';
+    service.guest[2].from_guest.queue->tail = 6;
+    result = aos_serial_virt_service_pump(&service, 8);
+    check(result.bytes == 2 && result.wake_vmm == 6 && !result.invalid_clients &&
+          service.frontend[1].from_guest.data[3] == '!' &&
+          service.frontend[2].from_guest.data[5] == '?',
+          "peer and operator bytes survive late wake with retired memory protected");
+    serial_virt_rebind_req_t rebind = {SERIAL_VIRT_REBIND_VERSION, 0, 1};
+    aos_serial_channel_t fresh = aos_serial_channel_at((uintptr_t)pages[0]);
+    aos_serial_virt_service_t before = service;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_SECONDARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_AUTHORITY &&
+        !memcmp(&before, &service, sizeof(service)), "peer cannot authorize queue replacement");
+    rebind.client = 2;
+    check(aos_serial_virt_rebind_validate(&service, SERIAL_VIRT_OPERATOR_BADGE,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_AUTHORITY,
+        "replacement excludes the operator channel");
+    rebind.client = 0;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)-1) == SERIAL_VIRT_ERR_PROTOCOL,
+        "short replacement rejected");
+    rebind.version++;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_VERSION, "wrong replacement version rejected");
+    rebind.version = SERIAL_VIRT_REBIND_VERSION;
+    rebind.generation = 0;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_PROTOCOL, "zero generation rejected");
+    rebind.generation = 2;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_PROTOCOL, "skipped generation rejected");
+    rebind.generation = 1;
+    service.frontend[0].meta->frontend_gate |= AOS_SERIAL_FRONTEND_BUSY;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_BUSY, "replacement waits for frontend quiescence");
+    service.frontend[0].meta->frontend_gate = AOS_SERIAL_FRONTEND_CLOSED;
+    fresh.to_guest.queue->tail = 1;
+    check(aos_serial_virt_rebind_commit(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind), fresh) == SERIAL_VIRT_ERR_PROTOCOL &&
+        service.guest_retired[0] && !service.guest[0].meta,
+        "nonempty replacement never publishes a queue");
+    fresh.to_guest.queue->tail = 0;
+    memset(service.frontend[0].to_guest.data, 0x5a, AOS_SERIAL_RX_CAPACITY);
+    memset(service.frontend[0].from_guest.data, 0xa5, AOS_SERIAL_TX_CAPACITY);
+    check(aos_serial_virt_rebind_commit(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind), fresh) == SERIAL_VIRT_OK &&
+        service.guest_attached[0] && !service.guest_retired[0] &&
+        service.guest_generation[0] == 1 && service.guest[0].meta == fresh.meta,
+        "replacement binds fresh queue without touching protected retired memory");
+    unsigned nonzero = 0;
+    for (unsigned i = 0; i < AOS_SERIAL_RX_CAPACITY; i++) nonzero |= service.frontend[0].to_guest.data[i];
+    for (unsigned i = 0; i < AOS_SERIAL_TX_CAPACITY; i++) nonzero |= service.frontend[0].from_guest.data[i];
+    check(!nonzero && !service.frontend[0].to_guest.queue->tail &&
+        !service.frontend[0].from_guest.queue->head && !service.frontend[0].meta->frontend_gate,
+        "old frontend bytes and cursors are cleared before reopening admission");
+    const uint8_t input[] = "new-input", output[] = "new-output";
+    check(aos_serial_frontend_write(&service.frontend[0], input, sizeof(input)) == AOS_SERIAL_PUMP_OK,
+        "frontend admits input for the replacement generation");
+    memcpy(fresh.from_guest.data, output, sizeof(output));
+    fresh.from_guest.queue->tail = sizeof(output);
+    result = aos_serial_virt_service_pump(&service, 64);
+    check(result.bytes == sizeof(input) + sizeof(output) && result.wake_vmm == 1 &&
+        !memcmp(fresh.to_guest.data, input, sizeof(input)) &&
+        !memcmp(service.frontend[0].from_guest.data, output, sizeof(output)),
+        "replacement carries fresh bidirectional bytes and leaves peers untouched");
+    req.client = 0; req.role = SERIAL_VIRT_ROLE_VMM;
+    check(aos_serial_virt_detach(&service, VIRT_CLIENT_BADGE_PRIMARY, &req, sizeof(req)) == SERIAL_VIRT_OK,
+        "replacement generation can retire again");
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_PROTOCOL,
+        "replayed generation cannot reopen a retired replacement");
+    rebind.generation = 2;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_OK, "next generation can prepare replacement");
+    service.guest_generation[0] = UINT32_MAX;
+    rebind.generation = 0;
+    check(aos_serial_virt_rebind_validate(&service, VIRT_CLIENT_BADGE_PRIMARY,
+        &rebind, sizeof(rebind)) == SERIAL_VIRT_ERR_PROTOCOL, "generation exhaustion fails closed");
+    check(munmap(retired_page, AOS_SERIAL_FRAME_SIZE) == 0, "release test mapping");
     printf("1..%u\n", checks);
     return failures ? 1 : 0;
 }

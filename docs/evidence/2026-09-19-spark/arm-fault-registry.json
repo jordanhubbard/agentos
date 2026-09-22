@@ -1,0 +1,10 @@
+{
+  "status": "passed full Spark OS gate for fault registry extraction and terminal retirement",
+  "revision": "9726b55",
+  "command": "make gate QEMU_TEST_SSH_PORT=12254 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+  "make_exit": 0,
+  "gate_log_sha256": "a42be47c04e2e0f1ba827b7aef298e1320bf89d8c4feb51f31bb908a82d8aa25",
+  "host_validation": "Full make test-host passed; fault registry test verifies old contexts do not dispatch after reset and fresh generations reuse the same address ranges",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/arm-registry-9726b55",
+  "limits": "Canonical root boot and guest I/O regression only. No target second ARM boot, target registry reset exercise, input rebind endpoint, framebuffer rebind, or complete ARM reconstruction claim. Later input-rebind service changes are outside this gate revision."
+}

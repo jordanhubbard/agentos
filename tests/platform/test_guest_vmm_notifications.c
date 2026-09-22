@@ -1,6 +1,8 @@
 #include <platform/guest_vmm_loop.h>
+#include <platform/input.h>
 #include <contracts/serial_virt_contract.h>
 #include <contracts/blk_virt_contract.h>
+#include <contracts/net_virt_contract.h>
 #include <contracts/guest_contract.h>
 #include <setjmp.h>
 #include <stdio.h>
@@ -8,6 +10,9 @@
 static jmp_buf complete;
 static seL4_Word incoming_badge, incoming_label, observed_badge;
 static unsigned receives, notifications, rpcs, faults, sends, checks, failures;
+static unsigned ready_calls;
+static unsigned after_reply_calls;
+static uint32_t state = GUEST_STATE_RUNNING;
 seL4_MessageInfo_t seL4_Recv(seL4_CPtr endpoint, seL4_Word *badge, seL4_CPtr reply)
 {
     (void)endpoint; (void)reply;
@@ -25,7 +30,13 @@ static seL4_MessageInfo_t fault(seL4_Word badge, seL4_MessageInfo_t info)
 {
     faults++; observed_badge = badge; return info;
 }
-static void ready(void) {}
+static void ready(void) { ready_calls++; }
+static void after_reply(void)
+{
+    /* Receiving here must not overwrite an outstanding outer reply. */
+    if (sends != 1 || rpcs != 1) failures++;
+    after_reply_calls++;
+}
 static void check(int condition, const char *name)
 {
     printf("%s %u - %s\n", condition ? "ok" : "not ok", ++checks, name);
@@ -35,12 +46,36 @@ static void dispatch(seL4_Word badge, seL4_Word label)
 {
     incoming_badge = badge; incoming_label = label;
     receives = notifications = rpcs = faults = sends = 0;
-    uint32_t state = GUEST_STATE_RUNNING;
-    const aos_guest_vmm_loop_ops_t ops = {&state, rpc, fault, notified, ready, ready};
+    ready_calls = 0;
+    after_reply_calls = 0;
+    const aos_guest_vmm_loop_ops_t ops = {&state, rpc, fault, notified, ready, ready, after_reply};
     if (!setjmp(complete)) aos_guest_vmm_loop(1, 9, &ops);
 }
 int main(void)
 {
+    const uint64_t wake_bits[] = { AOS_INPUT_VMM_WAKE_BADGE, NET_VIRT_VMM_WAKE_BADGE,
+        BLK_VIRT_VMM_WAKE_BADGE, SERIAL_VIRT_VMM_WAKE_BADGE };
+    for (unsigned i = 0; i < 4; i++)
+        for (unsigned j = i + 1; j < 4; j++)
+            check((wake_bits[i] & wake_bits[j]) == 0,
+                  "independent device notifications have disjoint badge bits");
+    state = GUEST_STATE_DESTROYING;
+    dispatch(0, BLK_VIRT_EVENT_RESP_READY);
+    check(ready_calls == 1 && !faults && !rpcs && !sends,
+          "cleanup state continues draining accepted block responses");
+    dispatch(UINT64_C(1) << 62, 7);
+    check(!faults && !sends && !rpcs,
+          "queued VCPU fault cannot restart MMIO during teardown");
+    state = GUEST_STATE_DEAD;
+    dispatch(UINT64_C(1) << 62, 7);
+    check(!faults && !sends && !rpcs,
+          "late VCPU fault cannot touch revoked guest resources");
+    dispatch(0, BLK_VIRT_EVENT_RESP_READY);
+    check(ready_calls == 0, "dead guest cannot process old block responses");
+    state = GUEST_STATE_SUSPENDED;
+    dispatch(0, BLK_VIRT_EVENT_RESP_READY);
+    check(ready_calls == 0, "ordinary suspend retains responses for resume");
+    state = GUEST_STATE_RUNNING;
     dispatch(SERIAL_VIRT_VMM_WAKE_BADGE, 0x3ffffdf);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == SERIAL_VIRT_VMM_WAKE_BADGE,
@@ -51,10 +86,29 @@ int main(void)
     dispatch(0, MSG_GUEST_CREATE);
     check(rpcs == 1 && sends == 1 && !notifications && !faults,
           "real lifecycle IPC retains its normal reply path");
+    check(after_reply_calls == 1,
+          "deferred reconstruction runs only after lifecycle reply delivery");
+    dispatch(AOS_INPUT_VMM_WAKE_BADGE, MSG_GUEST_DESTROY);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == AOS_INPUT_VMM_WAKE_BADGE,
+          "input wake cannot execute a stale lifecycle RPC");
+    dispatch(AOS_INPUT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE, 7);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == (AOS_INPUT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE),
+          "coalesced input and serial notifications retain both bits");
     dispatch(BLK_VIRT_VMM_WAKE_BADGE, MSG_GUEST_DESTROY);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == BLK_VIRT_VMM_WAKE_BADGE,
           "block wake cannot execute stale destroy RPC");
+    dispatch(NET_VIRT_VMM_WAKE_BADGE, MSG_GUEST_CREATE);
+    check(notifications == 1 && !rpcs && !faults && !sends &&
+          observed_badge == NET_VIRT_VMM_WAKE_BADGE,
+          "network wake reaches notification handler despite a stale IPC tag");
+    const uint64_t combined = AOS_INPUT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE |
+        BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE;
+    dispatch(combined, 7);
+    check(notifications == 1 && !rpcs && !faults && !sends && observed_badge == combined,
+          "coalesced input, network, block and serial wake bits are retained");
     dispatch(BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE, 7);
     check(notifications == 1 && !rpcs && !faults && !sends &&
           observed_badge == (BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE),
@@ -67,6 +121,7 @@ int main(void)
     dispatch(UINT64_C(1) << 62, 7);
     check(faults == 1 && sends == 1 && !notifications && !rpcs,
           "real VCPU fault badge remains on the fault path");
+    check(after_reply_calls == 0, "VCPU faults cannot trigger deferred lifecycle work");
     for (uint64_t badge = 1; badge <= 7; badge++)
         check(serial_virt_service_notification(badge),
               "combined serial notification bits classify without an IPC label");

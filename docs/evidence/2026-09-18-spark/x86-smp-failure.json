@@ -1,0 +1,39 @@
+{
+  "schema": "agentos.x86.smp-failure.v1",
+  "date_utc": "2026-09-19",
+  "revision": "4a7c8b08a1b12fd6b69006366bad39ca15365f05",
+  "accepted": false,
+  "command": "cd /tmp/agentos-v04-intel-discovery && if pgrep -f '[q]emu-system-x86_64' >/dev/null; then exit 90; fi && git fetch origin platform/x86-smp && git checkout --detach 4a7c8b0 && make gate-x86_64-smp SEL4_SDK_VERSION=2.3.0 X86_BOOT_PROFILE=debian-amd64-2cpu.toml X86_ROOT_DISK=/tmp/agentos-debian-amd64/recreate-3ea3554.raw X86_SSH_KEY=/tmp/agentos-debian-amd64/ssh-seed-19/identity X86_SSH_PORT=12224 X86_SSH_KNOWN_HOSTS=/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-LxAV1n.known_hosts X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=600",
+  "exit_code": 2,
+  "failed_stage": "First-generation login: systemd-debug-generator segfault in ld-linux-x86-64.so.2 on CPU 1; concurrent workload was not reached.",
+  "console_guest_timestamp": "133.107644",
+  "root_elf_sha256": "7cd86ae747f4821ca4c8ce80c564fe076fab204fb8776ee419889ab01fc22c9e",
+  "console_sha256": "ab3f75bed229fbf6fab41f94c41732fafaf81f0f2d033063d55584f0ff91ba3a",
+  "gate_log_sha256": "da28d455296441b1c3ec60614ee72ebf63c60db6c78e988dc2e3e33a59337e1f",
+  "artifact_archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-smp-crash/intel-strict-failure.tar",
+  "artifact_archive_sha256": "05739db216c1174ca68e23792b8592d6ba543bccafe4e8f2f841856d09645c85",
+  "qemu_gone_after_completion": true,
+  "disk_check": {
+    "method": "Read-only loop devices and debugfs; compare failed disk to earlier boot-19.raw seeded image. Read-only e2fsck skips journal recovery and is not a clean-filesystem proof.",
+    "matching_files": {
+      "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": "438c546d8e8cc48496bf3a95f753051afd9db66a629a74e31a9ded71586b56e0",
+      "/usr/lib/x86_64-linux-gnu/libc.so.6": "fa430b8f298f817a266046af84a77533185ad6fc4406c7d3787b5a0a0c207826",
+      "/usr/lib/systemd/system-generators/systemd-debug-generator": "0ed5110c491db1663a505b27658464d18516be2436310ab3e7074872a6b78d57"
+    }
+  },
+  "next_experiment": {
+    "revision": "4a7c8b08a1b12fd6b69006366bad39ca15365f05",
+    "disk": "/var/tmp/agentos-smp-qualification/clean-4a7c8b0.raw",
+    "preboot_sha256": "057ce18a65b41964fa4eb3cf94f0e8f5b57d1cc8c07344b79f5274d50c40f9c2",
+    "preparation": "Copy earlier boot-19.raw, recover journal with e2fsck -p, then e2fsck -fn exits 0.",
+    "purpose": "Separate reused disk state from recurring SMP runtime failure.",
+    "exit_code": 2,
+    "result": "First-generation boot rejected a userspace instruction-fetch fault in libc on CPU 0 at guest timestamp 233.056509. Workload not reached. The recurring fault is not confined to CPU 1 and reproduces on the journal-recovered baseline disk.",
+    "artifact_archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-smp-crash/intel-clean-failure.tar",
+    "artifact_archive_sha256": "a59bd75b8ffab512164cd46da00c1471c87804f9d48012f4a835cc5ace256453",
+    "gate_log_sha256": "9f666f746d5e46b01a5d7d564d341a5f8fddacd5aa828d5037edd061a96b93f0",
+    "qemu_pid": 1299389,
+    "qemu_gone_after_completion": true
+  },
+  "conclusion": "SMP remains unqualified. No confirmed root cause; file identity does not prove memory, CPU or I/O correctness."
+}

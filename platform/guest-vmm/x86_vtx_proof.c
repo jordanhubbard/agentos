@@ -6,18 +6,41 @@
  * at guest linear/physical address 0x1000, and four EPT-mapped guest
  * page-table pages. We initialise minimum long-mode VMCS state, enter
  * non-root mode once, and report the expected HLT VM exit to the root task.
+ * The optional firmware-mode variant repeats the HLT proof with explicit
+ * real-address, unpaged protected and long-mode entry states.
  */
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "sel4_boot.h"
+#include "system_desc.h"
 #include <sel4/arch/vmenter.h>
+#include <platform/x86_vmenter.h>
 #include "contracts/guest_execution_caps.h"
 #include "contracts/x86_vtx_proof.h"
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+#include "platform/x86_event.h"
+#if defined(AGENTOS_X86_FIRMWARE_RESET) || defined(AGENTOS_X86_FIRMWARE_MODES)
+#error "Guest fault proof is a separate private-page composition"
+#endif
+#endif
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+#include "x86_firmware.h"
+#endif
 
 #ifndef CONFIG_VTX
 #error "x86_vtx_proof.c requires a CONFIG_VTX seL4 SDK"
+#endif
+
+/* New seL4 names MR2 for its interruption-info payload. The old enum name
+ * becomes a deprecated macro there; avoid expanding its Clang-unknown pragma.
+ * Microkit 2.1 has the old enum directly, with the same wire slot. */
+#ifdef SEL4_VMENTER_CALL_CONTROL_ENTRY_MR
+#define AOS_VMENTER_INTERRUPT_INFO_MR SEL4_VMENTER_CALL_INTERRUPT_INFO_MR
+#else
+#define AOS_VMENTER_INTERRUPT_INFO_MR SEL4_VMENTER_CALL_CONTROL_ENTRY_MR
 #endif
 
 #define VTX_GUEST_CODE_SELECTOR       0x08u
@@ -122,7 +145,7 @@ static void report_and_wait(seL4_CPtr endpoint, seL4_Word status,
 
     for (;;) {
         seL4_Word badge = 0u;
-        (void)seL4_Wait(endpoint, &badge);
+        (void)seL4_Wait(PD_CNODE_SLOT_SELF_EP, &badge);
     }
 }
 
@@ -190,8 +213,9 @@ static seL4_Error write_vmcs_guest_state(seL4_CPtr vcpu,
         { VMX_GUEST_SYSENTER_EIP, 0u },
 
         /*
-         * The seL4 x86_64 VTX kernel fixes IA-32e guest entry on. The root
-         * task supplies the four guest paging pages this state requires.
+         * Both supported SDKs initialize IA-32e guest entry on. This proof
+         * retains that mode; root supplies its four guest paging pages.
+         * Firmware entry modes require separate qualification.
          */
         { VMX_CONTROL_CR0_MASK, VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG },
         { VMX_CONTROL_CR0_READ_SHADOW, 0u },
@@ -217,6 +241,203 @@ static seL4_Error write_vmcs_guest_state(seL4_CPtr vcpu,
     return err;
 }
 
+#ifdef AGENTOS_X86_FIRMWARE_MODES
+/* The older SDK cannot expose these controls. Never silently run the old
+ * long-mode-only proof when firmware-mode qualification was requested. */
+#ifndef SEL4_VMENTER_CALL_CONTROL_ENTRY_MR
+#error "Firmware entry qualification requires Microkit 2.3.0 VMCS controls"
+#endif
+#define VMX_CONTROL_ENTRY              0x00004012u
+#define VMX_CONTROL_SECONDARY          0x0000401eu
+#define VMX_ENTRY_IA32E                (1u << 9)
+#define VMX_SECONDARY_EPT              (1u << 1)
+#define VMX_SECONDARY_UNRESTRICTED     (1u << 7)
+
+/* Read back each mode-changing field before permitting entry. Errors return
+ * to the lifecycle caller so it can revoke partial reconstruction. */
+static seL4_Error mode_field(seL4_CPtr vcpu, seL4_Word field, seL4_Word value, seL4_Word mask)
+{
+    seL4_Error err = vmcs_write(vcpu, field, value);
+    if (err != seL4_NoError) return err;
+    seL4_X86_VCPU_ReadVMCS_t read =
+        seL4_X86_VCPU_ReadVMCS(vcpu, field);
+    if (read.error != seL4_NoError) return (seL4_Error)read.error;
+    return (read.value & mask) == (value & mask)
+        ? seL4_NoError : seL4_IllegalOperation;
+}
+
+static seL4_Error configure_firmware_mode(seL4_CPtr vcpu, unsigned mode, bool reset,
+                                          seL4_Word *failed_field)
+{
+    seL4_Error err = write_vmcs_guest_state(vcpu, failed_field);
+    if (err != seL4_NoError) return err;
+    seL4_X86_VCPU_ReadVMCS_t secondary =
+        seL4_X86_VCPU_ReadVMCS(vcpu, VMX_CONTROL_SECONDARY);
+    if (secondary.error != seL4_NoError) {
+        *failed_field = VMX_CONTROL_SECONDARY;
+        return (seL4_Error)secondary.error;
+    }
+    seL4_X86_VCPU_ReadVMCS_t entry =
+        seL4_X86_VCPU_ReadVMCS(vcpu, VMX_CONTROL_ENTRY);
+    if (entry.error != seL4_NoError) {
+        *failed_field = VMX_CONTROL_ENTRY;
+        return (seL4_Error)entry.error;
+    }
+#define FIELD(field, value, mask) do { \
+    *failed_field = (field); \
+    err = mode_field(vcpu, (field), (value), (mask)); \
+    if (err != seL4_NoError) return err; \
+} while (0)
+    FIELD(VMX_CONTROL_SECONDARY,
+               secondary.value | VMX_SECONDARY_UNRESTRICTED | VMX_SECONDARY_EPT,
+               VMX_SECONDARY_UNRESTRICTED | VMX_SECONDARY_EPT);
+    FIELD(VMX_CONTROL_ENTRY,
+               mode == 2u ? entry.value | VMX_ENTRY_IA32E
+                          : entry.value & ~VMX_ENTRY_IA32E,
+               VMX_ENTRY_IA32E);
+    FIELD(VMX_GUEST_EFER,
+               mode == 2u ? VMX_GUEST_EFER_LME | VMX_GUEST_EFER_LMA : 0u,
+               VMX_GUEST_EFER_LME | VMX_GUEST_EFER_LMA);
+    FIELD(VMX_GUEST_CR0,
+               mode == 0u ? 0u : mode == 1u ? VMX_GUEST_CR0_PE
+                                           : VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG,
+               VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG);
+    FIELD(VMX_GUEST_CR4,
+               mode == 2u ? VMX_GUEST_CR4_PAE : 0u, VMX_GUEST_CR4_PAE);
+    if (mode != 2u) {
+        FIELD(VMX_GUEST_CS_ACCESS_RIGHTS,
+                   mode == 0u ? 0x009bu : 0xc09bu, 0xffffu);
+    }
+    if (mode == 0u) {
+        /* Real-address segment caches: selector/base zero, 64 KiB limit,
+         * byte granularity, 16-bit default operand/address size. */
+        static const seL4_Word selectors[] = {
+            VMX_GUEST_ES_SELECTOR, VMX_GUEST_CS_SELECTOR,
+            VMX_GUEST_SS_SELECTOR, VMX_GUEST_DS_SELECTOR,
+            VMX_GUEST_FS_SELECTOR, VMX_GUEST_GS_SELECTOR,
+        };
+        static const seL4_Word limits[] = {
+            VMX_GUEST_ES_LIMIT, VMX_GUEST_CS_LIMIT, VMX_GUEST_SS_LIMIT,
+            VMX_GUEST_DS_LIMIT, VMX_GUEST_FS_LIMIT, VMX_GUEST_GS_LIMIT,
+        };
+        static const seL4_Word rights[] = {
+            VMX_GUEST_ES_ACCESS_RIGHTS, VMX_GUEST_SS_ACCESS_RIGHTS,
+            VMX_GUEST_DS_ACCESS_RIGHTS, VMX_GUEST_FS_ACCESS_RIGHTS,
+            VMX_GUEST_GS_ACCESS_RIGHTS,
+        };
+        for (unsigned i = 0u; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+            FIELD(selectors[i], 0u, 0xffffu);
+            FIELD(limits[i], 0xffffu, 0xffffffffu);
+        }
+        for (unsigned i = 0u; i < sizeof(rights) / sizeof(rights[0]); i++) {
+            FIELD(rights[i], 0x0093u, 0x1ffffu);
+        }
+    }
+
+    if (reset) {
+        /* Architectural reset starts with a special high CS cache. Keep
+         * CR0 mode writes intercepted for later transition emulation. */
+        /* Load all guest EFER bits, not only IA-32e mode implied by entry
+         * controls. Otherwise host SCE can survive into the reset guest. */
+        FIELD(VMX_CONTROL_ENTRY,
+                   (entry.value & ~VMX_ENTRY_IA32E) | (1u << 15),
+                   VMX_ENTRY_IA32E | (1u << 15));
+        FIELD(VMX_GUEST_CS_SELECTOR, 0xf000u, 0xffffu);
+        FIELD(VMX_GUEST_CS_BASE, 0xffff0000u, 0xffffffffu);
+        FIELD(VMX_GUEST_CR0, 0x60000010u,
+                   VMX_GUEST_CR0_PE | VMX_GUEST_CR0_PG);
+        FIELD(VMX_CONTROL_CR0_READ_SHADOW, 0x60000010u, 0xffffffffu);
+    }
+#undef FIELD
+    *failed_field = 0u;
+    return seL4_NoError;
+}
+
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+seL4_Error aos_x86_firmware_reset(aos_x86_vmenter_entry_t *reset_entry,
+                                  seL4_Word *failed_field)
+{
+    return aos_x86_firmware_reset_cpu(AOS_GUEST_VCPU_CAP_BASE,reset_entry,failed_field);
+}
+
+seL4_Error aos_x86_firmware_reset_cpu(seL4_CPtr vcpu,
+    aos_x86_vmenter_entry_t *reset_entry, seL4_Word *failed_field)
+{
+    if (!vcpu || !reset_entry || !failed_field) return seL4_InvalidArgument;
+    seL4_Error err = configure_firmware_mode(vcpu, 0u, true, failed_field);
+    if (err != seL4_NoError) return err;
+    *reset_entry = (aos_x86_vmenter_entry_t){
+        .ip = 0xfff0u, .controls = VMX_CONTROL_PPC_HLT_EXITING,
+        .interruption_info = 0u,
+    };
+    return seL4_NoError;
+}
+
+seL4_Error aos_x86_firmware_startup_cpu(seL4_CPtr vcpu, unsigned vector,
+    aos_x86_vmenter_entry_t *entry, seL4_Word *failed_field)
+{
+    if (!vcpu || vector>255u || !entry || !failed_field) return seL4_InvalidArgument;
+    aos_x86_vmenter_entry_t next;
+    seL4_Error err=aos_x86_firmware_reset_cpu(vcpu,&next,failed_field);
+    if (err!=seL4_NoError) return err;
+    /* A SIPI supplies the 4 KiB real-mode startup page, not the special
+     * high reset-vector CS cache used by the bootstrap firmware. */
+    const struct { seL4_Word field,value,mask; } fields[]={
+        {VMX_GUEST_CS_SELECTOR,(seL4_Word)vector<<8,0xffffu},
+        {VMX_GUEST_CS_BASE,(seL4_Word)vector<<12,0xffffffffu},
+        {VMX_GUEST_CR3,0u,UINT64_MAX},
+        {VMX_GUEST_RSP,0u,UINT64_MAX},
+        {VMX_GUEST_GDTR_LIMIT,0xffffu,0xffffffffu},
+        {VMX_GUEST_IDTR_LIMIT,0xffffu,0xffffffffu},
+    };
+    for (unsigned i=0; i<sizeof(fields)/sizeof(fields[0]); i++) {
+        *failed_field=fields[i].field;
+        err=mode_field(vcpu,fields[i].field,fields[i].value,fields[i].mask);
+        if (err!=seL4_NoError) return err;
+    }
+    next.ip=0;
+    *failed_field=0;
+    *entry=next;
+    return seL4_NoError;
+}
+#endif
+
+static void qualify_firmware_modes(seL4_CPtr endpoint)
+{
+#ifdef AGENTOS_X86_FIRMWARE_RESET
+    seL4_Word failed_field = 0u;
+    aos_x86_vmenter_entry_t reset_entry;
+    seL4_Error err = aos_x86_firmware_reset(&reset_entry, &failed_field);
+    if (err != seL4_NoError)
+        report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, failed_field, err, 0u);
+    aos_x86_firmware_run(endpoint, reset_entry);
+#endif
+    /* VMM-selected modes on the same EPT-owned HLT instruction. */
+    for (unsigned mode = 0u; mode < 3u; mode++) {
+        seL4_Word failed_field = 0u;
+        seL4_Error err = configure_firmware_mode(AOS_GUEST_VCPU_CAP_BASE, mode, false, &failed_field);
+        if (err != seL4_NoError)
+            report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, failed_field, err, mode);
+        seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, AOS_X86_VTX_GUEST_RIP);
+        seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, VMX_CONTROL_PPC_HLT_EXITING);
+        seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR, 0u);
+        aos_x86_vmenter_return_t returned = aos_x86_vm_enter();
+        seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
+        if (returned.result != SEL4_VMENTER_RESULT_FAULT)
+            report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, 0x4e5446u, rip, returned.badge);
+        seL4_Word reason = returned.words[SEL4_VMENTER_FAULT_REASON_MR];
+        seL4_Word length = returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR];
+        if (reason != AOS_X86_VTX_HLT_EXIT_REASON ||
+            rip != AOS_X86_VTX_GUEST_RIP || length != AOS_X86_VTX_HLT_INSTRUCTION_LEN) {
+            report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, reason, rip, length);
+        }
+    }
+    report_and_wait(endpoint, AOS_X86_VTX_MODES_PASS,
+                    AOS_X86_VTX_HLT_EXIT_REASON, AOS_X86_VTX_GUEST_RIP,
+                    AOS_X86_VTX_HLT_INSTRUCTION_LEN);
+}
+#endif
+
 void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver_endpoint)
 {
     (void)nameserver_endpoint;
@@ -226,6 +447,11 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver_endpoint)
             seL4_Yield();
         }
     }
+    endpoint = AOS_X86_VTX_REPORT_CAP;
+
+#ifdef AGENTOS_X86_FIRMWARE_MODES
+    qualify_firmware_modes(endpoint);
+#endif
 
     seL4_Word failed_field = 0u;
     seL4_Error err = write_vmcs_guest_state(AOS_GUEST_VCPU_CAP_BASE,
@@ -235,21 +461,65 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver_endpoint)
                         (seL4_Word)err, 0u);
     }
 
+#ifdef AGENTOS_X86_GUEST_FAULT_PROOF
+    const struct { seL4_Word field, value; } fault_fields[]={
+        {VMX_GUEST_GDTR_BASE,AOS_X86_FAULT_GUEST_GDT},
+        {VMX_GUEST_GDTR_LIMIT,23},
+        {VMX_GUEST_IDTR_BASE,AOS_X86_FAULT_GUEST_IDT},
+        {VMX_GUEST_IDTR_LIMIT,14*16-1},
+        {VMX_GUEST_RSP,AOS_X86_FAULT_GUEST_STACK},
+    };
+    for (unsigned i=0;i<sizeof(fault_fields)/sizeof(fault_fields[0]);i++) {
+        err=vmcs_write(AOS_GUEST_VCPU_CAP_BASE,fault_fields[i].field,fault_fields[i].value);
+        if (err) report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,fault_fields[i].field,err,0);
+    }
+    seL4_Word next_rip=AOS_X86_FAULT_GUEST_ENTRY, info=0;
+    for (unsigned attempt=0;attempt<3;attempt++) {
+        seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR,next_rip);
+        seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR,VMX_CONTROL_PPC_HLT_EXITING);
+        seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR,info);
+        aos_x86_vmenter_return_t returned=aos_x86_vm_enter();
+        seL4_Word rip=returned.words[SEL4_VMENTER_CALL_EIP_MR];
+        if (returned.result!=SEL4_VMENTER_RESULT_FAULT)
+            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,0x4e5446u,rip,returned.badge);
+        seL4_Word reason=returned.words[SEL4_VMENTER_FAULT_REASON_MR];
+        seL4_Word length=returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR];
+        if (attempt==2) {
+            if (reason==12u && rip==AOS_X86_VTX_GUEST_RIP && length==1u)
+                report_and_wait(endpoint,AOS_X86_VTX_GUEST_FAULTS_PASS,reason,rip,length);
+            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,reason,rip,length);
+        }
+        if (reason!=(attempt ? 32u : 31u) || length!=2u ||
+            returned.words[SEL4_VMENTER_FAULT_ECX]!=UINT32_MAX ||
+            returned.words[SEL4_VMENTER_FAULT_EAX]!=0x12345678u ||
+            returned.words[SEL4_VMENTER_FAULT_EDX]!=0x87654321u)
+            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,reason,rip,length);
+        aos_x86_entry_event_t event;
+        if (!aos_x86_entry_event(&event,true,true,length,0,2,0))
+            report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,0x45564eu,rip,length);
+        err=vmcs_write(AOS_GUEST_VCPU_CAP_BASE,0x4018u,event.error_code);
+        if (err) report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,0x4018u,rip,err);
+        next_rip=rip+event.advance; info=event.interruption_info;
+    }
+    report_and_wait(endpoint,AOS_X86_VTX_PROOF_FAIL,0x4750u,0,0);
+#endif
+
     /*
      * SysVMEnter updates guest RIP, primary execution controls, and entry
      * interruption info directly from these three message registers.
      */
     seL4_SetMR(SEL4_VMENTER_CALL_EIP_MR, AOS_X86_VTX_GUEST_RIP);
     seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_PPC_MR, VMX_CONTROL_PPC_HLT_EXITING);
-    seL4_SetMR(SEL4_VMENTER_CALL_CONTROL_ENTRY_MR, 0u);
+    seL4_SetMR(AOS_VMENTER_INTERRUPT_INFO_MR, 0u);
 
-    seL4_Word result = seL4_VMEnter(NULL);
-    seL4_Word reason = seL4_GetMR(SEL4_VMENTER_FAULT_REASON_MR);
-    seL4_Word rip = seL4_GetMR(SEL4_VMENTER_CALL_EIP_MR);
+    aos_x86_vmenter_return_t returned = aos_x86_vm_enter();
+    seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
+    if (returned.result != SEL4_VMENTER_RESULT_FAULT)
+        report_and_wait(endpoint, AOS_X86_VTX_PROOF_FAIL, 0x4e5446u, rip, returned.badge);
+    seL4_Word reason = returned.words[SEL4_VMENTER_FAULT_REASON_MR];
     seL4_Word instruction_len =
-        seL4_GetMR(SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR);
-    if (result == SEL4_VMENTER_RESULT_FAULT &&
-        (reason & 0xffffu) == AOS_X86_VTX_HLT_EXIT_REASON &&
+        returned.words[SEL4_VMENTER_FAULT_INSTRUCTION_LEN_MR];
+    if ((reason & 0xffffu) == AOS_X86_VTX_HLT_EXIT_REASON &&
         rip == AOS_X86_VTX_GUEST_RIP &&
         instruction_len == AOS_X86_VTX_HLT_INSTRUCTION_LEN) {
         report_and_wait(endpoint, AOS_X86_VTX_PROOF_PASS, reason, rip,

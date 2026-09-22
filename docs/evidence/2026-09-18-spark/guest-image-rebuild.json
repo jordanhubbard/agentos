@@ -1,0 +1,31 @@
+{
+  "qualification": "Embedded image restoration across preboot guest RAM recreation",
+  "runtime_revision": "f88a331d4d2f20a4628a0e4d3269f2505c93d662",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "pipeline_result": "PASS, exit 0",
+  "target": {
+    "command": "make test-guest-image-recycle QEMU_TEST_SSH_PORT=12237",
+    "log_sha256": "eef141217f401fa333dc071111cb0c39c8806ef49aee69ba36b772310bede5f1",
+    "serial_log_sha256": "c8c3c792577d1943ab8b724325ef1f4b23cdc6944c1c91bc38c7e07a1b5c0769",
+    "agentos_image_sha256": "36bbbbfe1009874761d22efca88aea1c04e06ff01fdabdbd93d6aa1e5b846a9e",
+    "qemu_pid": 1978589,
+    "qemu_log_stem": "agentos-qemu-QHFKgZ",
+    "result": "Two complete RAM overwrite/revoke/rebuild/zero cycles, byte-exact restoration of embedded kernel/DTB/initrd after each, then boot of final restored copy to Buildroot shell and successful guest ping through CC"
+  },
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12237",
+    "result": "PASS after target test",
+    "log_sha256": "51ccb478ee4067ef84de9c658aaefe42aa95df52ad7cabae08a71efc2d29dc53"
+  },
+  "earlier_attempts": [
+    "0c33704 rejected before VM launch by obsolete CLI block-proof requirement",
+    "64cf718 failed early marker check because console assertion used host-banner fallback; f88a331 routes explicit console assertions through the console plan without extending deadlines"
+  ],
+  "limits": [
+    "This is a preboot RAM/image proof, not whole-guest destroy/recreate",
+    "Execution objects and service attachments are retained in this probe",
+    "Media-loaded initrds require block reattachment and are excluded",
+    "Production reset, required CI, canonical integration and release remain pending"
+  ]
+}

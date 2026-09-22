@@ -1,0 +1,44 @@
+{
+  "qualification": "Private PM1 registers and OVMF continuation to diagnostic exit bound",
+  "runtime_revision": "2cbf5190063c2160a1d09ca3f28cedc7dccc69ac",
+  "intel": {
+    "host": "madmax, Intel i9-14900KF, nested KVM",
+    "sdk": "Microkit 2.3.0",
+    "command": "make gate-x86_64-firmware-reset SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "result": "FAIL: fixed 65536-exit diagnostic budget exhausted; firmware boot endpoint unqualified",
+    "timer_exits": 10771,
+    "injections": 4885,
+    "guest_eoi_writes": 4884,
+    "halt_exits": 4613,
+    "vmx_timer_rate_shift": 5,
+    "tsc_hz": 3187200000,
+    "stop": {"reason": "0x425544", "rip": "0x0018b0d1", "detail": "0x0001000000000034", "last_exit_reason": 52},
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/pm-2cbf519",
+    "image_sha256": "01c762d133b53c8a737bada2fe385127ef8238599bc26dbfcabe158bbfe1517b",
+    "root_task_sha256": "a89e5c68a591f2571171a88618aa1fba9e8b46870e37ca48f1181191acf46a51",
+    "serial_sha256": "6af28f4c0da7aafc2924dcdd6a5a810ef5585f58f92519fb04e3bd847931814c",
+    "termination": "Owned QEMU PID 2727658 terminated only after explicit failure and artifact retention; gate exited 2"
+  },
+  "spark": {
+    "revision": "a2e0e67e0563875b4b5f0e3530939bdf90a46f8c",
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "result": "PASS, exit 0",
+    "artifact_directory": "/tmp/agentos-v04-x86-string/build/evidence/pm-a2e0e67",
+    "image_sha256": "26ce34eca25c32751fe70170c15daa5b8fe5cf6953e6789dc4855b0b5876ddb1",
+    "gate_log_sha256": "8700e89d5ba9f7307b7e8a4edbdb9357d336364f35b291038d729ad66499a0cc",
+    "later_change": "2cbf519 only adds last-RIP/reason to the firmware budget-failure diagnostic; Intel rebuilt and ran that revision"
+  },
+  "host_tests": {
+    "pm_config_and_string": "PASS",
+    "config_asan_ubsan": "PASS",
+    "cases": ["byte/word PM1 access", "partial control writes", "PMIOSE independent of PCI IOEN", "disabled decode", "timer W1C status across skipped wraps", "clock reversal", "independent state", "atomic unsupported SCI/SMI/sleep rejection"]
+  },
+  "limitations": [
+    "The budget stop remains failure; no complete UEFI boot or guest payload handoff is claimed",
+    "Last RIP identifies the observation point, not which firmware component is waiting or why",
+    "Repeated HLT/EOI counters are not independent guest handler-payload or interrupt-window assertions",
+    "PM1 SCI enables, SMI and sleep actions remain unsupported",
+    "Guest ACPI tables, x86 Linux and canonical x86 I/O, persistence and reclamation remain outstanding"
+  ],
+  "mac_task": "task_7a994cf2265342a694917f99aa2986e5"
+}

@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "status": "diagnostic-ssh-verified",
+  "runtime_revision": "bb19f81",
+  "target_host": "madmax",
+  "target_architecture": "Intel x86_64 nested VMX",
+  "root_task_elf_sha256": "ed474da37bae5b19f2a4a7ce7ab14508be3f73dd013902ad098888b09518ee37",
+  "profile": "debian-amd64.toml",
+  "seed": {
+    "mechanism": "Stock cloud-init NoCloud; configuration data placed in a disposable root partition copy with native debugfs",
+    "directory": "/var/lib/cloud/seed/nocloud",
+    "partition_offset_bytes": 134217728,
+    "partition_bytes": 3085959168,
+    "user_data_sha256": "d824f2a7d06c3cb19cdf2fcb6d6a158d2e4a2d6855bcfd9391ef277ae578b0f5",
+    "metadata_sha256": "1218590aa9724fc479a9cadcb0eda96cad403b9071f406beed471cb821e850dc",
+    "network_config_sha256": "fde361e9a21ae4c981923237f42772d10c31ede5f3677e2784a578b63f57d8e3",
+    "instance_id": "agentos-test-19",
+    "account": "debian",
+    "authentication": "Temporary Ed25519 public key; ssh_pwauth false; disable_root true; guest generates its own Ed25519 host key",
+    "verification": "Seed user-data read back byte-for-byte before writing the partition into the disposable raw disk"
+  },
+  "first_boot": {
+    "attempt": 19,
+    "network": "eth0 UP at 10.0.2.15/24 through canonical agentOS virtio-net; QEMU user backend restrict=on with only loopback 127.0.0.1:12224 forwarded to guest port 22",
+    "ssh_proof": "Authenticated using publickey; uname -m returned x86_64; exit status 0",
+    "host_key_fingerprint": "SHA256:untR35+L8Sv+bCtNSxWc6F+CVEz15HXTNOdI165BsC8",
+    "host_key_verification": "SSH peer fingerprint matched the guest console's generated host-key fingerprint",
+    "effective_sshd": {
+      "pubkeyauthentication": "yes",
+      "passwordauthentication": "no",
+      "kbdinteractiveauthentication": "no",
+      "permitrootlogin": "without-password"
+    },
+    "negative_authentication": "An unrelated Ed25519 key was rejected with Permission denied (publickey), exit 255; SSH agent and other identity sources disabled",
+    "cloud_init": "25.1.4; status done; DataSourceNoCloud from the seed directory; errors [] and recoverable_errors {}",
+    "outer_log_sha256": "10250826cbed2eadd763bbea7de6b3d589b7472491d52986f23024782ed0b6c3",
+    "console_sha256": "bdb83590ab9db89503b1d1f6c88357f52ce2b2ffa1f452333756602c0c5ffd45",
+    "pcap_sha256": "c4a3631aeedf253b78d5e00d38864130793bdf7b50b07f5266d1948dc2888ee5",
+    "ssh_log_sha256": "a74e5e1ed0a9d62320c1cba7efd09e3dae42ad7d56cb0116f4592fc051fad2eb",
+    "shutdown": "sudo sync succeeded over SSH before owned QEMU was stopped through QMP quit"
+  },
+  "cold_boot": {
+    "attempt": 20,
+    "disk": "Same boot-19.raw disk, without reseeding; new QEMU process after first-boot sync and shutdown",
+    "ssh_proof": "Strict host-key checking matched the original Ed25519 host key; original public key authenticated; uname -m returned x86_64; exit status 0",
+    "cloud_init": "status done; DataSourceNoCloud from the same seed directory; errors [] and recoverable_errors {}",
+    "outer_log_sha256": "10250826cbed2eadd763bbea7de6b3d589b7472491d52986f23024782ed0b6c3",
+    "console_sha256": "0e10515eeba21c0f9a0d208875d70b9b30769a41b4a584d365bce9c840a83897",
+    "pcap_sha256": "d9ae2f20a1b9b9f48a17b81535199768c5cc079ec8f3ddf5044131faafa92cde",
+    "ssh_log_sha256": "14408bb574e76666f5b39ac54e7dd718bfa57adb01623136b853c024571c0a0b",
+    "shutdown": "sudo sync succeeded over SSH before QMP quit; no test QEMU process remains",
+    "verification": "Retained local log hashes match the Intel host copies; root-task ELF hash remains unchanged"
+  },
+  "retained_host_directory": "/tmp/agentos-debian-amd64",
+  "retained_local_directory": "build/evidence/x86-debian-ssh",
+  "limitations": [
+    "Manual diagnostic media preparation and QEMU launch; native seed builder and SSH gate integration are not implemented yet",
+    "First readiness probes reset or timed out during startup; the successful SSH proof used a bounded 90-second attempt",
+    "No throughput, latency, GUI, concurrent guest isolation or release qualification is claimed",
+    "Private login and host keys are not included in this receipt or repository"
+  ]
+}

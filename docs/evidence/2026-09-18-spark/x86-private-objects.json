@@ -1,0 +1,30 @@
+{
+  "qualification": "Private x86 firmware VCPU and EPT allocation authority",
+  "runtime_revision": "115e1ba732932199204036f3db415a424d5ce360",
+  "source_clean_during_tests": true,
+  "spark": {
+    "host_tests": "make test-x86-guest-objects-host and make test-host: PASS, exit0",
+    "host_log_sha256": "02c5ae9c2e85d41e576d4a6f710e157b6cd65f90f6853ae042419a9b2331ec4b",
+    "gate": "make gate: PASS, exit0; both architecture boot checks and ARM guest net/block/console proofs",
+    "gate_log_sha256": "bab34bcdae8fae72b50355a0c3f3f4688324e0a015a6f7eb52a0d71ee560d57f"
+  },
+  "intel": {
+    "host": "madmax Intel Linux via puck.local",
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600 with retained pinned Debian media, SSH host key and OVMF",
+    "result": "PASS, exit0; private pool delegation marker, public-key SSH with pinned Ed25519 host key, x86_64 and sync",
+    "log_sha256": "cd04196726387449eafb3abc1b8ece217741bedd79cda4f42cb734c132b9513a",
+    "serial_log_sha256": "314c27b9cb1017c58dc6b85fbd91594f541173aee4f0eb8b72e2b261355a5022",
+    "console_log_sha256": "e222d16ec2f0f66d947913f4275e09a8cae849977852384d1e152b6f1eb003d9",
+    "qemu_pid": 3195923,
+    "qemu_log_stem": "agentos-qemu-5MGreg",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "preflight": "Initial checkout attempt exited128 before building because the fetched branch lacked a remote-tracking ref. Selecting fetched commit 115e1ba directly succeeded."
+  },
+  "limits": [
+    "Boot and I/O qualification of the allocation change, not runtime revocation",
+    "Retype failure propagation is host-tested, not target fault-injected",
+    "RAM, ROM, VMM aliases and ASID namespace remain separate resources",
+    "x86 lifecycle IPC and full reclamation remain unimplemented",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}

@@ -28,6 +28,7 @@
 #include "sel4_boot.h"
 #include "sel4_ipc.h"
 #include "contracts/blk_virt_contract.h"
+#include "contracts/net_virt_contract.h"
 
 /* Stub builds do not link the full VMM diagnostics adapter. */
 #if defined(ARCH_X86_64) || defined(__riscv) || defined(GUEST_VMM_NATIVE_STUB)
@@ -417,10 +418,29 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
 #include <platform/guest_profile.h>
 #include <platform/guest_vmm_loop.h>
 #include <platform/guest_vmm_runtime.h>
+#include <platform/guest_teardown.h>
+#include <platform/arm_recreate.h>
+#include <platform/guest_execution.h>
+#include <platform/guest_paging.h>
+#include <platform/net_rebind.h>
+#include <platform/blk_rebind.h>
+#include <platform/serial_rebind.h>
+#include "contracts/guest_ram_caps.h"
+#include "contracts/guest_queue_caps.h"
+#include "contracts/guest_graphics_caps.h"
 #include <platform/vmm_virtio_net.h>
 #include <platform/net_layout.h>
 #include <platform/vmm_virtio_blk.h>
 #include <platform/vmm_virtio_console.h>
+#ifdef AGENTOS_GUEST_GRAPHICS
+#include <platform/vmm_virtio_gpu.h>
+#include <platform/framebuffer_rebind_client.h>
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+#include <platform/vmm_virtio_input.h>
+#include <platform/input.h>
+#include <platform/input_rebind.h>
+#endif
 
 #ifndef AGENTOS_GUEST_INITRD_TOTAL_BYTES
 #define AGENTOS_GUEST_INITRD_TOTAL_BYTES UINT64_C(0)
@@ -442,7 +462,7 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep) { guest_vmm_main(my_ep, ns_ep); }
  *
  * VMM_TCB/VCPU slots intentionally keep the old Microkit offsets because
  * they are high enough to avoid service caps and IRQ caps in guest_vmm's
- * 1024-slot CNode, while letting libvmm keep a simple fixed-cap model.
+ * CNode, while letting libvmm keep a simple fixed-cap model.
  */
 #define AGENTOS_IRQ_CAP_BASE     64u
 #define AGENTOS_VMM_TCB_CAP_BASE AOS_GUEST_TCB_CAP_BASE
@@ -585,12 +605,20 @@ uintptr_t gpu_tensor_buf_vaddr     __attribute__((weak));
 static aos_serial_endpoint_t serial_endpoint;
 static bool serial_attached;
 static bool     guest_started      = false;
+static bool guest_initializing = true;
+static aos_guest_teardown_t guest_teardown;
 static const aos_guest_profile_manifest_t *g_guest_profile;
 static aos_guest_boot_plan_t g_guest_boot_plan;
 static vcpu_time_state_t g_guest_time_state;
 static bool     g_guest_startable  = false;
 static uintptr_t g_guest_kernel_pc = 0u;
 static bool     gpu_shmem_ready    = false;
+static aos_arm_recreate_t reconstruction;
+static bool reconstruction_active;
+static bool reconstruction_pending;
+static bool reconstruction_ready;
+static bool guest_vmm_reset(void);
+static void guest_vmm_reset_cleanup(void);
 
 /* ─── Guest binding state (guest_contract.h compliance) ─────────────── */
 
@@ -1020,6 +1048,215 @@ static void guest_vmm_quiesce_timer(void)
     vmm_vcpu_arm_ack_vppi(GUEST_BOOT_VCPU_ID, GUEST_VTIMER_IRQ);
 }
 
+bool aos_vmm_serial_detach(void)
+{
+    if (!serial_attached) return true;
+    const uint32_t slot =
+#if defined(AGENTOS_GUEST_SECONDARY)
+        1u;
+#else
+        0u;
+#endif
+    if (!serial_virt_client_detach(slot)) return false;
+    serial_attached = false;
+    serial_endpoint = (aos_serial_endpoint_t){0};
+    return true;
+}
+
+#ifdef AGENTOS_GUEST_QUEUE_RECYCLE_TEST
+#include "contracts/guest_queue_caps.h"
+#include "contracts/guest_ram_caps.h"
+#include "contracts/guest_graphics_caps.h"
+#include "contracts/guest_paging_caps.h"
+#include "contracts/guest_gic_caps.h"
+#include <platform/guest_paging.h>
+#include <platform/guest_execution.h>
+static bool guest_paging_recycle_test(void)
+{
+    uintptr_t va = AOS_NET_SHMEM_VA;
+#ifdef AGENTOS_GUEST_SECONDARY
+    va += AOS_NET_CLIENT_STRIDE;
+#endif
+    volatile uint64_t *memory = (volatile uint64_t *)va;
+    const size_t bytes = (size_t)1u << AOS_GUEST_QUEUE_POOL_BITS;
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        if (!aos_vmm_guest_paging_release() || !aos_vmm_guest_paging_rebuild()) return false;
+        if (seL4_Untyped_Retype(AOS_GUEST_QUEUE_POOL_BASE,
+                seL4_ARM_LargePageObject, 0u, AOS_GUEST_RAM_SELF_CNODE,
+                0u, 0u, AOS_GUEST_QUEUE_TEST_FRAME, 1u) != seL4_NoError) return false;
+        if (!aos_vmm_guest_page_map(AOS_GUEST_QUEUE_TEST_FRAME, 0x40000000u)) return false;
+        if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,
+                AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_CNODE_BITS,
+                AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_FRAME,
+                AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_NoError) return false;
+        if (seL4_ARM_Page_Map(AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_VMM_VSPACE,
+                va, seL4_AllRights, seL4_ARM_Default_VMAttributes) != seL4_NoError) return false;
+        for (size_t i = 0; i < bytes / sizeof(*memory); ++i) {
+            if (memory[i]) return false;
+            memory[i] = UINT64_C(0x504147494e470001) ^ i ^ pass;
+        }
+        /* An ordinary small test frame at the GIC IPA exercises the deeper
+         * table hierarchy, without granting a hardware device capability. */
+        if (seL4_Untyped_Retype(AOS_GUEST_EXECUTION_POOL_CAP,
+                seL4_ARM_SmallPageObject, 0u, AOS_GUEST_RAM_SELF_CNODE,
+                0u, 0u, AOS_GUEST_IPC_FRAME_CAP, 1u) != seL4_NoError ||
+            !aos_vmm_guest_page_map(AOS_GUEST_IPC_FRAME_CAP, AOS_GUEST_GIC_IPA)) return false;
+        if (!aos_vmm_guest_execution_release() || !aos_vmm_guest_execution_rebuild()) return false;
+        seL4_UserContext context = {0};
+        const unsigned registers = sizeof(context) / sizeof(seL4_Word);
+        if (seL4_TCB_ReadRegisters(AOS_GUEST_TCB_CAP_BASE, false, 0,
+                registers, &context) != seL4_NoError || context.pc || context.sp) return false;
+        context.pc = 0x40000000u + pass * 4u;
+        context.sp = 0x40100000u;
+        if (seL4_TCB_WriteRegisters(AOS_GUEST_TCB_CAP_BASE, false, 0,
+                registers, &context) != seL4_NoError) return false;
+        context = (seL4_UserContext){0};
+        if (seL4_TCB_ReadRegisters(AOS_GUEST_TCB_CAP_BASE, false, 0,
+                registers, &context) != seL4_NoError ||
+                context.pc != 0x40000000u + pass * 4u || context.sp != 0x40100000u) return false;
+        if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_POOL_BASE,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError ||
+            seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_EXECUTION_POOL_CAP,
+                AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError ||
+            !aos_vmm_guest_paging_release()) return false;
+        const seL4_CPtr retired[] = {AOS_GUEST_RAM_GUEST_VSPACE, AOS_GUEST_PAGING_TABLE_BASE,
+            AOS_GUEST_TCB_CAP_BASE, AOS_GUEST_VCPU_CAP_BASE, AOS_GUEST_SC_CAP_BASE,
+            AOS_GUEST_IPC_FRAME_CAP};
+        for (unsigned i = 0; i < sizeof(retired) / sizeof(*retired); ++i)
+            if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,
+                    AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_CNODE_BITS,
+                    AOS_GUEST_RAM_SELF_CNODE, retired[i], AOS_GUEST_RAM_CNODE_BITS,
+                    seL4_AllRights) != seL4_FailedLookup) return false;
+    }
+    microkit_dbg_puts("guest execution recycle: fresh stopped objects and registers verified\n");
+    return true;
+}
+static bool guest_queue_recycle_test(void)
+{
+    const size_t bytes = (size_t)1u << AOS_GUEST_QUEUE_POOL_BITS;
+    uintptr_t va = AOS_NET_SHMEM_VA;
+#ifdef AGENTOS_GUEST_SECONDARY
+    va += AOS_NET_CLIENT_STRIDE;
+#endif
+    volatile uint64_t *memory = (volatile uint64_t *)va;
+    unsigned count = AOS_GUEST_QUEUE_INPUT;
+#ifdef AGENTOS_GUEST_INPUT
+    count = AOS_GUEST_QUEUE_POOL_COUNT;
+#endif
+    unsigned total = count;
+#ifdef AGENTOS_GUEST_GRAPHICS
+    total += AOS_GUEST_GRAPHICS_POOL_COUNT;
+    _Static_assert(AOS_GUEST_GRAPHICS_POOL_BITS == AOS_GUEST_QUEUE_POOL_BITS,
+                   "recycle probe frame sizes agree");
+#endif
+    /* The old network mapping is gone, but the VMM's own page tables remain.
+     * Reuse that address only after all service detach acknowledgments. */
+    for (unsigned kind = 0; kind < total; kind++) {
+        seL4_CPtr pool = kind < count ? AOS_GUEST_QUEUE_POOL_BASE + kind
+            : AOS_GUEST_GRAPHICS_POOL_BASE + kind - count;
+        for (unsigned pass = 0; pass < 2; pass++) {
+            if (seL4_Untyped_Retype(pool,
+                    seL4_ARM_LargePageObject, 0u, AOS_GUEST_RAM_SELF_CNODE,
+                    0u, 0u, AOS_GUEST_QUEUE_TEST_FRAME, 1u) != seL4_NoError)
+                return false;
+            if (seL4_ARM_Page_Map(AOS_GUEST_QUEUE_TEST_FRAME,
+                    AOS_GUEST_RAM_VMM_VSPACE, va, seL4_AllRights,
+                    seL4_ARM_Default_VMAttributes) != seL4_NoError) return false;
+            for (size_t i = 0; i < bytes / sizeof(*memory); i++) {
+                if (memory[i] != 0u) return false;
+                memory[i] = UINT64_C(0xcafe001100000001) ^ (i << 1u) ^ kind;
+            }
+            if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,
+                    pool,
+                    AOS_GUEST_RAM_CNODE_BITS) != seL4_NoError) return false;
+            if (seL4_CNode_Copy(AOS_GUEST_RAM_SELF_CNODE,
+                    AOS_GUEST_QUEUE_TEST_COPY, AOS_GUEST_RAM_CNODE_BITS,
+                    AOS_GUEST_RAM_SELF_CNODE, AOS_GUEST_QUEUE_TEST_FRAME,
+                    AOS_GUEST_RAM_CNODE_BITS, seL4_AllRights) != seL4_FailedLookup)
+                return false;
+        }
+    }
+    return true;
+}
+#endif
+
+#ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
+static bool guest_restore_embedded_images_test(void)
+{
+    if (g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) return false;
+    const aos_guest_boot_images_t images = {
+        .kernel = _guest_kernel_image,
+        .kernel_size = _guest_kernel_image_end - _guest_kernel_image,
+        .dtb = _guest_dtb_image,
+        .dtb_size = _guest_dtb_image_end - _guest_dtb_image,
+        .initrd = _guest_initrd_image,
+        .initrd_size = _guest_initrd_image_end - _guest_initrd_image,
+    };
+    aos_guest_boot_plan_t restored = {0};
+    if (aos_guest_boot_prepare(&restored, g_guest_profile, guest_ram_vaddr, &images,
+            g_guest_profile->kernel_format == AOS_GUEST_KERNEL_LINUX_IMAGE
+                ? linux_setup_images : NULL) != AOS_GUEST_BOOT_OK) return false;
+    const uintptr_t destinations[] = {restored.kernel_hva, restored.dtb_hva, restored.initrd_hva};
+    const void *sources[] = {images.kernel, images.dtb, images.initrd};
+    const size_t sizes[] = {images.kernel_size, images.dtb_size, images.initrd_size};
+    for (unsigned artifact = 0; artifact < 3; ++artifact) {
+        const volatile uint8_t *destination = (const volatile uint8_t *)destinations[artifact];
+        const uint8_t *source = sources[artifact];
+        for (size_t byte = 0; byte < sizes[artifact]; ++byte)
+            if (destination[byte] != source[byte]) return false;
+    }
+    g_guest_boot_plan = restored;
+    return true;
+}
+#endif
+
+static bool guest_vmm_teardown(void)
+{
+    bool done = aos_guest_teardown_step(&guest_teardown, g_guest_profile->ram_size);
+    if (guest_teardown.execution_released) {
+        guest_started = false;
+        g_guest_startable = false;
+    }
+#ifdef AGENTOS_GUEST_QUEUE_RECYCLE_TEST
+    static bool probe_attempted, probe_passed;
+    if (done && !probe_attempted) {
+        probe_attempted = true;
+        probe_passed = guest_queue_recycle_test();
+        microkit_dbg_puts(probe_passed
+            ? "guest queue recycle: zero pages and stale caps verified\n"
+            : "guest queue recycle: FAILED\n");
+#ifdef AGENTOS_GUEST_GRAPHICS
+        if (probe_passed)
+            microkit_dbg_puts("guest graphics recycle: queue and arena pools verified\n");
+#endif
+    }
+    static bool paging_attempted, paging_passed;
+    if (done && probe_passed && !paging_attempted) {
+        paging_attempted = true;
+        paging_passed = guest_paging_recycle_test();
+        microkit_dbg_puts(paging_passed
+            ? "guest paging recycle: fresh VSpaces and page tables verified\n"
+            : "guest paging recycle: FAILED\n");
+    }
+    if (done && (!probe_passed || !paging_passed)) return false;
+#endif
+    if (done) fault_reset_vm_exception_handlers();
+    if (done) microkit_dbg_puts("guest teardown: execution and RAM revoked\n");
+    if (done) microkit_dbg_puts("guest teardown: private paging revoked\n");
+    if (done) microkit_dbg_puts("guest teardown: network queues detached\n");
+    if (done) microkit_dbg_puts("guest teardown: block queues detached\n");
+    if (done) microkit_dbg_puts("guest teardown: serial queues detached\n");
+    if (done) microkit_dbg_puts("guest teardown: private queue pages revoked\n");
+#ifdef AGENTOS_GUEST_GRAPHICS
+    if (done) microkit_dbg_puts("guest teardown: framebuffer queues detached\n");
+    if (done) microkit_dbg_puts("guest teardown: private graphics pages revoked\n");
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+    if (done) microkit_dbg_puts("guest teardown: input queues detached\n");
+#endif
+    return done;
+}
+
 static bool guest_vmm_push_input(uint32_t event_type, const uint8_t *bytes,
                                  uint32_t length)
 {
@@ -1100,6 +1337,15 @@ static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
     sel4_msg_t rep = {0};
     _sel4_mrs_to_msg(&req);
 
+    /* Media staging can receive lifecycle IPC while init still holds RAM
+     * pointers. Do not allow teardown or boot to re-enter initialization. */
+    if (guest_initializing || g_guest_profile == NULL) {
+        rep.opcode = GUEST_ERR_NOT_READY;
+        _sel4_msg_to_mrs(&rep);
+        return seL4_MessageInfo_new((seL4_Word)rep.opcode, 0, 0,
+                                    (seL4_Word)_SEL4_MR_COUNT);
+    }
+
     const aos_guest_vmm_runtime_t runtime = {
         .os_type = g_guest_profile->control_type,
         .guest_id = 0u,
@@ -1109,6 +1355,8 @@ static seL4_MessageInfo_t guest_vmm_rpc(seL4_MessageInfo_t info)
         .suspend = guest_vmm_suspend_guest_tcb,
         .resume = guest_vmm_resume_guest_tcb,
         .quiesce_timer = guest_vmm_quiesce_timer,
+        .teardown = guest_vmm_teardown,
+        .reset = guest_vmm_reset,
         .push_input = guest_vmm_push_input,
         .drain_console = guest_vmm_drain_console,
     };
@@ -1140,6 +1388,9 @@ static seL4_CPtr g_vmm_listen_ep;
  */
 static void guest_vmm_wait_blk_event(void)
 {
+    /* Reconstruction runs after the initiating NOT_READY reply. No outer
+     * reply object is held here; nested lifecycle requests are rejected by
+     * guest_initializing while the block service completes media staging. */
     seL4_Word badge = 0u;
 #ifdef CONFIG_KERNEL_MCS
     seL4_MessageInfo_t info =
@@ -1149,7 +1400,10 @@ static void guest_vmm_wait_blk_event(void)
 #endif
     /* Bound notifications do not carry a fresh IPC tag. In particular a
      * block completion may arrive before this receive begins. */
-    if (badge & (BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE)) return;
+    if (badge & (BLK_VIRT_VMM_WAKE_BADGE | SERIAL_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE)) return;
+#ifdef AGENTOS_GUEST_INPUT
+    if (badge & AOS_INPUT_VMM_WAKE_BADGE) return;
+#endif
     seL4_Word label = seL4_MessageInfo_get_label(info);
 
     if (aos_guest_vmm_loop_is_rpc(label)) {
@@ -1237,6 +1491,431 @@ int vmm_inject_irq(uint8_t slot_id, uint32_t irq_num)
 
 /* ─── Init ───────────────────────────────────────────────────────────── */
 
+static bool guest_vmm_prepare_images(bool restored_images)
+{
+    /* Place guest images in RAM */
+    size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
+    size_t dtb_size    = _guest_dtb_image_end - _guest_dtb_image;
+    size_t embedded_initrd_size =
+        _guest_initrd_image_end - _guest_initrd_image;
+    size_t initrd_size = embedded_initrd_size;
+    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
+        initrd_size = 0u;
+    }
+    if (kernel_size > g_guest_profile->kernel_max_bytes ||
+        dtb_size > g_guest_profile->dtb_max_bytes ||
+        initrd_size > g_guest_profile->initrd_max_bytes) {
+        LOG_VMM_ERR("Embedded guest artifact exceeds its profile bound\n");
+        return false;
+    }
+
+    LOG_VMM("  Kernel: %zu bytes\n", kernel_size);
+    LOG_VMM("  DTB:    %zu bytes\n", dtb_size);
+    LOG_VMM("  Initrd: %zu bytes\n", initrd_size);
+    uint32_t kernel_source_checksum =
+        guest_image_checksum(_guest_kernel_image, kernel_size);
+    uint32_t dtb_source_checksum =
+        guest_image_checksum(_guest_dtb_image, dtb_size);
+    uint32_t initrd_source_checksum =
+        guest_image_checksum(_guest_initrd_image, initrd_size);
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd source 0x%lx checksum: 0x%x\n",
+                (unsigned long)_guest_initrd_image, initrd_source_checksum);
+    }
+
+    /*
+     * Guest frames are non-device seL4 objects and are already zeroed by
+     * Untyped_Retype before this PD can map them. Do not clear the full
+     * window again here: under nested TCG that duplicate pass dominates boot.
+     */
+    LOG_VMM("  Guest RAM zeroed by seL4 retype\n");
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd checksum after guest RAM setup: 0x%x\n",
+                guest_image_checksum(_guest_initrd_image, initrd_size));
+    }
+
+    aos_guest_boot_images_t images = {
+        .kernel = _guest_kernel_image,
+        .kernel_size = kernel_size,
+        .dtb = _guest_dtb_image,
+        .dtb_size = dtb_size,
+        .initrd = _guest_initrd_image,
+        .initrd_size = initrd_size,
+    };
+    /* Qualification can boot its last verified restored copy directly. */
+    enum aos_guest_boot_error boot_error = AOS_GUEST_BOOT_OK;
+    if (!restored_images) boot_error = aos_guest_boot_prepare(
+        &g_guest_boot_plan, g_guest_profile, guest_ram_vaddr, &images,
+        g_guest_profile->kernel_format == AOS_GUEST_KERNEL_LINUX_IMAGE
+            ? linux_setup_images : NULL);
+    if (boot_error != AOS_GUEST_BOOT_OK) {
+        LOG_VMM_ERR("Failed to initialise guest images\n");
+        return false;
+    }
+    uintptr_t kernel_hva = g_guest_boot_plan.kernel_hva;
+    uintptr_t dtb_hva = g_guest_boot_plan.dtb_hva;
+    uintptr_t initrd_hva = g_guest_boot_plan.initrd_hva;
+    uintptr_t kernel_pc = g_guest_boot_plan.entry_gpa;
+    uint32_t initrd_guest_checksum = guest_image_checksum(
+        (const void *)initrd_hva, initrd_size);
+    uint32_t kernel_guest_checksum =
+        guest_image_checksum((const void *)kernel_hva, kernel_size);
+    uint32_t dtb_guest_checksum =
+        guest_image_checksum((const void *)dtb_hva, dtb_size);
+    if (initrd_size > 0u) {
+        LOG_VMM("  Initrd guest checksum:  0x%x\n", initrd_guest_checksum);
+    }
+    LOG_VMM("  Kernel checksums: source=0x%x guest=0x%x\n",
+            kernel_source_checksum, kernel_guest_checksum);
+    LOG_VMM("  DTB checksums: source=0x%x guest=0x%x\n",
+            dtb_source_checksum, dtb_guest_checksum);
+    if (initrd_source_checksum != initrd_guest_checksum ||
+        kernel_source_checksum != kernel_guest_checksum ||
+        dtb_source_checksum != dtb_guest_checksum) {
+        LOG_VMM_ERR("Guest image copy checksum mismatch\n");
+        return false;
+    }
+
+    LOG_VMM("  Kernel entry: 0x%lx\n", (unsigned long)kernel_pc);
+
+    g_guest_kernel_pc = kernel_pc;
+    return true;
+}
+
+static bool guest_vmm_prepare_interrupts(void)
+{
+    /* Initialise the virtual GIC driver */
+    bool success = virq_controller_init();
+    if (!success) {
+        LOG_VMM_ERR("Failed to initialise emulated interrupt controller\n");
+        return false;
+    }
+
+    /* Register PL011 UART MMIO emulation (0x9000000 .. 0x9000FFF).
+     * A guest may use PL011 for early console output; serial_pd owns the
+     * physical IRQ.  Our handler returns FR=0x90 on reads so the kernel
+     * does not spin waiting for TX-empty. */
+    if (!fault_register_vm_exception_handler(PL011_BASE, PL011_SIZE,
+                                             pl011_fault_handler, NULL)) {
+        LOG_VMM_ERR("Failed to register PL011 UART fault handler\n");
+        return false;
+    }
+    if (!virq_register(GUEST_BOOT_VCPU_ID, PL011_UART_IRQ,
+                       &pl011_irq_ack, NULL)) {
+        LOG_VMM_ERR("Failed to register PL011 UART IRQ\n");
+        return false;
+    }
+
+    return true;
+}
+
+static bool guest_vmm_stage_media(void)
+{
+    const uintptr_t initrd_hva = g_guest_boot_plan.initrd_hva;
+    const size_t embedded_initrd_size = _guest_initrd_image_end - _guest_initrd_image;
+    /* Stage profile-selected boot data from agentOS-owned block media. */
+    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
+        size_t media_initrd_size = 0u;
+        size_t initrd_capacity =
+            g_guest_profile->dtb_load_address -
+            g_guest_profile->initrd_load_address;
+        if (!aos_vmm_virtio_blk_load_iso_file(
+            g_guest_profile->media_initrd_path, initrd_hva,
+            initrd_capacity,
+            &media_initrd_size, guest_vmm_wait_blk_event)) {
+            LOG_VMM_ERR("Failed to stage profile initrd from host media\n");
+            return false;
+        }
+        if (media_initrd_size > initrd_capacity ||
+            embedded_initrd_size > initrd_capacity - media_initrd_size ||
+            media_initrd_size + embedded_initrd_size >
+                g_guest_profile->initrd_max_bytes) {
+            LOG_VMM_ERR("Profile initrd plus overlay exceeds its bound\n");
+            return false;
+        }
+        if (AGENTOS_GUEST_INITRD_TOTAL_BYTES != 0u &&
+            media_initrd_size + embedded_initrd_size !=
+                AGENTOS_GUEST_INITRD_TOTAL_BYTES) {
+            LOG_VMM_ERR("Profile initrd exact size does not match its checked build metadata\n");
+            return false;
+        }
+        volatile uint8_t *overlay_dest =
+            (volatile uint8_t *)(initrd_hva + media_initrd_size);
+        const volatile uint8_t *overlay_src =
+            (const volatile uint8_t *)_guest_initrd_image;
+        for (size_t i = 0u; i < embedded_initrd_size; i++) {
+            overlay_dest[i] = overlay_src[i];
+        }
+        LOG_VMM("Profile initrd ready in guest RAM (%zu media + %zu overlay bytes)\n",
+                media_initrd_size, embedded_initrd_size);
+    }
+    return true;
+}
+
+#ifdef AGENTOS_GUEST_SECONDARY
+#define ARM_GUEST_OWNER 1u
+#else
+#define ARM_GUEST_OWNER 0u
+#endif
+static net_virt_rebind_reply_t reset_net;
+static blk_virt_rebind_reply_t reset_block;
+static uint32_t reset_adopted;
+#ifdef AGENTOS_GUEST_GRAPHICS
+static bool reset_graphics_mapped, reset_graphics_commit_attempted;
+static bool reset_graphics_exchange(uint32_t op,uint32_t index,fb_rebind_reply_t *reply)
+{
+    fb_rebind_req_t q={FB_REBIND_VERSION,ARM_GUEST_OWNER,reconstruction.generation,index};
+    return aos_fb_virt_rebind_exchange(op,&q,reply);
+}
+#endif
+static bool reset_direct_detach(seL4_CPtr ep,uint32_t op,uint32_t version,
+                                uint32_t request_bytes,uint32_t reply_bytes)
+{
+    uint32_t args[4]={version,ARM_GUEST_OWNER,
+        op==SERIAL_VIRT_OP_DETACH ? SERIAL_VIRT_ROLE_VMM : ARM_GUEST_OWNER,ARM_GUEST_OWNER};
+    sel4_msg_t request={.opcode=op,.length=request_bytes},reply={0};
+    __builtin_memcpy(request.data,args,request_bytes);
+    sel4_call(ep,&request,&reply);
+    return reply.opcode==SEL4_ERR_OK && reply.length==reply_bytes &&
+        msg_u32(&reply,0)==0 && msg_u32(&reply,4)==version;
+}
+static void reset_retire(void *context)
+{
+    (void)context;
+    g_guest_startable=false;
+    guest_started=false;
+    serial_attached=false;
+    /* No guest has run. Leave RAM/queues intact for backend drain/retirement. */
+}
+static bool reset_detach(void *context,unsigned backend)
+{
+    (void)context;
+    switch (backend) {
+    case AOS_ARM_RECREATE_NET:
+        if (reset_adopted & (1u<<backend)) aos_vmm_virtio_net_quiesce();
+        return reset_direct_detach(PD_CNODE_SLOT_NET_VIRT_EP,NET_VIRT_OP_DETACH,
+            NET_VIRT_CONTRACT_VERSION,sizeof(net_virt_attach_req_t),sizeof(net_virt_attach_reply_t));
+    case AOS_ARM_RECREATE_BLK:
+        if ((reset_adopted & (1u<<backend)) && !aos_vmm_virtio_blk_quiesce()) return false;
+        return reset_direct_detach(PD_CNODE_SLOT_BLK_VIRT_EP,BLK_VIRT_OP_DETACH,
+            BLK_VIRT_CONTRACT_VERSION,sizeof(blk_virt_attach_req_t),sizeof(blk_virt_attach_reply_t));
+    case AOS_ARM_RECREATE_SERIAL:
+        if ((reset_adopted & (1u<<backend)) && !aos_vmm_virtio_console_quiesce()) return false;
+        return reset_direct_detach(PD_CNODE_SLOT_SERIAL_VIRT_EP,SERIAL_VIRT_OP_DETACH,
+            SERIAL_VIRT_CONTRACT_VERSION,sizeof(serial_virt_attach_req_t),sizeof(serial_virt_attach_reply_t));
+#ifdef AGENTOS_GUEST_INPUT
+    case AOS_ARM_RECREATE_INPUT:
+        if (reset_adopted & (1u<<backend)) aos_vmm_virtio_input_quiesce();
+        return aos_input_virt_retire(ARM_GUEST_OWNER,reconstruction.generation);
+#endif
+#ifdef AGENTOS_GUEST_GRAPHICS
+    case AOS_ARM_RECREATE_GRAPHICS: {
+        if ((reset_adopted & (1u<<backend)) && !aos_vmm_virtio_gpu_quiesce()) return false;
+        fb_rebind_reply_t reply;
+        if (!reset_graphics_exchange(FB_REBIND_ABORT,0,&reply)) return false;
+        if (reply.status==FB_REBIND_OK) return true;
+        if (reply.status!=FB_REBIND_BAD_STATE || !reset_graphics_mapped ||
+            !reset_graphics_commit_attempted) return false;
+        /* COMMIT may have succeeded before an invalid reply. The mapped
+         * queue permits retirement without assuming adapter adoption. */
+        aos_fb_region_t *r=(void *)(AOS_FB_SHMEM_VA+ARM_GUEST_OWNER*AOS_FB_CLIENT_STRIDE);
+        __atomic_store_n(&r->detach.version,AOS_FB_DETACH_VERSION,__ATOMIC_RELAXED);
+        __atomic_store_n(&r->detach.request,1u,__ATOMIC_RELEASE);
+        seL4_Signal(PD_CNODE_SLOT_FB_PEER_NOTIFY);
+        return __atomic_load_n(&r->detach.ack,__ATOMIC_ACQUIRE)==1u;
+    }
+#endif
+    default: return false;
+    }
+}
+static bool reset_release(void *context,unsigned resource)
+{
+    (void)context;
+    if (resource==AOS_ARM_RELEASE_QUEUES) {
+        unsigned count=AOS_GUEST_QUEUE_INPUT;
+#ifdef AGENTOS_GUEST_INPUT
+        count=AOS_GUEST_QUEUE_POOL_COUNT;
+#endif
+        for (unsigned i=0;i<count;i++)
+            if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,AOS_GUEST_QUEUE_POOL_BASE+i,
+                AOS_GUEST_RAM_CNODE_BITS)!=seL4_NoError) return false;
+        return true;
+    }
+    if (resource==AOS_ARM_RELEASE_GRAPHICS) {
+#ifdef AGENTOS_GUEST_GRAPHICS
+        for (unsigned i=0;i<AOS_GUEST_GRAPHICS_POOL_COUNT;i++)
+            if (seL4_CNode_Revoke(AOS_GUEST_RAM_SELF_CNODE,AOS_GUEST_GRAPHICS_POOL_BASE+i,
+                AOS_GUEST_RAM_CNODE_BITS)!=seL4_NoError) return false;
+#endif
+        return true;
+    }
+    if (resource==AOS_ARM_RELEASE_EXECUTION) return aos_vmm_guest_execution_release();
+    if (resource==AOS_ARM_RELEASE_RAM) {
+        aos_vmm_guest_ram_bind(0,0,0);
+        return aos_vmm_guest_ram_release(g_guest_profile->ram_size);
+    }
+    if (resource==AOS_ARM_RELEASE_PAGING) {
+        if (!aos_vmm_guest_paging_release()) return false;
+        fault_reset_vm_exception_handlers();
+        return true;
+    }
+    return false;
+}
+static bool reset_step_impl(void *context,aos_arm_recreate_step_t step,uint32_t generation)
+{
+    (void)context;
+    switch (step) {
+    case AOS_ARM_RECREATE_PAGING: return aos_vmm_guest_paging_rebuild();
+    case AOS_ARM_RECREATE_RAM:
+        return aos_vmm_guest_ram_rebuild(g_guest_profile->guest_gpa_base,
+            guest_ram_vaddr,g_guest_profile->ram_size);
+    case AOS_ARM_RECREATE_EXECUTION: return aos_vmm_guest_execution_rebuild();
+    case AOS_ARM_RECREATE_IMAGES: return guest_vmm_prepare_images(false);
+    case AOS_ARM_RECREATE_NATIVE_STATE:
+        console_tx_head=console_tx_tail=console_tx_count=0;
+        console_rx_head=console_rx_tail=console_rx_count=0;
+        pl011_rsr_ecr=pl011_ilpr=pl011_ibrd=pl011_fbrd=pl011_lcrh=pl011_imsc=pl011_dmacr=0;
+        pl011_cr=PL011_CR_TXE|PL011_CR_RXE; pl011_ifls=0x12u;
+        g_guest_time_state=(vcpu_time_state_t){0};
+        vmm_register_vcpu(GUEST_BOOT_VCPU_ID,AGENTOS_VMM_VCPU_CAP_BASE+GUEST_BOOT_VCPU_ID,
+            AGENTOS_VMM_TCB_CAP_BASE+GUEST_BOOT_VCPU_ID);
+        aos_vmm_guest_ram_bind(g_guest_profile->guest_gpa_base,guest_ram_vaddr,g_guest_profile->ram_size);
+        return guest_vmm_prepare_interrupts();
+    case AOS_ARM_RECREATE_NET_REBIND:
+        return aos_net_virt_rebind_with_info(ARM_GUEST_OWNER,generation,&reset_net);
+    case AOS_ARM_RECREATE_NET_ADOPT:
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_NET;
+        return aos_vmm_virtio_net_adopt(ARM_GUEST_OWNER,(void *)AOS_NET_SHMEM_VA,&reset_net);
+    case AOS_ARM_RECREATE_BLK_REBIND:
+        return aos_blk_virt_rebind_with_info(ARM_GUEST_OWNER,generation,&reset_block);
+    case AOS_ARM_RECREATE_BLK_ADOPT:
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_BLK;
+        return aos_vmm_virtio_blk_adopt(ARM_GUEST_OWNER,(void *)AOS_BLK_SHMEM_VA,&reset_block);
+    case AOS_ARM_RECREATE_SERIAL_REBIND:
+        return aos_serial_virt_rebind(ARM_GUEST_OWNER,generation);
+    case AOS_ARM_RECREATE_CONSOLE:
+        serial_endpoint=(aos_serial_endpoint_t){.channel=aos_serial_channel_at(
+            AOS_SERIAL_SHMEM_VA+ARM_GUEST_OWNER*AOS_SERIAL_FRAME_SIZE)};
+        if (!(g_guest_profile->device_flags & AOS_GUEST_DEVICE_CONSOLE)) return true;
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_SERIAL;
+        return aos_vmm_virtio_console_recreate();
+#ifdef AGENTOS_GUEST_INPUT
+    case AOS_ARM_RECREATE_INPUT_REBIND: return aos_input_virt_rebind(ARM_GUEST_OWNER,generation);
+    case AOS_ARM_RECREATE_INPUT_ADOPT:
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_INPUT;
+        return aos_vmm_virtio_input_adopt(ARM_GUEST_OWNER,generation,
+            (void *)(AOS_INPUT_SHMEM_VA+ARM_GUEST_OWNER*AOS_INPUT_FRAME_SIZE));
+#endif
+#ifdef AGENTOS_GUEST_GRAPHICS
+    case AOS_ARM_RECREATE_GRAPHICS_STAGE: {
+        fb_rebind_reply_t reply;
+        for (uint32_t i=0;i<FB_REBIND_FRAMES;i++) {
+            if (!reset_graphics_exchange(FB_REBIND_STAGE,i,&reply) || reply.status!=FB_REBIND_OK) return false;
+            if (!i) {
+                if (!aos_fb_virt_map_queue(ARM_GUEST_OWNER)) return false;
+                reset_graphics_mapped=true;
+            }
+        }
+        return true;
+    }
+    case AOS_ARM_RECREATE_GRAPHICS_COMMIT: {
+        fb_rebind_reply_t reply;
+        reset_graphics_commit_attempted=true;
+        return reset_graphics_exchange(FB_REBIND_COMMIT,0,&reply) && reply.status==FB_REBIND_OK;
+    }
+    case AOS_ARM_RECREATE_GRAPHICS_ADOPT:
+        reset_adopted |= 1u<<AOS_ARM_RECREATE_GRAPHICS;
+        return aos_vmm_virtio_gpu_adopt(ARM_GUEST_OWNER,generation,
+            (void *)(AOS_FB_SHMEM_VA+ARM_GUEST_OWNER*AOS_FB_CLIENT_STRIDE));
+#endif
+    case AOS_ARM_RECREATE_MEDIA: return guest_vmm_stage_media();
+    default: return false;
+    }
+}
+static bool reset_step(void *context,aos_arm_recreate_step_t step,uint32_t generation)
+{
+    LOG_VMM("ARM reconstruction: generation=%u step=%u begin\n",generation,(unsigned)step);
+    bool success=reset_step_impl(context,step,generation);
+    LOG_VMM("ARM reconstruction: generation=%u step=%u result=%s\n",
+            generation,(unsigned)step,success ? "ready" : "failed");
+    return success;
+}
+static void reset_publish(void *context)
+{
+    (void)context;
+    guest_teardown=(aos_guest_teardown_t){0};
+    serial_attached=true;
+    guest_started=false;
+    g_guest_startable=true;
+    microkit_dbg_puts("guest recreation: fresh ARM objects, images and devices ready\n");
+}
+static const aos_arm_recreate_ops_t reset_ops={reset_step,reset_publish,reset_retire,reset_detach,reset_release};
+static void guest_vmm_reset_cleanup(void)
+{
+    (void)aos_arm_recreate_cleanup(&reconstruction,&reset_ops,NULL);
+}
+static bool guest_vmm_reconstruct(void)
+{
+    LOG_VMM("ARM reconstruction: enter failed=%u execution=%u ram=%u paging=%u started=%u\n",
+        (unsigned)reconstruction.failed,(unsigned)guest_teardown.execution_released,
+        (unsigned)guest_teardown.ram_released,(unsigned)guest_teardown.paging_released,
+        (unsigned)guest_started);
+    if (reconstruction.failed) { guest_vmm_reset_cleanup(); return false; }
+    if (!guest_teardown.execution_released || !guest_teardown.ram_released ||
+        !guest_teardown.paging_released || guest_started) return false;
+    uint32_t flags=g_guest_profile->device_flags,enabled=1u<<AOS_ARM_RECREATE_SERIAL;
+#ifndef AGENTOS_GUEST_INPUT
+    if (flags & AOS_GUEST_DEVICE_INPUT) return false;
+#endif
+#ifndef AGENTOS_GUEST_GRAPHICS
+    if (flags & AOS_GUEST_DEVICE_GPU) return false;
+#endif
+    if (flags & AOS_GUEST_DEVICE_NET) {
+        if (g_guest_profile->network_client!=ARM_GUEST_OWNER) return false;
+        enabled |= 1u<<AOS_ARM_RECREATE_NET;
+    }
+    if (flags & AOS_GUEST_DEVICE_BLOCK) {
+        if (g_guest_profile->block_media!=ARM_GUEST_OWNER) return false;
+        enabled |= 1u<<AOS_ARM_RECREATE_BLK;
+    }
+    if (flags & AOS_GUEST_DEVICE_INPUT) enabled |= 1u<<AOS_ARM_RECREATE_INPUT;
+    if (flags & AOS_GUEST_DEVICE_GPU) enabled |= 1u<<AOS_ARM_RECREATE_GRAPHICS;
+    reset_adopted=0;
+#ifdef AGENTOS_GUEST_GRAPHICS
+    reset_graphics_mapped=reset_graphics_commit_attempted=false;
+#endif
+    g_guest_startable=false;
+    guest_initializing=reconstruction_active=true;
+    bool success=aos_arm_recreate_run(&reconstruction,&reset_ops,NULL,enabled);
+    guest_initializing=reconstruction_active=false;
+    return success;
+}
+
+static bool guest_vmm_reset(void)
+{
+    if (reconstruction_ready) {
+        reconstruction_ready = false;
+        return true;
+    }
+    if (reconstruction.failed || reconstruction_active || reconstruction_pending ||
+        !guest_teardown.execution_released || !guest_teardown.ram_released ||
+        !guest_teardown.paging_released || guest_started) return false;
+    reconstruction_pending = true;
+    LOG_VMM("ARM reconstruction: queued after CREATE reply\n");
+    /* Return NOT_READY now. Media staging must not hold the caller's reply
+     * object or block the entire control chain until an ISO initrd is read. */
+    return false;
+}
+
+static void guest_vmm_after_rpc_reply(void)
+{
+    if (reconstruction.failed) { guest_vmm_reset_cleanup(); return; }
+    if (!reconstruction_pending) return;
+    LOG_VMM("ARM reconstruction: CREATE reply sent; deferred work begins\n");
+    reconstruction_pending = false;
+    reconstruction_ready = guest_vmm_reconstruct();
+}
+
 void init(void)
 {
     const uint32_t serial_slot =
@@ -1292,110 +1971,19 @@ void init(void)
                       AGENTOS_VMM_VCPU_CAP_BASE + GUEST_BOOT_VCPU_ID,
                       AGENTOS_VMM_TCB_CAP_BASE  + GUEST_BOOT_VCPU_ID);
 
-    /* Place guest images in RAM */
-    size_t kernel_size = _guest_kernel_image_end - _guest_kernel_image;
-    size_t dtb_size    = _guest_dtb_image_end - _guest_dtb_image;
-    size_t embedded_initrd_size =
-        _guest_initrd_image_end - _guest_initrd_image;
-    size_t initrd_size = embedded_initrd_size;
-    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
-        initrd_size = 0u;
-    }
-    if (kernel_size > g_guest_profile->kernel_max_bytes ||
-        dtb_size > g_guest_profile->dtb_max_bytes ||
-        initrd_size > g_guest_profile->initrd_max_bytes) {
-        LOG_VMM_ERR("Embedded guest artifact exceeds its profile bound\n");
+    bool restored_images = false;
+#ifdef AGENTOS_GUEST_RAM_RECYCLE_TEST
+    if (!aos_vmm_guest_ram_recycle_test(g_guest_profile->guest_gpa_base,
+            guest_ram_vaddr, g_guest_profile->ram_size, guest_restore_embedded_images_test)) {
+        LOG_VMM_ERR("guest RAM recycle: FAIL\n");
         return;
     }
+    microkit_dbg_puts("guest RAM recycle: PASS two full overwrite/revoke/rebuild/zero cycles\n");
+    microkit_dbg_puts("guest image recycle: embedded artifacts restored byte for byte twice\n");
+    restored_images = true;
+#endif
 
-    LOG_VMM("  Kernel: %zu bytes\n", kernel_size);
-    LOG_VMM("  DTB:    %zu bytes\n", dtb_size);
-    LOG_VMM("  Initrd: %zu bytes\n", initrd_size);
-    uint32_t kernel_source_checksum =
-        guest_image_checksum(_guest_kernel_image, kernel_size);
-    uint32_t dtb_source_checksum =
-        guest_image_checksum(_guest_dtb_image, dtb_size);
-    uint32_t initrd_source_checksum =
-        guest_image_checksum(_guest_initrd_image, initrd_size);
-    if (initrd_size > 0u) {
-        LOG_VMM("  Initrd source 0x%lx checksum: 0x%x\n",
-                (unsigned long)_guest_initrd_image, initrd_source_checksum);
-    }
-
-    /*
-     * Guest frames are non-device seL4 objects and are already zeroed by
-     * Untyped_Retype before this PD can map them. Do not clear the full
-     * window again here: under nested TCG that duplicate pass dominates boot.
-     */
-    LOG_VMM("  Guest RAM zeroed by seL4 retype\n");
-    if (initrd_size > 0u) {
-        LOG_VMM("  Initrd checksum after guest RAM setup: 0x%x\n",
-                guest_image_checksum(_guest_initrd_image, initrd_size));
-    }
-
-    aos_guest_boot_images_t images = {
-        .kernel = _guest_kernel_image,
-        .kernel_size = kernel_size,
-        .dtb = _guest_dtb_image,
-        .dtb_size = dtb_size,
-        .initrd = _guest_initrd_image,
-        .initrd_size = initrd_size,
-    };
-    enum aos_guest_boot_error boot_error = aos_guest_boot_prepare(
-        &g_guest_boot_plan, g_guest_profile, guest_ram_vaddr, &images,
-        g_guest_profile->kernel_format == AOS_GUEST_KERNEL_LINUX_IMAGE
-            ? linux_setup_images : NULL);
-    if (boot_error != AOS_GUEST_BOOT_OK) {
-        LOG_VMM_ERR("Failed to initialise guest images\n");
-        return;
-    }
-    uintptr_t kernel_hva = g_guest_boot_plan.kernel_hva;
-    uintptr_t dtb_hva = g_guest_boot_plan.dtb_hva;
-    uintptr_t initrd_hva = g_guest_boot_plan.initrd_hva;
-    uintptr_t kernel_pc = g_guest_boot_plan.entry_gpa;
-    uint32_t initrd_guest_checksum = guest_image_checksum(
-        (const void *)initrd_hva, initrd_size);
-    uint32_t kernel_guest_checksum =
-        guest_image_checksum((const void *)kernel_hva, kernel_size);
-    uint32_t dtb_guest_checksum =
-        guest_image_checksum((const void *)dtb_hva, dtb_size);
-    if (initrd_size > 0u) {
-        LOG_VMM("  Initrd guest checksum:  0x%x\n", initrd_guest_checksum);
-    }
-    LOG_VMM("  Kernel checksums: source=0x%x guest=0x%x\n",
-            kernel_source_checksum, kernel_guest_checksum);
-    LOG_VMM("  DTB checksums: source=0x%x guest=0x%x\n",
-            dtb_source_checksum, dtb_guest_checksum);
-    if (initrd_source_checksum != initrd_guest_checksum ||
-        kernel_source_checksum != kernel_guest_checksum ||
-        dtb_source_checksum != dtb_guest_checksum) {
-        LOG_VMM_ERR("Guest image copy checksum mismatch\n");
-        return;
-    }
-
-    LOG_VMM("  Kernel entry: 0x%lx\n", (unsigned long)kernel_pc);
-
-    /* Initialise the virtual GIC driver */
-    bool success = virq_controller_init();
-    if (!success) {
-        LOG_VMM_ERR("Failed to initialise emulated interrupt controller\n");
-        return;
-    }
-
-    /* Register PL011 UART MMIO emulation (0x9000000 .. 0x9000FFF).
-     * A guest may use PL011 for early console output; serial_pd owns the
-     * physical IRQ.  Our handler returns FR=0x90 on reads so the kernel
-     * does not spin waiting for TX-empty. */
-    if (!fault_register_vm_exception_handler(PL011_BASE, PL011_SIZE,
-                                             pl011_fault_handler, NULL)) {
-        LOG_VMM_ERR("Failed to register PL011 UART fault handler\n");
-        return;
-    }
-    if (!virq_register(GUEST_BOOT_VCPU_ID, PL011_UART_IRQ,
-                       &pl011_irq_ack, NULL)) {
-        LOG_VMM_ERR("Failed to register PL011 UART IRQ\n");
-        return;
-    }
+    if (!guest_vmm_prepare_images(restored_images) || !guest_vmm_prepare_interrupts()) return;
 
     /*
      * Complete guest binding protocol (guest_contract.h §3.1) before boot.
@@ -1414,6 +2002,12 @@ void init(void)
         .net_init = aos_vmm_virtio_net_init,
         .block_init = aos_vmm_virtio_blk_init,
         .console_init = aos_vmm_virtio_console_init,
+#ifdef AGENTOS_GUEST_GRAPHICS
+        .gpu_init = aos_vmm_virtio_gpu_init,
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+        .input_init = aos_vmm_virtio_input_init,
+#endif
     };
     if (aos_guest_devices_init(g_guest_profile, &device_ops) !=
             AOS_GUEST_BOOT_OK) {
@@ -1421,45 +2015,9 @@ void init(void)
         return;
     }
 
-    /* Stage profile-selected boot data from agentOS-owned block media. */
-    if ((g_guest_profile->flags & AOS_GUEST_PROFILE_INITRD_FROM_MEDIA) != 0u) {
-        size_t media_initrd_size = 0u;
-        size_t initrd_capacity =
-            g_guest_profile->dtb_load_address -
-            g_guest_profile->initrd_load_address;
-        if (!aos_vmm_virtio_blk_load_iso_file(
-            g_guest_profile->media_initrd_path, initrd_hva,
-            initrd_capacity,
-            &media_initrd_size, guest_vmm_wait_blk_event)) {
-            LOG_VMM_ERR("Failed to stage profile initrd from host media\n");
-            return;
-        }
-        if (media_initrd_size > initrd_capacity ||
-            embedded_initrd_size > initrd_capacity - media_initrd_size ||
-            media_initrd_size + embedded_initrd_size >
-                g_guest_profile->initrd_max_bytes) {
-            LOG_VMM_ERR("Profile initrd plus overlay exceeds its bound\n");
-            return;
-        }
-        if (AGENTOS_GUEST_INITRD_TOTAL_BYTES != 0u &&
-            media_initrd_size + embedded_initrd_size !=
-                AGENTOS_GUEST_INITRD_TOTAL_BYTES) {
-            LOG_VMM_ERR("Profile initrd exact size does not match its checked build metadata\n");
-            return;
-        }
-        volatile uint8_t *overlay_dest =
-            (volatile uint8_t *)(initrd_hva + media_initrd_size);
-        const volatile uint8_t *overlay_src =
-            (const volatile uint8_t *)_guest_initrd_image;
-        for (size_t i = 0u; i < embedded_initrd_size; i++) {
-            overlay_dest[i] = overlay_src[i];
-        }
-        LOG_VMM("Profile initrd ready in guest RAM (%zu media + %zu overlay bytes)\n",
-                media_initrd_size, embedded_initrd_size);
-    }
-    g_guest_kernel_pc = kernel_pc;
+    if (!guest_vmm_stage_media()) return;
     g_guest_startable = true;
-#if defined(AGENTOS_GUEST_DUAL)
+#if defined(AGENTOS_GUEST_DUAL) || defined(AGENTOS_GUEST_MANAGED_BOOT)
     g_guest_state = GUEST_STATE_READY;
     LOG_VMM("  Profile guest ready; waiting for lifecycle BOOT\n");
 #else
@@ -1493,8 +2051,23 @@ void init(void)
  */
 static void guest_vmm_notified(seL4_Word badge)
 {
+    if (reconstruction.failed) { guest_vmm_reset_cleanup(); return; }
+    if (badge & NET_VIRT_VMM_WAKE_BADGE) {
+        if (g_guest_state == GUEST_STATE_RUNNING) aos_vmm_virtio_net_rx_ready();
+        badge &= ~NET_VIRT_VMM_WAKE_BADGE;
+        if (!badge) return;
+    }
+#ifdef AGENTOS_GUEST_INPUT
+    if (badge & AOS_INPUT_VMM_WAKE_BADGE) {
+        if (g_guest_state == GUEST_STATE_RUNNING) aos_vmm_virtio_input_drain();
+        badge &= ~AOS_INPUT_VMM_WAKE_BADGE;
+        if (!badge) return;
+    }
+#endif
     if (badge & BLK_VIRT_VMM_WAKE_BADGE) {
-        if (g_guest_state == GUEST_STATE_RUNNING) aos_vmm_virtio_blk_resp_ready();
+        if (g_guest_state == GUEST_STATE_RUNNING ||
+            g_guest_state == GUEST_STATE_DESTROYING)
+            aos_vmm_virtio_blk_resp_ready();
         badge &= ~BLK_VIRT_VMM_WAKE_BADGE;
         if (!badge) return;
     }
@@ -1650,6 +2223,9 @@ static seL4_MessageInfo_t guest_vmm_fault(seL4_Word badge,
     aos_vmm_virtio_net_after_fault();
     aos_vmm_virtio_blk_after_fault();
     aos_vmm_virtio_console_after_fault();
+#ifdef AGENTOS_GUEST_INPUT
+    aos_vmm_virtio_input_drain();
+#endif
     guest_serial_service();
     /* UART MMIO fault compliance stub — silently accept, guest continues. */
     return seL4_MessageInfo_new(0, 0, 0, 0);
@@ -1695,6 +2271,7 @@ void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
     g_vmm_listen_ep = ep;
     /* Run init() — sets up guest images, GIC, virtio IRQs, starts guest */
     init();
+    guest_initializing = false;
 
     const aos_guest_vmm_loop_ops_t loop_ops = {
         .guest_state = &g_guest_state,
@@ -1703,6 +2280,7 @@ void guest_vmm_main(seL4_CPtr ep, seL4_CPtr reply_cap)
         .notified = guest_vmm_notified,
         .net_rx_ready = aos_vmm_virtio_net_rx_ready,
         .blk_resp_ready = aos_vmm_virtio_blk_resp_ready,
+        .after_rpc_reply = guest_vmm_after_rpc_reply,
     };
     aos_guest_vmm_loop(ep, reply_cap, &loop_ops);
 }

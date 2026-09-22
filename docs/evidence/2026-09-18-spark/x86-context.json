@@ -1,0 +1,59 @@
+{
+  "schema": "agentos.x86.context-qualification.v1",
+  "date_utc": "2026-09-19",
+  "revision": "b69a7a7801a63c504191f60f22e6115af2467200",
+  "scope": "Per-CPU native context storage and second-runner selection; single-CPU managed lifecycle regression",
+  "host": {
+    "command": "make test-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log": "agentos-smp-context-host.log",
+    "sha256": "325256ed22b96da4c553ad9fa34af230440fc1e99e6ba8c082417ca341c9ad3c"
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log": "agentos-smp-context-spark.log",
+    "sha256": "ebea4f2db1389b61fb1fc7bac850104090f377e695eae7f4e505a444748c0614"
+  },
+  "intel_teardown": {
+    "command": "cd /tmp/agentos-v04-intel-discovery && if pgrep -f '[q]emu-system-x86_64' >/dev/null; then exit 90; fi && git fetch origin platform/x86-smp && git checkout --detach b69a7a7 && make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4 QEMU_TEST_TIMEOUT=120",
+    "exit_code": 0,
+    "log": "agentos-smp-context-intel.log",
+    "sha256": "8ab9708477426ff9f80ca9fb142502d9fb737f7bc56b200a43a25a991a8dc404",
+    "root_elf_sha256": "2e7db446d20ddc1052f10ad8ec60cf45d0f31207fbc91b76f8484161a3d16a8e",
+    "target_log": "agentos-qemu-ti8jtD.log",
+    "target_log_sha256": "ac992909719c11d1a13c405a1322218cec93f57115369f1bc80bd9583989ccb4",
+    "qemu_pid": 1140912,
+    "qemu_gone_after_completion": true
+  },
+  "intel_managed": {
+    "command": "cd /tmp/agentos-v04-intel-discovery && if pgrep -f '[q]emu-system-x86_64' >/dev/null; then exit 90; fi && test \"$(git rev-parse --short=7 HEAD)\" = b69a7a7 && make gate-x86_64-cc-linux SEL4_SDK_VERSION=2.3.0 X86_BOOT_PROFILE=debian-amd64-2g.toml X86_ROOT_DISK=/tmp/agentos-debian-amd64/recreate-3ea3554.raw X86_SSH_KEY=/tmp/agentos-debian-amd64/ssh-seed-19/identity X86_SSH_PORT=12224 X86_SSH_KNOWN_HOSTS=/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-LxAV1n.known_hosts X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=600",
+    "exit_code": 0,
+    "log": "agentos-smp-context-managed.log",
+    "sha256": "d7186882984d7382c578b7bcf0196dc53aca5508637f389e960637f6e4e61f3a",
+    "root_elf_sha256": "40ee1ef7c380f9746056bbfef6c12d0a64259b75a323e7bd0b1c5d6421773fd9",
+    "target_log": "agentos-qemu-Vl66tr.log",
+    "target_log_sha256": "2bcfb9593a553c73989e8e5dd9fa6a7f8dbe17bd8a22bd7debbfed8225e920ff",
+    "console_sha256": "6a3cf4fc06687a8831f7a4f1e46bc239d5758dc8a2af32f84f3e50a6b1637f0f",
+    "recreated_console_sha256": "858be0e15b96b159b62d766006a7551b57a23b807254f05e5c4d4fc101b06ff8",
+    "qemu_pid": 1147678,
+    "qemu_gone_after_completion": true
+  },
+  "retained_artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-context",
+  "observed": [
+    "AP entry uses the same context selection and saved entry/exit path as bootstrap execution",
+    "AP execution preserves the bootstrap coordinator context and RIP sentinel",
+    "AP retirement clears saved guest state without resetting the native runner sequence",
+    "Both managed single-CPU generations passed pinned SSH, uname/sync, console input, destroy and stale-handle rejection"
+  ],
+  "source_inspection": {
+    "manifest": "https://github.com/seL4/microkit-manifest/blob/2.3.0/default.xml",
+    "kernel_revision": "6e7c3b733d296cfd88d5fbf635c96e447a882374",
+    "finding": "Pinned kernel has separate per-VCPU fpuState, initializes it from null state, and explicitly switches host/guest FPU state. This is source evidence, not a native isolation test."
+  },
+  "remaining": [
+    "Guest-driven SMP qualification",
+    "Two online Linux CPUs with overlapping x87/SSE workers in both managed generations",
+    "Canonical integration and complete v0.4 release scope"
+  ]
+}

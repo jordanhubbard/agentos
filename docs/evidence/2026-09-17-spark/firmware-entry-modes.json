@@ -1,0 +1,47 @@
+{
+  "qualification": "VMM-selected x86 entry modes and SDK switching",
+  "date": "2026-09-17",
+  "task": "task_a2511793db39457ca4789147058d8dca",
+  "runtime_revision": "e672700aed74a275466077c610a34c1cc39bb11e",
+  "default_sdk": "2.1.0 (unchanged)",
+  "intel_firmware_modes": {
+    "host": "madmax",
+    "command": "make gate-x86_64-firmware-modes SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS",
+    "modes": ["real-address", "unpaged protected", "long"],
+    "assertions": ["relevant VMCS control readback", "exact HLT exit reason", "RIP 0x1000", "instruction length 1"],
+    "log_sha256": "de71eb950b887de483914cd219cd8168f088f22e3949993b17a709313060300d",
+    "image_sha256": "f592f3606a3eb81592d56d45d37206d17fb7ac74986a27cb3af19c0e7509407d",
+    "retained_directory": "/tmp/agentos-v04-intel-modes/build/evidence/firmware-modes-e672700"
+  },
+  "intel_default_sdk_regression": {
+    "host": "madmax",
+    "command": "make gate-x86_64-vtx SEL4_SDK_VERSION=2.1.0",
+    "result": "PASS",
+    "log_sha256": "39cd3a9e028e967e6b5fa1ce932789d7131785abd92c6131ae24fc11117c4534",
+    "image_sha256": "a065c438d884c19af118cd0f8787fdc3efcdeaee3187c6119ae506b06d949f20",
+    "retained_directory": "/tmp/agentos-v04-intel-modes/build/evidence/sdk21-e672700"
+  },
+  "spark_full_gate": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12259",
+    "result": "PASS",
+    "scope": "Host tests, AArch64 and reduced-x86 root boot, AArch64 guest network/block/console",
+    "log_sha256": "51da8500e27f47e501174bb5dfdab53075d9db6e12eb46755139ee962fd2d603",
+    "last_gate_image_sha256": "4fa2aced03b69e2036acbfd6dff343c15887fbbd3f97abe10efb6bcf760ec18d",
+    "retained_directory": "/tmp/agentos-v04-x86-modes/build/evidence/firmware-modes-e672700"
+  },
+  "supporting_tests_at_4fcab7a": {
+    "rust_unit_tests": "84 passed",
+    "stale_image": "--no-build rejected before boot",
+    "sdk_2_1_firmware_variant": "build rejected with explicit SDK requirement"
+  },
+  "build_regression": "Switching 2.3 to 2.1 initially reused stale root objects and failed VSpace creation. A pattern EXTRA_PREREQS binding did not invalidate them. The final concrete-target binding rebuilt pd_vspace and the original proof passed; a subsequent switch back to 2.3 passed all modes.",
+  "revision_scope": "Later changes add documentation and source comments only. The retained full-gate image is the AArch64 console variant; the gate log covers every variant.",
+  "limitations": [
+    "No firmware payload or architectural reset-vector execution",
+    "No guest-driven real/protected/long-mode transitions",
+    "No UEFI, installed ACPI, Linux or canonical x86 guest I/O",
+    "No additional device or guest-memory authority",
+    "No default SDK change or seL4 kernel modification"
+  ]
+}

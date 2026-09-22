@@ -15,22 +15,19 @@
  *   - ATTACH is a seL4 Call on net_virt's listen endpoint.  The request and
  *     reply payloads are the packed structs below, carried in
  *     sel4_msg_t.data (opcode in sel4_msg_t.opcode / the message label).
- *   - KICK is a seL4_NBSend from a VMM to net_virt with label
- *     NET_VIRT_EVENT_KICK and no payload.  It means "the guest queues for my
- *     client changed: TX active has frames and/or RX free was replenished".
- *     The sender never blocks; a kick that lands while net_virt is not in
- *     Recv is dropped, which is why the sDDF consumer_signalled flags below
- *     make every kick re-sendable and net_virt rescans before blocking.
- *   - net_virt -> VMM uses NET_SVC_EVENT_RX_READY (contracts/net-service)
- *     as a seL4_NBSend on the VMM's listen endpoint: "RX active has frames".
+ *   - KICK signals net_virt's bound notification using a root-minted
+ *     send-only cap, badged 1 or 2 for the guest client. Signals remain
+ *     pending until received and may combine with the native-client badge.
+ *   - net_virt signals the owning VMM's bound notification with
+ *     NET_VIRT_VMM_WAKE_BADGE when RX active has frames. Notification badges
+ *     take precedence over IPC message tags, which may be stale.
  *
  * Signalling protocol (per client, over the sDDF queue flags):
  *   tx_active.consumer_signalled  consumer = net_virt.  net_virt sets it to
  *                                 1 while draining and to 0 before it
  *                                 blocks.  A VMM kicks when tx_active is
  *                                 non-empty and the flag is 0.  The VMM never
- *                                 sets the flag, so a lost kick is repeated
- *                                 on the guest's next MMIO exit.
+ *                                 sets the flag; redundant signals coalesce.
  *   rx_free.consumer_signalled    consumer = net_virt.  1 normally; net_virt
  *                                 clears it when it stopped pulling RX
  *                                 because the guest RX free queue was empty.
@@ -49,18 +46,44 @@
 
 /* Version 3 isolates queue clients and driver transfers on separate pages.
  * Version 2 requires root-minted virtualizer_authority.h badges. */
-#define NET_VIRT_CONTRACT_VERSION       4u
+#define NET_VIRT_CONTRACT_VERSION       6u
 /* Version 4 adds an isolated native client page before the driver page.
  * The native lane uses root-provisioned persistent notifications, not
  * dropped endpoint events. A wake badge takes precedence over message info. */
 #define NET_VIRT_NATIVE_WAKE_BADGE UINT64_C(0x40000000)
+/* Version 5 extends persistent wakeups to guest clients. */
+#define NET_VIRT_GUEST_WAKE_MASK UINT64_C(3)
+#define NET_VIRT_VMM_WAKE_BADGE (UINT64_C(1) << 59)
 
 /* ── Opcodes / labels ─────────────────────────────────────────────────── */
 
 /* Call, VMM -> net_virt: bind guest client `client_id` to the virtualizer.
- * `vmm_slot` names the caller so net_virt knows which listen EP to NBSend
- * RX_READY to; `client_id` selects the queue stride (profile network_client). */
+ * `vmm_slot` selects its root-granted notification; `client_id` selects the
+ * queue stride (profile network_client). */
 #define NET_VIRT_OP_ATTACH              0x2201u
+/* Version 6: terminal queue detach, with the same request/reply layout and
+ * badge authorization as ATTACH. Stop the producer before calling. An OK
+ * reply guarantees that net_virt holds no queue pointers for this client;
+ * queued packets may be discarded. Repeated detach is idempotent. This does
+ * close the raw driver handle before retiring the queue. Reattachment uses
+ * REBIND; legacy ATTACH cannot revive a retired client. */
+#define NET_VIRT_OP_DETACH              0x2202u
+/* Guest-only control: one private untyped capability in, one fresh queue
+ * frame capability out on success. The VMM retains pool revocation authority.
+ * Client N implies VMM slot N. Only the next nonzero generation is accepted.
+ * On failure revoke the pool before retrying; detach a committed generation
+ * first if receiving or mapping the returned frame fails. */
+#define NET_VIRT_OP_REBIND              0x2203u
+#define NET_VIRT_REBIND_VERSION         1u
+typedef struct __attribute__((packed)) {
+    uint32_t version, client, generation;
+} net_virt_rebind_req_t;
+typedef struct __attribute__((packed)) {
+    uint32_t status, version, generation;
+    uint32_t hw_state;
+    uint8_t mac[6];
+    uint8_t _pad[2];
+} net_virt_rebind_reply_t;
 /* NBSend, VMM -> net_virt: guest queues changed (see header comment). */
 #define NET_VIRT_EVENT_KICK             0x2210u
 
@@ -70,6 +93,7 @@
 #define NET_VIRT_ERR_BAD_CLIENT         2u   /* client_id out of range / no EP */
 #define NET_VIRT_ERR_BUSY               3u   /* client already attached */
 #define NET_VIRT_ERR_UNAVAILABLE        4u   /* virtualizer not bridging yet */
+#define NET_VIRT_ERR_RESOURCE           5u
 
 /* ── Hardware state reported by ATTACH (net_virt_attach_reply_t.hw_state) */
 #define NET_VIRT_HW_NONE                0u   /* no host NIC: hub/loopback pump */

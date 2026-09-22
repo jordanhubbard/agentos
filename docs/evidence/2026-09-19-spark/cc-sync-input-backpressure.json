@@ -1,0 +1,25 @@
+{
+  "accepted_batches_while_paused": [
+    4,
+    4
+  ],
+  "agentos_revision": "1ea78cdd1bccd2f51a3ca2737960ed2d5b4ff76a",
+  "connection_close_without_release_request": false,
+  "excludes": [
+    "physical input devices",
+    "peer guest isolation",
+    "guest recreation",
+    "GUI process termination",
+    "paused disconnect"
+  ],
+  "helper_sha256": "48749fa16ae56b5809f0d3f9686e7a43089a3f18250541538c915730f5ba4e13",
+  "keyboard_events": 4,
+  "pointer_events": 4,
+  "profile": "debian-input-aarch64",
+  "release_mode": "paused-backpressure",
+  "schema": "agentos.guest_input.v1",
+  "scope": "persistent public binary CC connection through virtio-input to exact Linux evdev packets",
+  "source_tree_clean": true,
+  "status": "pass",
+  "stderr": "/tmp/agentos-cc-cli-deadline/build/tmp/agentos-qemu-knbrgH.input-backpressure.stderr"
+}

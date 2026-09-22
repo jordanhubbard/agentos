@@ -1,0 +1,32 @@
+{
+  "qualification": "Canonical serial service attachment in the Intel firmware composition",
+  "runtime_revision": "39e9a0f996be4d2c535ec0008f959c53bbb6b3ae",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "intel": {
+    "host": "madmax Intel Linux nested KVM",
+    "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 with the pinned firmware, kernel and initrd arguments retained in x86-virtio-firmware.json",
+    "result": "PASS exit 0; Linux ring3 initramfs syscall proof verified",
+    "log_sha256": "ec722b28e6b81148b95408382e3bf3d53469f2d423fb69b1699e7c3479d35ed8",
+    "scope": [
+      "Firmware manifest and root descriptor instantiate serial_virt and guest_vmm_primary",
+      "VMM must successfully attach as serial client zero before continuing firmware execution",
+      "Userspace proof must reject attachment as client one and as the frontend",
+      "VMM reads zeroed head/tail words through its root-provisioned large-page mapping",
+      "Linux still reaches PID 1 after the attachment IPC and saved VM-entry return is consumed"
+    ]
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0",
+    "log_sha256": "699ef3ded730368f977f7cbebcd694fb7daef41b41999a9d818ec89abc4ee22c",
+    "link_command": "make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "link_result": "PASS exit 0",
+    "link_log_sha256": "6770f8fb00514384f7a59d220e8cffc054bd49c22e02c1ed6b4291531fee35d7"
+  },
+  "retained_directory": "build/evidence/x86-serial-attach-39e9a0f",
+  "limitations": [
+    "No frontend byte producer or registered guest console device exists in this composition yet.",
+    "Unexpected service notifications remain fatal; wake handling is not qualified.",
+    "The Intel check covers service attachment and own-page reads, not peer-page fault isolation, console traffic or lifecycle teardown."
+  ]
+}

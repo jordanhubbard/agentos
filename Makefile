@@ -105,6 +105,8 @@ QEMU_TEST_TIMEOUT ?= 300
 # Console and live-media proofs may run beside a retained guest instance.
 # Zero keeps the profile's normal forwarding port.
 QEMU_TEST_SSH_PORT ?= 0
+QEMU_TEST_GPU_SSH_PORT ?= 12224
+GUEST_LINUX_CC ?= aarch64-linux-gnu-gcc
 # Correct suspend accounting freezes each guest's architectural time while it
 # is stopped.  A full vendor-live-media dual proof can therefore take longer
 # than the old 90-minute bound that accidentally included a clock jump.
@@ -118,7 +120,7 @@ QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 # repo root.
 ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
-SEL4_SDK_VERSION ?= 2.1.0
+SEL4_SDK_VERSION ?= $(strip $(shell cat "$(ROOT_DIR)tools/sdk/default-version"))
 SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 export SEL4_SDK
 
@@ -219,6 +221,11 @@ MICROKIT_SDK_URL := https://github.com/seL4/microkit/releases/download/$(SEL4_SD
 
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
+# Native guest helpers must keep their acquisition toolchain when the kernel
+# sub-make prepends its own LLVM directory to PATH.
+ifndef AGENTOS_HOST_TOOL_PATH
+export AGENTOS_HOST_TOOL_PATH := $(PATH)
+endif
 
 # ─── Native arch / HW-accelerated QEMU ────────────────────────────────────
 # Normalise uname -m: macOS Apple Silicon reports "arm64", seL4 uses "aarch64"
@@ -264,7 +271,7 @@ ifeq ($(NATIVE_ARCH),aarch64)
                         -serial chardev:char0 \
                         -chardev socket,id=cc_pd_char,path=$(ROOT_DIR)build/cc_pd.sock,server=on,wait=off \
                         -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0 \
-                        -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0 \
+                        -device virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0,nr=1 \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
                         -device virtio-net-device,netdev=net0,bus=virtio-mmio-bus.16 \
@@ -402,6 +409,14 @@ endif
 # setup/demo: two-command first-run path and one-command repeatable showcase
 # =============================================================================
 .PHONY: sdk-check
+include tools/sdk/candidate.mk
+
+ifeq ($(SEL4_SDK_VERSION),$(SDK_CANDIDATE_VERSION))
+MICROKIT_SDK_URL := https://github.com/jordanhubbard/agentos/releases/download/v0.4.0/agentos-sdk-targets.tar.gz
+sdk-check: sdk-candidate-check
+build: sdk-check
+endif
+
 sdk-check:
 	@test -d "$(SEL4_SDK)/board" || \
 		(echo "ERROR: Microkit SDK missing at $(SEL4_SDK); run 'make sdk'." && exit 1)
@@ -413,21 +428,30 @@ sdk:
 		echo "Use macOS or Linux for the guest demo, or set SEL4_SDK to a cross-build SDK."; \
 		exit 1; \
 	fi
-	@if [ -d "$(SEL4_SDK)/board" ]; then \
+	@set -eu; if [ -d "$(SEL4_SDK)/board" ]; then \
 		echo "✓ Microkit SDK $(SEL4_SDK_VERSION): $(SEL4_SDK)"; \
 	else \
 		echo "Downloading Microkit SDK $(SEL4_SDK_VERSION) for $(SDK_PLATFORM)..."; \
 		command -v curl >/dev/null 2>&1 || \
 			(echo "ERROR: curl is required; run 'make install' first." && exit 1); \
+		test ! -e "$(SEL4_SDK)" || \
+			{ echo "ERROR: refusing to replace incomplete SDK at $(SEL4_SDK)"; exit 1; }; \
+		mkdir -p "$$(dirname "$(SEL4_SDK)")"; \
 		tmp="$$(mktemp -t agentos-microkit-sdk.XXXXXX)"; \
 		trap 'rm -f "$$tmp"' EXIT INT TERM; \
 		curl -fsSL "$(MICROKIT_SDK_URL)" -o "$$tmp"; \
-		mkdir -p "$$(dirname "$(SEL4_SDK)")"; \
-		tar -xzf "$$tmp" -C "$$(dirname "$(SEL4_SDK)")"; \
-		test -d "$(SEL4_SDK)/board" || \
-			(echo "ERROR: SDK archive did not create $(SEL4_SDK)" && exit 1); \
+		if [ "$(SEL4_SDK_VERSION)" = "$(SDK_CANDIDATE_VERSION)" ]; then \
+			printf '%s  %s\n' "$(SDK_CANDIDATE_ARCHIVE_SHA256)" "$$tmp" | sha256sum -c -; \
+		fi; \
+		stage="$$(mktemp -d "$$(dirname "$(SEL4_SDK)")/.agentos-sdk.XXXXXX")"; \
+		trap 'rm -f "$$tmp"; rm -rf "$$stage"' EXIT INT TERM; \
+		tar -xzf "$$tmp" -C "$$stage"; \
+		test -d "$$stage/microkit-sdk-$(SEL4_SDK_VERSION)/board" || \
+			{ echo 'ERROR: SDK archive has no expected board directory'; exit 1; }; \
+		mv "$$stage/microkit-sdk-$(SEL4_SDK_VERSION)" "$(SEL4_SDK)"; \
 		echo "✓ Microkit SDK installed: $(SEL4_SDK)"; \
 	fi
+	@$(MAKE) sdk-check
 
 setup:
 	@$(MAKE) install
@@ -476,7 +500,7 @@ demo-smoke: demo-check
 
 demo-test: demo-check
 	@echo ""
-	@echo "Running the non-interactive Ubuntu + FreeBSD authenticated-SSH proof..."
+	@echo "Running the non-interactive pinned Debian + FreeBSD authenticated-SSH proof..."
 	@$(MAKE) e2e-dual-os BOARD=qemu_virt_aarch64
 
 demo: demo-check
@@ -484,7 +508,7 @@ demo: demo-check
 		(echo "ERROR: 'make demo' requires an interactive terminal; use 'make demo-test' in automation." && exit 1)
 	@echo ""
 	@echo "Starting the agentOS dual-guest demonstration."
-	@echo "The gate boots Ubuntu and FreeBSD concurrently and proves key-only SSH."
+	@echo "The gate boots pinned Debian and FreeBSD concurrently and proves key-only SSH."
 	@echo "After it passes, open the printed SSH commands in two other terminals."
 	@echo "Press Enter here when the demonstration is complete."
 	@echo ""
@@ -539,6 +563,10 @@ build-tools:
 # =============================================================================
 # fetch-guest: execute the bounded acquisition recipe for selected profiles
 # =============================================================================
+.PHONY: seed-guest-root
+seed-guest-root:
+	@cargo xtask seed-guest --root-ext4 "$(SEED_ROOT_EXT4)" --public-key "$(SEED_PUBLIC_KEY)" --output "$(SEED_OUTPUT)" --instance-id "$(SEED_INSTANCE_ID)" $(if $(SEED_GUEST_ADDRESS),--guest-address "$(SEED_GUEST_ADDRESS)",) $(if $(SEED_DISK_RAW),--disk-raw "$(SEED_DISK_RAW)" --partition-offset "$(SEED_PARTITION_OFFSET)",)
+
 fetch-guest:
 ifneq ($(strip $(GUEST_PRIMARY_PROFILE)),)
 	@cargo xtask fetch-guest --profile $(GUEST_PRIMARY_PROFILE)
@@ -596,6 +624,17 @@ _RUN_SELECTION_ARGS = $(if $(_SELECTED_GUEST_SCENARIO),--scenario $(_SELECTED_GU
 
 # run (default): build native → QEMU with serial on stdout and a Unix guest
 # =============================================================================
+.PHONY: run-x86_64-cc
+run-x86_64-cc:
+	@cargo xtask qemu-launch --board x86_64_generic_vtx --x86-cc
+
+.PHONY: run-x86_64-cc-linux
+run-x86_64-cc-linux:
+	@test -n "$(X86_ROOT_DISK)" || { echo 'Set X86_ROOT_DISK to a disposable raw Debian root disk'; exit 1; }
+	@cargo xtask qemu-launch --board x86_64_generic_vtx --x86-cc \
+		--x86-boot-profile $(if $(X86_BOOT_PROFILE),$(X86_BOOT_PROFILE),debian-amd64.toml) --x86-block-image "$(X86_ROOT_DISK)" \
+		--x86-block-write --ssh-port $(if $(X86_SSH_PORT),$(X86_SSH_PORT),12224)
+
 run:
 	@if [ -z "$(_SELECTED_GUEST_SCENARIO)" ] && [ -n "$(GUEST_PRIMARY_PROFILE)" ] && [ -n "$(GUEST_SECONDARY_PROFILE)" ]; then \
 		echo "ERROR: interactive two-slot launch requires GUEST_SCENARIO=<alias>"; \
@@ -618,7 +657,7 @@ run:
 
 # run-fast: same as run, with TCG-mode performance knobs enabled.
 # On Apple Silicon (TCG-only because HVF is incompatible with seL4) this
-# adds -accel tcg,thread=multi and switches the CPU model to 'max', giving
+# adds -accel tcg,thread=multi while retaining the SDK-qualified CPU model, giving
 # a noticeable boot-time speedup for dev iteration.  On Linux/KVM hosts
 # QEMU_FAST is a no-op since hardware acceleration is already in use.
 run-fast:
@@ -670,6 +709,110 @@ gate-x86_64-vtx:
 	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
 		--assert-vmx-exit --timeout-secs $(QEMU_TEST_TIMEOUT)
 
+.PHONY: gate-x86_64-firmware-modes
+# Use SEL4_SDK_VERSION=2.3.0 for upstream VM-entry mode controls.
+gate-x86_64-firmware-modes:
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-modes --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+.PHONY: gate-x86_64-firmware-reset
+.PHONY: x86-userspace-initramfs gate-x86_64-userspace
+x86-userspace-initramfs:
+	@cargo xtask build-x86-initramfs
+
+gate-x86_64-userspace:
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-userspace \
+		--timeout-secs $(QEMU_TEST_TIMEOUT)
+
+.PHONY: gate-x86_64-teardown
+gate-x86_64-teardown: gate-x86_64-userspace
+
+.PHONY: gate-x86_64-linux-login
+.PHONY: debian-x86-console-hook
+.PHONY: debian-aarch64-console-hook
+debian-aarch64-console-hook:
+	@mkdir -p $(BUILD_TMP_DIR)/debian-aarch64/empty-toolchain
+	clang --gcc-toolchain=$(BUILD_TMP_DIR)/debian-aarch64/empty-toolchain -target aarch64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_bottom_aarch64.c -o $(BUILD_TMP_DIR)/debian-aarch64/udev
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-aarch64/udev
+	clang --gcc-toolchain=$(BUILD_TMP_DIR)/debian-aarch64/empty-toolchain -target aarch64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_top_aarch64.c -o $(BUILD_TMP_DIR)/debian-aarch64/udev-top
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-aarch64/udev-top
+
+debian-x86-console-hook:
+	@mkdir -p $(BUILD_TMP_DIR)/debian-x86
+	clang -target x86_64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_bottom_x86_64.c \
+		-o $(BUILD_TMP_DIR)/debian-x86/udev
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-x86/udev
+	clang -target x86_64-unknown-linux-gnu -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -nostdlib -static -fuse-ld=lld -O2 \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,-e,_start \
+		guest-profiles/helpers/debian_init_top_x86_64.c \
+		-o $(BUILD_TMP_DIR)/debian-x86/udev-top
+	llvm-objcopy --strip-all --remove-section=.comment $(BUILD_TMP_DIR)/debian-x86/udev-top
+
+gate-x86_64-linux-login:
+	@test -n "$(X86_ROOT_DISK)" || { echo 'Set X86_ROOT_DISK to a disposable raw root disk'; exit 1; }
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login \
+		$(if $(X86_BOOT_PROFILE),--x86-boot-profile $(X86_BOOT_PROFILE),) \
+		--x86-block-image "$(X86_ROOT_DISK)" --x86-block-write \
+		--timeout-secs $(QEMU_TEST_TIMEOUT)
+
+.PHONY: gate-x86_64-storage
+.PHONY: gate-x86_64-debian-ssh
+.PHONY: gate-x86_64-cc-linux
+.PHONY: x86-smp-probe gate-x86_64-smp
+x86-smp-probe:
+	@mkdir -p $(BUILD_TMP_DIR)
+	clang -target x86_64-linux-gnu -fuse-ld=lld -std=c11 -O2 -Wall -Wextra -Werror \
+		-ffreestanding -fno-builtin -fno-stack-protector -fno-pie -nostdlib -static \
+		-Wl,-e,_start -Wl,--build-id=none tests/platform/x86_smp_probe.c \
+		tests/platform/x86_smp_probe_start.S -o $(BUILD_TMP_DIR)/x86-smp-probe
+gate-x86_64-smp: x86-smp-probe
+	$(MAKE) gate-x86_64-cc-linux X86_BOOT_PROFILE=debian-amd64-2cpu.toml \
+		X86_SMP_PROBE=$(BUILD_TMP_DIR)/x86-smp-probe
+gate-x86_64-cc-linux:
+	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login --assert-x86-cc \
+		--x86-boot-profile $(if $(X86_BOOT_PROFILE),$(X86_BOOT_PROFILE),debian-amd64.toml) --x86-ssh-key "$(X86_SSH_KEY)" \
+		$(if $(X86_SMP_PROBE),--x86-smp-probe "$(X86_SMP_PROBE)",) \
+		$(if $(X86_SECONDARY_DISK),--x86-secondary-block-image "$(X86_SECONDARY_DISK)",) \
+		$(if $(filter 1,$(X86_SECONDARY_WRITABLE)),--x86-secondary-block-write,) \
+		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
+		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
+		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+gate-x86_64-debian-ssh:
+	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" -a -n "$(X86_SSH_PORT)" || { echo 'Set X86_ROOT_DISK, X86_SSH_KEY and X86_SSH_PORT'; exit 1; }
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login \
+		--x86-boot-profile $(if $(X86_BOOT_PROFILE),$(X86_BOOT_PROFILE),debian-amd64.toml) --x86-ssh-key "$(X86_SSH_KEY)" \
+		$(if $(X86_SSH_KNOWN_HOSTS),--x86-ssh-known-hosts "$(X86_SSH_KNOWN_HOSTS)",) \
+		--ssh-port "$(X86_SSH_PORT)" --x86-block-image "$(X86_ROOT_DISK)" \
+		--x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+gate-x86_64-storage:
+	@cargo xtask x86-storage --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+.PHONY: gate-x86_64-guest-faults
+gate-x86_64-guest-faults:
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-guest-faults --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+gate-x86_64-firmware-reset:
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 # gate-guest-io: guest I/O proofs through the virtualizer path. GUEST_OS=none
 # is a stub VMM, so the boot gates above prove PD load and root-task parking
 # only; these three targets are what make "the OS does I/O" a true claim.
@@ -680,15 +823,46 @@ gate-guest-io:
 	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
-gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
-	@echo ""
-	@echo "╔══════════════════════════════════════════════════════════╗"
-	@echo "║  ✅ OS-CLAIM GATE PASSED                                  ║"
-	@echo "║  Host suite + aarch64/x86_64 boot + guest net/blk/console ║"
-	@echo "║  proofs through the virtualizer path all OK.             ║"
-	@echo "║  OS-level completion claims are now permitted.           ║"
-	@echo "╚══════════════════════════════════════════════════════════╝"
-	@echo ""
+gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io
+
+# Link the real firmware VMM, including its MMIO dispatcher and shared virtio
+# transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
+# not claim Intel execution: make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0
+.PHONY: test-x86-firmware-build
+test-x86-firmware-build:
+	$(MAKE) -C kernel/agentos-root-task \
+		BUILD_DIR=$(abspath $(BUILD_TMP_DIR)/x86-firmware-link) \
+		AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic_vtx \
+		SEL4_SDK=$(SEL4_SDK) SEL4_SDK_VERSION=$(SEL4_SDK_VERSION) \
+		X86_FIRMWARE_RESET=1 \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/guest_vmm_primary.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/x86_runner.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/serial_pd.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/blk_virt.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/net_virt.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/net_pd.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/virtio_blk.elf \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_main.o \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_x86_host_pci.o \
+		$(abspath $(BUILD_TMP_DIR)/x86-firmware-link)/rt_virtio_pci_caps.o
+	@echo "PASS: x86 firmware VMM, serial/block drivers and block/network virtualizer link checks"
+
+.PHONY: test-x86-secondary-firmware-build
+.PHONY: prepare-x86-profile
+prepare-x86-profile:
+	@test -n "$(X86_BOOT_PROFILE)" || { echo 'X86_BOOT_PROFILE is required'; exit 1; }
+	cargo xtask guest-profile --profile "$(X86_BOOT_PROFILE)" \
+		--prepare-x86-slot "$(if $(X86_VMM_SLOT),$(X86_VMM_SLOT),primary)"
+
+test-x86-secondary-firmware-build:
+	$(MAKE) test-x86-firmware-build GUEST_OS=none X86_VMM_SLOT=secondary BUILD_TMP_DIR=$(abspath $(BUILD_TMP_DIR)/secondary)
+	$(MAKE) -C kernel/agentos-root-task \
+		BUILD_DIR=$(abspath $(BUILD_TMP_DIR)/secondary-managed) \
+		AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic_vtx \
+		SEL4_SDK=$(SEL4_SDK) SEL4_SDK_VERSION=$(SEL4_SDK_VERSION) \
+		X86_FIRMWARE_RESET=1 X86_MANAGED_START=1 X86_VMM_SLOT=secondary \
+		$(abspath $(BUILD_TMP_DIR)/secondary-managed)/x86_firmware_vmm.o
+	@echo "PASS: secondary x86 coordinator and canonical adapters link; managed reset path compiles"
 
 # test-host: alias for the host-only integration suite.  Named explicitly so
 # callers and CI cannot mistake host-only coverage for target/QEMU proof.
@@ -696,12 +870,583 @@ gate: test-host gate-aarch64 gate-x86_64 gate-guest-io
 # listed here so the invariants it protects are checked on every host run,
 # but it is not counted among the host tests below.
 test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host
+test-host: test-arm-recreate-host
+.PHONY: test-arm-recreate-host
+test-arm-recreate-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_arm_recreate.c platform/guest-vmm/arm_recreate.c -o $(BUILD_TMP_DIR)/test_arm_recreate
+	$(BUILD_TMP_DIR)/test_arm_recreate
+test-host: test-x86-cpu-host
+test-host: test-x86-composition-host
+test-host: test-vm-manager-identity-host
+
+.PHONY: test-vm-manager-identity-host
+test-vm-manager-identity-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
+		-DAGENTOS_TEST_HOST -ffunction-sections -fdata-sections \
+		-iquote kernel/agentos-root-task/include -I tests/platform/loop-stubs -I platform/include -I libvmm/include \
+		tests/platform/test_vm_manager_guest_identity.c -Wl,--gc-sections -o $(BUILD_TMP_DIR)/test_vm_manager_guest_identity
+	$(BUILD_TMP_DIR)/test_vm_manager_guest_identity
+
+.PHONY: test-x86-composition-host
+test-x86-composition-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -iquote kernel/agentos-root-task/include \
+		-DAGENTOS_X86_VTX=1 -DAGENTOS_X86_FIRMWARE_RESET=1 -DAGENTOS_X86_CC_PCI=1 -DAGENTOS_X86_MANAGED_START=1 \
+		tests/platform/test_x86_composition.c kernel/agentos-root-task/src/system_desc_x86_64.c -o $(BUILD_TMP_DIR)/test_x86_composition
+	$(BUILD_TMP_DIR)/test_x86_composition
+	$(CC) -std=c11 -Wall -Wextra -Werror -iquote kernel/agentos-root-task/include \
+		-DAGENTOS_X86_VTX=1 -DAGENTOS_X86_FIRMWARE_RESET=1 -DAGENTOS_X86_CC_PCI=1 -DAGENTOS_X86_MANAGED_START=1 -DAGENTOS_X86_DUAL_GUEST=1 \
+		tests/platform/test_x86_composition.c kernel/agentos-root-task/src/system_desc_x86_64.c -o $(BUILD_TMP_DIR)/test_x86_dual_composition
+	$(BUILD_TMP_DIR)/test_x86_dual_composition
+
+test-host: test-guest-scheduling-host test-guest-gic-mapping-host test-guest-paging-host test-net-rx-accounting-host
+test-host: test-guest-execution-host
+test-host: test-fault-registry-host
+.PHONY: test-fault-registry-host
+test-fault-registry-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Itests/platform/virtio-stubs -Itests/platform/mmio-stubs -Ilibvmm/include \
+		tests/platform/test_fault_registry.c libvmm/src/arch/aarch64/fault_registry.c \
+		-o $(BUILD_TMP_DIR)/test_fault_registry
+	$(BUILD_TMP_DIR)/test_fault_registry
+test-host: test-x86-guest-objects-host
+test-host: test-untyped-host
+test-host: test-loader-page-tables-host
+.PHONY: test-loader-page-tables-host
+test-loader-page-tables-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I kernel/loader \
+		tests/platform/test_loader_page_tables.c -o $(BUILD_TMP_DIR)/test_loader_page_tables
+	$(BUILD_TMP_DIR)/test_loader_page_tables
+
+.PHONY: test-untyped-host
+test-untyped-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include tests/api/test_ut_alloc.c \
+		-o $(BUILD_TMP_DIR)/test_ut_alloc
+	$(BUILD_TMP_DIR)/test_ut_alloc
+
+test-host: test-x86-memory-rebuild-host
+test-host: test-x86-recreate-host
+.PHONY: test-x86-recreate-host
+test-x86-recreate-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+		-Iplatform/include tests/platform/test_x86_recreate.c \
+		platform/guest-vmm/x86_recreate.c -o $(BUILD_TMP_DIR)/test_x86_recreate
+	$(BUILD_TMP_DIR)/test_x86_recreate
+test-host: test-blk-rebind-host
+test-host: test-net-rebind-host
+.PHONY: test-net-rebind-host
+test-net-rebind-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_net_rebind.c \
+		-o $(BUILD_TMP_DIR)/test_net_rebind
+	$(BUILD_TMP_DIR)/test_net_rebind
+.PHONY: test-blk-rebind-host
+test-blk-rebind-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_blk_rebind.c \
+		-o $(BUILD_TMP_DIR)/test_blk_rebind
+	$(BUILD_TMP_DIR)/test_blk_rebind
+
+.PHONY: test-x86-memory-rebuild-host
+test-x86-memory-rebuild-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Itests/platform/x86-objects-stubs \
+		-Iplatform/include -Ilibvmm/include -iquote kernel/agentos-root-task/include \
+		tests/platform/test_x86_memory_rebuild.c platform/guest-vmm/x86_rebuild_memory.c \
+		-o $(BUILD_TMP_DIR)/test_x86_memory_rebuild
+	$(BUILD_TMP_DIR)/test_x86_memory_rebuild
+test-host: test-x86-teardown-host
+test-host: test-x86-control-host
+
+.PHONY: test-x86-control-host
+test-x86-control-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS \
+		-I tests/platform/control-stubs -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_control.c \
+		platform/guest-vmm/x86_control.c platform/guest-vmm/runtime.c \
+		-o $(BUILD_TMP_DIR)/test_x86_control
+	$(BUILD_TMP_DIR)/test_x86_control
+	gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS -DAGENTOS_X86_USERSPACE_PROOF -DAGENTOS_X86_LIFECYCLE_TRACE \
+		-I tests/platform/control-stubs -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_control.c \
+		platform/guest-vmm/x86_control.c platform/guest-vmm/runtime.c \
+		-o $(BUILD_TMP_DIR)/test_x86_control_proof
+	$(BUILD_TMP_DIR)/test_x86_control_proof
+
+.PHONY: test-x86-teardown-host
+test-x86-teardown-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_X86_FIRMWARE_RESET \
+		-Itests/platform/teardown-stubs -Iplatform/include -Ilibvmm/include \
+		-iquote kernel/agentos-root-task/include tests/platform/test_x86_teardown.c \
+		platform/guest-vmm/teardown.c platform/guest-vmm/x86_release_memory.c \
+		-o $(BUILD_TMP_DIR)/test_x86_teardown
+	$(BUILD_TMP_DIR)/test_x86_teardown
+
+.PHONY: test-x86-guest-objects-host
+test-x86-guest-objects-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-Itests/platform/x86-objects-stubs -Ikernel/agentos-root-task/include \
+		tests/platform/test_x86_guest_objects.c -o $(BUILD_TMP_DIR)/test_x86_guest_objects
+	$(BUILD_TMP_DIR)/test_x86_guest_objects
+.PHONY: test-guest-execution-host
+test-guest-execution-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -DCONFIG_KERNEL_MCS -I tests/platform/execution-stubs -I platform/include -I kernel/agentos-root-task/include tests/platform/test_guest_execution.c platform/guest-ram/vmm_guest_execution.c -o $(BUILD_TMP_DIR)/test_guest_execution
+	@$(BUILD_TMP_DIR)/test_guest_execution
+.PHONY: test-net-rx-accounting-host
+test-net-rx-accounting-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -include assert.h -ffunction-sections -fdata-sections -Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -I libvmm/dep/sddf/include -I libvmm/dep/sddf/include/extern tests/platform/test_virtio_net_rx_accounting.c libvmm/src/virtio/net.c libvmm/src/virtio/gpa.c -o $(BUILD_TMP_DIR)/test_virtio_net_rx_accounting
+	@$(BUILD_TMP_DIR)/test_virtio_net_rx_accounting
+.PHONY: test-guest-paging-host
+test-guest-paging-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I tests/platform/paging-stubs -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_guest_paging.c platform/guest-ram/vmm_guest_paging.c -o $(BUILD_TMP_DIR)/test_guest_paging
+	@$(BUILD_TMP_DIR)/test_guest_paging
+.PHONY: test-guest-gic-mapping-host
+test-guest-gic-mapping-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I tests/platform/scheduling-stubs -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_guest_gic_mapping.c -o $(BUILD_TMP_DIR)/test_guest_gic_mapping
+	@$(BUILD_TMP_DIR)/test_guest_gic_mapping
+.PHONY: test-guest-scheduling-host
+test-guest-scheduling-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I tests/platform/scheduling-stubs -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_guest_scheduling.c -o $(BUILD_TMP_DIR)/test_guest_scheduling
+	@$(BUILD_TMP_DIR)/test_guest_scheduling
+test-host: test-x86-profile-host
+.PHONY: test-x86-profile-host
+test-x86-profile-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -I platform/include -idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_profile.c platform/guest-vmm/x86_profile.c \
+		platform/guest-vmm/profile.c libs/pd-support/sha256_mini.c \
+		-o $(BUILD_TMP_DIR)/test_x86_profile
+	@$(BUILD_TMP_DIR)/test_x86_profile
+test-host: test-virtio-host-transport
+test-host: test-virtio-pci-caps
+test-host: test-cc-transport-host
+test-host: test-cc-serial-control-host
+
+.PHONY: test-cc-serial-control-host
+test-cc-serial-control-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-I platform/include tests/platform/test_cc_serial_control.c \
+		services/command-console/cc_serial_control.c -o $(BUILD_TMP_DIR)/test_cc_serial_control
+	$(BUILD_TMP_DIR)/test_cc_serial_control
+
+.PHONY: test-cc-transport-host
+test-cc-transport-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_cc_transport.c \
+		-o $(BUILD_TMP_DIR)/test_cc_transport
+	$(BUILD_TMP_DIR)/test_cc_transport
+
+.PHONY: test-virtio-pci-caps
+test-virtio-pci-caps:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-I platform/include tests/platform/test_virtio_pci_caps.c \
+		platform/blk-virt/virtio_pci_caps.c -o $(BUILD_TMP_DIR)/test_virtio_pci_caps
+	$(BUILD_TMP_DIR)/test_virtio_pci_caps
+
+.PHONY: test-virtio-host-transport
+test-virtio-host-transport:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-I platform/include -I libvmm/dep/sddf/include \
+		-idirafter kernel/agentos-root-task/include \
+		tests/platform/test_virtio_host_transport.c services/block-driver/virtio_host_transport.c \
+		-o $(BUILD_TMP_DIR)/test_virtio_host_transport
+	$(BUILD_TMP_DIR)/test_virtio_host_transport
+
+test-host: test-x86-config-host
+test-host: test-x86-apic-host
+test-host: test-x86-smp-host
+.PHONY: test-x86-smp-host
+test-x86-smp-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-Iplatform/include tests/platform/test_x86_smp.c \
+		platform/guest-vmm/x86_smp.c platform/guest-vmm/x86_apic.c \
+		-o $(BUILD_TMP_DIR)/test_x86_smp
+	$(BUILD_TMP_DIR)/test_x86_smp
+test-host: test-x86-runner-host
+test-host: test-x86-runner-ownership-host
+test-host: test-blk-pci-media-host
+.PHONY: test-blk-pci-media-host
+test-blk-pci-media-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iplatform/include tests/platform/test_blk_pci_media.c -o $(BUILD_TMP_DIR)/test-blk-pci-media
+	$(BUILD_TMP_DIR)/test-blk-pci-media
+.PHONY: test-x86-runner-ownership-host
+test-x86-runner-ownership-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iplatform/include tests/platform/test_x86_runner_ownership.c -o $(BUILD_TMP_DIR)/test-x86-runner-ownership
+	$(BUILD_TMP_DIR)/test-x86-runner-ownership
+.PHONY: test-x86-runner-host
+test-x86-runner-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_runner.c \
+		platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner
+	$(BUILD_TMP_DIR)/test_x86_runner
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-DCONFIG_VTX -DCONFIG_X86_64_VTX_64BIT_GUESTS \
+		-Itests/platform/runner-stubs -Iplatform/include \
+		-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+		-idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_runner_client.c platform/guest-vmm/x86_runner_client.c \
+		platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner_client
+	$(BUILD_TMP_DIR)/test_x86_runner_client
+	@set -e; for mode in classic mcs; do \
+		flags=; if test "$$mode" = mcs; then flags=-DCONFIG_KERNEL_MCS; fi; \
+		$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+			-DCONFIG_VTX -DCONFIG_X86_64_VTX_64BIT_GUESTS $$flags \
+			-Itests/platform/runner-stubs -Iplatform/include \
+			-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+			-idirafter kernel/agentos-root-task/include \
+			tests/platform/test_x86_runner_pd.c platform/guest-vmm/x86_runner_pd.c \
+			platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner_$$mode; \
+		$(BUILD_TMP_DIR)/test_x86_runner_$$mode; \
+	done
+test-host: test-x86-string-host
+test-host: test-x86-rtc-host
+
+.PHONY: test-x86-rtc-host
+test-x86-rtc-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_rtc.c platform/guest-vmm/x86_rtc.c -o $(BUILD_TMP_DIR)/test_x86_rtc
+	$(BUILD_TMP_DIR)/test_x86_rtc
+
+.PHONY: test-x86-string-host
+test-x86-string-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_string.c platform/guest-vmm/x86_string.c platform/guest-vmm/x86_memory.c platform/guest-vmm/x86_config.c platform/guest-vmm/x86_rtc.c -o $(BUILD_TMP_DIR)/test_x86_string
+	$(BUILD_TMP_DIR)/test_x86_string
+
+.PHONY: test-x86-apic-host
+test-x86-apic-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_apic.c platform/guest-vmm/x86_apic.c platform/guest-vmm/x86_memory.c -o $(BUILD_TMP_DIR)/test_x86_apic
+	$(BUILD_TMP_DIR)/test_x86_apic
+
+.PHONY: test-x86-config-host
+test-x86-config-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_config.c platform/guest-vmm/x86_config.c platform/guest-vmm/x86_rtc.c -o $(BUILD_TMP_DIR)/test_x86_config
+	$(BUILD_TMP_DIR)/test_x86_config
+
+.PHONY: test-x86-cpu-host
+test-x86-cpu-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_cpu.c platform/guest-vmm/x86_cpu.c -o $(BUILD_TMP_DIR)/test_x86_cpu
+	$(BUILD_TMP_DIR)/test_x86_cpu
+test-host: test-x86-acpi-host
+test-host: test-serial-uart-host
+
+.PHONY: test-serial-uart-host
+test-serial-uart-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_serial_uart.c platform/serial-virt/uart.c platform/serial-virt/pump.c -o $(BUILD_TMP_DIR)/test_serial_uart
+	$(BUILD_TMP_DIR)/test_serial_uart
+test-host: test-x86-ioapic-host
+test-host: test-x86-acpi-loader-host
+test-host: test-x86-event-host
+test-host: test-virtio-mmio-core-host
+test-host: test-virtio-console-rx-host
+test-host: test-x86-virtio-host
+test-host: test-x86-console-host
+test-host: test-x86-block-host
+test-host: test-x86-net-host
+
+.PHONY: test-x86-net-host
+test-x86-net-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare \
+		-fsanitize=address,undefined -g -ffunction-sections \
+		-Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) \
+		-Itests/platform/block-stubs -Itests/platform/virtio-stubs -Ilibvmm/include \
+		-Ilibvmm/dep/sddf/include -Ilibvmm/dep/sddf/include/microkit \
+		-Iplatform/include -idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_net.c platform/net-virt/vmm_virtio_net.c \
+		platform/net-virt/net_virt_pump.c \
+		platform/guest-vmm/x86_virtio.c platform/guest-vmm/x86_ioapic.c \
+		libvmm/src/virtio/net.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
+		-o $(BUILD_TMP_DIR)/test_x86_net
+	$(BUILD_TMP_DIR)/test_x86_net
+	$(BUILD_TMP_DIR)/test_x86_net host-fixture
+
+.PHONY: test-x86-block-host
+test-x86-block-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare \
+		-fsanitize=address,undefined -g -ffunction-sections \
+		-Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) \
+		-Itests/platform/block-stubs -Itests/platform/virtio-stubs -Ilibvmm/include \
+		-Ilibvmm/dep/sddf/include -Iplatform/include -idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_block.c platform/blk-virt/vmm_virtio_blk.c \
+		platform/blk-virt/blk_virt_pump.c \
+		platform/guest-vmm/x86_virtio.c platform/guest-vmm/x86_ioapic.c \
+		libvmm/src/virtio/block.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
+		libvmm/dep/sddf/util/fsmalloc.c libvmm/dep/sddf/util/bitarray.c \
+		-o $(BUILD_TMP_DIR)/test_x86_block
+	$(BUILD_TMP_DIR)/test_x86_block
+
+.PHONY: test-x86-console-host
+test-x86-console-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare \
+		-fsanitize=address,undefined -g -ffunction-sections \
+		-Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) \
+		-Itests/platform/virtio-stubs -Ilibvmm/include -Ilibvmm/dep/sddf/include -Iplatform/include \
+		tests/platform/test_x86_console.c platform/serial-virt/vmm_virtio_console.c \
+		platform/guest-vmm/x86_virtio.c platform/guest-vmm/x86_ioapic.c \
+		libvmm/src/virtio/console.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
+		-o $(BUILD_TMP_DIR)/test_x86_console
+	$(BUILD_TMP_DIR)/test_x86_console
+
+.PHONY: test-x86-virtio-host
+test-x86-virtio-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	gcc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function \
+		-fsanitize=address,undefined -g -I tests/platform/virtio-stubs -I libvmm/include -I platform/include \
+		tests/platform/test_x86_virtio.c platform/guest-vmm/x86_virtio.c \
+		platform/guest-vmm/x86_ioapic.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
+		-o $(BUILD_TMP_DIR)/test_x86_virtio
+	$(BUILD_TMP_DIR)/test_x86_virtio
+
+.PHONY: test-virtio-console-rx-host
+test-virtio-console-rx-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-I libvmm/include tests/platform/test_virtio_console_rx_ring.c \
+		-o $(BUILD_TMP_DIR)/test_virtio_console_rx_ring
+	@$(BUILD_TMP_DIR)/test_virtio_console_rx_ring
+
+.PHONY: test-virtio-mmio-core-host
+test-virtio-mmio-core-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	gcc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function \
+		-fsanitize=address,undefined -g -I tests/platform/virtio-stubs -I libvmm/include \
+		tests/platform/test_virtio_mmio_core.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
+		-o $(BUILD_TMP_DIR)/test_virtio_mmio_core
+	@$(BUILD_TMP_DIR)/test_virtio_mmio_core
+
+# Compile the production virtio backends against real architecture-specific
+# seL4 headers. Host stubs cannot detect accidental ARM VCPU dependencies.
+# This is a build check, not a guest I/O qualification.
+.PHONY: test-virtio-backends-build
+test-virtio-backends-build: test-x86-vmenter-host
+	@set -eu; for arch in aarch64 x86_64; do \
+		case $$arch in aarch64) board=qemu_virt_aarch64 ;; x86_64) board=x86_64_generic ;; esac; \
+		out="$(BUILD_TMP_DIR)/virtio-backends-$$arch"; mkdir -p "$$out"; \
+		for backend in console net block; do \
+			clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
+				-I"$(SEL4_SDK)/board/$$board/release/include" \
+				-Ilibvmm/include -Ilibvmm/dep/sddf/include \
+				-Ilibvmm/dep/sddf/include/sddf/util/custom_libc \
+				-Ilibvmm/dep/sddf/include/microkit \
+				-Ikernel/agentos-root-task/include \
+				-c libvmm/src/virtio/$$backend.c -o "$$out/$$backend.o"; \
+		done; \
+		clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
+			-I"$(SEL4_SDK)/board/$$board/release/include" \
+			-Ilibvmm/include -Ilibvmm/dep/sddf/include \
+			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
+			-c platform/serial-virt/vmm_virtio_console.c -o "$$out/vmm_virtio_console.o"; \
+		clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
+			-I"$(SEL4_SDK)/board/$$board/release/include" \
+			-Ilibvmm/include -Ilibvmm/dep/sddf/include \
+			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
+			-Ikernel/agentos-root-task/include \
+			-c platform/blk-virt/vmm_virtio_blk.c -o "$$out/vmm_virtio_blk.o"; \
+		clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
+			-I"$(SEL4_SDK)/board/$$board/release/include" \
+			-Ilibvmm/include -Ilibvmm/dep/sddf/include \
+			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
+			-Ikernel/agentos-root-task/include \
+			-Ilibvmm/dep/sddf/include/microkit \
+			-c platform/net-virt/vmm_virtio_net.c -o "$$out/vmm_virtio_net.o"; \
+		if test "$$arch" = x86_64; then \
+			clang -target x86_64-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
+				-I"$(SEL4_SDK)/board/$$board/release/include" \
+				-Ilibvmm/include -Iplatform/include \
+				-c platform/guest-vmm/x86_virtio.c -o "$$out/x86_virtio.o"; \
+		fi; \
+		echo "PASS: production virtio console/net/block compile for $$arch"; \
+	done
+
+.PHONY: test-x86-vmenter-host
+test-x86-vmenter-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		-Itests/platform/virtio-stubs -Iplatform/include \
+		-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+		-idirafter kernel/agentos-root-task/include \
+		tests/platform/test_x86_vmenter.c platform/guest-vmm/x86_runner.c \
+		-o $(BUILD_TMP_DIR)/test_x86_vmenter
+	$(BUILD_TMP_DIR)/test_x86_vmenter
+
+.PHONY: test-x86-event-host
+test-x86-event-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_event.c platform/guest-vmm/x86_event.c platform/guest-vmm/x86_apic.c -o $(BUILD_TMP_DIR)/test_x86_event
+	$(BUILD_TMP_DIR)/test_x86_event
+
+.PHONY: test-x86-acpi-loader-host
+test-x86-acpi-loader-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_acpi_loader.c platform/guest-vmm/x86_acpi.c platform/guest-vmm/x86_config.c platform/guest-vmm/x86_rtc.c -o $(BUILD_TMP_DIR)/test_x86_acpi_loader
+	$(BUILD_TMP_DIR)/test_x86_acpi_loader
+
+.PHONY: test-x86-ioapic-host
+test-x86-ioapic-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_ioapic.c platform/guest-vmm/x86_ioapic.c platform/guest-vmm/x86_apic.c -o $(BUILD_TMP_DIR)/test_x86_ioapic
+	$(BUILD_TMP_DIR)/test_x86_ioapic
+
+.PHONY: test-x86-acpi-host
+test-x86-acpi-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_acpi.c platform/guest-vmm/x86_acpi.c -o $(BUILD_TMP_DIR)/test_x86_acpi
+	$(BUILD_TMP_DIR)/test_x86_acpi
+
+# Optional independent AML parser/interpreter qualification (ACPICA tools).
+IASL ?= iasl
+ACPIEXEC ?= acpiexec
+.PHONY: test-x86-acpi-aml
+test-x86-acpi-aml: test-x86-acpi-host test-x86-acpi-loader-host
+	$(BUILD_TMP_DIR)/test_x86_acpi_loader $(BUILD_TMP_DIR)/x86-console.aml
+	$(IASL) -p $(BUILD_TMP_DIR)/x86-console -d $(BUILD_TMP_DIR)/x86-console.aml
+	$(IASL) -p $(BUILD_TMP_DIR)/x86-console-roundtrip $(BUILD_TMP_DIR)/x86-console.dsl
+	$(BUILD_TMP_DIR)/test_x86_acpi $(BUILD_TMP_DIR)/x86-cpus.aml
+	$(IASL) -p $(BUILD_TMP_DIR)/x86-cpus -d $(BUILD_TMP_DIR)/x86-cpus.aml
+	$(IASL) -p $(BUILD_TMP_DIR)/x86-cpus-roundtrip $(BUILD_TMP_DIR)/x86-cpus.dsl
+	$(ACPIEXEC) -b 'execute \_SB.C000._UID; execute \_SB.C010._UID; execute \_SB.C01F._UID; execute \_SB.C01F._HID' $(BUILD_TMP_DIR)/x86-cpus.aml > $(BUILD_TMP_DIR)/x86-cpus-eval.log 2>&1
+	@rg -q '\[Integer\] = 0000000000000000' $(BUILD_TMP_DIR)/x86-cpus-eval.log
+	@rg -q '\[Integer\] = 0000000000000010' $(BUILD_TMP_DIR)/x86-cpus-eval.log
+	@rg -q '\[Integer\] = 000000000000001F' $(BUILD_TMP_DIR)/x86-cpus-eval.log
+	@rg -q '"ACPI0007"' $(BUILD_TMP_DIR)/x86-cpus-eval.log
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-agentctl-console-host test-ramfb-host test-display-host
+
+.PHONY: test-display-host
+.PHONY: test-display-init
+.PHONY: test-display
+test-display: test-display-host test-ramfb-host
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer --assert-display --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+test-display-init:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(MAKE) test-framebuffer DISPLAY_RAMFB=1 QEMU_TEST_TIMEOUT=$(QEMU_TEST_TIMEOUT) > $(BUILD_TMP_DIR)/display-init.log 2>&1 || { cat $(BUILD_TMP_DIR)/display-init.log; exit 1; }
+	rg -Fq '[display] private DMA and scanout banks ready' $(BUILD_TMP_DIR)/display-init.log
+	@echo 'Display driver initialized; native framebuffer clients and observer passed (scanout not tested)'
+
+test-display-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_display.c platform/display/service.c -o $(BUILD_TMP_DIR)/test_display
+	$(BUILD_TMP_DIR)/test_display
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_display_producer.c platform/display/producer.c platform/display/service.c -o $(BUILD_TMP_DIR)/test_display_producer
+	$(BUILD_TMP_DIR)/test_display_producer
+
+.PHONY: test-ramfb-host
+test-ramfb-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_ramfb.c platform/display/ramfb.c -o $(BUILD_TMP_DIR)/test_ramfb
+	$(BUILD_TMP_DIR)/test_ramfb
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_ramfb_mmio.c platform/display/ramfb_mmio.c -o $(BUILD_TMP_DIR)/test_ramfb_mmio
+	$(BUILD_TMP_DIR)/test_ramfb_mmio
+
+.PHONY: test-virtio-gpu-host
+# Override only for an explicit before/after CPU benchmark; qualification
+# always compiles the source in this checkout.
+GPU_2D_BENCH_SOURCE ?= libvmm/src/virtio/gpu_2d.c
+.PHONY: benchmark-virtio-gpu-host
+benchmark-virtio-gpu-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -O2 -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -DAGENTOS_GPU_BENCHMARK -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu.c libvmm/src/virtio/gpa.c $(GPU_2D_BENCH_SOURCE) libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/bench_virtio_gpu_2d
+	$(BUILD_TMP_DIR)/bench_virtio_gpu_2d
+
+test-virtio-gpu-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -iquote kernel/agentos-root-task/include tests/platform/test_gpu_adopt.c platform/gpu-virt/vmm_virtio_gpu.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_gpu_adopt
+	$(BUILD_TMP_DIR)/test_gpu_adopt
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu.c libvmm/src/virtio/gpa.c libvmm/src/virtio/gpu_2d.c libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_virtio_gpu_2d
+	$(BUILD_TMP_DIR)/test_virtio_gpu_2d
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I libvmm/include tests/platform/test_virtio_mmio.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c -o $(BUILD_TMP_DIR)/test_virtio_mmio
+	$(BUILD_TMP_DIR)/test_virtio_mmio
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare -ffunction-sections -fdata-sections -Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -I tests/platform/mmio-stubs -I libvmm/include -I libvmm/dep/sddf/include -I libvmm/dep/sddf/include/extern tests/platform/test_virtio_net_config.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c -o $(BUILD_TMP_DIR)/test_virtio_net_config
+	$(BUILD_TMP_DIR)/test_virtio_net_config
+test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-guest-block-drain-host
 
 .PHONY: test-framebuffer-host
+.PHONY: test-input-host
+test-input-host:
+	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -iquote kernel/agentos-root-task/include tests/platform/test_input_adopt.c platform/input-virt/vmm_virtio_input.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_input_adopt
+	$(BUILD_TMP_DIR)/test_input_adopt
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_input_rebind.c platform/input-virt/service.c platform/input-virt/rebind_service.c -o $(BUILD_TMP_DIR)/test_input_rebind
+	$(BUILD_TMP_DIR)/test_input_rebind
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_input_queue.c platform/input-virt/service.c -o $(ROOT_DIR)build/tmp/test_input_queue
+	$(ROOT_DIR)build/tmp/test_input_queue
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
+	$(BUILD_TMP_DIR)/test_virtio_input
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_input
+	$(BUILD_TMP_DIR)/test_agentctl_input
+ifeq ($(UNAME_S),Linux)
+	$(CC) -std=c11 -Wall -Wextra -Werror tests/platform/test_guest_input_probe.c -o $(BUILD_TMP_DIR)/test_guest_input_probe
+	$(BUILD_TMP_DIR)/test_guest_input_probe
+endif
+
+.PHONY: guest-input-probe
+guest-input-probe:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(GUEST_LINUX_CC) -static -O2 -std=c11 -Wall -Wextra -Werror tests/guest/input_probe.c -o $(BUILD_TMP_DIR)/guest-input-probe-aarch64
+
+.PHONY: guest-frame-pattern host-frame-pattern
+guest-frame-pattern:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(GUEST_LINUX_CC) -static -O2 -std=c11 -Wall -Wextra -Werror tests/guest/frame_pattern.c -o $(BUILD_TMP_DIR)/guest-frame-pattern-aarch64
+
+host-frame-pattern:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -O2 -std=c11 -Wall -Wextra -Werror tests/guest/frame_pattern.c -o $(BUILD_TMP_DIR)/host-frame-pattern
+
+.PHONY: test-agentctl-console-host
+test-agentctl-console-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_console
+	$(BUILD_TMP_DIR)/test_agentctl_console
+
+.PHONY: test-agentctl-frame-host
+test-agentctl-frame-host:
+	@mkdir -p $(ROOT_DIR)build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+	$(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+
 test-framebuffer-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_framebuffer_transaction.c platform/framebuffer/rebind.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_framebuffer_transaction
+	$(BUILD_TMP_DIR)/test_framebuffer_transaction
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_rebind.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_framebuffer_rebind
+	$(BUILD_TMP_DIR)/test_framebuffer_rebind
 	@mkdir -p $(ROOT_DIR)build/tmp
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_queue.c platform/framebuffer/service.c -o $(ROOT_DIR)build/tmp/test_framebuffer_queue
 	$(ROOT_DIR)build/tmp/test_framebuffer_queue
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_observer.c platform/framebuffer/service.c platform/framebuffer/observer.c -o $(ROOT_DIR)build/tmp/test_framebuffer_observer
+	$(ROOT_DIR)build/tmp/test_framebuffer_observer
 
 .PHONY: test-framebuffer
 test-framebuffer: test-framebuffer-host
@@ -710,7 +1455,7 @@ test-framebuffer: test-framebuffer-host
 .PHONY: test-framebuffer-isolation
 test-framebuffer-isolation:
 	@mkdir -p build/evidence/framebuffer-isolation
-	@set -e; for mode in 1 2 3 4 5 6 7 8; do \
+	@set -e; for mode in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do \
 	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer \
 	        --framebuffer-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
 	    cp build/qemu_virt_aarch64/agentos.img build/evidence/framebuffer-isolation/mode-$$mode.img; \
@@ -854,7 +1599,7 @@ test-guest-net:
 		echo "test-guest-net requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-net
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-net --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # Guest I/O proof: boot buildroot Linux under linux_vmm and require the
 # emulated virtio-blk (IPA 0x0A020000) to probe, reach DRIVER_OK, and pump
@@ -899,12 +1644,30 @@ test-block-isolation:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 7
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --timeout-secs $(QEMU_TEST_TIMEOUT) --block-isolation-probe 8
 
+.PHONY: test-guest-ram-recycle
+.PHONY: test-guest-image-recycle
+test-guest-image-recycle:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-guest-ram-recycle --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-ram-recycle:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --assert-guest-ram-recycle --ssh-port $(QEMU_TEST_SSH_PORT)
+
+.PHONY: test-guest-block-drain-host
+.PHONY: test-guest-block-drain
+test-guest-block-drain: test-guest-block-drain-host
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --assert-guest-block-drain --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-block-drain-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -g -Wall -include assert.h -I tests/platform/block-drain-stubs -I libvmm/include -I libvmm/dep/sddf/include tests/platform/test_virtio_blk_drain.c libvmm/src/virtio/block.c libvmm/src/virtio/gpa.c libvmm/dep/sddf/util/fsmalloc.c libvmm/dep/sddf/util/bitarray.c -o $(BUILD_TMP_DIR)/test_virtio_blk_drain
+	$(BUILD_TMP_DIR)/test_virtio_blk_drain
+
 test-guest-blk:
 	@if [ "$(BOARD)" != "qemu_virt_aarch64" ]; then \
 		echo "test-guest-blk requires BOARD=qemu_virt_aarch64 (got BOARD=$(BOARD))"; \
 		exit 1; \
 	fi
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os buildroot --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-blk --ssh-port $(QEMU_TEST_SSH_PORT)
 
 # Boot Ubuntu to its login prompt over agentOS's emulated virtio-console,
 # then inject input and require the guest to echo it back through sDDF queues.
@@ -916,6 +1679,23 @@ test-guest-console:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --ssh-port $(QEMU_TEST_SSH_PORT)
 
 .PHONY: test-console-backpressure
+.PHONY: test-guest-teardown
+.PHONY: test-guest-scheduling
+test-guest-scheduling:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-managed-guest --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-teardown:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-guest-teardown --ssh-port $(QEMU_TEST_SSH_PORT)
+
+.PHONY: test-guest-queue-recycle
+test-guest-queue-recycle:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-guest-teardown --assert-guest-queue-recycle --ssh-port $(QEMU_TEST_SSH_PORT)
+
+.PHONY: test-guest-paging-recycle
+test-guest-paging-recycle: test-guest-queue-recycle
+.PHONY: test-guest-execution-recycle
+test-guest-execution-recycle: test-guest-queue-recycle
+
 test-console-backpressure:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-emulated-console --assert-console-backpressure --ssh-port $(QEMU_TEST_SSH_PORT)
 
@@ -931,6 +1711,104 @@ test-ubuntu-virtio:
 # End-state proof: boot Ubuntu's real Casper initrd and ISO filesystem to a
 # serial login while requiring real I/O through every agentOS VirtIO class.
 .PHONY: test-debian-live
+.PHONY: test-guest-gic-failure
+test-guest-gic-failure:
+	@for mode in 1 2 3; do \
+		cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none \
+			--guest-gic-failure-probe $$mode --timeout-secs 120 || exit $$?; \
+	done
+
+.PHONY: test-debian-nocloud-ssh
+.PHONY: test-debian-nocloud-auto
+.PHONY: test-debian-nocloud-graphics
+.PHONY: test-debian-nocloud-graphics-teardown
+test-debian-nocloud-graphics-teardown: QEMU_TEST_TIMEOUT = 1800
+test-debian-nocloud-graphics-teardown: QEMU_TEST_SSH_PORT = 12223
+test-debian-nocloud-graphics-teardown:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
+		--seed-profile --assert-agentos-virtio --assert-guest-display --assert-guest-teardown --assert-guest-queue-recycle \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+test-debian-nocloud-graphics: QEMU_TEST_TIMEOUT = 1800
+test-debian-nocloud-graphics: QEMU_TEST_SSH_PORT = 12223
+test-debian-nocloud-graphics:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
+		--seed-profile --assert-agentos-virtio --assert-guest-display \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+# Retain the same pinned, seeded graphics guest for external binary-IPC clients.
+.PHONY: demo-debian-nocloud-graphics
+demo-debian-nocloud-graphics: QEMU_TEST_TIMEOUT = 1800
+demo-debian-nocloud-graphics: QEMU_TEST_SSH_PORT = 12223
+demo-debian-nocloud-graphics:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
+		--seed-profile --assert-agentos-virtio --assert-guest-display --keep-running \
+		$(if $(filter 1,$(QEMU_RETAIN_FAILED)),--retain-failed-guest,) \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+test-debian-nocloud-auto: QEMU_TEST_TIMEOUT = 1200
+test-debian-nocloud-auto: QEMU_TEST_SSH_PORT = 12222
+test-debian-nocloud-auto:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--seed-profile --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+.PHONY: test-debian-managed-recreation
+.PHONY: test-debian-managed-graphics-recreation
+test-debian-managed-graphics-recreation: QEMU_TEST_TIMEOUT = 1800
+test-debian-managed-graphics-recreation: QEMU_TEST_SSH_PORT = 12266
+test-debian-managed-graphics-recreation:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-nocloud-graphics-input \
+		--seed-profile --assert-seeded-recreation --assert-agentos-virtio \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+test-debian-managed-recreation: QEMU_TEST_TIMEOUT = 1800
+test-debian-managed-recreation: QEMU_TEST_SSH_PORT = 12264
+test-debian-managed-recreation:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--seed-profile --assert-seeded-recreation --assert-agentos-virtio \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+.PHONY: test-debian-nocloud-cold-boots
+test-debian-nocloud-cold-boots: QEMU_TEST_TIMEOUT = 1200
+test-debian-nocloud-cold-boots: QEMU_TEST_SSH_PORT = 12222
+test-debian-nocloud-cold-boots:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--seed-profile --assert-seeded-cold-boots --assert-agentos-virtio \
+		--ssh-port $(QEMU_TEST_SSH_PORT) --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+test-debian-nocloud-ssh:
+	@test -n "$(SEEDED_SSH_KEY)" -a -n "$(QEMU_TEST_SSH_PORT)" || { echo 'Set SEEDED_SSH_KEY and QEMU_TEST_SSH_PORT'; exit 1; }
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-arm64-nocloud \
+		--assert-agentos-virtio \
+		--seeded-ssh-key "$(SEEDED_SSH_KEY)" --ssh-port "$(QEMU_TEST_SSH_PORT)" \
+		$(if $(SEEDED_SSH_KNOWN_HOSTS),--seeded-ssh-known-hosts "$(SEEDED_SSH_KNOWN_HOSTS)",) \
+		$(if $(SEEDED_DIRECTORY),--seeded-directory "$(SEEDED_DIRECTORY)",) \
+		--timeout-secs $(QEMU_TEST_TIMEOUT)
+.PHONY: test-guest-gpu
+.PHONY: test-guest-input
+.PHONY: test-guest-graphics-input
+.PHONY: test-guest-display
+.PHONY: demo-guest-display
+# Spark input qualification takes about ten minutes through Debian boot and
+# SSH provisioning. Preserve explicit environment/command-line timeout choices.
+ifeq ($(origin QEMU_TEST_TIMEOUT),file)
+test-guest-input test-guest-graphics-input demo-guest-display: QEMU_TEST_TIMEOUT = 1800
+endif
+test-guest-display:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-guest-display --ssh-port $(QEMU_TEST_SSH_PORT)
+
+demo-guest-display:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --assert-guest-display --ssh-port $(QEMU_TEST_SSH_PORT) --keep-running
+
+test-guest-graphics-input:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-graphics-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-input:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-input --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
+
+test-guest-gpu:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian-gpu --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_GPU_SSH_PORT)
+
 test-debian-live:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os debian --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-live --assert-agentos-virtio --ssh-port $(QEMU_TEST_SSH_PORT)
 
@@ -1083,7 +1961,9 @@ test-integration:
 	    status=1; \
 	fi; \
 	if gcc -DAGENTOS_TEST_HOST -I platform/include -I . \
+	        -idirafter kernel/agentos-root-task/include \
 	        tests/platform/test_net_host_fanout.c \
+	        services/block-driver/virtio_host_transport.c \
 	        -o $(BUILD_TMP_DIR)/test_net_host_fanout 2>&1 \
 	    && $(BUILD_TMP_DIR)/test_net_host_fanout; then \
 	    echo "PASS: tests/platform/test_net_host_fanout.c"; \
@@ -1160,6 +2040,14 @@ test-integration:
 	        tests/platform/test_guest_vmm_notifications.c platform/guest-vmm/loop.c \
 	        -o $(BUILD_TMP_DIR)/test_guest_vmm_notifications \
 	    && $(BUILD_TMP_DIR)/test_guest_vmm_notifications; then :; \
+	else status=1; fi; \
+	if gcc -std=gnu11 -Wall -Wextra -Werror \
+	        -DAGENTOS_GUEST_GRAPHICS -DAGENTOS_GUEST_INPUT \
+	        -I tests/platform/teardown-stubs -I platform/include \
+	        -iquote kernel/agentos-root-task/include \
+	        tests/platform/test_guest_teardown.c platform/guest-vmm/teardown.c \
+	        -o $(BUILD_TMP_DIR)/test_guest_teardown \
+	    && $(BUILD_TMP_DIR)/test_guest_teardown; then :; \
 	else status=1; fi; \
 	if gcc -std=c11 -Wall -Wextra -Werror -I libvmm/include \
 	        tests/platform/test_virtio_console_tx.c -o $(BUILD_TMP_DIR)/test_virtio_console_tx \
@@ -1262,6 +2150,14 @@ e2e-contract:
 
 e2e-dual-os:
 	@cargo xtask qemu-test --board $(BOARD) --guest-os both --timeout-secs $(DUAL_OS_TEST_TIMEOUT)
+
+.PHONY: test-dual-guest-recreation
+test-dual-guest-recreation:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os both --scenario recreation --assert-scenario-recreation --timeout-secs $(DUAL_OS_TEST_TIMEOUT)
+
+.PHONY: test-debian-peer-recreation
+test-debian-peer-recreation:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os both --scenario debian-recreation --assert-scenario-recreation --timeout-secs $(DUAL_OS_TEST_TIMEOUT)
 
 # Run the dual authenticated-SSH gate, retain both guests, and print commands
 # for manual sessions. Press Enter in this terminal to stop QEMU cleanly.
@@ -1405,7 +2301,7 @@ help:
 	@echo "  make run GUEST_OS=buildroot"
 	@echo "                        Boot linux_vmm hosting buildroot Linux to a '#' prompt"
 	@echo "                        (no outer ISO; guest is packaged inside guest_vmm_primary.elf)"
-	@echo "  make run-fast         Same as run, plus TCG perf knobs (cpu max + multi-thread)"
+	@echo "  make run-fast         Same as run, plus multi-threaded TCG"
 	@echo "                        No-op on Linux/KVM hosts where HW accel is already on"
 	@echo "                        Recommended dev loop on Apple Silicon:"
 	@echo "                        make run-fast GUEST_OS=buildroot"

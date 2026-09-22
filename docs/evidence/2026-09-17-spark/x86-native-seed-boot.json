@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "revision": "4a601f5",
+  "host": "madmax",
+  "attempt": 21,
+  "status": "login-timeout",
+  "provisioning": "make seed-guest-root succeeded on Intel using the pinned Debian source root and disk; complete original region comparison and seeded replacement readback passed",
+  "instance_id": "agentos-native-seed-21",
+  "disk": "/tmp/agentos-debian-amd64/boot-21.raw",
+  "gate": "make gate-x86_64-linux-login X86_BOOT_PROFILE=debian-amd64.toml QEMU_TEST_TIMEOUT=300",
+  "observation": "Debian reached systemd and cloud-init init-local at guest uptime 255 seconds; no login before timeout. This does not qualify native-generated media login or SSH.",
+  "gate_log": "/tmp/agentos-debian-amd64/boot-21.gate.log",
+  "gate_log_sha256": "9c082e24b28bcb80d2d630b4db7102280e223ea5eb9c83048173a459ac70809b",
+  "console_log": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-96bYTA.console.log",
+  "console_sha256": "5637ce66ecad128d84abd7c744aaba450e5cf6b6b4c83e49a3c5145f216a512d",
+  "lifecycle": "Gate exited 2; QEMU no longer running",
+  "next_experiment": "Fresh independently seeded disk and explicit 600-second diagnostic timeout; original failed disk and evidence retained",
+  "followup": {
+    "attempt": 22,
+    "revision": "4a601f5",
+    "status": "login-passed",
+    "instance_id": "agentos-native-seed-22",
+    "disk": "/tmp/agentos-debian-amd64/boot-22.raw",
+    "timeout_seconds": 600,
+    "gate_log_sha256": "7b1a689e4ae124cad569dda6dfe29707551bd1497d337b0c2b09e46b6b165f46",
+    "console_log": "/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-gpvuXT.console.log",
+    "console_sha256": "3f841ef5491162b7fbf578a3eaf2bc6a35529ca65c31b86f1aa7a6e5e22d414e",
+    "observation": "Native-generated fresh disk passed canonical virtio-console login; SSH service started and cloud-init final stage ran. Authentication was not tested by this gate.",
+    "lifecycle": "Gate exited 0; QEMU no longer running"
+  }
+}

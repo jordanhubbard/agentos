@@ -1,0 +1,123 @@
+schema = 2
+id = "debian-nocloud-aarch64"
+status = "runtime"
+extends = "linux-base.toml"
+aliases = ["debian-arm64-nocloud"]
+
+[boot]
+command_line = "console=hvc0 root=UUID=eeb673b7-002d-483a-ba22-a4b6cad94540 rw rootwait net.ifnames=0 biosdevname=0 panic=0 systemd.default_device_timeout_sec=600"
+
+[artifacts.kernel]
+source = "debian-cloud:13/20260831-2587:/boot/vmlinuz-6.12.107+deb13-arm64"
+cache = "build/guest-images/debian-arm64-nocloud/Image"
+sha256 = "9c37ace54ef7e1919411fd912e9f34d6982ddd7f4c8ef3c8aee56f4c4d70db67"
+
+[artifacts.initrd]
+source = "generated:debian-cloud-initrd+native-udev-hooks"
+cache = "build/guest-images/debian-arm64-nocloud/initrd.img"
+sha256 = "8fda6a84a83982b14da5d7215a69dcd4d36ebc9614c8d5e4af239f459aa79937"
+
+[artifacts.dtb]
+source = "generated:linux.dts+linux-virtio-overlay.dts.in"
+cache = "build/qemu_virt_aarch64/debian-nocloud-vm.dtb"
+sha256 = "6813337fe174ba659170286dcbc345fda396277e2d8f40eaf401d7fee1184584"
+
+[placements.default]
+ram_size = 0x40000000
+dtb_load_address = 0x7f000000
+
+[host.build]
+adapter = "linux-merge"
+base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
+template = "kernel/agentos-root-task/linux-virtio-overlay.dts.in"
+acquire_dir = "build/guest-images/debian-arm64-nocloud"
+
+[[host.acquire]]
+action = "stage-url"
+args = { cache_name = "debian-13-generic-arm64-20260831-2587.qcow2", output = "disk.qcow2", url = "https://cdimage.debian.org/cdimage/cloud/trixie/20260831-2587/debian-13-generic-arm64-20260831-2587.qcow2", sha512 = "27287048285224e662722b54c77849c9bd1a2fd60ccea5f2e75c644fbd638fad7e32a97e8e3d628c8bbfdb9cf757951c8300f3c21758647c8906359d9c892b42" }
+
+[[host.acquire]]
+action = "convert-qcow2-raw"
+args = { source = "disk.qcow2", output = "disk.raw" }
+
+[[host.acquire]]
+action = "extract-gpt-partition"
+args = { source = "disk.raw", output = "root.ext4", index = "1" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "root.ext4", output = "vmlinuz", path = "/boot/vmlinuz-6.12.107+deb13-arm64" }
+
+[[host.acquire]]
+action = "normalize-arm64-linux-image"
+args = { source = "vmlinuz", output = "Image" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "root.ext4", output = "initrd.base", path = "/boot/initrd.img-6.12.107+deb13-arm64" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "root.ext4", output = "udev-top.stock", path = "/usr/share/initramfs-tools/scripts/init-top/udev" }
+
+[[host.acquire]]
+action = "extract-ext4-file"
+args = { source = "root.ext4", output = "udev-bottom.stock", path = "/usr/share/initramfs-tools/scripts/init-bottom/udev" }
+
+[[host.acquire]]
+action = "build-static-linux-elf"
+args = { source = "guest-profiles/helpers/debian_init_top_aarch64.c", output = "udev-top", architecture = "aarch64" }
+
+[[host.acquire]]
+action = "build-static-linux-elf"
+args = { source = "guest-profiles/helpers/debian_init_bottom_aarch64.c", output = "udev-bottom", architecture = "aarch64" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.base", output = "initrd.modules", path = "conf/modules", mode = "0644", content = "virtio_mmio\nvirtio_blk\nvirtio_net\n" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.modules", output = "initrd.top-stock", path = "scripts/init-top/udev.stock", mode = "0755", content_file = "udev-top.stock", content_sha256 = "5893d2c4c9426b2d6166586cb5bd1852be8fa22ba2984b9e1b2ca15f8b9cca5f" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.top-stock", output = "initrd.top", path = "scripts/init-top/udev", mode = "0755", content_file = "udev-top", content_sha256 = "cbb405b99d1c02e9714a93a43a28a6b84d3c1a8b74f5af4ed162ef3bbafada60" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.top", output = "initrd.bottom-stock", path = "scripts/init-bottom/udev.stock", mode = "0755", content_file = "udev-bottom.stock", content_sha256 = "5a7595d79328000420c9f641362af1ef15aa5b1bf6ce0114588b49e13f7949a6" }
+
+[[host.acquire]]
+action = "append-initramfs-file"
+args = { source = "initrd.bottom-stock", output = "initrd.img", path = "scripts/init-bottom/udev", mode = "0755", content_file = "udev-bottom", content_sha256 = "e0723e164d499e5f6aa66123d2fb081e5eda95e7f48e54b424b9467400d6bcda" }
+
+[host.qemu]
+memory = "3G"
+
+[host.seed]
+adapter = "nocloud-debian-v1"
+root_ext4 = "build/guest-images/debian-arm64-nocloud/root.ext4"
+disk_raw = "build/guest-images/debian-arm64-nocloud/disk.raw"
+partition_offset = 134217728
+
+[[host.qemu.media]]
+path = "build/guest-images/debian-arm64-nocloud/seeded.raw"
+drive_id = "primary_media"
+bus = 8
+writable = true
+
+[host.qemu.ssh]
+account = "debian"
+host_port = 12222
+guest_address = "10.0.2.15"
+
+[host.console]
+adapter = "expect"
+success = ["login:"]
+require = ["Debian GNU/Linux 13"]
+reject = ["Kernel panic", "Initramfs unpacking failed", "emergency mode", "Emergency Shell", "Press Enter for maintenance", "System halted", "Failed to start up manager.", "Freezing execution."]
+
+[[host.test]]
+action = "wait-console"
+args = { marker = "login:" }

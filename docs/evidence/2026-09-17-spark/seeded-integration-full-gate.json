@@ -1,0 +1,16 @@
+{
+  "revision": "65940ec",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "command": "make gate",
+  "exit_code": 0,
+  "status": "passed",
+  "worktree": "/tmp/agentos-v04-seeded-gate",
+  "log": "/tmp/agentos-seeded-integration-full-gate.log",
+  "log_sha256": "5fa416d34f6f4b59646eb15bf7c2121c23c5fedc1b403af3d91dbb06abd8f97d",
+  "scope": "Host tests, both architecture backend builds, ARM and reduced x86 root boot, ARM canonical guest I/O",
+  "limits": [
+    "Seeded graphics qualification is a separate running gate.",
+    "This does not qualify the subsequent network quiescence changes, Intel VMX execution, guest recreation or full resource reclamation."
+  ]
+}

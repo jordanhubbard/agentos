@@ -1,0 +1,36 @@
+{
+  "schema": "agentos.intel-single-cpu-regression.v1",
+  "date_utc": "2026-09-19",
+  "revision": "de1458c244258202aaaa63cd890b1c526202b7e5",
+  "host": "madmax, Intel i9-14900KF, nested VMX and KVM",
+  "target": "make gate-x86_64-cc-linux",
+  "profile": "debian-amd64.toml",
+  "timeout_seconds_per_boot": 600,
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "kernel_sha256": "0f5e9cf9ed7672fb745371b5f2aa0b20df1a49f24e707b88161c9ee4aefc2f9d",
+  "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "root_task_sha256": "3d720777ed53d0bf29791e22959e8237bc1e1d1cfb871f3be87701f9050fb8bc",
+  "initial_disk_sha256": "fdcdd0dc1a4384cc01d3bfce4a7dd232de4001d01380e06b58b728f24c1daaf3",
+  "host_key_fingerprint": "SHA256:untR35+L8Sv+bCtNSxWc6F+CVEz15HXTNOdI165BsC8",
+  "exit_code": 0,
+  "generations": [
+    {
+      "handle": 1,
+      "result": "Pinned public-key SSH, x86_64 architecture, sync, exact console input, normal destruction and stale-handle rejection passed",
+      "console_sha256": "2c24f4ab1d2b0054412608f60fde1c6ca4c6145af47e41a8881f9760bdee2edb"
+    },
+    {
+      "handle": 2,
+      "result": "Recreation with distinct handle, pinned public-key SSH, x86_64 architecture, sync, exact console input, normal destruction and stale-handle rejection passed",
+      "console_sha256": "bb7a0a1c632bb1a6902b005abc2f82b1ca288b3dd222672f14cc1d6efc90b0e9"
+    }
+  ],
+  "log_sha256": "97c2f81978341d55addc5679b4aff94401409f50e3f4296f4fa93ac79dc2932e",
+  "artifact": "/home/jkh/.local/share/agentos-evidence/2026-09-19-cr2-candidate/intel-managed-1cpu-pass.tar.gz",
+  "artifact_sha256": "c74d0bae25d1c2770744d131851a815db862fefe1db0509e340078de13e02c46",
+  "limitations": [
+    "Profile selects one vCPU; this run does not execute the two-CPU workload",
+    "No orderly guest reboot, storage durability or concurrent writable-media acceptance",
+    "Default SDK adoption, canonical integration, required review/CI and release acceptance remain separate"
+  ]
+}

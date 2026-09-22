@@ -73,6 +73,7 @@ static inline seL4_CPtr vmm_tcb_cap(size_t vcpu_id)
 
 /* ── VCPU register operations ────────────────────────────────────────────── */
 
+#if defined(CONFIG_ARCH_ARM)
 static inline seL4_Word vmm_vcpu_arm_read_reg(size_t vcpu_id, seL4_Word reg)
 {
     seL4_ARM_VCPU_ReadRegs_t ret = seL4_ARM_VCPU_ReadRegs(vmm_vcpu_cap(vcpu_id), reg);
@@ -105,6 +106,7 @@ static inline void vmm_vcpu_arm_ack_vppi(size_t vcpu_id, seL4_Word irq)
     assert(err == seL4_NoError);
     (void)err;
 }
+#endif /* CONFIG_ARCH_ARM */
 
 /* ── VCPU scheduling operations ──────────────────────────────────────────── */
 
@@ -119,8 +121,10 @@ static inline void vmm_vcpu_stop(size_t vcpu_id)
  * vmm_vcpu_restart — set the vCPU program counter to entry_point and resume.
  *
  * Reads the full register set, overwrites PC, then writes back with resume=1.
- * Used by PSCI CPU_ON to start secondary vCPUs.
+ * Used by PSCI CPU_ON to start secondary vCPUs. Intel guest execution uses
+ * VMEnter and VCPU state, not the host thread's instruction pointer.
  */
+#if defined(CONFIG_ARCH_ARM)
 static inline void vmm_vcpu_restart(size_t vcpu_id, seL4_Word entry_point)
 {
     seL4_UserContext regs;
@@ -133,6 +137,7 @@ static inline void vmm_vcpu_restart(size_t vcpu_id, seL4_Word entry_point)
     assert(err == seL4_NoError);
     (void)err;
 }
+#endif /* CONFIG_ARCH_ARM */
 
 /* ── IRQ and notification operations ─────────────────────────────────────── */
 

@@ -1,0 +1,27 @@
+{
+  "qualification": "x86 firmware virtio transport binding and Linux boot regression",
+  "runtime_revision": "5b8323d4e041e61d4e0eef829e06a71918c981c4",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "spark": {
+    "gate": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0",
+    "log_sha256": "5852a50d77bfa8e2f7dd4cbb5b3845feab77977c9f085cbb59eeb416f042eb1c",
+    "note": "Gate run included the firmware link target before it was separated to preserve SDK 2.1 gate support. No runtime source changed afterward.",
+    "link_command": "make test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "link_result": "PASS exit 0 on final source",
+    "link_log_sha256": "ae319158aaa7b768eff164c195bbe72eb76c52d994500675b82e126836fe9ce9"
+  },
+  "intel": {
+    "host": "madmax",
+    "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 X86_BOOT_KERNEL=/tmp/agentos-linux-7.0.0-30.efi X86_BOOT_KERNEL_SHA256=0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785 X86_BOOT_INITRD=/tmp/agentos-v04-intel-discovery/build/x86-userspace/initrd.bin X86_BOOT_INITRD_SHA256=e066792747bf8baf4fe1516a2fbf6603726e87f4962bbdb444c10ae708a41232",
+    "result": "PASS exit 0; x86 Linux ring3 initramfs syscall proof verified",
+    "log_sha256": "39dbec841192f06c0887341d45f479d876ea278a91836de573ec6665d5f70239"
+  },
+  "retained_directory": "build/evidence/x86-virtio-firmware-5b8323d",
+  "limitations": [
+    "Adapter initialization and Linux userspace regression are target-qualified; no virtio device is registered by this firmware yet.",
+    "Registered-device MMIO dispatch has component coverage, not Intel guest traffic coverage.",
+    "Canonical device services, device discovery, notification handling and lifecycle teardown remain incomplete.",
+    "Firmware link qualification requires SDK 2.3 VMCS controls; SDK 2.1 is explicitly rejected by the existing firmware compile guard."
+  ]
+}

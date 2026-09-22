@@ -1,0 +1,21 @@
+{
+  "status": "passed Intel native userspace and terminal reclamation gate",
+  "source_revision": "030915a37e351546bdc81ecfee512c56d5e5d958",
+  "host": "madmax Intel Linux with nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "command": "make gate-x86_64-teardown QEMU_TEST_TIMEOUT=300 with pinned firmware, Linux EFI kernel and minimal initramfs; exact command archived in run.sh",
+  "make_exit": 0,
+  "qemu_stem": "agentos-qemu-OcdP82",
+  "proof": [
+    "Target reported Linux ring3 initramfs syscall execution, canonical host network attachment, host and guest block reads, and guest network packet roundtrip.",
+    "Console request/reply passed through COM2 and serial_virt queues.",
+    "Target reported terminal teardown and zeroed pool reuse, and lifecycle client suspend/resume/destroy verification.",
+    "The terminal proof exercises every configured RAM and ROM pool and the applicable device queue pools twice with retype, zero checks, writes and revoke; it also reconstructs execution objects. See terminal_teardown_proof in platform/guest-vmm/x86_firmware.c at the recorded revision.",
+    "Detached launcher recorded exit zero; launcher3141167 and QEMU3144402 were absent after completion."
+  ],
+  "root_task_sha256": "e5b78e918fd935332fccbcf90f7206879bdca187595938ba563c2b3171dfbe2e",
+  "log_sha256": "042cecd4c2ed94e4bdc505ad72a152f77b6136b47b8db479758a8396084fff58",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-teardown-030915a/receipts.tar.gz",
+  "archive_sha256": "42149cdfc33a7f7d3dae5bb45dfcc056342a95932fdbf279536282882ac627f1",
+  "limits": "Configured minimal firmware/Linux proof, not all resource sizes or arbitrary admission failures. Retained empty management pools are intentional authority for reconstruction. Does not establish x86 graphics/input reclamation, final integrated release qualification, or v0.4 completion. No separate QEMU stderr artifact was emitted; the gate log and serial log are retained."
+}

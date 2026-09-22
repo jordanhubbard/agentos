@@ -1,0 +1,49 @@
+{
+  "schema": "agentos.integration_observation.v1",
+  "agentos_revision": "e73c0819a4db710ffd0e49e9c482a9803cb85d28",
+  "source_tree_clean": true,
+  "intel": {
+    "host": "madmax, Intel Linux with nested KVM, accessed through puck",
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 X86_ROOT_DISK=/tmp/agentos-debian-amd64/boot-24.raw X86_SSH_KEY=/tmp/agentos-debian-amd64/ssh-seed-19/identity X86_SSH_KNOWN_HOSTS=/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-LxAV1n.known_hosts X86_SSH_PORT=12224 QEMU_TEST_TIMEOUT=600 X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "exit_code": 0,
+    "status": "passed",
+    "assertion": "Public-key SSH verified with pinned Ed25519 host key; x86_64 and sync succeeded",
+    "log": "/tmp/agentos-v04-combined-intel-ssh.log",
+    "log_sha256": "bd0842feb51893e131a898e19d121b9f4ba8a80bd7886e009afa6f3d44ab8d56",
+    "known_hosts_sha256": "7dfd8ba6397a8a6c3f5e3ce7752dd45773358197ce117aa34272cd28420e6f39",
+    "console_sha256": "1b6ed35de7b0607a071a2cda842c732f4418d3dfb16dd1c28a728a7ee3c79fd7"
+  },
+  "native_gui": {
+    "host": "Spark ARM64 Linux, X11 display :1",
+    "gui_revision": "bb70be5b5a937c982d247e8d48f14b3fb8ce35fe",
+    "gui_source_tree_clean": true,
+    "binary_sha256": "c0a590cf03bbb1ae9a51cdc89edb994e2069364f6638d8572663145f1867f593",
+    "os_command": "make demo-guest-display QEMU_TEST_SSH_PORT=12223",
+    "gui_command": "make run CC_PD_SOCK=/tmp/agentos-v04-integration/build/tmp/agentos-qemu-nSwGhW.cc_pd.sock",
+    "os_exit_code": 0,
+    "gui_exit_code": 0,
+    "transport": "native Tauri application through the CC binary Unix socket",
+    "observations": [
+      "Autoconnect listed running Linux guest handle 0, aarch64.",
+      "Capture display rendered the Debian GNU/Linux 13 login screen.",
+      "X11-injected physical key events for agentosguiprobe followed by zzz appeared as agentosguiprobezzz in a subsequent guest frame; no login was submitted.",
+      "The settled GUI reported 31 acknowledged input batches, 1024x768 frame 1848, 3072 KiB transferred in 44.7 seconds, with focus outside the guest and no displayed input error.",
+      "The earlier frame contained a prefix of the input; the subsequent frame contained the complete string.",
+      "GUI disconnected and exited before Enter released the retained guest harness, which exited successfully."
+    ],
+    "screenshot": "/tmp/agentos-v04-native-gui-input-settled.png",
+    "screenshot_sha256": "a54f665fad3db1f3bcd2cf38b5bf8bf155ff0623d54db9fe358afb9be2cb8074",
+    "os_log": "/tmp/agentos-v04-native-gui-handoff.log",
+    "os_log_sha256": "e6c67721ab391ba7a6bc0b3b25d03cf9b51ee3d9ff4219785d29201e6df718d7",
+    "gui_log": "/tmp/agentos-v04-native-gui.log",
+    "gui_log_sha256": "0c25fa59945286380c70361496a434c2a4de8818866d2c3f5ca3e550378448ba"
+  },
+  "limits": [
+    "Native GUI observations were inspected manually from the application window, not asserted by an automated pixel test.",
+    "The pre-handoff OS gate separately asserted all 786432 QMP scanout pixels and exact Linux evdev keyboard/pointer packets.",
+    "The GUI capture is functional evidence, not acceptable interactive latency; the guest continued running during this 44.7-second transfer.",
+    "The GUI graphics guest uses console provisioning, not the NoCloud baseline.",
+    "This does not qualify native GUI pointer capture, physical input hardware, peer input isolation, concurrent writable disks, guest recreation, Intel graphics or complete resource reclamation.",
+    "Release integration and required GitHub checks remain outstanding."
+  ]
+}

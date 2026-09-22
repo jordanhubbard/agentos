@@ -12,7 +12,7 @@ ssh_host_port = 12223
 ssh_guest_address = "10.0.2.16"
 
 [[guests]]
-profile = "ubuntu-live.toml"
+profile = "debian-scenario.toml"
 ram_mb = 1024
 ssh_host_port = 12222
 ssh_guest_address = "10.0.2.15"

@@ -45,6 +45,22 @@ int aos_fb_client_init(aos_fb_client_t *c, aos_fb_region_t *r,
     return 0;
 }
 
+int aos_fb_client_rebind(aos_fb_client_t *c, aos_fb_region_t *r,
+                         uint8_t *arena, size_t bytes, uint32_t generation)
+{
+    if (!c || c->region || !c->retired || c->generation==UINT32_MAX ||
+        !generation || generation!=c->generation+1u || !r || !arena ||
+        bytes<AOS_FB_ARENA_BYTES || r->req_head || r->req_tail ||
+        r->resp_head || r->resp_tail || r->detach.version ||
+        r->detach.request || r->detach.ack) return -1;
+    aos_fb_client_t fresh;
+    if (aos_fb_client_init(&fresh,r,arena,bytes)!=0) return -1;
+    fresh.next_handle=c->next_handle;
+    fresh.generation=generation;
+    *c=fresh;
+    return 0;
+}
+
 static aos_fb_surface_t *lookup(aos_fb_client_t *c, uint64_t handle)
 {
     if (handle == 0) return NULL;
@@ -53,11 +69,17 @@ static aos_fb_surface_t *lookup(aos_fb_client_t *c, uint64_t handle)
     return NULL;
 }
 
-static int rectangle_valid(const aos_fb_surface_t *s, const aos_fb_request_t *q)
+static int geometry_valid(const aos_fb_surface_t *s, const aos_fb_request_t *q)
 {
     if (!q->width || !q->height || q->x > s->width || q->y > s->height ||
         q->width > s->width - q->x || q->height > s->height - q->y)
         return 0;
+    return 1;
+}
+
+static int rectangle_valid(const aos_fb_surface_t *s, const aos_fb_request_t *q)
+{
+    if (!geometry_valid(s, q)) return 0;
     /* Dimensions are now bounded by the privately retained surface size. */
     uint32_t bytes = q->width * q->height * AOS_FB_PIXEL_BYTES;
     return q->data_offset <= AOS_FB_DATA_BYTES &&
@@ -70,11 +92,16 @@ static aos_fb_response_t execute(aos_fb_client_t *c, const aos_fb_request_t *q)
                             .handle = q->handle };
     if (q->version != AOS_FB_VERSION) { p.status = AOS_FB_BAD_VERSION; return p; }
     if (q->reserved) { p.status = AOS_FB_BAD_OPERATION; return p; }
-    if (q->operation < AOS_FB_CREATE || q->operation > AOS_FB_DESTROY) {
+    if (q->operation < AOS_FB_CREATE || q->operation > AOS_FB_SELECT) {
         p.status = AOS_FB_BAD_OPERATION;
         return p;
     }
     aos_fb_surface_t *s = NULL;
+    if (q->operation == AOS_FB_SELECT && q->handle == 0) {
+        c->selected_handle = 0;
+        c->selected_x = c->selected_y = c->selected_width = c->selected_height = 0;
+        return p;
+    }
     if (q->operation == AOS_FB_CREATE) {
         if (!q->width || !q->height || q->width > AOS_FB_MAX_WIDTH ||
             q->height > AOS_FB_MAX_HEIGHT) { p.status = AOS_FB_BAD_BOUNDS; return p; }
@@ -91,7 +118,12 @@ static aos_fb_response_t execute(aos_fb_client_t *c, const aos_fb_request_t *q)
     } else {
         s = lookup(c, q->handle);
         if (!s) { p.status = AOS_FB_BAD_HANDLE; return p; }
-        if (q->operation == AOS_FB_WRITE || q->operation == AOS_FB_READ) {
+        if (q->operation == AOS_FB_SELECT) {
+            if (!geometry_valid(s, q)) { p.status = AOS_FB_BAD_BOUNDS; return p; }
+            c->selected_handle = s->handle;
+            c->selected_x = q->x; c->selected_y = q->y;
+            c->selected_width = q->width; c->selected_height = q->height;
+        } else if (q->operation == AOS_FB_WRITE || q->operation == AOS_FB_READ) {
             if (!rectangle_valid(s, q)) { p.status = AOS_FB_BAD_BOUNDS; return p; }
             size_t row_bytes = (size_t)q->width * AOS_FB_PIXEL_BYTES;
             for (uint32_t row = 0; row < q->height; ++row) {
@@ -113,7 +145,10 @@ static aos_fb_response_t execute(aos_fb_client_t *c, const aos_fb_request_t *q)
     p.sequence = s->sequence;
     p.width = s->width;
     p.height = s->height;
-    if (q->operation == AOS_FB_DESTROY) s->handle = 0;
+    if (q->operation == AOS_FB_DESTROY) {
+        if (c->selected_handle == s->handle) c->selected_handle = 0;
+        s->handle = 0;
+    }
     return p;
 }
 
@@ -121,6 +156,20 @@ unsigned aos_fb_pump(aos_fb_client_t *c)
 {
     if (!c || !c->region) return 0;
     aos_fb_region_t *r = c->region;
+    if (load(&r->detach.request) == 1u &&
+        load(&r->detach.version) == AOS_FB_DETACH_VERSION) {
+        /* Single-threaded with observer snapshots and display forwarding:
+         * neither can hold a surface pointer across this service iteration.
+         * Existing observer snapshots are separate service-owned copies. */
+        uint64_t next_handle=c->next_handle;
+        uint32_t generation=c->generation;
+        memset(c, 0, sizeof(*c));
+        c->next_handle=next_handle;
+        c->generation=generation;
+        c->retired=1u;
+        publish(&r->detach.ack, 1u);
+        return 1;
+    }
     unsigned completed = 0;
     while (completed < AOS_FB_QUEUE_CAPACITY) {
         uint32_t head = load(&r->req_head), tail = load(&r->req_tail);

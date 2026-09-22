@@ -1,0 +1,140 @@
+{
+  "schema": "agentos.cc_refill_cadence.v1",
+  "runtime": "3999e6d1556bb900869fd8018926dc36973ae34e",
+  "baseline_runtime": "1aee4b8a0f483f7133e7954ebb9244990781940f",
+  "gui_runtime": "bdc2520c8a422aba8253b8cc38691d625c13f843",
+  "host": "sparky Linux aarch64",
+  "candidate_image_sha256": "10082aee052f87eae5924ccdc910aa8054a0623b42a647a1c1a424b161f18828",
+  "cc_budget_us": 100,
+  "cc_period_us": 1000,
+  "checks": {
+    "gate": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12273 passed",
+    "guest": "make demo-guest-display SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12273 QEMU_TEST_TIMEOUT=1800 qualified; all786432 pixels match; guest retained",
+    "pixel_checked_capture_seconds": 3
+  },
+  "benchmark_order": [
+    "candidate1",
+    "baseline",
+    "candidate2"
+  ],
+  "candidate": [
+    {
+      "capture_ms": 200.18209000000002,
+      "frame": {
+        "bytes": 3145728,
+        "height": 768,
+        "sequence": "589",
+        "token": "1",
+        "width": 1024
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 1581.70798,
+      "reads": {
+        "count": 128,
+        "max_ms": 193.57853,
+        "mean_ms": 12.3493777578125,
+        "median_ms": 7.42954,
+        "min_ms": 1.96081,
+        "p95_ms": 12.145026999999999
+      },
+      "recorded_wire_ms": 1520,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 9.38883,
+        "mean_ms": 3.4088717500000008,
+        "median_ms": 2.531106,
+        "min_ms": 1.9741229999999999,
+        "p95_ms": 9.38883
+      }
+    },
+    {
+      "capture_ms": 200.173845,
+      "frame": {
+        "bytes": 3145728,
+        "height": 768,
+        "sequence": "656",
+        "token": "1",
+        "width": 1024
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 1463.525805,
+      "reads": {
+        "count": 128,
+        "max_ms": 215.839798,
+        "mean_ms": 11.427517656250002,
+        "median_ms": 5.877935,
+        "min_ms": 1.9058650000000001,
+        "p95_ms": 14.002907
+      },
+      "recorded_wire_ms": 1396,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 5.576778,
+        "mean_ms": 3.096167375,
+        "median_ms": 3.091225,
+        "min_ms": 2.016619,
+        "p95_ms": 5.576778
+      }
+    }
+  ],
+  "baseline": {
+    "capture_ms": 320.40641600000004,
+    "frame": {
+      "bytes": 3145728,
+      "height": 768,
+      "sequence": "3551",
+      "token": "1",
+      "width": 1024
+    },
+    "payload_bytes": 519168,
+    "pixels_stable": true,
+    "read_bytes": 4056,
+    "read_wall_ms": 3268.593375,
+    "reads": {
+      "count": 128,
+      "max_ms": 194.712301,
+      "mean_ms": 25.528124484375002,
+      "median_ms": 17.04034,
+      "min_ms": 2.712852,
+      "p95_ms": 173.264543
+    },
+    "recorded_wire_ms": 3209,
+    "schema": "agentos_gui.frame_benchmark.v1",
+    "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+    "status": {
+      "count": 16,
+      "max_ms": 20.337920999999998,
+      "mean_ms": 20.0994970625,
+      "median_ms": 20.096429,
+      "min_ms": 19.854058000000002,
+      "p95_ms": 20.337920999999998
+    }
+  },
+  "full_frame": {
+    "method": "agentctl frame-capture0 timed with /usr/bin/time; both guests running, sequential captures",
+    "candidate_seconds": 9.71,
+    "baseline_seconds": 18.85,
+    "candidate_exit": 0,
+    "baseline_exit": 0,
+    "bytes": 3145728,
+    "width": 1024,
+    "height": 768
+  },
+  "artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-cc-refill/",
+  "limitations": [
+    "Separate QEMU guests with the same profile; uncontrolled host background load.",
+    "Region tests use the production GUI CC client without browser polling or input.",
+    "Full-frame timing includes command lifecycle and file output, not native GUI rendering.",
+    "Occasional194-216ms region reads persist; full frames are not interactive.",
+    "Retry iteration counts are unchanged but their elapsed-time behavior can change.",
+    "Required Actions and canonical integration remain pending."
+  ]
+}

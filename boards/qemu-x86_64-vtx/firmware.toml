@@ -1,0 +1,36 @@
+# Firmware composition: PCI block/network and COM2 drivers, queue muxes and VMM.
+[[pd]]
+name = "net_pd"
+priority = 215
+
+[[pd]]
+name = "net_virt"
+priority = 205
+
+[[pd]]
+name = "virtio_blk"
+priority = 215
+
+[[pd]]
+name = "blk_virt"
+priority = 210
+
+[[pd]]
+name = "serial_pd"
+priority = 180
+
+[[pd]]
+name = "serial_virt"
+priority = 203
+
+[[pd]]
+name = "x86_runner"
+priority = 250
+
+[[pd]]
+name = "x86_runner_ap"
+priority = 250
+
+[[pd]]
+name = "guest_vmm_primary"
+priority = 250

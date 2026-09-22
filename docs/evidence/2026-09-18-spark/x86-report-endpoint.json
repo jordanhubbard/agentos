@@ -1,0 +1,35 @@
+{
+  "qualification": "VMX report endpoint separated from VMM lifecycle service",
+  "runtime_revision": "94f47a37c55ecf39f7aa2de65ce915303ee51457",
+  "source_clean_during_tests": true,
+  "spark": {
+    "host_tests": "make test-host: PASS, exit0",
+    "host_log_sha256": "1c9fbfd53f41f204ffeb79f310cd3319b549c741045937b0afd5a71673782b70",
+    "gate": "make gate: PASS, exit0; both architecture boot checks and ARM guest net/block/console proofs",
+    "gate_log_sha256": "6e258062347524dca8152808c9589138ae6d74482d884fadc97e7bbeadac54a9"
+  },
+  "intel": {
+    "host": "madmax Intel Linux via puck.local",
+    "commands": [
+      "make gate-x86_64-vtx SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600",
+      "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600 with pinned OVMF/kernel and generated userspace initrd"
+    ],
+    "result": "Both PASS, exit0; private reporting route, ordinary-service failure message excluded, canonical guest I/O, terminal teardown and two zeroed reuse cycles of all133 frame pools",
+    "combined_log_sha256": "fd980d3703c5eb217056fbcbb746c42ef7e934565db4181b4b7fab54d5cb4b77",
+    "basic_qemu_pid": 3360888,
+    "basic_qemu_log_stem": "agentos-qemu-yYgQFf",
+    "basic_serial_log_sha256": "c1a9b9dc9f89dba5266d3c8b1380cd9cc44ae3c2f4e02b41b0890946a5cab3a8",
+    "teardown_qemu_pid": 3362810,
+    "teardown_qemu_log_stem": "agentos-qemu-ssC9t7",
+    "teardown_serial_log_sha256": "9788b78d7da89a8dc46bc01b8a8533524dd796602a5d4e3228f353065cb0c690",
+    "kernel_sha256": "0ad39b13e289e1a5cf806d14541ac8f221eefe849017f5915e0846917ed67785",
+    "initrd_sha256": "43f3b0bb3e26a1e45438c421d8fecfa3a1cf613138fef7b3a5132420357f0bd4",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5"
+  },
+  "limits": [
+    "No lifecycle handlers, external control transport or suspend/resume acceptance claim",
+    "Service-endpoint test message is a nonblocking qualification-only failure report",
+    "No wrong-routing build was run as a separate negative-control variant",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}

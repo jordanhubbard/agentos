@@ -3,7 +3,9 @@
 #include <contracts/guest_contract.h>
 #include <contracts/net-service/interface.h>
 #include <contracts/blk_virt_contract.h>
+#include <contracts/net_virt_contract.h>
 #include <contracts/serial_virt_contract.h>
+#include <platform/input.h>
 
 bool aos_guest_vmm_loop_is_rpc(seL4_Word label)
 {
@@ -29,7 +31,9 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
 #endif
     for (;;) {
         seL4_Word label = seL4_MessageInfo_get_label(info);
-        if (serial_virt_vmm_notification(badge) || (badge & BLK_VIRT_VMM_WAKE_BADGE)) {
+        if (serial_virt_vmm_notification(badge) ||
+            (badge & (BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE |
+                      AOS_INPUT_VMM_WAKE_BADGE))) {
             ops->notified(badge);
 #ifdef CONFIG_KERNEL_MCS
             info = seL4_Recv(endpoint, &badge, reply_cap);
@@ -40,9 +44,11 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
             seL4_MessageInfo_t reply = ops->rpc(info);
 #ifdef CONFIG_KERNEL_MCS
             seL4_Send(reply_cap, reply);
+            if (ops->after_rpc_reply) ops->after_rpc_reply();
             info = seL4_Recv(endpoint, &badge, reply_cap);
 #else
             seL4_Reply(reply);
+            if (ops->after_rpc_reply) ops->after_rpc_reply();
             info = seL4_Recv(endpoint, &badge);
 #endif
         } else if (label == NET_SVC_EVENT_RX_READY) {
@@ -55,7 +61,8 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
             info = seL4_Recv(endpoint, &badge);
 #endif
         } else if (label == BLK_VIRT_EVENT_RESP_READY) {
-            if (*ops->guest_state == GUEST_STATE_RUNNING &&
+            if ((*ops->guest_state == GUEST_STATE_RUNNING ||
+                 *ops->guest_state == GUEST_STATE_DESTROYING) &&
                 ops->blk_resp_ready != NULL) {
                 ops->blk_resp_ready();
             }
@@ -66,6 +73,16 @@ void aos_guest_vmm_loop(seL4_CPtr endpoint, seL4_CPtr reply_cap,
 #endif
         } else if (label == seL4_Fault_NullFault) {
             ops->notified(badge);
+#ifdef CONFIG_KERNEL_MCS
+            info = seL4_Recv(endpoint, &badge, reply_cap);
+#else
+            info = seL4_Recv(endpoint, &badge);
+#endif
+        } else if (*ops->guest_state == GUEST_STATE_DESTROYING ||
+                   *ops->guest_state == GUEST_STATE_DEAD) {
+            /* A fault queued before suspension cannot restart MMIO work
+             * after backend quiescence or touch revoked execution caps.
+             * Leave its sender blocked; teardown revokes the stopped TCB. */
 #ifdef CONFIG_KERNEL_MCS
             info = seL4_Recv(endpoint, &badge, reply_cap);
 #else

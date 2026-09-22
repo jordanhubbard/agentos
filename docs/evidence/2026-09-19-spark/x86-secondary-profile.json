@@ -1,0 +1,30 @@
+{
+  "schema": "agentos.x86_secondary_profile.v1",
+  "date": "2026-09-19",
+  "code_revision": "b13354f",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "gate": {
+    "command": "make gate",
+    "source_tree_clean": true,
+    "exit": 0,
+    "log_sha256": "075fbaf7bde76e6d9dde48a2a1b6d9dbedd57d3e52c9f241fcc49ca19bf34888"
+  },
+  "profile_preparation": {
+    "command": "make prepare-x86-profile X86_BOOT_PROFILE=debian-amd64-secondary.toml X86_VMM_SLOT=secondary",
+    "exit": 0,
+    "log_sha256": "d41020acaf575151197cae68e212d603e0b1b9a8d4244bfdb42db87cf23de4eb",
+    "primary_preparation_preserved_secondary_manifest": true
+  },
+  "secondary_managed_link": {
+    "command": "make test-x86-firmware-build with emitted secondary profile arguments, X86_LINUX_LOGIN=1 and X86_MANAGED_START=1 in an isolated build directory",
+    "exit": 0,
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "log_sha256": "fbe44309b64237dc765d70b1ba4ffed69d520d2d9782bdea6cb01d258d39f3f4"
+  },
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership",
+  "limitations": [
+    "The default x86 descriptor still provisions only the primary guest",
+    "No concurrent guest or independent persistent storage acceptance",
+    "No canonical merge or release acceptance"
+  ]
+}

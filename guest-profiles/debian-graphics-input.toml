@@ -1,0 +1,24 @@
+schema = 2
+id = "debian-graphics-input-aarch64"
+status = "runtime"
+extends = "debian-gpu.toml"
+aliases = ["debian-graphics-input"]
+
+[target]
+devices = ["net", "block", "console", "gpu", "input"]
+
+[artifacts.dtb]
+source = "generated:linux.dts+profile-selected-virtio-gpu+virtio-input"
+cache = "build/qemu_virt_aarch64/debian-graphics-input-vm.dtb"
+sha256 = "bd03c8361711a3f4318ff4a4125acef4ebef91b339ac5b68f33f45e98f863236"
+
+[placements.dual-primary]
+dtb_sha256 = "bd03c8361711a3f4318ff4a4125acef4ebef91b339ac5b68f33f45e98f863236"
+
+[host.qemu.ssh]
+host_port = 12235
+
+[host.console]
+probe_line = "modprobe virtio_input && modprobe virtio_gpu && test -e /dev/dri/card0 && test -c /dev/fb0 && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none && sleep 1 && printf 'agentos-debian-graphics-input-%s\\n' ready"
+probe_marker = "agentos-debian-graphics-input-ready"
+probe_timeout_secs = 180

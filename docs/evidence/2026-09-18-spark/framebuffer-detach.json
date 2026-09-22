@@ -1,0 +1,35 @@
+{
+  "qualification": "Framebuffer terminal detach and four private guest queue pools",
+  "runtime_revision": "36e798ac87acc9ae51f041cab49f53f1bcab75e1",
+  "host": "Spark AArch64",
+  "source_clean_during_tests": true,
+  "gate": {
+    "command": "make gate QEMU_TEST_SSH_PORT=12233",
+    "result": "PASS",
+    "log_sha256": "839494cc624cc8afbf7af1e260555ef2ca1f860e56d951eb631da7656e682195"
+  },
+  "target": {
+    "command": "make test-debian-nocloud-graphics-teardown QEMU_TEST_SSH_PORT=12233",
+    "result": "PASS",
+    "log_sha256": "17b9973cb49aba73792f3ef1d1c3a32d0e7f6a8244b38f5ab0815878dccade28",
+    "serial_log_sha256": "a92d4f039aaeb2f1c5681534e45602cc51525eaf2130e8f6bfa97a24f21ce309",
+    "agentos_image_sha256": "0122a9a0420cfcae6428d07f0a83b57334559d4756e30b3258591a725b5ed38d",
+    "qemu_pid": 1118506,
+    "qemu_log_stem": "agentos-qemu-vAPR1S",
+    "frame": {
+      "width": 1024,
+      "height": 768,
+      "sequence": 1216,
+      "sha256": "68dcf755e16f71c6de1a6c3ea545c6deb41ce341f13e4353cadc4f5cf311794b",
+      "physical_scanout_pixels_matched": 786432
+    },
+    "input": "Both explicit-events and server-held-state passes matched four keyboard and seven pointer events",
+    "teardown": "Network, block, serial, input and framebuffer detach; execution, RAM, paging and private queue revocation",
+    "queue_recycle": "Network, block, serial and input pools: two retype, whole-page zero-check, overwrite, revoke and stale-capability rejection cycles"
+  },
+  "limits": [
+    "Earlier SSH input failure retained in framebuffer-detach-input-timeout.json; this pass does not establish its cause or a reliability rate",
+    "Framebuffer queue and surface-arena pages are not reclaimed by this revision",
+    "No guest reconstruction, concurrent peer continuity, physical input device or final release qualification claim"
+  ]
+}

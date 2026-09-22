@@ -8,24 +8,16 @@
 #include <libvmm/virtio/mmio.h>
 #include <libvmm/virtio/gpa.h>
 
-static void *virtio_gpa_identity(uint64_t gpa, size_t len)
-{
-    if (len != 0u && (gpa + (uint64_t)len) < gpa) {
-        return NULL;
-    }
-    return (void *)(uintptr_t)gpa;
-}
-
-static virtio_gpa_translate_fn g_translate = virtio_gpa_identity;
+static virtio_gpa_translate_fn g_translate;
 
 void virtio_gpa_set_translate(virtio_gpa_translate_fn fn)
 {
-    g_translate = (fn != NULL) ? fn : virtio_gpa_identity;
+    g_translate = fn;
 }
 
 void *virtio_gpa_to_hva(uint64_t gpa, size_t len)
 {
-    return g_translate(gpa, len);
+    return g_translate != NULL ? g_translate(gpa, len) : NULL;
 }
 
 static int gpa_add_off(uint64_t gpa, size_t off, uint64_t *out)
@@ -94,6 +86,11 @@ bool virtio_queue_map_guest_rings(struct virtq *virtq)
     desc_gpa = (uint64_t)(uintptr_t)virtq->desc;
     avail_gpa = (uint64_t)(uintptr_t)virtq->avail;
     used_gpa = (uint64_t)(uintptr_t)virtq->used;
+
+    /* Split-ring ABI alignment also keeps typed host accesses well-defined. */
+    if ((desc_gpa & 15u) || (avail_gpa & 1u) || (used_gpa & 3u)) {
+        return false;
+    }
 
     desc_len = (size_t)virtq->num * sizeof(struct virtq_desc);
     /* flags + idx + ring[num] + used_event */

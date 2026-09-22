@@ -1,0 +1,91 @@
+{
+  "qualification": "Generated guest ACPI and private IOAPIC integration",
+  "runtime_revision": "da074102f705b74f6efe7a162c516d8b4d3cc4d1",
+  "inputs": "Same pinned OVMF/kernel and Intel gate invocation as ovmf-boot-payload.json; 256MiB private RAM, no initrd or command line",
+  "changes": [
+    "Immutable fw_cfg tables, RSDP and 19-command relocation/checksum stream",
+    "FACS, empty DSDT, FADT, MADT, CPU SSDT, RSDT and XSDT describe exactly one provisioned CPU and private controllers",
+    "24-input IOAPIC fixed/lowest-priority delivery to sole LAPIC, masks, edge/level pending state, Remote IRR and matching-vector EOI",
+    "ARAT only for admitted invariant-TSC clock profile",
+    "Validated CMOS century writes outside SET preserve weekday and subsecond phase",
+    "Accept only absent-PIT shutdown writes and stateless byte I/O-delay writes; periodic PIT requests and timer reads remain rejected"
+  ],
+  "intel": {
+    "host": "madmax Intel i9-14900KF nested KVM",
+    "result": "FAIL exit2 at Linux RDMSR 0x3a (IA32_FEATURE_CONTROL)",
+    "stop": {
+      "reason": "0x1f",
+      "rip": "0xffffffffa44091f2",
+      "msr": "0x3a"
+    },
+    "kernel_bytes_consumed": 17295752,
+    "artifact_directory": "/tmp/agentos-v04-intel-discovery/build/evidence/acpi-da07410",
+    "image_sha256": "f81d2aaa0cf77b2e35283e82505ef13f0b702161dbf667a1bb53ab7df188088f",
+    "root_task_sha256": "0706585133bed8323f39ec4170598fdae56d4f4a764e06bafe5f8c10976d2ac5",
+    "serial_sha256": "9174f4bb7572bbbd390af42d224e093dfe7253163f6bf913bcb91794f286c4be",
+    "termination": "Owned QEMU3213879 terminated after explicit failure and artifact retention; original gate returned exit2"
+  },
+  "intermediate_runs": [
+    {
+      "revision": "d2d2e2f",
+      "result": "FAIL exit2 at firmware CMOS century write outside SET",
+      "directory": "/tmp/agentos-v04-intel-discovery/build/evidence/acpi-d2d2e2f",
+      "serial_sha256": "097ffc6b40fb27f834d99ad27dd9a10c0cec3f831050766c2064f59a21629426"
+    },
+    {
+      "revision": "be0d71f",
+      "result": "FAIL exit2 at Linux PIT shutdown, not periodic setup",
+      "stop": {
+        "rip": "0xffffffffa919a262",
+        "qualification": "0x430040"
+      },
+      "analysis": "Pinned decompressed Linux instruction ffffffff8239a262 is OUT43,AL preceded by MOV EAX,30 and followed by two zero writes to40 and another30 write to43. Matches clockevent_i8253_disable; relocation26e00000.",
+      "directory": "/tmp/agentos-v04-intel-discovery/build/evidence/acpi-be0d71f",
+      "serial_sha256": "a0903579555366065ab12a097b0a306fd6eca747fad9491a0289b6207a139597"
+    },
+    {
+      "revision": "f335e3d",
+      "result": "FAIL exit2 at Linux native_io_delay OUTed,AL",
+      "stop": {
+        "rip": "0xffffffff8adb1416",
+        "qualification": "0xed0040"
+      },
+      "analysis": "Pinned kernel instruction ffffffff813b1416 is OUTed,AL in native_io_delay; relocation9a00000.",
+      "directory": "/tmp/agentos-v04-intel-discovery/build/evidence/acpi-f335e3d",
+      "serial_sha256": "7b9e3961272ac42e6596152c35d7f8c4d3909f81f41eae1fc4798c51b0fd8fae"
+    }
+  ],
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12266",
+    "result": "PASS exit0 at da07410",
+    "artifact_directory": "/tmp/agentos-v04-x86-acpi-boot/build/evidence/acpi-da07410",
+    "image_sha256": "994ce098c33b5a2ef7abbe22c93f3ff06bffd241e8625d6c0508c7c67bb43117",
+    "gate_log_sha256": "1a1676251d9025d822f25b845fa0ed0a9a4cd7a253b5ae554ba847a0eccb393e"
+  },
+  "host_checks": "Exact fw_cfg directory and source bytes; loader interpreted at three bases with bounded relocations, table/root pointers and checksums; IOAPIC edge/level/mask/EOI/vector-reprogramming and independent LAPIC state; CPU ARAT gating; RTC century/phase/invalid-date rejection",
+  "sanitizers": {
+    "result": "PASS",
+    "command": "make test-x86-acpi-loader-host test-x86-config-host test-x86-rtc-host test-x86-ioapic-host test-x86-apic-host test-x86-cpu-host CC='cc -fsanitize=address,undefined -fno-omit-frame-pointer'",
+    "log": "/tmp/agentos-x86-acpi-latest-sanitizers.log",
+    "sha256": "18ccc7f508cfa53b42097576137c4614684aacbc37e8fe1043d94aa1ca049f33"
+  },
+  "sources": [
+    "https://github.com/tianocore/edk2/blob/edk2-stable202402/OvmfPkg/Include/IndustryStandard/QemuLoader.h",
+    "https://github.com/tianocore/edk2/blob/edk2-stable202402/OvmfPkg/Library/AcpiPlatformLib/QemuFwCfgAcpi.c",
+    "https://github.com/tianocore/edk2/blob/edk2-stable202402/MdePkg/Include/IndustryStandard/Acpi65.h",
+    "https://github.com/torvalds/linux/blob/v7.0/drivers/clocksource/i8253.c",
+    "https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/io_delay.c",
+    "https://github.com/torvalds/linux/blob/v7.0/arch/x86/kernel/cpu/feat_ctl.c"
+  ],
+  "limitations": [
+    "No Linux userspace or successful Intel gate",
+    "No dedicated guest IOAPIC/LAPIC interrupt-handler proof",
+    "No canonical x86 device backend connected to IOAPIC inputs",
+    "No runtime SMP, hotplug, sleep, PCI endpoints, MSI or enabled SCI source",
+    "No firmware-installed-table dump independently verifying every guest-visible table",
+    "Unsupported MSRs still terminate this qualification profile rather than inject guest #GP",
+    "No exit limit or gate success criterion was relaxed"
+  ],
+  "mac_task": "task_ff3fa0f2a0c14cfdb6159750e5ad003a",
+  "followup_task": "task_7e41df20f09846c0a4f5b0fb40e615f6"
+}

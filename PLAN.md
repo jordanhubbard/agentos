@@ -1,7 +1,7 @@
 # agentOS — Platform Plan
 
 **Status:** Active
-**Last updated:** 2026-09-14
+**Last updated:** 2026-09-20
 **Epic:** mac `task_a2c5cdc55f994af8bc9fc48b13c54d5a` (project `agentos`)
 
 QEMU is a hardware emulator so we can prototype quickly. agentOS is the
@@ -63,7 +63,7 @@ as guest-path coverage. Infrastructure claims require `make gate` (both target
 arches under QEMU with `GUEST_OS=none`, plus `gate-guest-io`: the buildroot
 net and blk proofs and the Ubuntu console proof). `GUEST_OS=none` on its own
 is a stub VMM and proves PD load only. Guest release claims additionally require
-`make demo-test`, which boots Ubuntu and FreeBSD concurrently and proves
+`make demo-test`, which boots pinned Debian and FreeBSD concurrently and proves
 key-only SSH to both. A device-class claim also needs its focused guest I/O
 assertion through the virtualizer — not QEMU bus ownership.
 
@@ -166,5 +166,8 @@ two hours under TCG on hosted runners.
 
 This closes the full Ubuntu live-filesystem proof. Ubuntu retains the same
 emulated-only DTB, translated RAM, and agentOS-owned bus.8 backend in a dual
-image. The dual authenticated-SSH acceptance path is `make demo-test`;
-`make demo` runs the same gate and retains both guests for manual sessions.
+image. Ubuntu remains an explicit legacy profile. The canonical dual
+authenticated-SSH acceptance path, `make demo-test`, now uses pinned Debian
+alongside FreeBSD; `make demo` runs that scenario and retains both guests for
+manual sessions. The default-scenario qualification is recorded in
+[`debian-default-scenario.json`](docs/evidence/2026-09-19-spark/debian-default-scenario.json).

@@ -3,15 +3,11 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
-#include <libvmm/vmm_caps.h>
-#include <libvmm/guest.h>
-#include <libvmm/virq.h>
 #include <libvmm/util/util.h>
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/virtio.h>
 #include <libvmm/virtio/virtq.h>
 #include <libvmm/virtio/gpa.h>
-#include <libvmm/arch/aarch64/fault.h>
 
 /* Uncomment this to enable debug logging */
 // #define DEBUG_MMIO
@@ -39,6 +35,8 @@ int handle_virtio_mmio_set_status_flag(virtio_device_t *dev, uint32_t reg)
     switch (reg) {
     case VIRTIO_CONFIG_S_RESET:
         dev->regs.Status = 0;
+        /* Virtio 1.2, 4.2.2.1: reset clears every InterruptStatus bit. */
+        dev->regs.InterruptStatus = 0;
         dev->funs->device_reset(dev);
         break;
 
@@ -82,10 +80,9 @@ int handle_virtio_mmio_set_status_flag(virtio_device_t *dev, uint32_t reg)
     return success;
 }
 
-static bool handle_virtio_mmio_reg_read(virtio_device_t *dev, size_t vcpu_id, size_t offset, size_t fsr,
-                                        seL4_UserContext *regs)
+bool virtio_mmio_reg_read(virtio_device_t *dev, size_t offset, uint32_t *value)
 {
-
+    if (dev == NULL || value == NULL) return false;
     uint32_t reg = 0;
     bool success = true;
     LOG_MMIO("read from 0x%lx\n", offset);
@@ -124,39 +121,41 @@ static bool handle_virtio_mmio_reg_read(virtio_device_t *dev, size_t vcpu_id, si
     case REG_RANGE(REG_VIRTIO_MMIO_STATUS, REG_VIRTIO_MMIO_QUEUE_DESC_LOW):
         reg = dev->regs.Status;
         break;
+    case REG_RANGE(REG_VIRTIO_MMIO_SHM_LEN_LOW, REG_VIRTIO_MMIO_SHM_BASE_HIGH + 4):
+        /* No backend currently exposes VirtIO shared-memory regions.
+         * VirtIO 1.2 requires all-ones length and base for an absent ID. */
+        reg = UINT32_MAX;
+        break;
     case REG_RANGE(REG_VIRTIO_MMIO_CONFIG_GENERATION, REG_VIRTIO_MMIO_CONFIG):
         reg = dev->regs.ConfigGeneration;
         break;
     case REG_RANGE(REG_VIRTIO_MMIO_CONFIG, REG_VIRTIO_MMIO_CONFIG + 0x100):
-        success = dev->funs->get_device_config(dev, offset - REG_VIRTIO_MMIO_CONFIG, &reg);
+        /* Read the containing little-endian word. The fault helper selects
+         * the requested byte/halfword lane below. Passing an unaligned offset
+         * and shifting a callback's word repeats the low byte of net's MAC. */
+        success = dev->funs->get_device_config(dev,
+            (offset - REG_VIRTIO_MMIO_CONFIG) & ~3u, &reg);
         break;
     default:
         LOG_VMM_ERR("unknown virtIO MMIO register read at offset 0x%x\n", offset);
         success = false;
     }
 
-    uint32_t mask = fault_get_data_mask(offset, fsr);
-    // @ivanv: make it clearer that just passing the offset is okay,
-    // possibly just fix the API
-    fault_emulate_write(regs, offset, fsr, reg & mask);
-
-    LOG_MMIO("read from device (ID: 0x%x, Vendor 0x%x), offset 0x%lx, value: 0x%lx, PC: 0x%lx\n", dev->regs.DeviceID,
-             dev->regs.VendorID, offset, reg, regs->pc);
+    if (success) *value = reg;
 
     return success;
 }
 
-static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, size_t offset, size_t fsr,
-                                         seL4_UserContext *regs)
+bool virtio_mmio_reg_write(virtio_device_t *dev, size_t offset, uint32_t data)
 {
+    if (dev == NULL) return false;
+    /* Mapped ring pointers and lengths are immutable until device reset.
+     * Reprogramming a ready queue would mix GPAs with translated pointers. */
+    if (dev->regs.QueueSel<dev->num_vqs && dev->vqs[dev->regs.QueueSel].ready &&
+        ((offset>=REG_VIRTIO_MMIO_QUEUE_NUM && offset<REG_VIRTIO_MMIO_QUEUE_READY) ||
+         (offset>=REG_VIRTIO_MMIO_QUEUE_DESC_LOW && offset<REG_VIRTIO_MMIO_CONFIG_GENERATION)))
+        return false;
     bool success = true;
-    uint32_t data = fault_get_data(regs, fsr);
-    uint32_t mask = fault_get_data_mask(offset, fsr);
-    /* Mask the data to write */
-    data &= mask;
-
-    LOG_MMIO("write from device (ID: 0x%x, Vendor 0x%x), offset 0x%lx with value 0x%x, PC: 0x%lx\n", dev->regs.DeviceID,
-             dev->regs.VendorID, offset, data, regs->pc);
 
     switch (offset) {
     case REG_RANGE(REG_VIRTIO_MMIO_DEVICE_FEATURES_SEL, REG_VIRTIO_MMIO_DRIVER_FEATURES):
@@ -193,8 +192,8 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
             }
             /*
              * Map QueueDesc/Avail/Used GPAs to HVAs before walking the rings.
-             * Identity until
-             * the VMM installs virtio_gpa_set_translate().
+             * This fails until the VMM installs a translator with
+             * virtio_gpa_set_translate().
              */
             if (!dev->vqs[dev->regs.QueueSel].ready) {
                 if (!virtio_queue_map_guest_rings(&dev->vqs[dev->regs.QueueSel].virtq)) {
@@ -282,7 +281,7 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         }
         break;
     }
-    case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_USED_HIGH, REG_VIRTIO_MMIO_CONFIG_GENERATION): {
+    case REG_RANGE(REG_VIRTIO_MMIO_QUEUE_USED_HIGH, REG_VIRTIO_MMIO_QUEUE_USED_HIGH + 4): {
         if (dev->regs.QueueSel < dev->num_vqs) {
             struct virtq *virtq = get_current_virtq_by_handler(dev);
             uintptr_t ptr = (uintptr_t)virtq->used;
@@ -295,58 +294,17 @@ static bool handle_virtio_mmio_reg_write(virtio_device_t *dev, size_t vcpu_id, s
         }
         break;
     }
+    case REG_RANGE(REG_VIRTIO_MMIO_SHM_SEL, REG_VIRTIO_MMIO_SHM_LEN_LOW):
+        /* Every region ID is absent; selection has no queue side effects. */
+        break;
     case REG_RANGE(REG_VIRTIO_MMIO_CONFIG, REG_VIRTIO_MMIO_CONFIG + 0x100):
-        success = dev->funs->set_device_config(dev, offset, data);
+        /* Architecture adapters supply a right-aligned, width-masked value. */
+        success = dev->funs->set_device_config(dev, offset - REG_VIRTIO_MMIO_CONFIG, data);
         break;
     default:
         LOG_VMM_ERR("unknown virtIO MMIO register write at offset 0x%x\n", offset);
         success = false;
     }
-
-    return success;
-}
-
-bool virtio_mmio_fault_handle(size_t vcpu_id, size_t offset, size_t fsr, seL4_UserContext *regs, void *data)
-{
-    virtio_device_t *dev = (virtio_device_t *) data;
-    assert(dev);
-    if (fault_is_read(fsr)) {
-        return handle_virtio_mmio_reg_read(dev, vcpu_id, offset, fsr, regs);
-    } else {
-        return handle_virtio_mmio_reg_write(dev, vcpu_id, offset, fsr, regs);
-    }
-}
-
-static void virtio_virq_default_ack(size_t vcpu_id, int irq, void *cookie)
-{
-    (void)vcpu_id;
-    (void)irq;
-    (void)cookie;
-}
-
-bool virtio_mmio_register_device(virtio_device_t *dev,
-                                 uintptr_t region_base,
-                                 uintptr_t region_size,
-                                 size_t virq)
-{
-    bool success;
-    assert(dev->transport_type == VIRTIO_TRANSPORT_MMIO);
-    success = fault_register_vm_exception_handler(region_base,
-                                                  region_size,
-                                                  &virtio_mmio_fault_handle,
-                                                  dev);
-    if (!success) {
-        LOG_VMM_ERR("Could not register virtual memory fault handler for "
-                    "virtIO region [0x%lx..0x%lx)\n", region_base, region_base + region_size);
-        return false;
-    }
-
-    /* Register the virtual IRQ that will be used to communicate from the device
-     * to the guest. This assumes that the interrupt controller is already setup. */
-    // @ivanv: we should check that (on AArch64) the virq is an SPI.
-    success = virq_register(GUEST_BOOT_VCPU_ID, virq,
-                            &virtio_virq_default_ack, dev);
-    assert(success);
 
     return success;
 }

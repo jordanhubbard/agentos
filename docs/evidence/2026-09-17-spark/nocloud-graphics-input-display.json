@@ -1,0 +1,108 @@
+{
+  "schema": "agentos.seeded_graphics_qualification.v1",
+  "revision": "65940ec64a651da6fa452e88a7c836077e9c8966",
+  "host": "Spark ARM64 Linux",
+  "command": "make test-debian-nocloud-graphics",
+  "exit_code": 0,
+  "status": "passed",
+  "log": "/tmp/agentos-seeded-graphics-target.log",
+  "log_sha256": "cec1de03ebeae10d15b3796580e6583cb6b8bb25cbf62a0d7fb3daa3bee39df4",
+  "evidence_directory": "build/evidence/profile-seed-kkcwXO",
+  "timing": {
+    "agentos_image_sha256": "6d2e544885008a82b19da9ddf4e9477a43e32252e51d9df599a0ed1d53fe9b9d",
+    "agentos_revision": "65940ec64a651da6fa452e88a7c836077e9c8966",
+    "board": "qemu_virt_aarch64",
+    "boundary": "host QEMU launch request to completed authenticated SSH proof",
+    "elapsed_ms": 986979,
+    "excludes": [
+      "artifact acquisition",
+      "build",
+      "persistent media preparation"
+    ],
+    "guest_bundle_sha256": "d57dfdbfc3e1b1470e2eafdf58e6ef747974e02b92bf562dca436b565e1d3ba7",
+    "host_arch": "aarch64",
+    "host_backed_virtio": true,
+    "host_os": "linux",
+    "includes": [
+      "host scheduling",
+      "QEMU startup",
+      "agentOS boot",
+      "guest boot",
+      "console provisioning",
+      "SSH authentication"
+    ],
+    "persistent_second_boot": false,
+    "profile": "debian-nocloud-graphics-input-aarch64",
+    "qemu_config_sha256": "57f7f302b54baa5f4e5ed25d67f3877ada0e947b76445c72f978786a63f537a6",
+    "qualification_status": "passed",
+    "schema": "agentos.guest_boot_timing.v2",
+    "serial_log": "/tmp/agentos-v04-integration/build/tmp/agentos-qemu-kWJYqx.log",
+    "source_tree_clean": true,
+    "status": "ssh_authenticated"
+  },
+  "frame": {
+    "asserted_pixels": 2,
+    "bytes": 2359312,
+    "format": "P6 RGB888",
+    "guest_handle": 0,
+    "height": 768,
+    "sequence": 1123,
+    "sha256": "68dcf755e16f71c6de1a6c3ea545c6deb41ce341f13e4353cadc4f5cf311794b",
+    "version": 1,
+    "width": 1024
+  },
+  "display": {
+    "asserted_pixels": 786432,
+    "capture": "QMP screendump",
+    "client": 0,
+    "height": 768,
+    "path": "/tmp/agentos-v04-integration/build/tmp/agentos-qemu-kWJYqx.display.ppm",
+    "sha256": "68dcf755e16f71c6de1a6c3ea545c6deb41ce341f13e4353cadc4f5cf311794b",
+    "width": 1024
+  },
+  "input": {
+    "agentos_revision": "65940ec64a651da6fa452e88a7c836077e9c8966",
+    "batches": 4,
+    "excludes": [
+      "physical input devices",
+      "peer guest isolation",
+      "guest recreation"
+    ],
+    "helper_sha256": "2ba0315a3bc89917f9bd4762fd54a25cb0d250635dd34830cf02c2c8b981e517",
+    "keyboard_events": 4,
+    "pointer_events": 7,
+    "profile": "debian-nocloud-graphics-input-aarch64",
+    "release_mode": "explicit-events",
+    "schema": "agentos.guest_input.v1",
+    "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+    "source_tree_clean": true,
+    "status": "pass",
+    "stderr": "/tmp/agentos-v04-integration/build/tmp/agentos-qemu-kWJYqx.input.stderr"
+  },
+  "held_state_release": {
+    "agentos_revision": "65940ec64a651da6fa452e88a7c836077e9c8966",
+    "batches": 4,
+    "excludes": [
+      "physical input devices",
+      "peer guest isolation",
+      "guest recreation"
+    ],
+    "helper_sha256": "2ba0315a3bc89917f9bd4762fd54a25cb0d250635dd34830cf02c2c8b981e517",
+    "keyboard_events": 4,
+    "pointer_events": 7,
+    "profile": "debian-nocloud-graphics-input-aarch64",
+    "release_mode": "server-held-state",
+    "schema": "agentos.guest_input.v1",
+    "scope": "public CLI through CC and virtio-input to exact Linux evdev packets",
+    "source_tree_clean": true,
+    "status": "pass",
+    "stderr": "/tmp/agentos-v04-integration/build/tmp/agentos-qemu-kWJYqx.input-release.stderr"
+  },
+  "frame_transfer_seconds": 8,
+  "limits": [
+    "Guest suspended during coherent scanout comparison; not interactive performance evidence.",
+    "Native GUI is a separate qualification.",
+    "No guest recreation, complete resource reclamation, peer input isolation or concurrent writable disk proof.",
+    "Subsequent quiescence changes are outside this target receipt."
+  ]
+}

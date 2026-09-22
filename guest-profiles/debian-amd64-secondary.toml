@@ -1,0 +1,11 @@
+schema = 2
+id = "debian-stable-x86-64-secondary"
+status = "runtime"
+extends = "debian-amd64.toml"
+aliases = ["debian-amd64-secondary"]
+
+[target]
+guest_id = 1
+control_type = 2
+network_client = 1
+block_media = 1

@@ -1,0 +1,36 @@
+{
+  "revision": "7f1e1d8ff47bf78f25a3c5929f5c0a0cb4fa96b9",
+  "source_tree_clean": true,
+  "host": "Spark ARM64 Linux",
+  "status": "passed",
+  "checks": [
+    {
+      "command": "make test-guest-teardown",
+      "exit_code": 0,
+      "log": "/tmp/agentos-teardown-target-final.log",
+      "log_sha256": "80ac84dda8f3a65f427790fdd09224673435ba32ce8eb3c5c23ab75918b9c4ca",
+      "qemu_log_stem": "build/tmp/agentos-qemu-NZaVoH",
+      "scope": "ubuntu-e2e-aarch64 console-proof guest completed bidirectional console I/O, then CC destroy returned success after execution and RAM pool revocation; status, suspend and resume rejected the stale handle"
+    },
+    {
+      "command": "make gate",
+      "exit_code": 0,
+      "log": "/tmp/agentos-teardown-full-gate.log",
+      "log_sha256": "75a0c36e1b02cce96ffc9dacbbd022e10bdc5feeef3e00486f5ffb501b77710f",
+      "scope": "Host suite, both backend architectures and root-task boots, ARM guest network/block/bidirectional console"
+    },
+    {
+      "command": "make build BOARD=qemu_virt_aarch64 GUEST_OS=none GUEST_PROFILE=debian-nocloud-graphics-input.toml DISPLAY_RAMFB=1 GUEST_GRAPHICS=1 GUEST_INPUT=1",
+      "exit_code": 0,
+      "log": "/tmp/agentos-teardown-graphics-build.log",
+      "log_sha256": "34c028261accaef58a4c9b537f3eaaf8954d45638e033ac4dc9587069419b402",
+      "scope": "Optional graphics/input teardown path compiles and links; no target graphics teardown claim"
+    }
+  ],
+  "limits": [
+    "VSpace, page tables and service grants remain allocated; complete resource reclamation is not qualified.",
+    "No recreation, peer-continuity or Intel lifecycle qualification.",
+    "Pending device drains and partial revocation retries are host-tested; this target run does not force those failures.",
+    "The target guest is the deterministic console-proof profile, not the provisioned Debian desktop."
+  ]
+}

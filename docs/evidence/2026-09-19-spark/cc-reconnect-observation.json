@@ -1,0 +1,19 @@
+{
+  "status": "live reconnect stall observed; qualification incomplete",
+  "source_revision": "3b715a107daf1cb7f17b93b471d4a9e8757c5d60",
+  "target": "Spark, qemu_virt_aarch64, GUEST_OS=none",
+  "command": "make test-operator-session QEMU_TEST_TIMEOUT=180 SEL4_SDK=/home/jkh/.cache/agentos/sdk-make-cr2-20260919/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 CARGO_TARGET_DIR=/tmp/agentos-gpu-backing-walk/target",
+  "observations": [
+    "verify_inspect reached its agentctl subprocess after the initial CcClient completed three invalid-version checks, one reserved-argument check and one valid boot snapshot check.",
+    "The first CcClient was dropped before agentctl opened the replacement connection.",
+    "agentctl PID 1310060 remained blocked in unix_stream_data_wait; QEMU PID 1310010 remained alive. Both AF_UNIX socket endpoints were established with zero reported send/receive queue bytes.",
+    "Serial output contains another STATUS/serial-ready pair after agentOS boot complete, consistent with the close handler resetting the transport.",
+    "agentctl cc_call uses blocking read_full; verify_inspect waits through Command::output without a subprocess deadline. QEMU_TEST_TIMEOUT therefore does not bound this wait."
+  ],
+  "artifacts": {
+    "build_and_test_observation": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/3b715a1-operator-reconnect-observation.log",
+    "serial_observation": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/3b715a1-operator-reconnect-serial-observation.log",
+    "live_stem": "/tmp/agentos-x86-guest-ownership/build/tmp/agentos-qemu-DNrEey"
+  },
+  "limits": "Observation snapshots, not terminal test results. The stall reproduces without Linux or guest input. Discard of the replacement connection's request during reset remains a hypothesis; no queue trace yet proves it. Preserve the live process for diagnosis; elapsed observation time is not evidence of process termination."
+}

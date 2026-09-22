@@ -20,7 +20,7 @@ _start:
     ldr x0, =0x44010000
     mov sp, x0
 
-    /* Clear BSS (page_table_l0, page_table_l1a, page_table_l1b) */
+    /* Clear BSS, including all bootstrap page tables. */
     ldr x0, =__bss_start
     ldr x1, =__bss_end
     cmp x0, x1
@@ -55,3 +55,7 @@ page_table_l1a:
     .global page_table_l1b
 page_table_l1b:
     .space (512 * 8)    /* L1 table for VA[512GB..1TB): high kernel map */
+
+    .global page_table_l2
+page_table_l2:
+    .space (512 * 8)    /* 2 MiB kernel blocks in one high 1 GiB window */

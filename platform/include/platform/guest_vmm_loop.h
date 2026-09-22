@@ -14,6 +14,9 @@ typedef struct aos_guest_vmm_loop_ops {
     void (*notified)(seL4_Word badge);
     void (*net_rx_ready)(void);
     void (*blk_resp_ready)(void);
+    /* Optional deferred work, called only after the lifecycle reply is sent.
+     * It may receive IPC because no outer reply object remains owned. */
+    void (*after_rpc_reply)(void);
 } aos_guest_vmm_loop_ops_t;
 
 /* True for the guest-control RPC labels the loop answers with ops->rpc. */

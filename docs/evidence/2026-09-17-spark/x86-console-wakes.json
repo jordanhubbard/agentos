@@ -1,0 +1,28 @@
+{
+  "qualification": "x86 console backend binding and canonical serial-service notification resume",
+  "runtime_revision": "bb6855c9c2cf6fd3bcaf4d48e39f6f8124fe2ce3",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "intel": {
+    "host": "madmax Intel Linux nested KVM",
+    "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 with the pinned firmware, kernel and initrd arguments retained in x86-virtio-firmware.json",
+    "result": "PASS exit 0; Linux ring3 initramfs syscall proof verified",
+    "log_sha256": "8f8dfac4959eeb0042dcde63392e4b3665ee31ac29bd05fb194885e576836b32",
+    "scope": [
+      "Real libvmm console registers at guest MMIO f0000000 and private IOAPIC GSI 16",
+      "Userspace completion requires a notification from the serial virtualizer's actual send capability",
+      "Notification handler services the bounded serial endpoint and restores the three saved VM-entry words",
+      "Guest GPRs survive notification handling and Linux reaches the PID 1 syscall roundtrip proof"
+    ]
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0",
+    "log_sha256": "8acc1deefb8ddd2ee6b2d39eac18d78aceadb7a5a7bc389852189332e3681e29"
+  },
+  "retained_directory": "build/evidence/x86-console-wakes-bb6855c",
+  "limitations": [
+    "No guest discovery description or frontend byte producer is configured yet.",
+    "The target proof requires one service wake, not sustained notification traffic or Intel console TX/RX.",
+    "Canonical network, block, lifecycle teardown, Debian baseline and the remaining release qualifications are incomplete."
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "source_revision": "b2b86f5cdc0940c59c8271f93299a320f2f24cb5",
+  "host": "madmax Intel Linux with nested VMX/KVM",
+  "profile": "debian-amd64-2cpu.toml",
+  "sdk": "default 2.3.1-agentos-e60776ac-cr2, installed from the checksum-verified target bundle",
+  "sdk_archive_sha256": "fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b",
+  "command": "make gate-x86_64-smp GUEST_OS=none X86_ROOT_DISK=/var/tmp/agentos-intel-b2b86f5c-tmp/repeat.raw X86_SSH_KEY=/var/tmp/agentos-intel-b2b86f5c-tmp/ssh-seed/identity X86_SSH_PORT=12371 X86_FIRMWARE_IMAGE=/var/tmp/agentos-intel-37a9eacf-tmp/OVMF.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=1800",
+  "make_exit": 0,
+  "launcher_exit": 0,
+  "qemu_stem": "agentos-qemu-tKp9cX",
+  "proof": [
+    "Before both generations, an oversized 2052 MiB CREATE failed without a guest handle or inventory change. The bounded 2 GiB profile subsequently created handles 1 and 2.",
+    "Both generations reached Debian userspace, authenticated using pinned Ed25519 SSH, returned x86_64 and completed sync.",
+    "Both SMP receipts report online=0-1, worker affinity=0,1 and overlapping x87/SSE workers with preserved register state.",
+    "Console input echo, successful DESTROY, managed reconstruction and stale-handle rejection passed.",
+    "No external known-hosts file was supplied. The first authenticated console key was retained for the recreated guest; both host-key receipts are byte-identical.",
+    "The remote launcher had isolated stdin and saved exit zero. The tool session exited zero and QEMU244491 was absent after completion."
+  ],
+  "root_task_sha256": "2c9c9dbc5f2733bd1292b049b8c97911beb7e7f628ac0dd363e476c1d64715da",
+  "gate_log_sha256": "838113b1f5dc0a462ba03cb0e3c87b1af42f7ea3dc13dbfdc23999bc45550d90",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-smp-b2b86f5c/repeat-receipts.tar.gz",
+  "archive_sha256": "bac81e1aeec34e73528023422473bd426db89b9961b61932d44c7a307b69745a",
+  "earlier_attempt": {
+    "qemu_stem": "agentos-qemu-gPhiEZ",
+    "result": "All target and guest assertions emitted PASS, but the streamed remote shell wrapper lost its exit-status assignment and exited 2; its saved status is blank. This is not an accepted zero-exit run.",
+    "archive_sha256": "fe42a57f5952ed1cfcc7af7e2b73ed68a057f7dcfd406f254e5bc6457d8cbd3c",
+    "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/intel-smp-b2b86f5c/receipts.tar.gz"
+  },
+  "limits": "Two virtual CPUs in the qualified Intel composition, not simultaneous execution on two host cores, every resource profile, physical power-loss durability, x86 desktop support or final release acceptance. Private SSH identities and guest disks are excluded from both evidence archives."
+}

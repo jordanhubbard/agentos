@@ -1,0 +1,39 @@
+{
+  "status": "corrected target SDK and full default-path gate passed locally",
+  "sdk_version": "2.3.1-agentos-e60776ac-cr2",
+  "archive_sha256": "fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b",
+  "corrected_bundle_gate": {
+    "revision": "93efb9bc1e560df15fdb861bc1a73cef7e3c5666",
+    "command": "make gate SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 SEL4_SDK=/tmp/agentos-sdk-linker-installed",
+    "observed_exit": 0,
+    "log_sha256": "dc4b936127c83f35b5f5ca1f14a16abbaa467a95a4f0a17bc8311957518755cc",
+    "arm_image_sha256": "9bee4e266a370f20c48456797dc4918765ff037bd8755ccd985ca50e57436ede",
+    "x86_image_sha256": "7ccbc2ee5b0626210d72cfd68285f45b80a444d3a8944e03092f9522e4ea17da",
+    "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/sdk-linker-qualified"
+  },
+  "default_path_gate": {
+    "revision": "b2b86f5cdc0940c59c8271f93299a320f2f24cb5",
+    "command": "env -u SEL4_SDK -u SEL4_SDK_VERSION make gate",
+    "observed_exit": 0,
+    "log_sha256": "74e9533dd2c11954dfe14f6c44922201dfcb229da3465695272d05a49810c86b",
+    "arm_image_sha256": "cb6a7c95911ccf683d4082e65baea89f619e3e453ecf14122cdbbcff260110a0",
+    "x86_image_sha256": "bcffbdea7573ccb004b1a46d945f36dbd314d42b5fef907b009cba33c8318187",
+    "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/sdk-default-b2b86f5c"
+  },
+  "earlier_default_path_gate": {
+    "revision": "37a9eacfccd2008b543ad4a92e678acccb0d7258",
+    "command": "env -u SEL4_SDK -u SEL4_SDK_VERSION make gate",
+    "observed_exit": null,
+    "result": "Process finished; retained log contains host tests and all five expected OS PASS markers, ending after the console proof. Original execution exit status was unavailable after session compaction.",
+    "log_sha256": "4b3fffb4104da165d634d71fdd34fcc17c9fbfd9eb690c1510a513fc9a3060d0",
+    "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/sdk-default-37a9eacf"
+  },
+  "proof": [
+    "The corrected bundle contains the three kernels, both x86 Multiboot wrappers, complete board headers, all three Microkit linker scripts, VERSION and licenses.",
+    "The full corrected-bundle gate passed the host suite, ARM and x86 root boots, and ARM guest network, block and console assertions.",
+    "Default installation on Spark and Intel checked all eight pinned binary/linker inputs. Direct Rust x86 boot also passed without SDK environment overrides.",
+    "Fresh packaging at 37a9eacf reproduced the pinned target archive and bundled source archives, scoped patch, input manifest, current recipe, dependency pins, normalizer and documentation; all nine distribution checksums verified.",
+    "Native Intel packaging from its independent SDK build matched all nine Spark distribution checksums byte-for-byte. The retained intel-SHA256SUMS has SHA-256 3b326078853ac48d28c74b82172244f61a8a16b747765383ee27887ae024d195. Initial native packaging stopped at Git ownership validation; a process-scoped exception for the two recorded container-owned source clones allowed packaging without changing global Git configuration."
+  ],
+  "limits": "Local QEMU evidence only. Intel VMX requalification is running separately. Earlier omitted-wrapper and omitted-linker failures remain retained. Hosted CI, final integration and release publication are incomplete; the default download URL requires the v0.4.0 SDK asset to be published."
+}

@@ -1,7 +1,7 @@
 use crate::cmd_guest_profile::{self, RecipeStep};
 use crate::FetchGuestArgs;
 use anyhow::Context;
-use sha2::{Digest, Sha512};
+use sha2::{Digest, Sha256, Sha512};
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
@@ -189,6 +189,7 @@ fn recipe_path(output_dir: &Path, value: &str) -> anyhow::Result<PathBuf> {
 
 fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<()> {
     match step.action.as_str() {
+        "build-static-linux-elf" => build_static_linux_elf(step, &repo_root()?, output_dir)?,
         "stage-url" => {
             let output = recipe_arg(step, "output")?;
             let dest = recipe_path(output_dir, output)?;
@@ -243,7 +244,7 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             &recipe_path(output_dir, recipe_arg(step, "output")?)?,
             recipe_arg(step, "path")?,
             recipe_arg(step, "mode")?,
-            recipe_arg(step, "content")?.as_bytes(),
+            &initramfs_payload(step, output_dir)?,
             step.args.get("compression").map(String::as_str),
         )?,
         "append-initramfs-file" => append_initramfs_file(
@@ -251,7 +252,7 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             &recipe_path(output_dir, recipe_arg(step, "output")?)?,
             recipe_arg(step, "path")?,
             recipe_arg(step, "mode")?,
-            recipe_arg(step, "content")?.as_bytes(),
+            &initramfs_payload(step, output_dir)?,
             step.args.get("compression").map(String::as_str),
         )?,
         "convert-qcow2-raw" => convert_qcow2_to_raw(
@@ -269,6 +270,14 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             &recipe_path(output_dir, recipe_arg(step, "output")?)?,
             recipe_arg(step, "path")?,
         )?,
+        "install-gpt-ext4-file" => install_gpt_ext4_file(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+            recipe_arg(step, "index")?,
+            step.args.get("sector_size").map(String::as_str),
+            recipe_arg(step, "path")?,
+            recipe_arg(step, "content")?.as_bytes(),
+        )?,
         "normalize-arm64-linux-image" => normalize_arm64_linux_image(
             &recipe_path(output_dir, recipe_arg(step, "source")?)?,
             &recipe_path(output_dir, recipe_arg(step, "output")?)?,
@@ -278,16 +287,11 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
     Ok(())
 }
 
-fn extract_gpt_partition(
+fn gpt_partition_range(
     source: &Path,
-    dest: &Path,
     index: &str,
     sector_size: Option<&str>,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        source != dest,
-        "GPT source and partition output must differ"
-    );
+) -> anyhow::Result<(u64, u64)> {
     let index = index
         .parse::<u32>()
         .context("GPT partition index must be a positive integer")?;
@@ -303,19 +307,6 @@ fn extract_gpt_partition(
         matches!(sector_size, 512 | 4096),
         "GPT sector size must be 512 or 4096"
     );
-    let source_id = source_file_identity(source)?;
-    let source_stamp = PathBuf::from(format!("{}.source", dest.display()));
-    if dest.is_file()
-        && fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0) > 0
-        && fs::read_to_string(&source_stamp).unwrap_or_default() == source_id
-    {
-        println!(
-            "[fetch-guest] GPT partition already extracted: {}",
-            dest.display()
-        );
-        return Ok(());
-    }
-
     let source_len = fs::metadata(source)
         .with_context(|| format!("failed to inspect GPT disk {}", source.display()))?
         .len();
@@ -376,6 +367,29 @@ fn extract_gpt_partition(
             .is_some_and(|end| end <= source_len),
         "GPT partition exceeds disk image"
     );
+    Ok((offset, length))
+}
+
+fn extract_gpt_partition(
+    source: &Path,
+    dest: &Path,
+    index: &str,
+    sector_size: Option<&str>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        source != dest,
+        "GPT source and partition output must differ"
+    );
+    let (offset, length) = gpt_partition_range(source, index, sector_size)?;
+    let source_id = source_file_identity(source)?;
+    let source_stamp = PathBuf::from(format!("{}.source", dest.display()));
+    if dest.is_file()
+        && fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0) == length
+        && fs::read_to_string(&source_stamp).unwrap_or_default() == source_id
+    {
+        return Ok(());
+    }
+    let mut input = fs::File::open(source)?;
 
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
@@ -412,6 +426,123 @@ fn extract_gpt_partition(
         length,
         dest.display()
     );
+    Ok(())
+}
+
+/// Install configuration in a private disk copy, never the acquired base image.
+/// Guest executables are not run on the host and host keys are not generated here.
+fn install_gpt_ext4_file(
+    source: &Path,
+    dest: &Path,
+    index: &str,
+    sector_size: Option<&str>,
+    filesystem_path: &str,
+    content: &[u8],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(source != dest, "disk source and output must differ");
+    let path = Path::new(filesystem_path);
+    anyhow::ensure!(
+        path.is_absolute()
+            && path.file_name().is_some()
+            && path
+                .components()
+                .all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
+            && filesystem_path
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/_+.-".contains(&b)),
+        "installed ext4 path must be confined and absolute"
+    );
+    anyhow::ensure!(
+        !content.is_empty() && content.len() <= 65536,
+        "installed configuration must contain 1..65536 bytes"
+    );
+    let (offset, length) = gpt_partition_range(source, index, sector_size)?;
+    let source_id = source_file_identity(source)?;
+    let recipe = serde_json::to_vec(&(
+        "gpt-ext4-file-v1",
+        &source_id,
+        index,
+        sector_size.unwrap_or("512"),
+        filesystem_path,
+        content,
+    ))?;
+    let identity = format!("{:x}", Sha512::digest(&recipe));
+    let stamp = PathBuf::from(format!("{}.source", dest.display()));
+    if dest.is_file()
+        && fs::metadata(dest)?.len() == fs::metadata(source)?.len()
+        && fs::read_to_string(&stamp).unwrap_or_default() == identity
+    {
+        return Ok(());
+    }
+    anyhow::ensure!(!dest.exists(),
+        "configured disk already exists with a different source/recipe; choose a new output path to preserve guest data");
+    let parent = dest.parent().context("disk output has no parent")?;
+    fs::create_dir_all(parent)?;
+    let work = tempfile::Builder::new()
+        .prefix("guest-config-")
+        .tempdir_in(parent)?;
+    let partition = work.path().join("partition.ext4");
+    extract_gpt_partition(source, &partition, index, sector_size)?;
+    let partition = fs::canonicalize(partition)?;
+    fs::write(work.path().join("content"), content)?;
+    let debugfs = find_tool(&[
+        "debugfs",
+        "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
+        "/usr/local/opt/e2fsprogs/sbin/debugfs",
+        "/usr/sbin/debugfs",
+        "/usr/bin/debugfs",
+    ])?;
+    let mut commands = String::new();
+    let mut directory = String::new();
+    for component in path
+        .parent()
+        .context("configuration has no parent")?
+        .components()
+    {
+        if let Component::Normal(name) = component {
+            directory.push('/');
+            directory.push_str(name.to_str().context("non-UTF8 configuration path")?);
+            commands.push_str(&format!("mkdir {directory}\n"));
+        }
+    }
+    // mkdir of an existing directory and rm of an absent file are harmless.
+    // debugfs can exit successfully after a command error, so verify data below.
+    commands.push_str(&format!(
+        "rm {filesystem_path}\nwrite content {filesystem_path}\nset_inode_field {filesystem_path} mode 0100644\nset_inode_field {filesystem_path} uid 0\nset_inode_field {filesystem_path} gid 0\ndump {filesystem_path} readback\n"
+    ));
+    fs::write(work.path().join("commands"), commands)?;
+    let output = std::process::Command::new(debugfs)
+        .args(["-w", "-f", "commands"])
+        .arg(&partition)
+        .current_dir(work.path())
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "debugfs configuration install failed"
+    );
+    anyhow::ensure!(
+        fs::read(work.path().join("readback"))? == content,
+        "debugfs configuration readback differs"
+    );
+    anyhow::ensure!(
+        fs::metadata(&partition)?.len() == length,
+        "configuration installation changed partition length"
+    );
+    let disk = work.path().join("disk.raw");
+    fs::copy(source, &disk)?;
+    let mut output = OpenOptions::new().write(true).open(&disk)?;
+    output.seek(SeekFrom::Start(offset))?;
+    let copied = std::io::copy(&mut fs::File::open(partition)?.take(length), &mut output)?;
+    anyhow::ensure!(copied == length, "short configured partition copy");
+    output.sync_all()?;
+    anyhow::ensure!(
+        source_file_identity(source)? == source_id,
+        "base disk changed during configuration install"
+    );
+    // Atomic no-clobber publication on the same filesystem. A competing
+    // preparation must not replace a writable disk created since our check.
+    fs::hard_link(disk, dest)?;
+    write_output(&stamp, identity.as_bytes())?;
     Ok(())
 }
 
@@ -558,6 +689,109 @@ fn verify_sha512(path: &Path, expected: &str) -> anyhow::Result<()> {
     );
     println!("[fetch-guest] SHA-512 verified: {}", path.display());
     Ok(())
+}
+
+fn build_static_linux_elf(step: &RecipeStep, root: &Path, output_dir: &Path) -> anyhow::Result<()> {
+    let target = match recipe_arg(step, "architecture")? {
+        "x86_64" => "x86_64-unknown-linux-gnu",
+        "aarch64" => "aarch64-unknown-linux-gnu",
+        other => anyhow::bail!("unsupported native helper architecture {other:?}"),
+    };
+    let source = recipe_path(root, recipe_arg(step, "source")?)?;
+    anyhow::ensure!(
+        source.extension().is_some_and(|ext| ext == "c"),
+        "native helper source must be C"
+    );
+    let output = recipe_path(output_dir, recipe_arg(step, "output")?)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = output.with_extension("elf.tmp");
+    // This freestanding build uses Clang resource headers and LLD, not a
+    // discovered host GCC installation or its target runtime libraries.
+    let empty_toolchain = tempfile::tempdir()?;
+    let tool_path = std::env::var_os("AGENTOS_HOST_TOOL_PATH")
+        .or_else(|| std::env::var_os("PATH"))
+        .context("native helper compiler search path is unavailable")?;
+    let status = std::process::Command::new("clang")
+        .env("PATH", &tool_path)
+        .arg(format!(
+            "--gcc-toolchain={}",
+            empty_toolchain.path().display()
+        ))
+        .args([
+            "-target",
+            target,
+            "-ffreestanding",
+            "-fno-builtin",
+            "-fno-stack-protector",
+            "-fno-pie",
+            "-nostdlib",
+            "-static",
+            "-fuse-ld=lld",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wl,--build-id=none",
+            "-Wl,-e,_start",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&temp)
+        .status()
+        .context("compile native Linux helper")?;
+    anyhow::ensure!(status.success(), "native Linux helper compilation failed");
+    let status = std::process::Command::new("llvm-objcopy")
+        .env("PATH", &tool_path)
+        .args(["--strip-all", "--remove-section=.comment"])
+        .arg(&temp)
+        .status()
+        .context("normalize native Linux helper")?;
+    anyhow::ensure!(status.success(), "native Linux helper normalization failed");
+    fs::rename(temp, output)?;
+    Ok(())
+}
+
+fn initramfs_payload(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<Vec<u8>> {
+    match (step.args.get("content"), step.args.get("content_file")) {
+        (Some(content), None) => {
+            anyhow::ensure!(
+                !step.args.contains_key("content_sha256"),
+                "content_sha256 requires content_file"
+            );
+            Ok(content.as_bytes().to_vec())
+        }
+        (None, Some(path)) => {
+            let expected = recipe_arg(step, "content_sha256")?;
+            anyhow::ensure!(
+                expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit()),
+                "content_sha256 must contain 64 hexadecimal digits"
+            );
+            let path = recipe_path(output_dir, path)?;
+            let file = fs::File::open(&path)
+                .with_context(|| format!("open initramfs payload {}", path.display()))?;
+            anyhow::ensure!(
+                file.metadata()?.is_file(),
+                "initramfs payload must be a regular file"
+            );
+            const LIMIT: u64 = 16 * 1024 * 1024;
+            let mut bytes = Vec::new();
+            file.take(LIMIT + 1).read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                bytes.len() as u64 <= LIMIT,
+                "initramfs payload exceeds 16 MiB"
+            );
+            let actual = format!("{:x}", Sha256::digest(&bytes));
+            anyhow::ensure!(
+                actual.eq_ignore_ascii_case(expected),
+                "initramfs payload SHA-256 mismatch for {}",
+                path.display()
+            );
+            Ok(bytes)
+        }
+        _ => anyhow::bail!("initramfs requires exactly one of content or content_file"),
+    }
 }
 
 fn append_initramfs_file(
@@ -713,11 +947,41 @@ fn linux_probe_initramfs_ready(initrd: &Path) -> anyhow::Result<bool> {
 }
 
 fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
+    build_static_init(work_dir, LINUX_E2E_INIT_ASM, "aarch64-linux-gnu")
+}
+
+pub fn build_x86_initramfs() -> anyhow::Result<()> {
+    for (mode, suffix) in [(0, ""), (1, "-write"), (2, "-verify")] {
+        let root = build_tmp_dir()?;
+        let tmp = tempfile::Builder::new()
+            .prefix("x86-init-")
+            .tempdir_in(root)?;
+        let init = build_static_init(
+            tmp.path(),
+            &format!(
+                ".set STORAGE_MODE, {mode}\n{}",
+                include_str!("../../tests/platform/x86_linux_init.S")
+            ),
+            "x86_64-linux-gnu",
+        )?;
+        let mut archive = Vec::new();
+        append_newc_dir(&mut archive, ".", 1)?;
+        append_newc_file(&mut archive, "init", 2, 0o755, &init)?;
+        append_newc_trailer(&mut archive, 3)?;
+        write_output(
+            &repo_root()?.join(format!("build/x86-userspace/initrd{suffix}.bin")),
+            &archive,
+        )?;
+        println!("[x86-userspace] Built build/x86-userspace/initrd{suffix}.bin");
+    }
+    Ok(())
+}
+
+fn build_static_init(work_dir: &Path, source: &str, target: &str) -> anyhow::Result<Vec<u8>> {
     let init_s = work_dir.join("agentos-linux-e2e-init.S");
     let init_elf = work_dir.join("init");
     let normalized_elf = work_dir.join("init.normalized");
-    fs::write(&init_s, LINUX_E2E_INIT_ASM)
-        .with_context(|| format!("failed to write {}", init_s.display()))?;
+    fs::write(&init_s, source).with_context(|| format!("failed to write {}", init_s.display()))?;
 
     let clang = find_tool(&[
         "clang",
@@ -729,7 +993,7 @@ fn build_linux_e2e_init(work_dir: &Path) -> anyhow::Result<Vec<u8>> {
     let status = std::process::Command::new(&clang)
         .args([
             "-target",
-            "aarch64-linux-gnu",
+            target,
             "-nostdlib",
             "-static",
             "-fuse-ld=lld",
@@ -1346,6 +1610,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_helper_recipe_builds_reproducible_static_elf_for_both_architectures() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("helper.c"),
+            b"void _start(void) { for (;;) {} }\n",
+        )
+        .unwrap();
+        for (architecture, machine) in [("x86_64", 62u16), ("aarch64", 183u16)] {
+            let step = RecipeStep {
+                action: "build-static-linux-elf".into(),
+                args: [
+                    ("source", "helper.c"),
+                    ("output", "helper"),
+                    ("architecture", architecture),
+                ]
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+            };
+            build_static_linux_elf(&step, dir.path(), dir.path()).unwrap();
+            let first = fs::read(dir.path().join("helper")).unwrap();
+            assert_eq!(&first[..4], b"\x7fELF");
+            assert_eq!(first[4], 2); // ELF64
+            assert_eq!(u16::from_le_bytes([first[16], first[17]]), 2); // executable
+            assert_eq!(u16::from_le_bytes([first[18], first[19]]), machine);
+            build_static_linux_elf(&step, dir.path(), dir.path()).unwrap();
+            assert_eq!(fs::read(dir.path().join("helper")).unwrap(), first);
+            fs::write(
+                dir.path().join("helper.c"),
+                b"#error intentional build failure\n",
+            )
+            .unwrap();
+            assert!(build_static_linux_elf(&step, dir.path(), dir.path()).is_err());
+            assert_eq!(fs::read(dir.path().join("helper")).unwrap(), first);
+            fs::write(
+                dir.path().join("helper.c"),
+                b"void _start(void) { for (;;) {} }\n",
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn binary_initramfs_recipe_preserves_bytes_and_rejects_changed_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"\x7fELF\0\xff\x80\n";
+        fs::write(dir.path().join("helper"), payload).unwrap();
+        fs::write(dir.path().join("base"), b"old").unwrap();
+        let mut step = RecipeStep {
+            action: "append-initramfs-file".into(),
+            args: [
+                ("source", "base".into()),
+                ("output", "ready".into()),
+                ("path", "init".into()),
+                ("mode", "0755".into()),
+                ("content_file", "helper".into()),
+                ("content_sha256", format!("{:x}", Sha256::digest(payload))),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.into(), v))
+            .collect(),
+        };
+        execute_acquire_step(&step, dir.path()).unwrap();
+        let bytes = fs::read(dir.path().join("ready")).unwrap();
+        assert_eq!(&bytes[..4], b"old\0");
+        let archive = &bytes[4..];
+        assert_eq!(&archive[..6], b"070701");
+        assert_eq!(&archive[14..22], b"000081ed");
+        assert_eq!(&archive[54..62], b"00000008");
+        assert_eq!(&archive[110..115], b"init\0");
+        assert_eq!(&archive[116..124], payload);
+        fs::write(dir.path().join("helper"), b"changed").unwrap();
+        assert!(execute_acquire_step(&step, dir.path()).is_err());
+        assert_eq!(fs::read(dir.path().join("ready")).unwrap(), bytes);
+        step.args.insert("content".into(), "ambiguous".into());
+        assert!(execute_acquire_step(&step, dir.path()).is_err());
+        step.args.remove("content");
+        step.args.remove("content_sha256");
+        assert!(execute_acquire_step(&step, dir.path()).is_err());
+        step.args.insert("content_sha256".into(), "00".repeat(32));
+        step.args.insert("content_file".into(), "../helper".into());
+        assert!(execute_acquire_step(&step, dir.path()).is_err());
+    }
+
+    #[test]
     fn initramfs_overlay_is_aligned_bounded_newc() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("base.initrd");
@@ -1488,6 +1837,88 @@ mod tests {
         assert_eq!(partition.len(), 4 * 512);
         assert_eq!(&partition[..16], b"agentOS-GPT-data");
         assert!(extract_gpt_partition(&source, &dir.path().join("unused"), "2", None).is_err());
+    }
+
+    #[test]
+    fn gpt_ext4_configuration_is_private_verified_and_preserves_writable_disk() {
+        let Ok(mkfs) = find_tool(&[
+            "mkfs.ext4",
+            "/usr/sbin/mkfs.ext4",
+            "/opt/homebrew/opt/e2fsprogs/sbin/mkfs.ext4",
+        ]) else {
+            eprintln!("skipping: mkfs.ext4 is unavailable");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let partition = dir.path().join("root.ext4");
+        let length = 8 * 1024 * 1024;
+        fs::File::create(&partition)
+            .unwrap()
+            .set_len(length as u64)
+            .unwrap();
+        assert!(std::process::Command::new(mkfs)
+            .args(["-q", "-F", "-O", "^has_journal"])
+            .arg(&partition)
+            .status()
+            .unwrap()
+            .success());
+        let offset = 1024 * 1024;
+        let mut original = vec![0x5au8; offset + length + 512];
+        original[512..520].copy_from_slice(b"EFI PART");
+        original[524..528].copy_from_slice(&92u32.to_le_bytes());
+        original[584..592].copy_from_slice(&2u64.to_le_bytes());
+        original[592..596].copy_from_slice(&1u32.to_le_bytes());
+        original[596..600].copy_from_slice(&128u32.to_le_bytes());
+        original[1056..1064].copy_from_slice(&(offset as u64 / 512).to_le_bytes());
+        original[1064..1072].copy_from_slice(&((offset + length) as u64 / 512 - 1).to_le_bytes());
+        original[offset..offset + length].copy_from_slice(&fs::read(&partition).unwrap());
+        let source = dir.path().join("base.raw");
+        let output = dir.path().join("configured.raw");
+        fs::write(&source, &original).unwrap();
+        let path = "/etc/systemd/system/ssh.service.d/agentos-hostkeys.conf";
+        let config = b"[Service]\nExecStartPre=/usr/bin/ssh-keygen -A\n";
+        install_gpt_ext4_file(&source, &output, "1", None, path, config).unwrap();
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            original,
+            "base image must not change"
+        );
+        let configured = fs::read(&output).unwrap();
+        assert_eq!(&configured[..offset], &original[..offset]);
+        assert_eq!(&configured[offset + length..], &original[offset + length..]);
+        let extracted = dir.path().join("configured.ext4");
+        extract_gpt_partition(&output, &extracted, "1", None).unwrap();
+        let readback = dir.path().join("config");
+        extract_ext4_file(&extracted, &readback, path).unwrap();
+        assert_eq!(fs::read(&readback).unwrap(), config);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&readback).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+        }
+        let before = fs::metadata(&output).unwrap().modified().unwrap();
+        install_gpt_ext4_file(&source, &output, "1", None, path, config).unwrap();
+        assert_eq!(fs::metadata(&output).unwrap().modified().unwrap(), before);
+        assert!(install_gpt_ext4_file(&source, &output, "1", None, path, b"changed").is_err());
+        assert_eq!(
+            fs::read(&output).unwrap(),
+            configured,
+            "recipe changes must not erase guest data"
+        );
+        assert!(install_gpt_ext4_file(&source, &source, "1", None, path, config).is_err());
+        assert!(install_gpt_ext4_file(
+            &source,
+            &dir.path().join("bad.raw"),
+            "1",
+            None,
+            "/etc/../bad",
+            config
+        )
+        .is_err());
+        assert!(!dir.path().join("bad.raw").exists());
     }
 
     #[test]

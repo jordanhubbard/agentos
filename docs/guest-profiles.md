@@ -11,6 +11,11 @@ The source format has three states:
 - `abstract` supplies inherited defaults and cannot enter a target image;
 - `planned` describes a roadmap guest but cannot enter a target image;
 - `runtime` requires pinned kernel, DTB, and optional initrd SHA-256 identities.
+  UEFI profiles may omit the DTB; its manifest address, size, and hash are then
+  zero. Placement DTB hashes and nonzero addresses are rejected when the
+  artifact is absent. FDT boot continues to require a DTB. The existing build
+  bundle adapter accepts only `fdt-direct`; a valid UEFI manifest does not yet
+  imply that this adapter or the target VMM can execute the profile.
 
 `extends` is a root-relative profile path. The Rust compiler rejects absolute
 paths, `..`, cycles, inheritance deeper than eight files, unknown fields,
@@ -44,7 +49,7 @@ consumes `host.test`. Neither path chooses single-guest machine, memory, media,
 SSH, console, or VirtIO proof policy by distribution name. Runtime acquisition
 supports a closed set of semantic operations (HTTPS staging, archive/ISO
 extraction, SHA-512 verification, qcow2-to-raw conversion, bounded GPT
-partition extraction, ext4 file extraction, arm64 image normalization,
+partition extraction, ext4 file extraction/configuration, arm64 image normalization,
 deterministic probe-initramfs construction, and confined initramfs file
 overlays). Unknown actions and arguments fail closed. The build executor
 renders a bounded FDT template, hashes all staged artifacts, and emits a
@@ -53,6 +58,66 @@ and `profile.bin`. `vmm.mk` packages only that bundle and has no
 distribution-specific artifact or DTB branches. The VMM validates the fixed
 wire representation and checks embedded artifact sizes before the
 guest-neutral boot executor copies anything into guest RAM.
+
+For `build-initramfs-file` and `append-initramfs-file`, specify exactly one of
+inline UTF-8 `content` or `content_file`. A file payload is relative to the
+profile's acquisition output directory and requires `content_sha256` (64 hex
+digits). The executor reads at most 16 MiB, verifies the bytes before changing
+the destination, and preserves arbitrary binary data, including native ELF
+helpers. `path` remains the relative path inside the CPIO archive; `mode` is
+octal and at most `0777`. Both payload forms support `compression = "none"`
+or `"zstd"`. Existing text overlays do not need a file checksum.
+
+`build-static-linux-elf` compiles a repository-relative C `source` to an
+acquisition-directory-relative `output`, with `architecture = "x86_64"` or
+`"aarch64"`. The executor uses fixed freestanding static Clang/LLD flags and
+strips build metadata with llvm-objcopy; recipes cannot supply compiler flags
+or shell commands. Subsequent binary overlay steps pin the resulting bytes.
+
+`make fetch-guest GUEST_PROFILE=debian-amd64.toml` acquires the pinned Debian
+13 amd64 cloud image, extracts its kernel and initrd, preserves its stock udev
+hooks, and appends native hooks and virtio module configuration. Its
+`uefi-artifacts` build adapter provides an acquisition directory without FDT
+template fields. The FDT bundle executor still rejects UEFI profiles.
+`make gate-x86_64-linux-login X86_BOOT_PROFILE=debian-amd64.toml` selects,
+acquires and verifies this profile's kernel and initrd, emits its NUL-terminated
+command line, and applies its RAM budget. Supply the independently pinned
+`X86_FIRMWARE_IMAGE`/`X86_FIRMWARE_SHA256` and a disposable `X86_ROOT_DISK` as
+usual; separate `X86_BOOT_KERNEL`, initrd, command-line and RAM overrides
+conflict with profile selection. The selector accepts only the currently
+supported single primary guest, one vCPU, fixed VMM RAM mapping, canonical
+net/block/console devices and no requested CPU-feature policy. The emitted
+`build/tmp/x86-boot-profile/profile.bin` is embedded read-only in the x86 VMM
+after a build-time hash check. Before publishing boot blobs through fw_cfg,
+the VMM validates the manifest, compares its guest/device/RAM policy with the
+provisioned configuration, matches the complete command line, and recomputes
+kernel and initrd SHA-256 digests. Unsupported CPU-feature requests and
+artifact/resource mismatches stop the boot. UEFI still chooses image placement
+and entry; manifest artifact windows are resource bounds, not instructions to
+the EFI loader. This binding does not authenticate a release or replace secure
+boot. SSH provisioning remains separate integration work. The generated `disk.raw` is
+source media; use a disposable copy for writable boot tests.
+`install-gpt-ext4-file` installs one root-owned 0644 configuration file
+(1–65536 bytes) into an ext4 partition of a private GPT disk copy. Its arguments
+are `source`, `output`, `index`, `path`, `content`, and optional `sector_size`
+(512 or 4096). The Rust executor verifies the installed bytes before publishing
+the output and leaves the base disk unchanged. A matching cached recipe keeps
+the existing writable output, including guest changes. A different recipe or
+base image requires a new output path; preparation refuses to replace an
+existing configured disk. The host needs e2fsprogs `debugfs`.
+
+The Debian profile uses this operation to install an SSH service drop-in. Since
+cloud-init is disabled, the guest runs its native `ssh-keygen -A` before the
+normal `sshd -t` check. Existing keys are retained; no private key is baked into
+the acquired image, and authentication policy is unchanged. A second configuration
+file gives the already-enabled networkd service a `virtio_net` driver match and
+IPv4 DHCP. The initramfs leaves the image's enabled systemd-resolved service
+available so its existing stub resolver link can use DHCP-provided DNS.
+The `.networked.raw` disk is the writable boot medium;
+`.configured.raw` is the SSH-configured intermediate, and the dated `.raw` disk
+remains the base for artifact extraction. No interface name or static guest IP
+is selected by the network configuration. Test-harness SSH account provisioning
+remains a separate operation.
 
 Legacy `--guest-os` and `GUEST_OS` spellings remain compatibility selectors.
 For a single guest, the value is resolved through the profile's `aliases`
@@ -130,6 +195,13 @@ make run GUEST_PROFILE=ubuntu-e2e.toml
 make run GUEST_SCENARIO=both
 make run-fast GUEST_SCENARIO=both
 ```
+
+Launch and qualification builds derive `GUEST_GRAPHICS` and `GUEST_INPUT`
+from the selected profiles' device lists, including every guest in a scenario.
+For example, `make run GUEST_PROFILE=debian-input.toml` builds the input
+virtualizer and guest backends automatically. Absent capabilities are passed
+as empty values so inherited environment settings cannot add an unrequested backend.
+Direct `make build` still requires the corresponding optional build flags.
 
 The canonical Make selector is `GUEST_PROFILE` for one profile,
 `GUEST_SCENARIO` for a data-defined composition, or

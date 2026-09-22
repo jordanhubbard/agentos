@@ -5,7 +5,7 @@
  * adapter connects these device-local queues to the separate serial_virt PD.
  */
 
-#include <libvmm/libvmm.h>
+#include <libvmm/util/util.h>
 #include <libvmm/virtio/config.h>
 #include <libvmm/virtio/console.h>
 #include <sddf/serial/queue.h>
@@ -24,6 +24,9 @@ static int                          g_probed;
 static int                          g_driver_ok;
 static int                          g_tx_pumped;
 static int                          g_rx_pumped;
+static uintptr_t                    g_guest_base;
+static unsigned                     g_virq;
+static bool                         g_recreate_pending;
 
 static void zero_bytes(void *ptr, uint32_t size)
 {
@@ -33,8 +36,10 @@ static void zero_bytes(void *ptr, uint32_t size)
     }
 }
 
-void aos_vmm_virtio_console_init(void)
+bool aos_vmm_virtio_console_init_at(uintptr_t guest_base, unsigned virq)
 {
+    if (g_ready || !guest_base || (guest_base & (AOS_VIRTIO_CONSOLE_MMIO_SIZE-1u)))
+        return false;
     zero_bytes(&g_aos_console, (uint32_t)sizeof(g_aos_console));
     zero_bytes(&g_rx_queue, (uint32_t)sizeof(g_rx_queue));
     zero_bytes(&g_tx_queue, (uint32_t)sizeof(g_tx_queue));
@@ -52,18 +57,37 @@ void aos_vmm_virtio_console_init(void)
     g_rx_queue.producer_signalled = 1u;
 
     if (!virtio_mmio_console_init(&g_aos_console,
-                                  AOS_VIRTIO_CONSOLE_GUEST_IPA,
+                                  guest_base,
                                   AOS_VIRTIO_CONSOLE_MMIO_SIZE,
-                                  AOS_VIRTIO_CONSOLE_VIRQ,
+                                  virq,
                                   &g_rx, &g_tx, 0)) {
         LOG_VMM_ERR("emulated virtio-console: init failed\n");
-        return;
+        return false;
     }
 
     g_ready = 1;
+    g_recreate_pending = false;
+    g_guest_base = guest_base;
+    g_virq = virq;
     LOG_VMM("emulated virtio-console IPA 0x%lx IRQ %u (sDDF serial queues)\n",
-            (unsigned long)AOS_VIRTIO_CONSOLE_GUEST_IPA,
-            (unsigned)AOS_VIRTIO_CONSOLE_VIRQ);
+            (unsigned long)g_guest_base, g_virq);
+    return true;
+}
+
+bool aos_vmm_virtio_console_recreate(void)
+{
+    if (!g_guest_base || (!g_recreate_pending &&
+        (!g_ready || !g_aos_console.quiesced))) return false;
+    g_recreate_pending = true;
+    g_ready = 0;
+    g_probed = g_driver_ok = g_tx_pumped = g_rx_pumped = 0;
+    return aos_vmm_virtio_console_init_at(g_guest_base, g_virq);
+}
+
+void aos_vmm_virtio_console_init(void)
+{
+    (void)aos_vmm_virtio_console_init_at(AOS_VIRTIO_CONSOLE_GUEST_IPA,
+                                       AOS_VIRTIO_CONSOLE_VIRQ);
 }
 
 void aos_vmm_virtio_console_after_fault(void)
@@ -78,13 +102,13 @@ void aos_vmm_virtio_console_after_fault(void)
     if (!g_probed && (status & VIRTIO_CONFIG_S_ACKNOWLEDGE)) {
         g_probed = 1;
         LOG_VMM("emulated virtio-console: guest probed IPA 0x%lx (status=0x%x)\n",
-                (unsigned long)AOS_VIRTIO_CONSOLE_GUEST_IPA,
+                (unsigned long)g_guest_base,
                 (unsigned)status);
     }
     if (!g_driver_ok && (status & VIRTIO_CONFIG_S_DRIVER_OK)) {
         g_driver_ok = 1;
         LOG_VMM("emulated virtio-console: guest DRIVER_OK virq %u\n",
-                (unsigned)AOS_VIRTIO_CONSOLE_VIRQ);
+                g_virq);
     }
 
     (void)virtio_console_handle_rx(&g_aos_console);
@@ -92,12 +116,18 @@ void aos_vmm_virtio_console_after_fault(void)
 
 bool aos_vmm_virtio_console_driver_ready(void)
 {
-    return g_ready && g_driver_ok;
+    return g_ready && !g_aos_console.quiescing &&
+        (g_aos_console.virtio_device.regs.Status & VIRTIO_CONFIG_S_DRIVER_OK) != 0;
 }
 
 bool aos_vmm_virtio_console_tx_active(void)
 {
     return aos_vmm_virtio_console_driver_ready() && g_tx_pumped;
+}
+
+bool aos_vmm_virtio_console_quiesce(void)
+{
+    return !g_ready || virtio_console_quiesce(&g_aos_console);
 }
 
 uint32_t aos_vmm_virtio_console_drain_tx(uint8_t *dst, uint32_t max)
@@ -129,7 +159,7 @@ bool aos_vmm_virtio_console_push_rx(uint8_t byte)
 
 bool aos_vmm_virtio_console_push_rx_bytes(const uint8_t *bytes, uint32_t len)
 {
-    if (!g_ready || !g_driver_ok || bytes == 0 || len == 0u) {
+    if (!aos_vmm_virtio_console_driver_ready() || bytes == 0 || len == 0u) {
         return false;
     }
     /*

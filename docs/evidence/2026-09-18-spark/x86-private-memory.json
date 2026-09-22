@@ -1,0 +1,28 @@
+{
+  "qualification": "Private x86 RAM and ROM allocation authority",
+  "runtime_revision": "c36b4a80f1b3fcf3ecb8fee94103d97749396cd8",
+  "source_clean_during_tests": true,
+  "spark": {
+    "host_tests": "make test-x86-guest-objects-host and make test-host: PASS, exit0",
+    "host_log_sha256": "478b91f0c78cc87b696e1feac3ecd3bef005181f544a6f4eaee03b43619523e0",
+    "gate": "make gate: PASS, exit0; both architecture boot checks and ARM guest net/block/console proofs",
+    "gate_log_sha256": "0bd9989c1f9c1ca756aede86c01512f36c55692ae5a1ea357214c4cbde863505"
+  },
+  "intel": {
+    "host": "madmax Intel Linux via puck.local",
+    "command": "make gate-x86_64-debian-ssh SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=600 with retained pinned Debian media, SSH host key and OVMF",
+    "result": "PASS, exit0; private RAM/ROM and VCPU/EPT pool delegation markers, public-key SSH with pinned Ed25519 host key, x86_64 and sync",
+    "log_sha256": "87ef9b9c478766388fd0f30c494fcc6a9c2b0b0f53a9ccfe60e049c36b84683f",
+    "serial_log_sha256": "b8bbb21d51d4c532b232c737ef4e5ee9a4a7f10a7c1a2be13e7b83bc98012cb9",
+    "console_log_sha256": "d4e794c6cb4b4b585cb50aaa585fe73e321a4cf751090f3e953189c31c92b897",
+    "qemu_pid": 3236006,
+    "qemu_log_stem": "agentos-qemu-1qS3f4",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5"
+  },
+  "limits": [
+    "Boot/I/O qualification of allocation ownership, not runtime revocation",
+    "Pool slot bounds and allocation failure propagation are host-tested",
+    "x86 lifecycle control, service quiescence and full teardown remain outstanding",
+    "Required CI, canonical integration and release remain pending"
+  ]
+}

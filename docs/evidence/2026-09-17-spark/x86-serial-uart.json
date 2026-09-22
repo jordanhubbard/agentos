@@ -1,0 +1,38 @@
+{
+  "qualification": "Intel guest hvc0 request/reply through canonical serial queues and COM2 driver PD",
+  "runtime_revision": "b122f395f370eb830d5bfada5e279b90ff54d1d8",
+  "task": "task_ede60b058fc745d296bad77044a57420",
+  "intel": {
+    "host": "madmax Intel Linux nested KVM",
+    "command": "make gate-x86_64-userspace SEL4_SDK_VERSION=2.3.0 with firmware/kernel pins retained in x86-virtio-firmware.json and the initrd pin below",
+    "initrd_build": "make x86-userspace-initramfs",
+    "initrd_sha256": "4ca368d8cf181ba151f6e4cbc79ca312e14c9822970db0c3292a5c5d616f7745",
+    "result": "PASS exit 0; exact COM2 request/reply and Linux PID 1 syscall proof",
+    "log_sha256": "80c26a3fb7ffb2192210eb20c0f622011b56ff5a9c55237ee1643a001abd9992",
+    "image_sha256": "3a680f2c8db8fee0c2878246f5db68e2d2c93296a35c911ecb267c35fc655a6a",
+    "retained_image": "/tmp/agentos-v04-intel-discovery/build/evidence/x86-serial-uart-b122f39/agentos.img",
+    "scope": [
+      "Root starts serial_pd, serial_virt and the VMM with separate frontend and guest queue pages",
+      "serial_pd receives only COM2 ports 2f8..2ff; it polls bounded batches with a 1ms/10ms scheduling reservation",
+      "Host receives exact readiness bytes, sends the request and compares every reply byte through the QEMU COM2 socket",
+      "Guest Linux uses raw hvc0 through the real libvmm console and private IOAPIC interrupt path",
+      "PID 1 checks complete only after the console exchange; host requires both byte evidence and the root userspace marker"
+    ]
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0",
+    "log_sha256": "970565bd6ca7922913101106bc7d782781b6bb09191d4670833419b63f4ed32c"
+  },
+  "focused": {
+    "command": "make test-serial-uart-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "result": "PASS exit 0; exact UART bytes, retained TX/RX under backpressure, I/O failure handling, VMM and serial driver ELF links",
+    "log_sha256": "988083a3d3e2b96fdc23f1c11a3ba5f7bc562169ad5b057e4083c0f5ebd4411a"
+  },
+  "retained_directory": "build/evidence/x86-serial-uart-b122f39",
+  "limitations": [
+    "This is a short exchange, not sustained throughput, disconnect recovery or concurrent guest console qualification.",
+    "The polling driver has no hardware IRQ path; COM1 remains root bootstrap diagnostics.",
+    "The external CC/agentos_gui API, x86 net/block, lifecycle reclamation, Debian parity and release integration remain incomplete."
+  ]
+}

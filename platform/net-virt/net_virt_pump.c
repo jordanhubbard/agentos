@@ -109,6 +109,23 @@ int aos_net_virt_add_client(aos_net_virt_t *v, const aos_net_virt_client_t *c)
     return 0;
 }
 
+int aos_net_virt_remove_client(aos_net_virt_t *v, const aos_net_virt_client_t *c)
+{
+    if (!v || !c || !c->tx_active || v->num_clients > AOS_NET_MAX_CLIENTS)
+        return -1;
+    for (uint32_t i = 0u; i < v->num_clients;) {
+        if (v->clients[i].tx_active != c->tx_active) {
+            i++;
+            continue;
+        }
+        for (uint32_t j = i + 1u; j < v->num_clients; j++)
+            v->clients[j - 1u] = v->clients[j];
+        v->num_clients--;
+        aos_bzero(&v->clients[v->num_clients], sizeof(v->clients[0]));
+    }
+    return 0;
+}
+
 static int deliver_one(aos_net_virt_client_t *dst, const uint8_t *src,
                        uint16_t len)
 {

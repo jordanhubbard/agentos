@@ -1,0 +1,66 @@
+{
+  "schema": "agentos.x86_cpu_profile.v1",
+  "task": "task_824221947c2f48f2b6c82f0efbcbf1fb",
+  "accepted_for_v04_release": false,
+  "runtime_revision": "42833d57eaedf12faf852cc4c3d4577987416b91",
+  "policy": {
+    "model": "Fixed synthetic x86 CPUID baseline",
+    "required": [
+      "fp",
+      "simd"
+    ],
+    "prohibited": [
+      "crypto",
+      "rng",
+      "vector",
+      "nested-virt"
+    ],
+    "semantics": "FP=x87; SIMD=SSE/SSE2. Crypto=AES/PCLMUL, RNG=RDRAND/RDSEED, vector=AVX family, nested-virt=VMX/SVM. These are advertised feature requirements, not instruction filtering. Mandatory FP/SIMD cannot be disabled."
+  },
+  "host": {
+    "command": "make test-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "feature_mask_pairs": 4096,
+    "log_sha256": "5f8c537933dd89224d11fbd9dd56d1735a712c0cc7af814af885667e34ee30e2"
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "exit_code": 0,
+    "log_sha256": "562ec191f4f75c1eff9997628ab7d2a33159ddb6aeb7f111fd87c501afeec489"
+  },
+  "guest_witness": {
+    "method": "Pinned Ed25519 public-key SSH: cat /proc/cpuinfo; cat /proc/meminfo",
+    "exit_code": 0,
+    "log_sha256": "779003ff360f6592cb74c05eb97bc8ad910ef34c9cc581189ce72d3eaccab4d5",
+    "processor_count": 1,
+    "mem_total_kib": 2017464,
+    "flags": "fpu de pse tsc msr pae cx8 apic pge cmov mmx fxsr sse sse2 syscall nx lm constant_tsc rep_good nopl nonstop_tsc cpuid tsc_known_freq hypervisor pti arat",
+    "assertion": "fpu/sse/sse2 present; aes/pclmulqdq/rdrand/rdseed/avx-family/vmx/svm absent"
+  },
+  "managed": {
+    "command": "make gate-x86_64-cc-linux SEL4_SDK_VERSION=2.3.0 X86_BOOT_PROFILE=debian-amd64-2g.toml X86_ROOT_DISK=/tmp/agentos-debian-amd64/recreate-3ea3554.raw X86_SSH_KEY=/tmp/agentos-debian-amd64/ssh-seed-19/identity X86_SSH_PORT=12224 X86_SSH_KNOWN_HOSTS=/tmp/agentos-v04-intel-discovery/build/tmp/agentos-qemu-LxAV1n.known_hosts X86_FIRMWARE_IMAGE=/tmp/agentos-ovmf-2024.02-2ubuntu0.9.fd X86_FIRMWARE_SHA256=101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5 QEMU_TEST_TIMEOUT=600",
+    "status": "passed",
+    "handles": [
+      1,
+      2
+    ],
+    "exit_code": 0,
+    "full_log_sha256": "cf977e51a7183b8b08ec375a565a0526b6afaf730d36bab6d47cf85630478491",
+    "root_task_sha256": "86be5e4e7ed30c0a1203fe850dd409d18b9c1519091da0d179f0325cc709a33e",
+    "target_log_sha256": "81acbcc7945ae97acc6c6b4bb29f30bd5bf3a7cac8f410992aee3bcec7b01399",
+    "first_console_sha256": "4a8963fbd40f77598f7e0bb00c698e103aef38e642c7c4055a8a94a3c06ec5e8",
+    "second_console_sha256": "57a9ea0e9d845a8ebe89b48705621f4c48d8eb1ec4879f14fbca427fd79557e2",
+    "proofs": [
+      "Both generations reached Debian login and passed pinned Ed25519 SSH with uname x86_64 and sync",
+      "Both passed exact console input echo and destroy",
+      "Recreation used distinct public handles without restarting agentOS",
+      "Stale handle rejection"
+    ]
+  },
+  "artifact_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-18-cpu-profile",
+  "limitations": [
+    "The profile selects a fixed supported exposure; optional feature emulation and multi-vCPU execution are not established.",
+    "Dynamic resources, concurrent guest isolation, graphical acceptance, required GitHub checks and canonical integration remain pending.",
+    "Not v0.4 release acceptance."
+  ]
+}

@@ -30,7 +30,7 @@
 
 #include "agentos.h"
 #include "sel4_ipc.h"
-#include "serial_log.h"
+#include <stdio.h>
 #include "system_desc.h"
 #include "nameserver.h"
 #include <contracts/blk_virt_contract.h>
@@ -38,6 +38,9 @@
 #include <platform/blk_layout.h>
 #include <platform/blk_host_layout.h>
 #include <platform/blk_virt_pump.h>
+#include <platform/blk_rebind.h>
+#include "contracts/queue_rebind_caps.h"
+#include "boot_info.h"
 
 _Static_assert(sizeof(blk_virt_attach_req_t) == 16u,
                "blk_virt ATTACH request wire size");
@@ -48,12 +51,12 @@ _Static_assert(AOS_BLK_SHMEM_VA != AGENTOS_BLK_SHARED_VA,
 _Static_assert(AOS_BLK_TRANSFER_SIZE % AOS_HOST_BLK_SECTOR_SIZE == 0u,
                "sDDF transfer unit must be whole host sectors");
 
-/* Unmapped: log_drain_write falls back to the (release-silent) debug putc.
- * Visible diagnostics go through serial_pd via serial_log_t. */
+/* Root-provisioned log ring on ARM; the common debug fallback elsewhere. */
 uintptr_t log_drain_rings_vaddr;
 
 typedef struct {
     uint8_t               attached;
+    uint8_t               retired;
     uint8_t               hw;           /* requests go to virtio_blk (else RAM) */
     uint8_t               pumped_marked;
     uint8_t               read_marked;
@@ -67,31 +70,22 @@ typedef struct {
 } bv_client_t;
 
 static bv_client_t  g_clients[AOS_BLK_MAX_CLIENTS];
+static uint32_t     g_generation[AOS_BLK_MAX_CLIENTS];
 static uint8_t      g_ram_disk[AOS_BLK_MAX_CLIENTS][AOS_BLK_DISK_BYTES]
                         __attribute__((aligned(4096)));
-static serial_log_t g_log = { .ep = PD_CNODE_SLOT_SERIAL_EP };
 
 /* ── diagnostics ────────────────────────────────────────────────────────── */
 
-static void bv_puts(const char *s)
+static void bv_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void bv_log(const char *fmt, ...)
 {
-    serial_log_puts(&g_log, s);
-}
-
-static void bv_dec(uint64_t v)
-{
-    char buf[24];
-    int i = 23;
-
-    buf[i] = '\0';
-    if (v == 0u) {
-        buf[--i] = '0';
-    }
-    while (v > 0u && i > 0) {
-        buf[--i] = (char)('0' + (v % 10u));
-        v /= 10u;
-    }
-    bv_puts(&buf[i]);
+    /* Leave room for the common logger's PD prefix and trailing newline. */
+    char buf[160];
+    va_list args;
+    va_start(args, fmt);
+    (void)vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    agentos_log_info("blk_virt", buf);
 }
 
 static uint32_t rd32(const uint8_t *p, uint32_t off)
@@ -251,7 +245,7 @@ static aos_blk_resp_status_t host_blk_backend(
 
     c->requests++;
     if (data_end > AOS_BLK_DATA_BYTES) {
-        bv_puts("[blk_virt] request exceeds the client data cells\n");
+        bv_log("request exceeds the client data cells");
         return AOS_BLK_RESP_ERR_INVALID_PARAM;
     }
 
@@ -262,13 +256,8 @@ static aos_blk_resp_status_t host_blk_backend(
                                nbytes);
         if (rc == AOS_HOST_BLK_OK && !c->read_marked) {
             c->read_marked = 1u;
-            bv_puts("[blk_virt] host-media read sector=");
-            bv_dec(sector);
-            bv_puts(" count=");
-            bv_dec(sectors);
-            bv_puts(" client=");
-            bv_dec(c->client_id);
-            bv_puts("\n");
+            bv_log("host-media read sector=%lu count=%u client=%u",
+                   (unsigned long)sector, sectors, c->client_id);
         }
         break;
     case AOS_BLK_REQ_WRITE:
@@ -287,11 +276,7 @@ static aos_blk_resp_status_t host_blk_backend(
     if (rc == AOS_HOST_BLK_OK) {
         return AOS_BLK_RESP_OK;
     }
-    bv_puts("[blk_virt] host request failed media=");
-    bv_dec(c->media_id);
-    bv_puts(" rc=");
-    bv_dec(rc);
-    bv_puts("\n");
+    bv_log("host request failed media=%u rc=%u", c->media_id, rc);
     if (rc == AOS_HOST_BLK_ERR_NODEV) {
         return AOS_BLK_RESP_ERR_NO_DEVICE;
     }
@@ -312,7 +297,7 @@ static void bv_notify_vmm(const bv_client_t *c)
 
 static seL4_CPtr vmm_notify_for_slot(uint32_t vmm_slot)
 {
-#if defined(AGENTOS_GUEST_PRIMARY)
+#if defined(AGENTOS_GUEST_PRIMARY) || defined(AGENTOS_X86_FIRMWARE_RESET)
     if (vmm_slot == BLK_VIRT_VMM_SLOT_PRIMARY) {
         return (seL4_CPtr)PD_CNODE_SLOT_BLK_PRIMARY_NOTIFY;
     }
@@ -367,11 +352,8 @@ static void bv_service(void)
                 c->responses += n;
                 if (!c->pumped_marked) {
                     c->pumped_marked = 1u;
-                    bv_puts("[blk_virt] pumped ");
-                    bv_dec(n);
-                    bv_puts(" request(s) for client ");
-                    bv_dec(c->client_id);
-                    bv_puts(c->hw ? " via virtio_blk\n" : " via RAM disk\n");
+                    bv_log("pumped %u request(s) for client %u via %s",
+                           n, c->client_id, c->hw ? "virtio_blk" : "RAM disk");
                 }
                 bv_notify_vmm(c);
             }
@@ -410,7 +392,7 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
                client_id >= AOS_BLK_MAX_CLIENTS ||
                media_id >= AOS_HOST_BLK_MEDIA_COUNT || vmm_notify == 0u) {
         status = BLK_VIRT_ERR_BAD_CLIENT;
-    } else if (g_clients[client_id].attached) {
+    } else if (g_clients[client_id].attached || g_clients[client_id].retired) {
         status = BLK_VIRT_ERR_BUSY;
     }
 
@@ -465,31 +447,19 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
         bv_fence();
         c->attached = 1u;
 
-        bv_puts("[blk_virt] ATTACH client=");
-        bv_dec(client_id);
-        bv_puts(" vmm_slot=");
-        bv_dec(vmm_slot);
-        bv_puts(" media=");
-        bv_dec(media_id);
-        bv_puts(c->hw ? " hw=1\n" : " hw=0 (RAM disk backend)\n");
+        bv_log("ATTACH client=%u vmm_slot=%u media=%u %s",
+               client_id, vmm_slot, media_id,
+               c->hw ? "hw=1" : "hw=0 (RAM disk backend)");
         if (c->hw) {
-            bv_puts("[blk_virt] host media ");
-            bv_dec(media_id);
-            bv_puts(" ready sectors=");
-            bv_dec(host_sectors);
-            bv_puts(host_read_only ? " read-only" : " writable");
-            bv_puts("\n");
+            bv_log("host media %u ready sectors=%lu %s", media_id,
+                   (unsigned long)host_sectors,
+                   host_read_only ? "read-only" : "writable");
         } else {
-            bv_puts("[blk_virt] host unavailable rc=");
-            bv_dec(rc);
-            bv_puts("; serving ");
-            bv_dec(AOS_BLK_DISK_BLOCKS);
-            bv_puts("-block RAM disk\n");
+            bv_log("host unavailable rc=%u; serving %u-block RAM disk",
+                   rc, AOS_BLK_DISK_BLOCKS);
         }
     } else {
-        bv_puts("[blk_virt] ATTACH rejected status=");
-        bv_dec(status);
-        bv_puts("\n");
+        bv_log("ATTACH rejected status=%u", status);
     }
 
     wr32(rep->data, 0u, status);
@@ -502,7 +472,76 @@ static void handle_attach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep
     rep->opcode = SEL4_ERR_OK;
 }
 
+static void handle_detach(uint64_t badge, const sel4_msg_t *req, sel4_msg_t *rep)
+{
+    uint32_t client = rd32(req->data, 4u), slot = rd32(req->data, 8u);
+    uint32_t media = rd32(req->data, 12u), status = BLK_VIRT_OK;
+    if (req->length != sizeof(blk_virt_attach_req_t) ||
+        rd32(req->data, 0u) != BLK_VIRT_CONTRACT_VERSION) {
+        status = BLK_VIRT_ERR_VERSION;
+    } else if (!virt_media_authorized(badge, client, slot, media) ||
+               client >= AOS_BLK_MAX_CLIENTS ||
+               media >= AOS_HOST_BLK_MEDIA_COUNT || !vmm_notify_for_slot(slot)) {
+        status = BLK_VIRT_ERR_BAD_CLIENT;
+    } else {
+        bv_client_t *c = &g_clients[client];
+        /* Driver transfers are synchronous; serialized control cannot run
+         * inside one. Both queues must be empty before discarding pointers. */
+        if (c->attached && !aos_blk_virt_detach(&c->virt)) {
+            status = BLK_VIRT_ERR_BUSY;
+        } else {
+            *c = (bv_client_t){ .retired = 1u };
+            bv_log("DETACH client=%u queues released", client);
+        }
+    }
+    wr32(rep->data, 0u, status);
+    wr32(rep->data, 4u, BLK_VIRT_CONTRACT_VERSION);
+    rep->length = sizeof(blk_virt_attach_reply_t);
+    rep->opcode = SEL4_ERR_OK;
+}
+
 /* ── main loop ──────────────────────────────────────────────────────────── */
+
+static uint32_t rebind_queue(uint64_t badge, const blk_virt_rebind_req_t *req)
+{
+    /* Validate client authority before indexing or touching retired mappings. */
+    if (!virt_media_authorized(badge, req->client, req->client, req->client))
+        return BLK_VIRT_ERR_BAD_CLIENT;
+    bv_client_t *c = &g_clients[req->client];
+    uint32_t status = aos_blk_rebind_validate(badge, req, sizeof(*req), c->attached,
+        c->retired, g_generation[req->client]);
+    if (status != BLK_VIRT_OK) return status;
+    seL4_CPtr frame = AOS_QUEUE_SERVICE_FRAME_BASE + req->client;
+    if (seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, frame,
+            AOS_QUEUE_SERVICE_CNODE_BITS) != seL4_NoError)
+        return BLK_VIRT_ERR_RESOURCE;
+    if (seL4_Untyped_Retype(AOS_QUEUE_SERVICE_RECEIVE, seL4_ARCH_LargePageObject,
+            0u, AOS_QUEUE_SERVICE_CNODE, 0u, 0u, frame, 1u) != seL4_NoError)
+        return BLK_VIRT_ERR_RESOURCE;
+    uintptr_t va = aos_blk_rebind_queue_va(req->client);
+    if (seL4_ARCH_Page_Map(frame, AOS_QUEUE_SERVICE_VSPACE, va, seL4_AllRights,
+            seL4_ARM_Default_VMAttributes) != seL4_NoError) {
+        status = BLK_VIRT_ERR_RESOURCE;
+    } else {
+        aos_blk_virt_client_t fresh;
+        aos_blk_client_bind((uint8_t *)AOS_BLK_SHMEM_VA, req->client, &fresh);
+        aos_blk_client_init_queues(&fresh);
+        sel4_msg_t attach = {.length = sizeof(blk_virt_attach_req_t)}, reply = {0};
+        wr32(attach.data, 0u, BLK_VIRT_CONTRACT_VERSION);
+        wr32(attach.data, 4u, req->client);
+        wr32(attach.data, 8u, req->client);
+        wr32(attach.data, 12u, req->client);
+        c->retired = 0u;
+        handle_attach(badge, &attach, &reply);
+        status = rd32(reply.data, 0u);
+        if (status == BLK_VIRT_OK) g_generation[req->client] = req->generation;
+        else *c = (bv_client_t){.retired = 1u};
+    }
+    if (status != BLK_VIRT_OK)
+        (void)seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, frame,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
+    return status;
+}
 
 static void blk_virt_run(seL4_CPtr ep)
 {
@@ -510,6 +549,10 @@ static void blk_virt_run(seL4_CPtr ep)
         seL4_Word badge = 0u;
         sel4_msg_t req = {0};
         sel4_msg_t rep = {0};
+        (void)seL4_CNode_Delete(AOS_QUEUE_SERVICE_CNODE, AOS_QUEUE_SERVICE_RECEIVE,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
+        seL4_SetCapReceivePath(AOS_QUEUE_SERVICE_CNODE, AOS_QUEUE_SERVICE_RECEIVE,
+            AOS_QUEUE_SERVICE_CNODE_BITS);
 #ifdef CONFIG_KERNEL_MCS
         seL4_MessageInfo_t info = seL4_Recv(ep, &badge, AGENTOS_IPC_REPLY_CAP);
 #else
@@ -522,17 +565,49 @@ static void blk_virt_run(seL4_CPtr ep)
         seL4_Word label = seL4_MessageInfo_get_label(info);
         (void)badge;
 
-        if (label == BLK_VIRT_OP_ATTACH) {
+        if (label == BLK_VIRT_OP_ATTACH || label == BLK_VIRT_OP_DETACH ||
+            label == BLK_VIRT_OP_REBIND) {
             _sel4_mrs_to_msg(&req);
-            handle_attach(badge, &req, &rep);
+            bool rebound = false;
+            uint32_t status = BLK_VIRT_ERR_VERSION;
+            bool valid = seL4_MessageInfo_get_length(info) == _SEL4_MR_COUNT &&
+                req.opcode == label && req.length <= sizeof(req.data);
+            if (label == BLK_VIRT_OP_REBIND) {
+                blk_virt_rebind_req_t rebind = {0};
+                if (valid && req.length == sizeof(rebind) &&
+                    seL4_MessageInfo_get_extraCaps(info) == 1u &&
+                    seL4_MessageInfo_get_capsUnwrapped(info) == 0u) {
+                    __builtin_memcpy(&rebind, req.data, sizeof(rebind));
+                    status = rebind_queue(badge, &rebind);
+                }
+                rebound = status == BLK_VIRT_OK;
+                wr32(rep.data, 0u, status);
+                wr32(rep.data, 4u, BLK_VIRT_REBIND_VERSION);
+                wr32(rep.data, 8u, rebind.generation);
+                wr32(rep.data, 12u, rebound && g_clients[rebind.client].hw ?
+                    BLK_VIRT_HW_VIRTIO_BLK : BLK_VIRT_HW_NONE);
+                rep.length = sizeof(blk_virt_rebind_reply_t);
+                rep.opcode = SEL4_ERR_OK;
+                if (rebound) seL4_SetCap(0, AOS_QUEUE_SERVICE_FRAME_BASE + rebind.client);
+            } else if (valid && seL4_MessageInfo_get_extraCaps(info) == 0u &&
+                       req.length == sizeof(blk_virt_attach_req_t)) {
+                if (label == BLK_VIRT_OP_ATTACH) handle_attach(badge, &req, &rep);
+                else handle_detach(badge, &req, &rep);
+            } else {
+                wr32(rep.data, 0u, status);
+                wr32(rep.data, 4u, BLK_VIRT_CONTRACT_VERSION);
+                rep.length = sizeof(blk_virt_attach_reply_t);
+                rep.opcode = SEL4_ERR_OK;
+            }
             _sel4_msg_to_mrs(&rep);
             seL4_MessageInfo_t reply = seL4_MessageInfo_new(
-                (seL4_Word)rep.opcode, 0u, 0u, (seL4_Word)_SEL4_MR_COUNT);
+                (seL4_Word)rep.opcode, 0u, rebound ? 1u : 0u, (seL4_Word)_SEL4_MR_COUNT);
 #ifdef CONFIG_KERNEL_MCS
             seL4_Send(AGENTOS_IPC_REPLY_CAP, reply);
 #else
             seL4_Reply(reply);
 #endif
+            seL4_SetCap(0, seL4_CapNull);
             /* A client may have queued requests before its ATTACH reply
              * landed; serve them without waiting for a kick. */
             bv_service();
@@ -550,6 +625,6 @@ void pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     agentos_log_boot("blk_virt");
     register_with_nameserver(ns_ep);
-    bv_puts("[blk_virt] READY: contract v4, persistent wakeups, capability-bound clients/media, no device caps\n");
+    bv_log("READY: contract v5, persistent wakeups, capability-bound clients/media, no device caps");
     blk_virt_run(my_ep);
 }

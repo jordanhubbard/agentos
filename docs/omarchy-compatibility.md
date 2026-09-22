@@ -10,6 +10,10 @@ The detailed compatibility baseline below remains the explicitly dated v4.0.3
 study; this update records newly verified facts without implying that the new
 ISO has been installed or qualified on agentOS.
 
+The upstream release listing was rechecked on **2026-09-19** and still names
+v4.0.4 as latest. The ISO metadata observations below remain dated 2026-09-16;
+this release-list check did not download or requalify the media.
+
 ## Current official release observation
 
 | Field | Observed value | Evidence |
@@ -119,15 +123,23 @@ until the first measurements show a stable distribution; thereafter, regress
 the qualified percentile and record artifact, vCPU, RAM, storage, renderer,
 and acceleration mode with every result.
 
-## Known gaps at this snapshot
+## agentOS implementation evidence, 2026-09-19
 
-- The VMX/EPT HLT-exit probe exists, but does not establish x86_64 Linux
-  guest execution. See `docs/TCB.md` for its proof boundary.
-- No agentOS UEFI/ACPI path exists for a full x86 guest yet.
-- Writable guest storage has not been qualified for an installer, LUKS,
-  Btrfs, flush, reboot, or snapshot recovery.
-- Virtio-gpu and virtio-input virtualizers and their canonical target services
-  are roadmap work, not current behavior.
+The earlier implementation-gap notes predated the following target proofs.
+These receipts describe their exact tested revisions, including work still
+awaiting canonical integration and required review. They do not qualify the
+official Omarchy ISO or turn this branch into a released platform.
+
+| Area | Retained evidence | Remaining acceptance |
+| --- | --- | --- |
+| x86 execution and firmware | [Two-vCPU Linux recreation](evidence/2026-09-19-spark/intel-current-smp.json) passed pinned SSH, CPU affinity and overlapping x87/SSE workers across two managed boots at `6df47ad`. This supersedes the earlier failed SMP attempt for that exact scope. At `030915a`, the [two-GiB profile](evidence/2026-09-19-spark/intel-current-memory-capacity.json) passed managed recreation with Linux MemTotal measured in both generations, and the [terminal teardown gate](evidence/2026-09-19-spark/intel-current-teardown.json) passed zeroed pool reuse. | Final integrated qualification, full-memory stress and resource-admission boundaries remain required. Reclamation is proven for the configured native test, not every possible profile. These profiles do not qualify Omarchy's illustrative 4-vCPU/8-GiB configuration. |
+| Writable storage | At `030915a`, [concurrent same-LBA writes](evidence/2026-09-19-spark/intel-current-same-lba.json) preserved distinct guest patterns, and [independent reboots](evidence/2026-09-19-spark/intel-current-raw-reboots.json) retained both patterns. [Detached snapshot/COW checks](evidence/2026-09-19-spark/intel-current-snapshot.json) and one [interrupted-write recovery](evidence/2026-09-19-spark/intel-current-crash-recovery.json) also passed. | Exhaustive bounds/crash coverage, installer/LUKS/Btrfs use, final integrated qualification and physical power-loss durability remain unproven. Discard is not exposed by the current queue contract; the snapshot proof is offline disk state, not live memory/device state. |
+| Guest graphics and input | [ARM graphics recreation](evidence/2026-09-19-spark/graphics-recreation-adcf5a80.json) passed two managed generations at `adcf5a80`: guest-written frame pixels, exact Linux evdev packets, held-state release, disconnect release and paused backpressure. | x86 desktop graphics and an interactive Omarchy session remain unqualified. One successful recreation run does not establish repeated-run reliability; earlier failures remain retained. Bulk frame capture is not a responsive remote-desktop claim. |
+| Integration guests | [Two Debian cold boots](evidence/2026-09-19-spark/debian-current-cold-boots.json) retained disk and SSH identity at `2bb18a0`. [Debian recreation with a FreeBSD peer](evidence/2026-09-19-spark/debian-peer-recreation.json) passed at `cd9efb9`; [Ubuntu peer recreation](evidence/2026-09-19-spark/ubuntu-peer-recreation.json) remains separately retained. The dual-release scenario now selects pinned Debian. | The changed default's dual-guest qualification and final release acceptance remain required. Existing receipts apply to their recorded revisions. Retained boot warnings still need assessment. |
+
+## Remaining official-Omarchy gaps
+
+- No official Omarchy installation or desktop-session acceptance is claimed.
 - The minimum renderer needed for unmodified Hyprland plus Quickshell is not
   yet measured. A software-rendered bring-up may accelerate development but
   cannot silently become the final support profile.

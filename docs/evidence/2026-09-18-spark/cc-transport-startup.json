@@ -1,0 +1,21 @@
+{
+  "qualification": "CC MMIO startup validation and PCI startup contract",
+  "runtime_revision": "ac9b5732db69e280876d75791fcd8070aeeae7c1",
+  "host": {
+    "command": "make test-cc-transport-host",
+    "result": "PASS with address and undefined-behavior sanitizers",
+    "scope": "DMA page alignment and alias rejection, PCI mapped-span bounds and notification offset arithmetic"
+  },
+  "spark": {
+    "command": "make gate",
+    "result": "PASS, exit 0",
+    "sdk": "2.1.0",
+    "log_sha256": "beae57b6b018fc9fabd8e6b13413ab358d03541a12d6ed6ca68782e0d29312d3",
+    "scope": "Host suite, both root architectures, ARM guest network/block/console with CC MMIO startup validation active"
+  },
+  "limits": [
+    "PCI startup contract has no target producer/driver integration yet",
+    "No x86 CC socket or GUI acceptance is claimed",
+    "Required GitHub CI and canonical integration remain pending"
+  ]
+}

@@ -1,0 +1,138 @@
+{
+  "schema": "agentos.frame_observer_progress.v1",
+  "runtime": "1aee4b8a0f483f7133e7954ebb9244990781940f",
+  "baseline_runtime": "4af3a8732ae3cbd05280c9fee611b19de7839d52",
+  "gui_runtime": "bdc2520c8a422aba8253b8cc38691d625c13f843",
+  "host": "sparky Linux aarch64",
+  "candidate_image_sha256": "88842b2e68c8a4f02282d829bbfd6e30ef3e14e2fa5f57f95cd820f6a23e2099",
+  "checks": {
+    "host": "make test-framebuffer-host test-display-host passed",
+    "gate": "make gate SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12272 passed",
+    "display": "make test-display SEL4_SDK_VERSION=2.3.0 passed; all1600 native pixels match",
+    "guest": "make demo-guest-display SEL4_SDK_VERSION=2.3.0 QEMU_TEST_SSH_PORT=12272 QEMU_TEST_TIMEOUT=1800 qualified; all786432 pixels match; guest retained"
+  },
+  "benchmark_order": [
+    "candidate1",
+    "baseline",
+    "candidate2"
+  ],
+  "candidate": [
+    {
+      "capture_ms": 179.617958,
+      "frame": {
+        "bytes": 3145728,
+        "height": 768,
+        "sequence": "610",
+        "token": "1",
+        "width": 1024
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 3565.381161,
+      "reads": {
+        "count": 128,
+        "max_ms": 222.182522,
+        "mean_ms": 27.847319078125,
+        "median_ms": 17.316527,
+        "min_ms": 3.069228,
+        "p95_ms": 179.116179
+      },
+      "recorded_wire_ms": 3504,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 20.892741,
+        "mean_ms": 20.2171984375,
+        "median_ms": 20.247624,
+        "min_ms": 19.456889,
+        "p95_ms": 20.892741
+      }
+    },
+    {
+      "capture_ms": 78.236952,
+      "frame": {
+        "bytes": 3145728,
+        "height": 768,
+        "sequence": "694",
+        "token": "1",
+        "width": 1024
+      },
+      "payload_bytes": 519168,
+      "pixels_stable": true,
+      "read_bytes": 4056,
+      "read_wall_ms": 3411.9241100000004,
+      "reads": {
+        "count": 128,
+        "max_ms": 220.011503,
+        "mean_ms": 26.64767084375,
+        "median_ms": 16.921888,
+        "min_ms": 2.142601,
+        "p95_ms": 171.081246
+      },
+      "recorded_wire_ms": 3351,
+      "schema": "agentos_gui.frame_benchmark.v1",
+      "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+      "status": {
+        "count": 16,
+        "max_ms": 20.515701,
+        "mean_ms": 20.232359812499993,
+        "median_ms": 20.262528,
+        "min_ms": 20.045931,
+        "p95_ms": 20.515701
+      }
+    }
+  ],
+  "baseline": {
+    "capture_ms": 214.913883,
+    "frame": {
+      "bytes": 3145728,
+      "height": 768,
+      "sequence": "3746",
+      "token": "1",
+      "width": 1024
+    },
+    "payload_bytes": 519168,
+    "pixels_stable": true,
+    "read_bytes": 4056,
+    "read_wall_ms": 5787.2943159999995,
+    "reads": {
+      "count": 128,
+      "max_ms": 216.88414,
+      "mean_ms": 45.205679343750006,
+      "median_ms": 18.875879,
+      "min_ms": 2.677027,
+      "p95_ms": 177.320598
+    },
+    "recorded_wire_ms": 5728,
+    "schema": "agentos_gui.frame_benchmark.v1",
+    "scope": "Repeated reads of one immutable snapshot region; no GUI polling or input",
+    "status": {
+      "count": 16,
+      "max_ms": 20.614266,
+      "mean_ms": 20.287209750000002,
+      "median_ms": 20.308165,
+      "min_ms": 19.942685,
+      "p95_ms": 20.614266
+    }
+  },
+  "full_frame": {
+    "method": "agentctl frame-capture0 timed with /usr/bin/time; both guests running, sequential captures",
+    "candidate_seconds": 18.68,
+    "baseline_seconds": 36.68,
+    "candidate_exit": 0,
+    "baseline_exit": 0,
+    "bytes": 3145728,
+    "width": 1024,
+    "height": 768
+  },
+  "artifacts": "/home/jkh/.local/share/agentos-evidence/2026-09-19-observer-progress/",
+  "limitations": [
+    "Two separate QEMU guests with the same profile; host background load is not controlled.",
+    "Region benchmarks use the production GUI CC client without browser polling or input.",
+    "Full-frame timing includes command lifecycle and file output, not native GUI rendering.",
+    "Approximately170-180ms p95 region latency persists; this is a partial throughput improvement, not interactive desktop acceptance.",
+    "Required GitHub Actions and canonical integration remain pending."
+  ]
+}

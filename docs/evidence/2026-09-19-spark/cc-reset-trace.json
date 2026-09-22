@@ -1,0 +1,17 @@
+{
+  "status": "native reconnect failure localized; CLI deadline verified",
+  "source_revision": "17d6fcb",
+  "instrumentation": "Diagnostic-only patch captured RX produced/consumed indices, next used length, and host_open before close reset. Patch retained separately and removed after the run.",
+  "target": "Spark qemu_virt_aarch64, GUEST_OS=none, test-operator-session",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "trace": {
+    "host_open": 1,
+    "rx_produced": 11,
+    "rx_consumed": 10,
+    "pending_length": 4096
+  },
+  "finding": "After five successful requests on the initial connection, the close handler resets with the replacement host connection already open and an unread 4096-byte data completion. The next CLI request does not receive a reply. Reset discards the unread fragment; the fixed request length is 4112 bytes, so recovery must also address partial-frame alignment.",
+  "deadline": "The new CLI exited with Connection timed out and delivery uncertain/request not replayed. The qualification terminated with exit 2 and cleaned up its QEMU and CLI children; both PIDs 1360221 and 1360534 were absent after completion.",
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership",
+  "limits": "One instrumented native reproduction. Queue metadata establishes unread data at reset, not the subsequent location of the remaining 16 request bytes. This does not qualify a reconnect fix. The earlier uninstrumented run remains preserved separately."
+}

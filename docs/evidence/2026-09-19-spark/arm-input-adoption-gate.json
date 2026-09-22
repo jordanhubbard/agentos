@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "revision": "64989a0",
+  "command": "make gate QEMU_TEST_SSH_PORT=12258 SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2",
+  "make_exit": 0,
+  "log_sha256": "5249c9bbc301783e586397ec12d7352441702c2f6fb53b3b35e0bd6cb236eacc",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/arm-input-adopt-64989a0",
+  "limits": "Canonical regression gate. Input adoption has behavioral host coverage and ARM compilation, but this gate does not exercise rebind capability transfer, a second managed ARM boot or complete graphics reconstruction."
+}

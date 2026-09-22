@@ -651,6 +651,11 @@ static bool handle_client_requests(struct virtio_device *dev, int *num_reqs_cons
     bool has_dropped = false;
     int nums_consumed = 0;
 
+    if (state->quiescing) {
+        *num_reqs_consumed = 0;
+        return true;
+    }
+
     LOG_BLOCK("------------- handle_client_requests start loop -------------\n");
     uint16_t desc_head;
     while (virtio_virtq_peek_avail(vq, &desc_head)) {
@@ -781,6 +786,51 @@ static bool virtio_blk_queue_notify(struct virtio_device *dev)
     return virq_inject_success;
 }
 
+void virtio_blk_begin_quiesce(struct virtio_blk_device *state)
+{
+    state->quiescing = true;
+}
+
+bool virtio_blk_is_quiesced(struct virtio_blk_device *state)
+{
+    if (!state->quiescing ||
+        ialloc_num_free(&state->ialloc) != state->queue_capacity ||
+        !blk_queue_empty_req(&state->queue_h) ||
+        !blk_queue_empty_resp(&state->queue_h)) return false;
+    for (uint32_t i = 0u; i < state->queue_capacity; i++) {
+        if (state->reqsbk[i].state != VIRTIO_BLK_REQ_STATE_INVALID)
+            return false;
+    }
+    return true;
+}
+
+/* Start one accepted waiter whose transfer window is no longer held by an
+ * active writer. Scan independently of the completed request: a failed
+ * predecessor or a moved chunk must not strand otherwise runnable work. */
+static bool virtio_blk_start_waiter(struct virtio_blk_device *state)
+{
+    for (uint32_t i = 0u; i < state->queue_capacity; i++) {
+        reqbk_t *waiter = &state->reqsbk[i];
+        if (waiter->state != VIRTIO_BLK_REQ_STATE_RMW_QUEUEING) continue;
+        bool blocked = false;
+        for (uint32_t j = 0u; j < state->queue_capacity; j++) {
+            if (i != j && request_is_write(&state->reqsbk[j]) &&
+                do_requests_overlap(&state->reqsbk[j], waiter)) {
+                blocked = true;
+                break;
+            }
+        }
+        if (blocked) continue;
+        int err = blk_enqueue_req(&state->queue_h, BLK_REQ_READ,
+            waiter->sddf_data_cell_base - state->data_region,
+            waiter->sddf_block_number, waiter->sddf_count, i);
+        assert(!err);
+        waiter->state = VIRTIO_BLK_REQ_STATE_RMW_READING;
+        return true;
+    }
+    return false;
+}
+
 bool virtio_blk_handle_resp(struct virtio_blk_device *state)
 {
     LOG_BLOCK(" ----------- Blk virt notified VMM ----------- \n");
@@ -795,7 +845,7 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
     uint32_t sddf_ret_id;
 
     bool virt_notify = false;
-    bool resp_handled = false;
+    bool guest_completion_published = false;
     bool read_write_modify_inflight = false;
     while (!blk_queue_empty_resp(&state->queue_h)) {
         err = blk_dequeue_resp(&state->queue_h, &sddf_ret_status, &sddf_ret_success_count, &sddf_ret_id);
@@ -855,30 +905,6 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
             }
             }
 
-            if ((reqbk->state == VIRTIO_BLK_REQ_STATE_WRITING_ALIGNED
-                 || reqbk->state == VIRTIO_BLK_REQ_STATE_RMW_WRITING)
-                && reqbk->body_bytes_completed + reqbk->body_bytes_current
-                       == request_bytes_to_body_bytes(reqbk->total_req_size)) {
-                /* If we get here, we've just finished processing a normal or unaligned write. Now check
-                   which request is queueing on the same sDDF block we touched and process it. */
-                for (int i = 0; i < SDDF_MAX_QUEUE_CAPACITY; i++) {
-                    if (state->reqsbk[i].state == VIRTIO_BLK_REQ_STATE_RMW_QUEUEING
-                        && do_requests_overlap(&(state->reqsbk[i]), reqbk)) {
-
-                        state->reqsbk[i].state = VIRTIO_BLK_REQ_STATE_RMW_READING;
-                        uintptr_t next_sddf_offset = state->reqsbk[i].sddf_data_cell_base
-                                                   - ((struct virtio_blk_device *)dev->device_data)->data_region;
-
-                        err = blk_enqueue_req(&state->queue_h, BLK_REQ_READ, next_sddf_offset,
-                                              state->reqsbk[i].sddf_block_number, state->reqsbk[i].sddf_count, i);
-                        assert(!err);
-
-                        virt_notify = true;
-                        read_write_modify_inflight = true;
-                        break;
-                    }
-                }
-            }
         }
 
         if (resp_success) {
@@ -904,8 +930,8 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
                     if (reqbk->state != VIRTIO_BLK_REQ_STATE_RMW_QUEUEING) {
                         virt_notify = true;
                     }
+                    if (virtio_blk_start_waiter(state)) virt_notify = true;
                     read_write_modify_inflight = true;
-                    resp_handled = true;
                     continue;
                 }
             }
@@ -918,12 +944,17 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
                     reqbk->total_req_size);
         }
         virtio_virtq_add_used(vq, reqbk->virtio_desc_head, used_len);
+        guest_completion_published = true;
 
         reqbk->state = VIRTIO_BLK_REQ_STATE_INVALID;
         err = ialloc_free(&state->ialloc, sddf_ret_id);
         assert(!err);
 
-        resp_handled = true;
+        if (virtio_blk_start_waiter(state)) {
+            virt_notify = true;
+            read_write_modify_inflight = true;
+        }
+
     }
 
     int nums_pending_cmds_consumed = 0;
@@ -936,11 +967,12 @@ bool virtio_blk_handle_resp(struct virtio_blk_device *state)
         }
     }
 
-    /* We need to know if we've finished handling all the requests in the previous cycle, if we did, we inject an
-     * interrupt, if we didn't we don't inject.
-     */
+    /* A published completion belongs to the guest even when freed cells let
+     * us admit more work or continue another request's RMW/chunk sequence.
+     * Do not make the guest wait for unrelated I/O to finish. Partial chunks
+     * have not published a used entry and must not signal completion. */
     bool virq_inject_success = true;
-    if (resp_handled && !read_write_modify_inflight && !virt_notify) {
+    if (guest_completion_published && !state->quiescing) {
         virtio_blk_set_interrupt_status(dev, true, false);
         virq_inject_success = virtio_blk_virq_inject(dev);
     }
@@ -1009,6 +1041,7 @@ static struct virtio_device *virtio_blk_init(struct virtio_blk_device *blk_dev, 
     blk_dev->data_region = data_region;
     blk_dev->queue_capacity = queue_capacity;
     blk_dev->server_ch = server_ch;
+    blk_dev->quiescing = false;
 
     size_t num_sddf_cells = (data_region_size / BLK_TRANSFER_SIZE) < SDDF_MAX_DATA_CELLS
                               ? (data_region_size / BLK_TRANSFER_SIZE)

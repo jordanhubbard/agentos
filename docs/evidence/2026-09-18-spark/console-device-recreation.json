@@ -1,0 +1,34 @@
+{
+  "schema": "agentos.console_device_recreation.v1",
+  "runtime_commit": "0bb06f3",
+  "accepted_for_guest_recreation": false,
+  "scope": "Private VMM console-device recreation after complete quiescence and caller-managed backend detach/bus retirement",
+  "host": {
+    "result": "Sanitizer tests, full host suite and firmware link passed, terminal exit 0",
+    "checks": [
+      "Reset is rejected before initialization, while live, and during a backpressured retained TX drain",
+      "Registration failure disables callbacks and allows retry on a fresh bus",
+      "Two replacement devices transfer exact TX/RX bytes through new guest descriptors",
+      "Prior buffered input/output is absent in the next generation",
+      "Retired guest RAM is inaccessible or unmapped during recreation and late callbacks"
+    ],
+    "log_sha256": "52b4cdbed73841837447a64a20f414ded984210fea3920dfd6da68a311e9c3c5"
+  },
+  "spark": {
+    "command": "make gate",
+    "result": "passed, terminal exit 0",
+    "log_sha256": "07df4fc39b35a1b314d7d543b2d59a87e385bd4d1f8e8b78af11ced82369b6dd"
+  },
+  "intel": {
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 with pinned firmware, kernel and initrd",
+    "result": "passed, terminal exit 0",
+    "scope": "Two private console recreation cycles on reconstructed RAM and fresh buses/controllers, MMIO identity/reset-state probes, empty output, quiescence and retirement",
+    "log_sha256": "d231f15fe1dc48b7be224240edebd18502946fc7924c2a399885dd0fa222b56b",
+    "stage_legend": "Base 6000 + generation * 100; 1 fresh bus/controller; 2 recreation/readiness/empty output; 10..12 MMIO identity/status/queue-ready; 20 quiescence/retirement"
+  },
+  "limitations": [
+    "Fresh native guest descriptor TX/RX and integration with a new serial endpoint remain pending",
+    "Firmware reset and actual second guest boot remain required",
+    "The intermittent serial queue reconstruction failure remains unresolved"
+  ]
+}

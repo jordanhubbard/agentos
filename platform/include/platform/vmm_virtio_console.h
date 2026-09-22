@@ -5,10 +5,24 @@
 #include <stdint.h>
 
 /* Guest virtio-console backed by sDDF serial queues inside the VMM. */
+/* Bind once to an architecture-selected guest MMIO page and virtual IRQ.
+ * Failure leaves the console unavailable; a live binding cannot be replaced. */
+bool aos_vmm_virtio_console_init_at(uintptr_t guest_base, unsigned virq);
+/* Recreate only after successful quiescence, serial backend detach and bus
+ * retirement. Caller supplies a fresh bus/RAM/controller and separately binds
+ * its new serial endpoint. Clears private buffered bytes and guest state.
+ * Failed registration leaves callbacks disabled and permits a bounded caller retry. */
+bool aos_vmm_virtio_console_recreate(void);
+/* Compatibility entry for the AArch64 profile device-operations table. */
 void aos_vmm_virtio_console_init(void);
 void aos_vmm_virtio_console_after_fault(void);
 bool aos_vmm_virtio_console_driver_ready(void);
 bool aos_vmm_virtio_console_tx_active(void);
+/* Stop vCPUs before calling. Returns false until published TX has been
+ * copied out of guest RAM; continue drain_tx while retrying. Success leaves
+ * copied TX available to drain without guest memory. New RX is rejected.
+ * This does not detach serial_virt queues or flush them to an observer. */
+bool aos_vmm_virtio_console_quiesce(void);
 
 /* CC-PD / serial_virt bridge used by the guest lifecycle contract. */
 uint32_t aos_vmm_virtio_console_drain_tx(uint8_t *dst, uint32_t max);

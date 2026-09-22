@@ -1,0 +1,40 @@
+{
+  "schema": "agentos.x86_firmware_reset_reuse.v1",
+  "runtime_commit": "cb09ea0",
+  "accepted_for_guest_recreation": false,
+  "scope": "Shared checked VMCS firmware reset for first boot and stopped reconstructed VCPUs",
+  "host": {
+    "command": "make test-host test-x86-firmware-build SEL4_SDK_VERSION=2.3.0",
+    "result": "passed, terminal exit 0",
+    "log_sha256": "05a370260169cae6f49e3331dac4d568b06e9d16d846423fa3ffd30948a0a185"
+  },
+  "spark": {
+    "command": "make gate SEL4_SDK_VERSION=2.3.0",
+    "result": "passed, terminal exit 0",
+    "log_sha256": "a3867bc9c2fd4d7b1471c7a3bfd16bb67e68ee6ed1faa20fed48930224930b43"
+  },
+  "intel": {
+    "host": "madmax",
+    "command": "make gate-x86_64-teardown SEL4_SDK_VERSION=2.3.0 with pinned firmware, kernel and initrd",
+    "result": "passed, terminal exit 0",
+    "checks": [
+      "Initial firmware/Linux boot uses the shared reset helper",
+      "Two stopped reconstructed VCPUs receive reset state after binding",
+      "Independent readback checks CS selector/base/limit/access, EFER, CR0 shadow, RFLAGS and entry controls",
+      "Reset rejects a revoked VCPU, identifies the first failed field and leaves the saved entry output unchanged"
+    ],
+    "log_sha256": "b0331dc1969e06f25477d2189195793b321416e0f262b9585a1451d7cbc127c1",
+    "stage_legend": "152 + pass * 100: reset helper; 153 + pass * 100: independent reset-field probes; 154 + pass * 100: revoked-capability rejection"
+  },
+  "intel_mode_regression": {
+    "command": "make gate-x86_64-firmware-modes SEL4_SDK_VERSION=2.3.0 QEMU_TEST_TIMEOUT=120",
+    "result": "passed real, protected and long-mode HLT entry, terminal exit 0",
+    "log_sha256": "8679118f755cc2582f1dbc13edfe26b5f56009ad03a2fa38053efd74bae2830c"
+  },
+  "limitations": [
+    "Rebuilt VCPUs remain stopped and have no mapped guest memory during reset qualification",
+    "Lifecycle reset integration and an actual second guest boot remain required",
+    "The intermittent serial reconstruction failure remains unresolved",
+    "Native revoked-capability coverage exercises the first VMCS write failure, not every reset failure boundary"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "status": "passed authenticated Ubuntu compatibility baseline",
+  "source_revision": "2bb18a0c29d729aa98f4c28bfe46294408d7d215",
+  "source_tree_clean": true,
+  "host": "Spark Linux AArch64",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "command": "make test-ubuntu-live QEMU_TEST_TIMEOUT=1800 QEMU_TEST_SSH_PORT=12500",
+  "make_exit": 0,
+  "proof": "Completed all eight console provisioning steps, authenticated SSH, and host-backed agentOS VirtIO net/block/console assertions.",
+  "timing_receipt": "ubuntu-current-boot-timing.json",
+  "launch_to_authenticated_ssh_ms": 1061081,
+  "artifacts_directory": "/home/jkh/.local/share/agentos-evidence/2026-09-19-x86-ownership/ubuntu-baseline-2bb18a0",
+  "sha256": {
+    "test.log": "4ac2e753ab82eb4e8d6940fb8cfd8399c9aa150052ce1f290e8589ef89b8249e",
+    "serial.log": "394b4e8c2a7b741620b244482f3f43bf938c2e68c50b27aeaeeecec329b85ef1",
+    "agentos.img": "3e82f96cf4acc15508f3e9650dbb3e5551caab1cd500beb94d496011febecb22"
+  },
+  "observations": "Boot reported a udev queue timeout and provisioning reported an unavailable FQDN for its local snakeoil certificate. Qualification subsequently completed successfully; both messages remain in the retained log.",
+  "limits": "One Ubuntu live boot. Timing includes host scheduling and provisioning; it excludes acquisition, build and media preparation. No Debian comparison is claimed until its matching run completes and the receipt comparator passes. Not full v0.4 acceptance."
+}

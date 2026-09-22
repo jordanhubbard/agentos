@@ -137,10 +137,19 @@ through a separate native serial client. It uses a single serialized stream:
 `inspect.snapshot` returns `ok N` followed by exactly N report bytes. There is
 no interactive shell or mutation command in this protocol.
 
-The dual-guest demonstration (`make demo`, `make demo-test`) boots Ubuntu and
+`tools/agentctl/agentctl --socket PATH log-stream SLOT PD_ID` consumes one
+bounded console chunk and returns reply registers plus `data_hex` in JSON.
+Hex preserves all bytes, including NULs, escape sequences and non-UTF-8 data.
+An empty `data_hex` is a successful read with no available bytes; a failed
+reply exits nonzero and supplies no data. For the boot guest, use `0 0`.
+Save each response before decoding it (for example, with
+`jq -r .data_hex console.json | xxd -r -p > console.bin`), and avoid competing
+with an active qualification harness for the console stream.
+
+The dual-guest demonstration (`make demo`, `make demo-test`) boots pinned Debian and
 FreeBSD concurrently and proves key-only SSH to both. See
-[`docs/demo.md`](docs/demo.md). It downloads two ISOs of about 4 GB each and
-runs for a long time under TCG.
+[`docs/demo.md`](docs/demo.md). It downloads the pinned Debian generic image
+and FreeBSD installation media and runs for a long time under TCG.
 
 ## Project structure
 
@@ -195,7 +204,7 @@ image asserted by an automated QEMU test can.
 | Emulated virtio-console (library path) | guest-proven | `make test-guest-console` (Ubuntu initramfs) |
 | Ubuntu on agentOS net + blk + console only, host-backed | guest-proven | `make test-ubuntu-virtio`; CI `Ubuntu agentOS VirtIO net + blk + console proof` |
 | Ubuntu Casper live filesystem to login | nightly qualification, not a per-push gate | `make test-ubuntu-live`; `ubuntu-live-nightly.yml` |
-| Concurrent Ubuntu + FreeBSD with key-only SSH | acceptance gate, run on demand | `make demo-test` |
+| Concurrent pinned Debian + FreeBSD with key-only SSH | acceptance gate, run on demand | `make demo-test` |
 | Ubuntu desktop over an SSH tunnel (RFB frame) | experimental | `make demo-desktop-test`; `docs/desktop-demo.md` |
 | Console virtualizer as its own PD | target | `docs/TCB.md` |
 | Native agent attached to `net_virt`/`blk_virt` queues | target | `services/legacy-pds/native_net_client.c` is a host-tested client of the older `net_pd` raw contract; nothing native attaches to a virtualizer yet |
