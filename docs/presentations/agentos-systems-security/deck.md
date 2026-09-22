@@ -147,6 +147,31 @@ memory, console, network, and block abstractions are actually guest-neutral.
 > before changing this page to “proven in release.” The default scenario passed
 > at `67c2fe04`; see `debian-default-scenario.json`. Release integration remains
 > pending, and managed Debian reconstruction is a separate proof.
+> September 22: the Ubuntu/FreeBSD reconstruction scenario additionally passed
+> locally and in hosted CI at `c2a25050`, including peer survival, fresh Ubuntu
+> handle 3 and concurrent authenticated SSH after recreation. See
+> `docs/evidence/2026-09-22-release/dual-recreation.json`.
+
+---
+
+## 6a. Initial control authority comes from the shipping descriptor
+
+**Generated from the default AArch64 system table**
+
+```text
+vm_manager -- slot 11 --> guest_vmm_primary
+cc_pd      -- slot  5 --> guest_vmm_primary
+cc_pd      -- slot 10 --> vm_manager
+```
+
+Dynamic lifecycle requests use the manager. CC also retains a direct VMM
+endpoint: routing policy alone does not remove that capability.
+
+> Speaker notes: `make topology-report TOPOLOGY_PDS='cc_pd vm_manager
+> guest_vmm_primary'` compiles `system_desc_aarch64.c` with the default primary
+> guest selection. The full generated Mermaid output is retained in
+> `docs/evidence/2026-09-22-release/control-topology.mmd`. This is a focused
+> initial-capability diagram, not all queue mappings or a live traffic trace.
 
 ---
 
@@ -183,14 +208,39 @@ This separation enables:
 - guest lifecycle operations have explicit states;
 - release gates distinguish host simulation from target behavior.
 
-**Question for reviewers**
+**Retained lifecycle rejection trace**
 
-When a VMM, device service, guest, or host transport stops responding, which
-capabilities and resources remain recoverable?
+```text
+scenario guest recreated: retired=2 fresh=3 peer=1;
+concurrent authenticated SSH and stale-handle rejection passed
+destroyed and invalid guest handles rejected
+```
 
-> Speaker notes: Show one real failure transcript and the corresponding state
-> transition. A success-only demo is insufficient evidence for an OS lifecycle
-> manager.
+> Speaker notes: Exact message bodies from `baseline.log`, lines 906–907,
+> core `c2a25050`; the xtask prefix is omitted and the first line wraps here.
+> Ubuntu's retired handle is rejected while the surviving FreeBSD peer and
+> fresh Ubuntu both authenticate. This is a scoped lifecycle failure path,
+> not proof of recovery from arbitrary VMM or driver compromise.
+
+---
+
+## 8a. Guest architectural faults return to the guest
+
+**Recorded Intel qualification output**
+
+```text
+[rt] x86 guest GP read/write handlers and IRET recovery verified
+```
+
+The guest handles the injected architectural faults and returns through IRET.
+The test checks recovery under the VMX/EPT composition using the qualified SDK.
+
+> Speaker notes: `make gate-x86_64-guest-faults`, clean `fd7d1dcd`,
+> `vmm-main.log` line 320 in the September 21 milestone audit. The same log
+> records a successful Make gate; target and harness source are unchanged at
+> `c2a25050`. This proves the selected architectural fault path, not recovery
+> from arbitrary memory corruption, kernel compromise or physical hardware
+> failure. The September 22 resource receipt separately covers reclamation.
 
 ---
 

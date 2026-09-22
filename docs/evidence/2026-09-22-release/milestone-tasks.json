@@ -1,0 +1,67 @@
+{
+  "schema": "agentos.milestone-reconciliation.v1",
+  "observed_date": "2026-09-22",
+  "method": "Normal signed VM review and canonical publication; no forced completion",
+  "tasks": [
+    {
+      "id": "task_ede60b058fc745d296bad77044a57420",
+      "title": "v0.4: Implement x86_64 VMM and VMX guest execution",
+      "state": "completed"
+    },
+    {
+      "id": "task_cefc0f77327d4245ab9feb132cd1eb57",
+      "title": "v0.4: Implement guest virtio-gpu and virtio-input virtualizers",
+      "state": "completed"
+    },
+    {
+      "id": "task_3a5da27d553a475092d35a9fa1cb90e9",
+      "title": "v0.4: Port canonical guest devices to x86_64",
+      "state": "completed"
+    },
+    {
+      "id": "task_5870ef2f51974ffe95099c3032d0f077",
+      "title": "v0.4: Implement x86_64 UEFI and ACPI guest boot",
+      "state": "completed"
+    },
+    {
+      "id": "task_26e8b1157ffe449483d2fe1c44f2a8be",
+      "title": "v0.4: Replace Ubuntu live media with pinned Debian integration guests",
+      "state": "completed"
+    },
+    {
+      "id": "task_73b8e18d4e71424fb8223d7e555b1831",
+      "title": "Dual live guests need scalable RAM allocation and authenticated SSH gate",
+      "state": "completed"
+    },
+    {
+      "id": "task_9cc7b9d4fbd14601b6b0851de4d300b8",
+      "title": "v0.4: Target-test the canonical framebuffer service",
+      "state": "completed"
+    },
+    {
+      "id": "task_4090f05598f74a9cafbb571a6271b6e5",
+      "title": "v0.4: Provide persistent writable block storage for x86 guests",
+      "state": "completed"
+    },
+    {
+      "id": "task_5a7af19b3d99497a8c13b1f7ac57b230",
+      "title": "v0.4: Add desktop-class x86 guest resource profiles",
+      "state": "completed"
+    },
+    {
+      "id": "task_93ddbd0f497e4209a162e0f5527fc7cf",
+      "title": "v0.4: Maintain an official Omarchy architecture and artifact compatibility ledger",
+      "state": "completed"
+    },
+    {
+      "id": "task_b969013c310248fd92f238f9baf2e42b",
+      "title": "v0.4: qualify x86 VMX/EPT HLT exit",
+      "state": "completed"
+    },
+    {
+      "id": "task_47cf7cf0f0734239a594eb594ebedc24",
+      "title": "Integrate agentos_gui with v0.4 guest display and input contracts",
+      "state": "completed"
+    }
+  ]
+}
