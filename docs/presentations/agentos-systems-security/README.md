@@ -9,9 +9,13 @@ virtualization, and security audiences.
 - [`../../security-architecture.md`](../../security-architecture.md) contains
   detailed current and target diagrams and their security boundaries.
 
-Native Google Slides publication is pending. The local narrative and rendered
-PDF do not substitute for the requested native deck. The published URL will be
-linked here and in the root README after import and verification.
+The [native Google Slides deck](https://docs.google.com/presentation/d/1MR9hUcXfWos6q01fWb12rNDMQmv7uRMgI1AlVYGYeMc/edit)
+is available with read access for anyone with the link. It contains 19 slides
+with editable text and the original speaker notes. Import verification compared
+all slide text and notes after exporting the native deck back to PDF and PPTX,
+then visually reviewed every page and the dense evidence slides. The native
+edition retains the source revision in each slide footer and is refreshed
+against the final release revision before publication.
 
 The portable baseline is Markdown. The repository-owned Rust renderer writes a
 PDF and a checksum-bearing QA receipt beneath `build/`, preserves editable text
