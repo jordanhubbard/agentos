@@ -40,8 +40,13 @@ else
   $(error Unsupported arch: $(ARCH))
 endif
 
-CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-variable \
-           -Iinclude -Ilwip/include -I$(REPO_ROOT_MK) -I$(REPO_ROOT_MK)/platform/include -I$(SEL4_INC_DIR) \
+# -Wunused-but-set-* landed in clang 23 and fires on a handful of globals that
+# record state nothing reads back yet. Suppressed alongside the unused-* family
+# already waived above rather than deleting the declarations, so a newer host
+# compiler does not fail the build on -Werror.
+CFLAGS := -nostdlib -ffreestanding -g -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable \
+          -Wno-unused-but-set-variable -Wno-unused-but-set-global -Wno-unknown-warning-option \
+          -Iinclude -Ilwip/include -I$(REPO_ROOT_MK) -I$(REPO_ROOT_MK)/platform/include -I$(SEL4_INC_DIR) \
            $(CFLAGS_ARCH) \
            -DCONFIG_KERNEL_MCS \
            -D__thread= \

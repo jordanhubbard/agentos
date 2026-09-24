@@ -82,7 +82,9 @@ extern volatile aos_x86_lifecycle_witness_t aos_x86_control_witness;
 #ifndef AOS_X86_FIRMWARE_RAM
 #define AOS_X86_FIRMWARE_RAM      0x02000000u
 #endif
+#ifndef AOS_X86_FIRMWARE_RAM_VA
 #define AOS_X86_FIRMWARE_RAM_VA   0x80000000ull
+#endif
 #ifndef AOS_X86_FIRMWARE_ROM_VA
 #define AOS_X86_FIRMWARE_ROM_VA   0x90000000u
 #endif

@@ -60,8 +60,9 @@ void sel4_call(seL4_CPtr cap, const sel4_msg_t *request, sel4_msg_t *reply)
         if (detach_failure==3) reply->data[0]=BLK_VIRT_ERR_BUSY;
     }
 }
-static _Alignas(4096) uint8_t ram[0x20000];
-static _Alignas(4096) uint8_t region[AOS_BLK_SHMEM_SIZE];
+/* Darwin arm64 uses 16 KiB host pages; Linux accepts the stronger alignment. */
+static _Alignas(16384) uint8_t ram[0x20000];
+static _Alignas(16384) uint8_t region[AOS_BLK_SHMEM_SIZE];
 static void wr(uintptr_t base, uint32_t offset, uint32_t value)
 { assert(aos_x86_virtio_access(base+offset,4,true,&value)); }
 int main(void)

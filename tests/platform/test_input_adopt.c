@@ -41,7 +41,8 @@ static void detach(aos_input_client_region_t *r)
 int main(void)
 {
     aos_input_client_region_t *old=mmap((void *)AOS_INPUT_SHMEM_VA,
-        AOS_INPUT_FRAME_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        AOS_INPUT_FRAME_SIZE,PROT_READ|PROT_WRITE,
+        MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
     assert(old==(void *)AOS_INPUT_SHMEM_VA);
     static aos_input_client_region_t fresh, failed, final;
     assert(!aos_vmm_virtio_input_adopt(0,1,&fresh));
