@@ -47,7 +47,7 @@ static void detach(aos_fb_region_t *r)
 int main(void)
 {
     aos_fb_region_t *old=mmap((void *)AOS_FB_SHMEM_VA,AOS_FB_CLIENT_STRIDE,
-        PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
     assert(old==(void *)AOS_FB_SHMEM_VA);
     static aos_fb_region_t fresh, failed, final;
     assert(!aos_vmm_virtio_gpu_adopt(0,1,&fresh));
