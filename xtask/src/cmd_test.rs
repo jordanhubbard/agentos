@@ -38,7 +38,7 @@ pub(crate) const SSH_AUTH_OPTIONS: &[&str] = &[
 ];
 pub(crate) const SSH_PROBE_LIVENESS_OPTIONS: &[&str] =
     &["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1"];
-const SSH_SESSION_LIVENESS_OPTIONS: &[&str] = &[
+pub(crate) const SSH_SESSION_LIVENESS_OPTIONS: &[&str] = &[
     "-o",
     "ServerAliveInterval=30",
     "-o",

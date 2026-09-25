@@ -272,7 +272,9 @@ pub(crate) fn prove(
         .arg("-i")
         .arg(key)
         .args(["-p", &port.to_string()])
-        .args(crate::cmd_test::SSH_PROBE_LIVENESS_OPTIONS)
+        // Login/PAM and package work can stall server replies under emulation.
+        // Use session keepalives; our own deadline still bounds all progress.
+        .args(crate::cmd_test::SSH_SESSION_LIVENESS_OPTIONS)
         // No remote command: sshd must start the account's login shell.
         .arg(format!("{account}@127.0.0.1"))
         .env("TERM", "dumb")
