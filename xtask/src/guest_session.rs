@@ -223,7 +223,10 @@ pub(crate) fn prove(
     known_hosts: Option<&Path>,
     timeout: Duration,
 ) -> Result<()> {
-    ensure!(profile.seed.is_none() || known_hosts.is_some(), "seeded session requires pinned host identity");
+    ensure!(
+        profile.seed.is_none() || known_hosts.is_some(),
+        "seeded session requires pinned host identity"
+    );
     let steps = steps(profile)?;
     let account = &profile
         .test
@@ -423,7 +426,12 @@ mod tests {
             .parent()
             .unwrap()
             .join("guest-profiles");
-        for name in ["ubuntu-live.toml", "freebsd.toml", "debian.toml", "debian-scenario.toml"] {
+        for name in [
+            "ubuntu-live.toml",
+            "freebsd.toml",
+            "debian.toml",
+            "debian-scenario.toml",
+        ] {
             let profile = cmd_guest_profile::host_profile_plan(&root, Path::new(name)).unwrap();
             let checks = steps(&profile).unwrap();
             assert_eq!(checks.len(), 5);

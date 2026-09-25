@@ -32,6 +32,10 @@ initial FreeBSD ICMP loss observed during qualification. The session requires
 a successful three-probe ping and retains packet-loss output; its cause is
 not yet established.
 
+Integration prerequisite `task_8017b95c612b44108c6fa705ffc86f09` restores
+macOS host-gate tool lookup and linker flags after the v0.4 merge, so this
+machine can qualify the integrated guest fixes.
+
 ## Release map
 
 | Release | Theme | Required outcome |

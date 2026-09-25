@@ -224,7 +224,7 @@ export PATH := $(HOME)/.cargo/bin:$(PATH)
 # Native guest helpers must keep their acquisition toolchain when the kernel
 # sub-make prepends its own LLVM directory to PATH.
 ifndef AGENTOS_HOST_TOOL_PATH
-export AGENTOS_HOST_TOOL_PATH := $(PATH)
+export AGENTOS_HOST_TOOL_PATH := $(LLVM_BIN):$(LLD_BIN):$(PATH)
 endif
 
 # ─── Native arch / HW-accelerated QEMU ────────────────────────────────────
@@ -886,7 +886,7 @@ test-vm-manager-identity-host:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
 		-DAGENTOS_TEST_HOST -ffunction-sections -fdata-sections \
 		-iquote kernel/agentos-root-task/include -I tests/platform/loop-stubs -I platform/include -I libvmm/include \
-		tests/platform/test_vm_manager_guest_identity.c -Wl,--gc-sections -o $(BUILD_TMP_DIR)/test_vm_manager_guest_identity
+		tests/platform/test_vm_manager_guest_identity.c -Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $(BUILD_TMP_DIR)/test_vm_manager_guest_identity
 	$(BUILD_TMP_DIR)/test_vm_manager_guest_identity
 
 .PHONY: test-x86-composition-host
@@ -961,6 +961,7 @@ test-x86-memory-rebuild-host:
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Itests/platform/x86-objects-stubs \
 		-Iplatform/include -Ilibvmm/include -iquote kernel/agentos-root-task/include \
 		tests/platform/test_x86_memory_rebuild.c platform/guest-vmm/x86_rebuild_memory.c \
+		$(if $(filter Darwin,$(UNAME_S)),-DAOS_X86_FIRMWARE_RAM_VA=0x300000000ull -DAOS_X86_FIRMWARE_ROM_VA=0x310000000ull,) \
 		-o $(BUILD_TMP_DIR)/test_x86_memory_rebuild
 	$(BUILD_TMP_DIR)/test_x86_memory_rebuild
 test-host: test-x86-teardown-host
@@ -1381,7 +1382,7 @@ benchmark-virtio-gpu-host:
 
 test-virtio-gpu-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=gnu11 -Wall -Wextra -Werror -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -iquote kernel/agentos-root-task/include tests/platform/test_gpu_adopt.c platform/gpu-virt/vmm_virtio_gpu.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_gpu_adopt
+	$(CC) -std=gnu11 -Wall -Wextra -Werror $(if $(filter Darwin,$(UNAME_S)),-DAOS_FB_SHMEM_VA=0x300000000UL,) -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -iquote kernel/agentos-root-task/include tests/platform/test_gpu_adopt.c platform/gpu-virt/vmm_virtio_gpu.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_gpu_adopt
 	$(BUILD_TMP_DIR)/test_gpu_adopt
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu.c libvmm/src/virtio/gpa.c libvmm/src/virtio/gpu_2d.c libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_virtio_gpu_2d
 	$(BUILD_TMP_DIR)/test_virtio_gpu_2d
@@ -1395,7 +1396,7 @@ test-host: policy-check guest-profile-check lint-source test-integration test-op
 .PHONY: test-input-host
 test-input-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
-	$(CC) -std=gnu11 -Wall -Wextra -Werror -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -iquote kernel/agentos-root-task/include tests/platform/test_input_adopt.c platform/input-virt/vmm_virtio_input.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_input_adopt
+	$(CC) -std=gnu11 -Wall -Wextra -Werror $(if $(filter Darwin,$(UNAME_S)),-DAOS_INPUT_SHMEM_VA=0x300000000UL,) -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -iquote kernel/agentos-root-task/include tests/platform/test_input_adopt.c platform/input-virt/vmm_virtio_input.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_input_adopt
 	$(BUILD_TMP_DIR)/test_input_adopt
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_input_rebind.c platform/input-virt/service.c platform/input-virt/rebind_service.c -o $(BUILD_TMP_DIR)/test_input_rebind
 	$(BUILD_TMP_DIR)/test_input_rebind
@@ -1403,7 +1404,7 @@ test-input-host:
 	$(ROOT_DIR)build/tmp/test_input_queue
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
 	$(BUILD_TMP_DIR)/test_virtio_input
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_input
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_input
 	$(BUILD_TMP_DIR)/test_agentctl_input
 ifeq ($(UNAME_S),Linux)
 	$(CC) -std=c11 -Wall -Wextra -Werror tests/platform/test_guest_input_probe.c -o $(BUILD_TMP_DIR)/test_guest_input_probe
@@ -1427,13 +1428,13 @@ host-frame-pattern:
 .PHONY: test-agentctl-console-host
 test-agentctl-console-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_console
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_console
 	$(BUILD_TMP_DIR)/test_agentctl_console
 
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)build/tmp/test_agentctl_frame_capture
 	$(ROOT_DIR)build/tmp/test_agentctl_frame_capture
 
 test-framebuffer-host:
@@ -2146,10 +2147,12 @@ SESSION_PROFILE ?= ubuntu-live.toml
 SESSION_PORT ?= 12222
 SESSION_KEY ?= build/tmp/dual-ssh/id_ed25519
 SESSION_TIMEOUT ?= 600
+SESSION_KNOWN_HOSTS ?=
 .PHONY: test-guest-session
 test-guest-session:
 	@cargo xtask guest-session --profile $(SESSION_PROFILE) --key $(SESSION_KEY) \
-		--port $(SESSION_PORT) --timeout-secs $(SESSION_TIMEOUT)
+		--port $(SESSION_PORT) --timeout-secs $(SESSION_TIMEOUT) \
+		$(if $(SESSION_KNOWN_HOSTS),--known-hosts $(SESSION_KNOWN_HOSTS),)
 
 e2e-guest:
 	@chmod +x tests/e2e/suite_common.sh

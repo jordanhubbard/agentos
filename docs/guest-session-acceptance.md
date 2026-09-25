@@ -78,6 +78,15 @@ make test-guest-session SESSION_PROFILE=freebsd.toml SESSION_PORT=12223
 sets the total session deadline in seconds. These tests install and remove
 their named test package and are intended for disposable qualification guests.
 
+Current v0.4 main uses pinned Debian/FreeBSD for the default demonstration.
+Its `debian-scenario.toml` profile has the same functional checks, using the
+`debian` account and the seed's pinned SSH host identity. For a retained seeded
+guest, supply `SESSION_KNOWN_HOSTS` with the runner's retained known-hosts file;
+the functional runner rejects seeded profiles without it. The older Ubuntu
+scenario and standalone Ubuntu live test retain the functional requirement.
+Other seeded lifecycle/display proofs keep their existing specialized checks;
+their receipts alone do not qualify this login-session contract.
+
 ## Live storage and runtime limits
 
 Ubuntu provisioning establishes devpts, cgroup2 and a working journal stream

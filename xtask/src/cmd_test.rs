@@ -3654,7 +3654,10 @@ fn x86_linux_login_probe(
             Err(_) => std::thread::sleep(Duration::from_millis(20)),
         }
     };
-    stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+    // macOS can reject SO_RCVTIMEO with EINVAL after the peer closes, even
+    // when unread diagnostic bytes remain. Drain those bytes nonblocking;
+    // the reader already enforces the host deadline.
+    stream.set_nonblocking(true)?;
     x86_linux_login_reader(|chunk| stream.read(chunk), log_path, deadline, ssh)
 }
 
@@ -3737,7 +3740,10 @@ fn x86_linux_login_reader_with_artifacts(
                 if matches!(
                     error.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
+                ) =>
+            {
+                std::thread::sleep(Duration::from_millis(20))
+            }
             Err(error) => return Err(error.into()),
         }
     }
@@ -6991,7 +6997,12 @@ fn wait_for_dual_guest_consoles_via_cc(
             &ssh_key.private_key,
             guest.ssh_host_port,
             if guest.profile.seed.is_some() {
-                Some(ssh_key.known_hosts.as_deref().context("seeded session requires pinned identity")?)
+                Some(
+                    ssh_key
+                        .known_hosts
+                        .as_deref()
+                        .context("seeded session requires pinned identity")?,
+                )
             } else {
                 None
             },
@@ -7882,7 +7893,8 @@ mod tests {
             sender.join().unwrap();
             assert_eq!(result.is_ok(), expected, "{result:?}");
             assert_eq!(
-                std::fs::read(log.with_extension("console.log")).unwrap(),
+                std::fs::read(log.with_extension("console.log"))
+                    .unwrap_or_else(|error| panic!("missing transcript: {error}; login result: {result:?}")),
                 bytes
             );
         }

@@ -23,7 +23,7 @@ static bool host_fixture;
 static const uintptr_t base = AOS_X86_VIRTIO_BASE + 2u*AOS_X86_VIRTIO_STRIDE;
 static unsigned char *ram;
 enum { RAM_BYTES = 0x20000 };
-static _Alignas(4096) unsigned char region[AOS_NET_SHMEM_SIZE];
+static unsigned char *region;
 int printf_(const char *fmt, ...)
 {
     va_list ap; va_start(ap,fmt); int n=vprintf(fmt,ap); va_end(ap); return n;
@@ -77,6 +77,10 @@ int main(int argc, char **argv)
 {
     assert(argc==1 || (argc==2 && !strcmp(argv[1],"host-fixture")));
     host_fixture=argc==2;
+    /* A dedicated mapping follows the host page size, including 16 KiB on
+     * Apple Silicon, and keeps retirement protection away from other data. */
+    region=mmap(NULL,AOS_NET_SHMEM_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    assert(region!=MAP_FAILED);
     ram=mmap(NULL,RAM_BYTES,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     assert(ram!=MAP_FAILED);
     aos_x86_ioapic_t ioapic;
@@ -199,7 +203,7 @@ int main(int argc, char **argv)
     aos_vmm_virtio_net_after_fault();
     assert(kicks==old_kicks);
     aos_x86_virtio_retire();
-    assert(mprotect(region,sizeof(region),PROT_NONE)==0);
+    assert(mprotect(region,AOS_NET_SHMEM_SIZE,PROT_NONE)==0);
     unsigned char *fresh=mmap(NULL,AOS_NET_SHMEM_SIZE,PROT_READ|PROT_WRITE,
         MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     assert(fresh!=MAP_FAILED);
@@ -289,6 +293,6 @@ int main(int argc, char **argv)
         assert(munmap(ram,RAM_BYTES)==0);
         assert(munmap(fresh,AOS_NET_SHMEM_SIZE)==0);
     }
-    assert(mprotect(region,sizeof(region),PROT_READ|PROT_WRITE)==0);
+    assert(munmap(region,AOS_NET_SHMEM_SIZE)==0);
     puts("PASS: network TX/RX, retirement, failed adoption cleanup and fresh device generations");
 }
