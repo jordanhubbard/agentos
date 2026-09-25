@@ -18,6 +18,7 @@ else.
 | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) | Boot flow, declaring a PD, PD skeleton, contracts, notifications, adding a virtualizer/driver/profile/native agent, testing policy. |
 | [`ROADMAP.md`](ROADMAP.md) | Release map 0.2 to 1.0, dependency order, trust-baseline corrective actions, per-release acceptance evidence. |
 | [`RELEASES.md`](RELEASES.md) | Evidence-bound release protocol: plan, prepare, check, publish, verify; branch policy; evidence matrix. |
+| [`remoteos-gui-architecture.md`](remoteos-gui-architecture.md) | Accepted GUI boundary: `agentos_gui` remains the control plane and uses RemoteOS-SDL as its shared graphical presentation backend through an untrusted host relay. |
 | [`guest-profiles.md`](guest-profiles.md) | Data-driven guest personalities: TOML profile format, host/target boundary, compiler, scenarios, console expect rules. |
 | [`demo.md`](demo.md) | The dual-guest Ubuntu + FreeBSD SSH demo: `make setup`, `make demo`, ports, timing, troubleshooting. |
 | [`desktop-demo.md`](desktop-demo.md) | Experimental Ubuntu desktop-over-SSH (RFB frame) proof. Not release-qualified. |

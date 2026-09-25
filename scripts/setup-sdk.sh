@@ -22,7 +22,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 SDK_VERSION="2.1.0"
-SDK_BASE_URL="https://github.com/seL4/microkit/releases/download/1.4.1"
+# The release tag has to track SDK_VERSION: every tag only carries assets named
+# for its own version, so a fixed tag here means the download 404s for every
+# host the moment SDK_VERSION moves. It was pinned at 1.4.1 while SDK_VERSION
+# said 2.1.0, which is exactly that failure.
+SDK_BASE_URL="https://github.com/seL4/microkit/releases/download/${SDK_VERSION}"
 SDK_DIR="${PROJECT_DIR}/microkit-sdk-${SDK_VERSION}"
 
 HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"  # linux / darwin

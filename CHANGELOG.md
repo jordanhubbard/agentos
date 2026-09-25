@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-25
+
+### Added
+
+- Add a transport-independent RemoteOS protocol-v2 client foundation with
+  bounded framing, parsing and binary pixel upload, plus deterministic mock
+  coverage and live headless RemoteOS-SDL interoperability. This is host-side
+  protocol evidence only: the release image does not yet contain a display
+  relay, and graphical CC framebuffer/input integration remains unqualified.
+- Record the GUI architecture decision: `agentos_gui` remains the AgentOS
+  control plane while RemoteOS-SDL is the common graphical presentation/input
+  backend. The future relay stays outside the TCB and uses existing CC,
+  framebuffer-observer and input-virtualizer contracts.
+
 ## [0.4.0] - 2026-09-22
 
 ### Added

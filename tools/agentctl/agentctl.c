@@ -5,6 +5,9 @@
  * CC frame, prints structured output, and exits. No interactive UI.
  */
 
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 #ifdef __APPLE__
 #define _DARWIN_C_SOURCE
@@ -139,6 +142,10 @@ static int connect_cc(void)
 /* Absolute deadline per frame direction, including partial progress. */
 static bool transfer_nonblocking(int fd, void *buf, size_t n, bool writing)
 {
+    int descriptor_flags = fcntl(fd, F_GETFL, 0);
+    if (descriptor_flags < 0 ||
+        (!(descriptor_flags & O_NONBLOCK) &&
+         fcntl(fd, F_SETFL, descriptor_flags | O_NONBLOCK) < 0)) return false;
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now)) return false;
     int64_t deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + CC_FRAME_TIMEOUT_MS;
@@ -300,8 +307,9 @@ static int cmd_frame_capture(uint32_t handle, const char *path)
     }
     if (fclose(file) != 0) written = false;
     if (!written) { unlink(path); goto release; }
-    printf("{\"width\":%u,\"height\":%u,\"sequence\":%" PRIu64 ",\"bytes\":%u}\n",
-           snapshot.width, snapshot.height, snapshot.sequence, bytes);
+    printf("{\"width\":%u,\"height\":%u,\"sequence\":%llu,\"bytes\":%u}\n",
+           snapshot.width, snapshot.height,
+           (unsigned long long)snapshot.sequence, bytes);
     result = 0;
 release:
     query.operation = AOS_FB_CAPTURE_RELEASE;
@@ -597,10 +605,10 @@ static int cmd_trace_dump(int argc, char **argv)
            r.mr[0], count, r.mr[2], r.mr[3]);
     for (uint32_t i = 0; i < count; i++) {
         if (i) printf(",");
-        printf("{\"timestamp_ns\":%" PRIu64 ",\"from_pd\":%u"
+        printf("{\"timestamp_ns\":%llu,\"from_pd\":%u"
                ",\"to_pd\":%u,\"channel\":%u"
                ",\"opcode\":%u,\"seq_lo\":%u}",
-               e[i].timestamp_ns, (unsigned)e[i].from_pd,
+               (unsigned long long)e[i].timestamp_ns, (unsigned)e[i].from_pd,
                (unsigned)e[i].to_pd, (unsigned)e[i].channel,
                (unsigned)e[i].opcode, (unsigned)e[i].seq_lo);
     }

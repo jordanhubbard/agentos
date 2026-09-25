@@ -123,6 +123,10 @@ KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
 SEL4_SDK_VERSION ?= $(strip $(shell cat "$(ROOT_DIR)tools/sdk/default-version"))
 SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
 export SEL4_SDK
+# Host VM-entry tests need the generated x86 ABI header. Prefer the selected
+# SDK, but accept the repository-local SDK installed by scripts/setup-sdk.sh.
+HOST_TEST_SEL4_SDK := $(if $(wildcard $(SEL4_SDK)/board),$(SEL4_SDK),$(firstword $(wildcard $(ROOT_DIR)microkit-sdk-*)))
+HOST_X86_SEL4_INCLUDE := $(HOST_TEST_SEL4_SDK)/board/x86_64_generic/release/include
 
 # ─── BOARD_NAME: selects a boards/<name>/board.mk configuration ──────────────
 # Derive from TARGET_ARCH when not explicitly provided.  Override with
@@ -183,6 +187,11 @@ BUILD_TMP_DIR := $(ROOT_DIR)build/tmp
 
 # ─── OS / arch detection ──────────────────────────────────────────────────────
 UNAME_S := $(shell uname -s)
+# Apple clang's ASan runtime deadlocks during dyld initialization on current
+# Darwin; keep undefined-behaviour coverage there and retain ASan+UBSan on the
+# Linux CI path where the address sanitizer starts reliably.
+HOST_SANITIZER_FLAGS := -fsanitize=$(if $(filter Darwin,$(UNAME_S)),undefined,address,undefined)
+HOST_LIBVMM_WARNING_FLAGS := $(if $(filter Darwin,$(UNAME_S)),-Wno-macro-redefined)
 UNAME_M := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
@@ -889,6 +898,16 @@ test-arm-recreate-host:
 test-host: test-x86-cpu-host
 test-host: test-x86-composition-host
 test-host: test-vm-manager-identity-host
+test-host: test-remoteos-client-host
+
+.PHONY: test-remoteos-client-host
+test-remoteos-client-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_remoteos_client.c kernel/agentos-root-task/src/remoteos_client.c \
+		-o $(BUILD_TMP_DIR)/test_remoteos_client
+	$(BUILD_TMP_DIR)/test_remoteos_client
 
 .PHONY: test-vm-manager-identity-host
 test-vm-manager-identity-host:
@@ -896,7 +915,9 @@ test-vm-manager-identity-host:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
 		-DAGENTOS_TEST_HOST -ffunction-sections -fdata-sections \
 		-iquote kernel/agentos-root-task/include -I tests/platform/loop-stubs -I platform/include -I libvmm/include \
-		tests/platform/test_vm_manager_guest_identity.c -Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $(BUILD_TMP_DIR)/test_vm_manager_guest_identity
+		tests/platform/test_vm_manager_guest_identity.c \
+		-Wl,$(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) \
+		-o $(BUILD_TMP_DIR)/test_vm_manager_guest_identity
 	$(BUILD_TMP_DIR)/test_vm_manager_guest_identity
 
 .PHONY: test-x86-composition-host
@@ -944,7 +965,7 @@ test-host: test-x86-recreate-host
 .PHONY: test-x86-recreate-host
 test-x86-recreate-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+	$(CC) -std=c11 -Wall -Wextra -Werror $(HOST_SANITIZER_FLAGS) \
 		-Iplatform/include tests/platform/test_x86_recreate.c \
 		platform/guest-vmm/x86_recreate.c -o $(BUILD_TMP_DIR)/test_x86_recreate
 	$(BUILD_TMP_DIR)/test_x86_recreate
@@ -970,8 +991,8 @@ test-x86-memory-rebuild-host:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Itests/platform/x86-objects-stubs \
 		-Iplatform/include -Ilibvmm/include -iquote kernel/agentos-root-task/include \
+		$(if $(filter Darwin,$(UNAME_S)),-DAOS_X86_FIRMWARE_RAM_VA=0x600000000000ull -DAOS_X86_FIRMWARE_ROM_VA=0x600010000000ull) \
 		tests/platform/test_x86_memory_rebuild.c platform/guest-vmm/x86_rebuild_memory.c \
-		$(if $(filter Darwin,$(UNAME_S)),-DAOS_X86_FIRMWARE_RAM_VA=0x300000000ull -DAOS_X86_FIRMWARE_ROM_VA=0x310000000ull,) \
 		-o $(BUILD_TMP_DIR)/test_x86_memory_rebuild
 	$(BUILD_TMP_DIR)/test_x86_memory_rebuild
 test-host: test-x86-teardown-host
@@ -1052,7 +1073,7 @@ test-host: test-cc-serial-control-host
 .PHONY: test-cc-serial-control-host
 test-cc-serial-control-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+	$(CC) -std=c11 -Wall -Wextra -Werror $(HOST_SANITIZER_FLAGS) -g \
 		-I platform/include tests/platform/test_cc_serial_control.c \
 		services/command-console/cc_serial_control.c -o $(BUILD_TMP_DIR)/test_cc_serial_control
 	$(BUILD_TMP_DIR)/test_cc_serial_control
@@ -1060,7 +1081,7 @@ test-cc-serial-control-host:
 .PHONY: test-cc-transport-host
 test-cc-transport-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+	$(CC) -std=c11 -Wall -Wextra -Werror $(HOST_SANITIZER_FLAGS) -g \
 		-idirafter kernel/agentos-root-task/include tests/platform/test_cc_transport.c \
 		-o $(BUILD_TMP_DIR)/test_cc_transport
 	$(BUILD_TMP_DIR)/test_cc_transport
@@ -1068,7 +1089,7 @@ test-cc-transport-host:
 .PHONY: test-virtio-pci-caps
 test-virtio-pci-caps:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+	$(CC) -std=c11 -Wall -Wextra -Werror $(HOST_SANITIZER_FLAGS) -g \
 		-I platform/include tests/platform/test_virtio_pci_caps.c \
 		platform/blk-virt/virtio_pci_caps.c -o $(BUILD_TMP_DIR)/test_virtio_pci_caps
 	$(BUILD_TMP_DIR)/test_virtio_pci_caps
@@ -1076,7 +1097,7 @@ test-virtio-pci-caps:
 .PHONY: test-virtio-host-transport
 test-virtio-host-transport:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+	$(CC) -std=c11 -Wall -Wextra -Werror $(HOST_SANITIZER_FLAGS) -g \
 		-I platform/include -I libvmm/dep/sddf/include \
 		-idirafter kernel/agentos-root-task/include \
 		tests/platform/test_virtio_host_transport.c services/block-driver/virtio_host_transport.c \
@@ -1089,7 +1110,7 @@ test-host: test-x86-smp-host
 .PHONY: test-x86-smp-host
 test-x86-smp-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+	$(CC) -std=c11 -Wall -Wextra -Werror $(HOST_SANITIZER_FLAGS) -g \
 		-Iplatform/include tests/platform/test_x86_smp.c \
 		platform/guest-vmm/x86_smp.c platform/guest-vmm/x86_apic.c \
 		-o $(BUILD_TMP_DIR)/test_x86_smp
@@ -1114,20 +1135,20 @@ test-x86-runner-host:
 		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_runner.c \
 		platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner
 	$(BUILD_TMP_DIR)/test_x86_runner
-	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+	$(CC) -std=c11 -Wall -Wextra -Werror $(HOST_SANITIZER_FLAGS) -g \
 		-DCONFIG_VTX -DCONFIG_X86_64_VTX_64BIT_GUESTS \
 		-Itests/platform/runner-stubs -Iplatform/include \
-		-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+		-I$(HOST_X86_SEL4_INCLUDE) \
 		-idirafter kernel/agentos-root-task/include \
 		tests/platform/test_x86_runner_client.c platform/guest-vmm/x86_runner_client.c \
 		platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner_client
 	$(BUILD_TMP_DIR)/test_x86_runner_client
 	@set -e; for mode in classic mcs; do \
 		flags=; if test "$$mode" = mcs; then flags=-DCONFIG_KERNEL_MCS; fi; \
-		$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+		$(CC) -std=c11 -Wall -Wextra -Werror $(HOST_SANITIZER_FLAGS) -g \
 			-DCONFIG_VTX -DCONFIG_X86_64_VTX_64BIT_GUESTS $$flags \
 			-Itests/platform/runner-stubs -Iplatform/include \
-			-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+			-I$(HOST_X86_SEL4_INCLUDE) \
 			-idirafter kernel/agentos-root-task/include \
 			tests/platform/test_x86_runner_pd.c platform/guest-vmm/x86_runner_pd.c \
 			platform/guest-vmm/x86_runner.c -o $(BUILD_TMP_DIR)/test_x86_runner_$$mode; \
@@ -1186,8 +1207,8 @@ test-host: test-x86-net-host
 .PHONY: test-x86-net-host
 test-x86-net-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare \
-		-fsanitize=address,undefined -g -ffunction-sections \
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare $(HOST_LIBVMM_WARNING_FLAGS) \
+		$(HOST_SANITIZER_FLAGS) -g -ffunction-sections \
 		-Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) \
 		-Itests/platform/block-stubs -Itests/platform/virtio-stubs -Ilibvmm/include \
 		-Ilibvmm/dep/sddf/include -Ilibvmm/dep/sddf/include/microkit \
@@ -1203,8 +1224,8 @@ test-x86-net-host:
 .PHONY: test-x86-block-host
 test-x86-block-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare \
-		-fsanitize=address,undefined -g -ffunction-sections \
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare $(HOST_LIBVMM_WARNING_FLAGS) \
+		$(HOST_SANITIZER_FLAGS) -g -ffunction-sections \
 		-Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) \
 		-Itests/platform/block-stubs -Itests/platform/virtio-stubs -Ilibvmm/include \
 		-Ilibvmm/dep/sddf/include -Iplatform/include -idirafter kernel/agentos-root-task/include \
@@ -1219,8 +1240,8 @@ test-x86-block-host:
 .PHONY: test-x86-console-host
 test-x86-console-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare \
-		-fsanitize=address,undefined -g -ffunction-sections \
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -Wno-sign-compare $(HOST_LIBVMM_WARNING_FLAGS) \
+		$(HOST_SANITIZER_FLAGS) -g -ffunction-sections \
 		-Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) \
 		-Itests/platform/virtio-stubs -Ilibvmm/include -Ilibvmm/dep/sddf/include -Iplatform/include \
 		tests/platform/test_x86_console.c platform/serial-virt/vmm_virtio_console.c \
@@ -1232,8 +1253,8 @@ test-x86-console-host:
 .PHONY: test-x86-virtio-host
 test-x86-virtio-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	gcc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function \
-		-fsanitize=address,undefined -g -I tests/platform/virtio-stubs -I libvmm/include -I platform/include \
+	gcc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function $(HOST_LIBVMM_WARNING_FLAGS) \
+		$(HOST_SANITIZER_FLAGS) -g -I tests/platform/virtio-stubs -I libvmm/include -I platform/include \
 		tests/platform/test_x86_virtio.c platform/guest-vmm/x86_virtio.c \
 		platform/guest-vmm/x86_ioapic.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
 		-o $(BUILD_TMP_DIR)/test_x86_virtio
@@ -1242,7 +1263,7 @@ test-x86-virtio-host:
 .PHONY: test-virtio-console-rx-host
 test-virtio-console-rx-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+	gcc -std=c11 -Wall -Wextra -Werror $(HOST_LIBVMM_WARNING_FLAGS) $(HOST_SANITIZER_FLAGS) -g \
 		-I libvmm/include tests/platform/test_virtio_console_rx_ring.c \
 		-o $(BUILD_TMP_DIR)/test_virtio_console_rx_ring
 	@$(BUILD_TMP_DIR)/test_virtio_console_rx_ring
@@ -1250,8 +1271,8 @@ test-virtio-console-rx-host:
 .PHONY: test-virtio-mmio-core-host
 test-virtio-mmio-core-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	gcc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function \
-		-fsanitize=address,undefined -g -I tests/platform/virtio-stubs -I libvmm/include \
+	gcc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function $(HOST_LIBVMM_WARNING_FLAGS) \
+		$(HOST_SANITIZER_FLAGS) -g -I tests/platform/virtio-stubs -I libvmm/include \
 		tests/platform/test_virtio_mmio_core.c libvmm/src/virtio/mmio.c libvmm/src/virtio/gpa.c \
 		-o $(BUILD_TMP_DIR)/test_virtio_mmio_core
 	@$(BUILD_TMP_DIR)/test_virtio_mmio_core
@@ -1266,7 +1287,7 @@ test-virtio-backends-build: test-x86-vmenter-host
 		out="$(BUILD_TMP_DIR)/virtio-backends-$$arch"; mkdir -p "$$out"; \
 		for backend in console net block; do \
 			clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
-				-I"$(SEL4_SDK)/board/$$board/release/include" \
+				-I"$(HOST_TEST_SEL4_SDK)/board/$$board/release/include" \
 				-Ilibvmm/include -Ilibvmm/dep/sddf/include \
 				-Ilibvmm/dep/sddf/include/sddf/util/custom_libc \
 				-Ilibvmm/dep/sddf/include/microkit \
@@ -1274,18 +1295,18 @@ test-virtio-backends-build: test-x86-vmenter-host
 				-c libvmm/src/virtio/$$backend.c -o "$$out/$$backend.o"; \
 		done; \
 		clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
-			-I"$(SEL4_SDK)/board/$$board/release/include" \
+			-I"$(HOST_TEST_SEL4_SDK)/board/$$board/release/include" \
 			-Ilibvmm/include -Ilibvmm/dep/sddf/include \
 			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
 			-c platform/serial-virt/vmm_virtio_console.c -o "$$out/vmm_virtio_console.o"; \
 		clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
-			-I"$(SEL4_SDK)/board/$$board/release/include" \
+			-I"$(HOST_TEST_SEL4_SDK)/board/$$board/release/include" \
 			-Ilibvmm/include -Ilibvmm/dep/sddf/include \
 			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
 			-Ikernel/agentos-root-task/include \
 			-c platform/blk-virt/vmm_virtio_blk.c -o "$$out/vmm_virtio_blk.o"; \
 		clang -target $$arch-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
-			-I"$(SEL4_SDK)/board/$$board/release/include" \
+			-I"$(HOST_TEST_SEL4_SDK)/board/$$board/release/include" \
 			-Ilibvmm/include -Ilibvmm/dep/sddf/include \
 			-Ilibvmm/dep/sddf/include/sddf/util/custom_libc -Iplatform/include \
 			-Ikernel/agentos-root-task/include \
@@ -1293,7 +1314,7 @@ test-virtio-backends-build: test-x86-vmenter-host
 			-c platform/net-virt/vmm_virtio_net.c -o "$$out/vmm_virtio_net.o"; \
 		if test "$$arch" = x86_64; then \
 			clang -target x86_64-unknown-elf -ffreestanding -O2 -Wall -Werror -Wno-unused-function \
-				-I"$(SEL4_SDK)/board/$$board/release/include" \
+				-I"$(HOST_TEST_SEL4_SDK)/board/$$board/release/include" \
 				-Ilibvmm/include -Iplatform/include \
 				-c platform/guest-vmm/x86_virtio.c -o "$$out/x86_virtio.o"; \
 		fi; \
@@ -1303,9 +1324,9 @@ test-virtio-backends-build: test-x86-vmenter-host
 .PHONY: test-x86-vmenter-host
 test-x86-vmenter-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+	$(CC) -std=c11 -Wall -Wextra -Werror $(HOST_SANITIZER_FLAGS) -g \
 		-Itests/platform/virtio-stubs -Iplatform/include \
-		-I$(SEL4_SDK)/board/x86_64_generic/release/include \
+		-I$(HOST_X86_SEL4_INCLUDE) \
 		-idirafter kernel/agentos-root-task/include \
 		tests/platform/test_x86_vmenter.c platform/guest-vmm/x86_runner.c \
 		-o $(BUILD_TMP_DIR)/test_x86_vmenter
@@ -1392,7 +1413,12 @@ benchmark-virtio-gpu-host:
 
 test-virtio-gpu-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=gnu11 -Wall -Wextra -Werror $(if $(filter Darwin,$(UNAME_S)),-DAOS_FB_SHMEM_VA=0x300000000UL,) -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -iquote kernel/agentos-root-task/include tests/platform/test_gpu_adopt.c platform/gpu-virt/vmm_virtio_gpu.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_gpu_adopt
+	$(CC) -std=gnu11 -Wall -Wextra -Werror \
+		$(if $(filter Darwin,$(UNAME_S)),-DAOS_FB_SHMEM_VA=0x600020000000UL) \
+		-I tests/platform/mmio-stubs -I platform/include -I libvmm/include \
+		-iquote kernel/agentos-root-task/include tests/platform/test_gpu_adopt.c \
+		platform/gpu-virt/vmm_virtio_gpu.c platform/framebuffer/service.c \
+		-o $(BUILD_TMP_DIR)/test_gpu_adopt
 	$(BUILD_TMP_DIR)/test_gpu_adopt
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_gpu_2d.c libvmm/src/virtio/gpu.c libvmm/src/virtio/gpa.c libvmm/src/virtio/gpu_2d.c libvmm/src/virtio/gpu_ring.c platform/gpu-virt/framebuffer_adapter.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_virtio_gpu_2d
 	$(BUILD_TMP_DIR)/test_virtio_gpu_2d
@@ -1406,7 +1432,12 @@ test-host: policy-check guest-profile-check lint-source test-integration test-op
 .PHONY: test-input-host
 test-input-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
-	$(CC) -std=gnu11 -Wall -Wextra -Werror $(if $(filter Darwin,$(UNAME_S)),-DAOS_INPUT_SHMEM_VA=0x300000000UL,) -I tests/platform/mmio-stubs -I platform/include -I libvmm/include -iquote kernel/agentos-root-task/include tests/platform/test_input_adopt.c platform/input-virt/vmm_virtio_input.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_input_adopt
+	$(CC) -std=gnu11 -Wall -Wextra -Werror \
+		$(if $(filter Darwin,$(UNAME_S)),-DAOS_INPUT_SHMEM_VA=0x600040000000UL) \
+		-I tests/platform/mmio-stubs -I platform/include -I libvmm/include \
+		-iquote kernel/agentos-root-task/include tests/platform/test_input_adopt.c \
+		platform/input-virt/vmm_virtio_input.c platform/input-virt/service.c \
+		-o $(BUILD_TMP_DIR)/test_input_adopt
 	$(BUILD_TMP_DIR)/test_input_adopt
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_input_rebind.c platform/input-virt/service.c platform/input-virt/rebind_service.c -o $(BUILD_TMP_DIR)/test_input_rebind
 	$(BUILD_TMP_DIR)/test_input_rebind
