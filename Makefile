@@ -221,6 +221,14 @@ MICROKIT_SDK_URL := https://github.com/seL4/microkit/releases/download/$(SEL4_SD
 
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
+# v0.4's target dependency tracking uses GNU Make 4 features. Preserve the
+# public `make` entry point on macOS while recursive builds use Homebrew Make.
+ifeq ($(UNAME_S),Darwin)
+ifneq ($(wildcard $(BREW_PREFIX)/bin/gmake),)
+MAKE := $(BREW_PREFIX)/bin/gmake
+export PATH := $(BREW_PREFIX)/opt/make/libexec/gnubin:$(PATH)
+endif
+endif
 # Native guest helpers must keep their acquisition toolchain when the kernel
 # sub-make prepends its own LLVM directory to PATH.
 ifndef AGENTOS_HOST_TOOL_PATH
@@ -324,6 +332,7 @@ ifeq ($(UNAME_S),Darwin)
 		(echo "ERROR: Homebrew not found. Install from https://brew.sh" && exit 1)
 	@echo "[macOS] Installing dependencies via brew..."
 	@brew install --quiet \
+		make \
 		qemu \
 		llvm \
 		lld \
