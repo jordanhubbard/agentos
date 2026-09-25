@@ -36,6 +36,12 @@ Integration prerequisite `task_8017b95c612b44108c6fa705ffc86f09` restores
 macOS host-gate tool lookup and linker flags after the v0.4 merge, so this
 machine can qualify the integrated guest fixes.
 
+The implementation and cold Ubuntu/FreeBSD validation are recorded in the
+[functional-session receipt](evidence/2026-09-25-guest-sessions/README.md).
+MAC closure was attempted, but the ledger rejects `open` to `completed` for
+these unclaimed, dispatch-held tasks. Their descriptions record the published
+implementation and evidence; dispatch remains paused.
+
 ## Release map
 
 | Release | Theme | Required outcome |

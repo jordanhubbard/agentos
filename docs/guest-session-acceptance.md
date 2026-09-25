@@ -31,6 +31,10 @@ MAC tracks this audit in `task_e49d2ed2bb3c49339cfb4f6657cf0a62`, Ubuntu repair
 in `task_dfc0f3dc0b8e4275b36cfe4e74e92fcc`, and FreeBSD writable package state
 in `task_3086b8c0ea594264a8fea160d57fcef7`.
 
+Cold-boot validation, exact revisions/image hashes, and original Ubuntu and
+FreeBSD login transcripts are recorded in
+[the qualification receipt](evidence/2026-09-25-guest-sessions/README.md).
+
 ## Required functional session
 
 `make demo-test` and standalone live-profile proofs must pass the original

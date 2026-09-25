@@ -1,0 +1,71 @@
+Linux agentos-debian 6.12.107+deb13-arm64 #1 SMP Debian 6.12.107-1 (2026-08-29) aarch64^M
+^M
+The programs included with the Debian GNU/Linux system are free software;^M
+the exact distribution terms for each program are described in the^M
+individual files in /usr/share/doc/*/copyright.^M
+^M
+Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent^M
+permitted by applicable law.^M
+debian@agentos-debian:~$ ^M<ntos-%s-%s\n' guest-session-9waPGk ready || exit 91^M
+^M
+agentos-guest-session-9waPGk-ready^M
+debian@agentos-debian:~$ /dev/pts/0^M
+speed 9600 baud; rows 24; columns 80; line = 0;^M
+intr = ^C; quit = ^\; erase = ^?; kill = ^U; eof = ^D; eol = <undef>;^M
+eol2 = <undef>; swtch = <undef>; start = ^Q; stop = ^S; susp = ^Z; rprnt = ^R;^M
+werase = ^W; lnext = ^V; discard = ^O; min = 1; time = 0;^M
+-parenb -parodd -cmspar cs8 -hupcl -cstopb cread -clocal -crtscts^M
+-ignbrk -brkint -ignpar -parmrk -inpck -istrip -inlcr -igncr icrnl ixon -ixoff^M
+-iuclc ixany imaxbel -iutf8^M
+opost -olcuc -ocrnl onlcr -onocr -onlret -ofill -ofdel nl0 cr0 tab0 bs0 vt0 ff0^M
+isig icanon iexten -echo echoe -echok -echonl -noflsh -xcase -tostop -echoprt^M
+echoctl echoke -flusho -extproc^M
+^M
+agentos-guest-session-9waPGk-terminal^M
+debian@agentos-debian:~$ uid=1000(debian) gid=1000(debian) groups=1000(debian),4(adm),20(dialout),24(cdrom),25(floppy),27(sudo),29(audio),30(dip),44(video),46(plugdev)^M
+Linux agentos-debian 6.12.107+deb13-arm64 #1 SMP Debian 6.12.107-1 (2026-08-29) aarch64 GNU/Linux^M
+^M
+agentos-guest-session-9waPGk-identity^M
+debian@agentos-debian:~$ Filesystem      Size  Used Avail Use% Mounted on^M
+/dev/vda1       2.8G  804M  1.9G  31% /^M
+tmpfs           485M  8.0K  485M   1% /tmp^M
+    PID TTY          TIME CMD^M
+    786 pts/0    00:00:00 sh^M
+^M
+agentos-guest-session-9waPGk-files-processes^M
+debian@agentos-debian:~$ PING 10.0.2.2 (10.0.2.2) 56(84) bytes of data.^M
+64 bytes from 10.0.2.2: icmp_seq=1 ttl=255 time=2.04 ms^M
+64 bytes from 10.0.2.2: icmp_seq=2 ttl=255 time=276 ms^M
+64 bytes from 10.0.2.2: icmp_seq=3 ttl=255 time=977 ms^M
+^M
+--- 10.0.2.2 ping statistics ---^M
+3 packets transmitted, 3 received, 0% packet loss, time 2053ms^M
+rtt min/avg/max/mdev = 2.044/418.455/977.210/410.636 ms^M
+151.101.2.132   STREAM debian.map.fastlydns.net^M
+151.101.2.132   DGRAM  ^M
+151.101.2.132   RAW    ^M
+151.101.66.132  STREAM ^M
+151.101.66.132  DGRAM  ^M
+151.101.66.132  RAW    ^M
+151.101.130.132 STREAM ^M
+151.101.130.132 DGRAM  ^M
+151.101.130.132 RAW    ^M
+151.101.194.132 STREAM ^M
+151.101.194.132 DGRAM  ^M
+151.101.194.132 RAW    ^M
+^M
+agentos-guest-session-9waPGk-network^M
+debian@agentos-debian:~$ ^[[1mdpkg-deb:^[[0m building package 'agentos-acceptance-probe' in '/tmp/tmp.G2eN1iXE92/probe.deb'.^M
+Selecting previously unselected package agentos-acceptance-probe.^M
+(Reading database ... ^M(Reading database ... 5%^M(Reading database ... 10%^M(Reading database ... 15%^M(Reading database ... 20%^M(Reading database ... 25%^M(Reading database ... 30%^M(Reading database ... 35%^M(Reading database ... 40%^M(Reading database ... 45%^M(Reading database ... 50%^M(Reading database ... 55%^M(Reading database ... 60%^M(Reading database ... 65%^M(Reading database ... 70%^M(Reading database ... 75%^M(Reading database ... 80%^M(Reading database ... 85%^M(Reading database ... 90%^M(Reading database ... 95%^M(Reading database ... 100%^M(Reading database ... 25290 files and directories currently installed.)^M
+Preparing to unpack /tmp/tmp.G2eN1iXE92/probe.deb ...^M
+Unpacking agentos-acceptance-probe (1.0) ...^M
+Setting up agentos-acceptance-probe (1.0) ...^M
+agentos-acceptance-probe	1.0^M
+(Reading database ... ^M(Reading database ... 5%^M(Reading database ... 10%^M(Reading database ... 15%^M(Reading database ... 20%^M(Reading database ... 25%^M(Reading database ... 30%^M(Reading database ... 35%^M(Reading database ... 40%^M(Reading database ... 45%^M(Reading database ... 50%^M(Reading database ... 55%^M(Reading database ... 60%^M(Reading database ... 65%^M(Reading database ... 70%^M(Reading database ... 75%^M(Reading database ... 80%^M(Reading database ... 85%^M(Reading database ... 90%^M(Reading database ... 95%^M(Reading database ... 100%^M(Reading database ... 25293 files and directories currently installed.)^M
+Removing agentos-acceptance-probe (1.0) ...^M
+^[[1mdpkg:^[[0m ^[[1;33mwarning:^[[0m while removing agentos-acceptance-probe, directory '/usr/local' not empty so not removed^M
+^M
+agentos-guest-session-9waPGk-packages^M
+debian@agentos-debian:~$ logout^M
+Connection to 127.0.0.1 closed.^M

@@ -1,0 +1,61 @@
+root@:~ # stty -echo rows 24 columns 80 && printf '\nagentos-%s-%s\n' guest-session-GhvyRD ready || exit 91^M
+^M
+agentos-guest-session-GhvyRD-ready^M
+root@:~ # /bin/sh -c 'set -eu; test -t 0; test -t 1; tty; stty -a' && printf '\nagentos-%s-%s\n' guest-session-GhvyRD terminal || exit 91^M
+/dev/pts/0^M
+speed 9600 baud; 24 rows; 80 columns;^M
+lflags: icanon isig iexten echo echoe -echok echoke -echonl echoctl^M
+	-echoprt -altwerase -noflsh -tostop -flusho -pendin -nokerninfo^M
+	-extproc^M
+iflags: -istrip icrnl -inlcr -igncr ixon -ixoff ixany imaxbel -ignbrk^M
+	brkint -inpck -ignpar -parmrk -iutf8^M
+oflags: opost onlcr -ocrnl tab0 -onocr -onlret^M
+cflags: cread cs8 -parenb -parodd hupcl -clocal -cstopb -crtscts -dsrflow^M
+	-dtrflow -mdmbuf rtsdtr^M
+cchars: discard = ^O; dsusp = ^Y; eof = ^D; eol = <undef>;^M
+	eol2 = <undef>; erase = ^?; erase2 = ^H; intr = ^C; kill = ^U;^M
+	lnext = ^V; min = 1; quit = ^\; reprint = ^R; start = ^Q;^M
+	status = ^T; stop = ^S; susp = ^Z; time = 0; werase = ^W;^M
+^M
+agentos-guest-session-GhvyRD-terminal^M
+root@:~ # /bin/sh -c 'set -eu; test "$(id -un)" = '\''root'\''; test "$(uname -s)" = '\''FreeBSD'\''; id; uname -a' && printf '\nagentos-%s-%s\n' guest-session-GhvyRD identity || exit 91^M
+uid=0(root) gid=0(wheel) groups=0(wheel),5(operator)^M
+FreeBSD  15.0-RELEASE FreeBSD 15.0-RELEASE releng/15.0-n280995-7aedc8de6446 GENERIC arm64^M
+^M
+agentos-guest-session-GhvyRD-identity^M
+root@:~ # /bin/sh -c 'set -eu; d=$(mktemp -d /tmp/agentos-session.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; printf '\''%s\n'\'' alpha beta gamma >"$d/in"; cp "$d/in" "$d/copy"; cmp "$d/in" "$d/copy"; test "$(wc -l <"$d/in" | tr -d '\'' '\'')" = 3; (cat "$d/in" >"$d/out") & p=$!; wait "$p"; cmp "$d/in" "$d/out"; rm "$d/copy"; test ! -e "$d/copy"; df -h / /tmp; ps -p $$' && printf '\nagentos-%s-%s\n' guest-session-GhvyRD files-processes || exit 91^M
+Filesystem                               Size    Used   Avail Capacity  Mounted on^M
+/dev/iso9660/15_0_RELEASE_AARCH64_DVD    3.8G    3.8G      0B   100%    /^M
+tmpfs                                    303M     28K    303M     0%    /tmp^M
+PID TT  STAT    TIME COMMAND^M
+ 66  0  R+   0:00.25 /bin/sh -c set -eu; d=$(mktemp -d /tmp/agentos-session.XXX^M
+^M
+agentos-guest-session-GhvyRD-files-processes^M
+root@:~ # /bin/sh -c 'set -eu; ping -c 3 -W 5000 10.0.2.2; getent hosts pkg.FreeBSD.org' && printf '\nagentos-%s-%s\n' guest-session-GhvyRD network || exit 91^M
+PING 10.0.2.2 (10.0.2.2): 56 data bytes^M
+64 bytes from 10.0.2.2: icmp_seq=1 ttl=255 time=355.480 ms^M
+64 bytes from 10.0.2.2: icmp_seq=2 ttl=255 time=3.133 ms^M
+^M
+--- 10.0.2.2 ping statistics ---^M
+3 packets transmitted, 2 packets received, 33.3% packet loss^M
+round-trip min/avg/max/stddev = 3.133/179.306/355.480/176.174 ms^M
+2001:4978:1000:1395::50:2  pkgmir.geo.FreeBSD.org  pkg.FreeBSD.org^M
+163.237.194.42    pkgmir.geo.FreeBSD.org  pkg.FreeBSD.org^M
+^M
+agentos-guest-session-GhvyRD-network^M
+root@:~ # /bin/sh -c 'set -eu; pkg add /packages/FreeBSD:15:aarch64/All/cmark-0.31.1.pkg; test "$(pkg query '\''%n-%v'\'' cmark)" = cmark-0.31.1; test "$(printf '\''# agentos\n'\'' | /usr/local/bin/cmark -t commonmark)" = '\''# agentos'\''; pkg delete -y cmark; test ! -e /usr/local/bin/cmark; ! pkg info -e cmark' && printf '\nagentos-%s-%s\n' guest-session-GhvyRD packages || exit 91^M
+Installing cmark-0.31.1...^M
+Extracting cmark-0.31.1:   0%^MExtracting cmark-0.31.1:   0%^MExtracting cmark-0.31.1:   6%^MExtracting cmark-0.31.1:  12%^MExtracting cmark-0.31.1:  18%^MExtracting cmark-0.31.1:  25%^MExtracting cmark-0.31.1:  31%^MExtracting cmark-0.31.1:  37%^MExtracting cmark-0.31.1:  43%^MExtracting cmark-0.31.1:  50%^MExtracting cmark-0.31.1:  56%^MExtracting cmark-0.31.1:  62%^MExtracting cmark-0.31.1:  68%^MExtracting cmark-0.31.1:  75%^MExtracting cmark-0.31.1:  81%^MExtracting cmark-0.31.1:  87%^MExtracting cmark-0.31.1:  93%^MExtracting cmark-0.31.1: 100%^M
+Updating database digests format:   0%^MUpdating database digests format:   0%^MUpdating database digests format: 100%^M
+Checking integrity... done (0 conflicting)^M
+Deinstallation has been requested for the following 1 packages (of 0 packages in the universe):^M
+^M
+Installed packages to be REMOVED:^M
+	cmark: 0.31.1^M
+^M
+Number of packages to be removed: 1^M
+[1/1] Deinstalling cmark-0.31.1...^M
+[1/1] Deleting files for cmark-0.31.1:   0%^M[1/1] Deleting files for cmark-0.31.1:   0%^M[1/1] Deleting files for cmark-0.31.1:   6%^M[1/1] Deleting files for cmark-0.31.1:  12%^M[1/1] Deleting files for cmark-0.31.1:  18%^M[1/1] Deleting files for cmark-0.31.1:  25%^M[1/1] Deleting files for cmark-0.31.1:  31%^M[1/1] Deleting files for cmark-0.31.1:  37%^M[1/1] Deleting files for cmark-0.31.1:  43%^M[1/1] Deleting files for cmark-0.31.1:  50%^M[1/1] Deleting files for cmark-0.31.1:  56%^M[1/1] Deleting files for cmark-0.31.1:  62%^M[1/1] Deleting files for cmark-0.31.1:  68%^M[1/1] Deleting files for cmark-0.31.1:  75%^M[1/1] Deleting files for cmark-0.31.1:  81%^M[1/1] Deleting files for cmark-0.31.1:  87%^M[1/1] Deleting files for cmark-0.31.1:  93%^M[1/1] Deleting files for cmark-0.31.1: 100%^M
+^M
+agentos-guest-session-GhvyRD-packages^M
+root@:~ # exit 0^M

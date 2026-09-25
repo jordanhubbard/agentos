@@ -1,0 +1,32 @@
+{
+  "agentos_image_sha256": "50ac23244662ee40b06330bcd2611cfd9811e66e7b40147dfca8501be8f3b863",
+  "agentos_revision": "436afaea615903d4f4a005878225ebbcea28ba32",
+  "board": "qemu_virt_aarch64",
+  "boundary": "host QEMU launch request to completed authenticated SSH proof",
+  "elapsed_ms": 531134,
+  "excludes": [
+    "artifact acquisition",
+    "build",
+    "persistent media preparation"
+  ],
+  "guest_bundle_sha256": "016eaeb1371a1b28d8c33ad0ad656dd48390a8423708be3d7882cfa2f5e791ae",
+  "host_arch": "aarch64",
+  "host_backed_virtio": true,
+  "host_os": "macos",
+  "includes": [
+    "host scheduling",
+    "QEMU startup",
+    "agentOS boot",
+    "guest boot",
+    "console provisioning",
+    "SSH authentication"
+  ],
+  "persistent_second_boot": false,
+  "profile": "ubuntu-live-aarch64",
+  "qemu_config_sha256": "57f7f302b54baa5f4e5ed25d67f3877ada0e947b76445c72f978786a63f537a6",
+  "qualification_status": "passed",
+  "schema": "agentos.guest_boot_timing.v2",
+  "serial_log": "/Users/jordanh/Src/agentos/build/tmp/agentos-qemu-776wXa.log",
+  "source_tree_clean": true,
+  "status": "ssh_authenticated"
+}
