@@ -59,3 +59,8 @@ The `*-dual-terminal.txt` files retain both successful command sessions.
 Raw image, serial and test logs remain in
 `build/evidence/ssh-functional-e2e3758c/`.
 `make test-host` also passed at this revision: 133 Rust tests and the C suite.
+
+The final `CARGO_INCREMENTAL=0 make gate QEMU_TEST_TIMEOUT=600` passed at
+clean revision `481894e7`: host tests, real virtio backend builds, ARM64/x86
+boot, Buildroot network/block I/O, and Ubuntu console execution. Its full log
+is retained at `build/evidence/ssh-completion-481894e7/gate.log`.
