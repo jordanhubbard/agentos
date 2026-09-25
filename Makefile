@@ -232,7 +232,7 @@ endif
 # Native guest helpers must keep their acquisition toolchain when the kernel
 # sub-make prepends its own LLVM directory to PATH.
 ifndef AGENTOS_HOST_TOOL_PATH
-export AGENTOS_HOST_TOOL_PATH := $(LLVM_BIN):$(LLD_BIN):$(PATH)
+export AGENTOS_HOST_TOOL_PATH := $(PATH):$(LLVM_BIN):$(LLD_BIN)
 endif
 
 # ─── Native arch / HW-accelerated QEMU ────────────────────────────────────
