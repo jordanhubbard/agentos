@@ -35,7 +35,7 @@ jobs:
   sdk-candidate:
     uses: ./.github/workflows/sdk-candidate.yml
   dual-ssh:
-    name: Concurrent SSH (${{ inputs.guests }})
+    name: Functional SSH sessions (${{ inputs.guests }})
     runs-on: ubuntu-24.04
     needs: sdk-candidate
     timeout-minutes: 330
@@ -65,7 +65,7 @@ jobs:
           path: ~/.cache/agentos/isos/
           key: dual-ssh-${{ runner.os }}-${{ inputs.guests }}-${{ hashFiles('guest-profiles/*.toml', 'xtask/src/guest_manifest.rs') }}
 
-      - name: Prove concurrent SSH and peer survival across recreation
+      - name: Prove functional SSH sessions and peer survival across recreation
         timeout-minutes: 300
         env:
           GUEST_PAIR: ${{ inputs.guests }}
@@ -78,8 +78,9 @@ jobs:
           mkdir -p build/evidence/dual-ssh
           git rev-parse HEAD > build/evidence/dual-ssh/source-revision.txt
           # bash pipefail propagates the Make failure through tee. The existing
-          # harness requires exact FreeBSD/Linux replies from both concurrent
-          # SSH processes and repeats them after recreating the Linux guest.
+          # harness requires exact FreeBSD/Linux readiness replies, repeats
+          # them after Linux recreation, then checks real terminal sessions
+          # including file/process, network and package operations in both guests.
           make "$target" DUAL_OS_TEST_TIMEOUT=14400 2>&1 | tee build/evidence/dual-ssh/qualification.log
 
       - name: Retain qualification and authenticated SSH transcripts
@@ -89,6 +90,7 @@ jobs:
           name: dual-ssh-${{ inputs.guests }}-${{ github.sha }}
           path: |
             build/evidence/dual-ssh/
+            build/evidence/guest-session-*/
             build/tmp/agentos-qemu-*.log
             build/tmp/agentos-qemu-*.qemu.stderr
             build/tmp/agentos-qemu-*.ssh-evidence/
