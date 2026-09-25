@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const SSH_AUTH_OPTIONS: &[&str] = &[
+pub(crate) const SSH_AUTH_OPTIONS: &[&str] = &[
+    "-F",
+    "/dev/null",
     "-o",
     "BatchMode=yes",
     "-o",
@@ -34,7 +36,7 @@ const SSH_AUTH_OPTIONS: &[&str] = &[
     "-o",
     "LogLevel=ERROR",
 ];
-const SSH_PROBE_LIVENESS_OPTIONS: &[&str] =
+pub(crate) const SSH_PROBE_LIVENESS_OPTIONS: &[&str] =
     &["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=1"];
 const SSH_SESSION_LIVENESS_OPTIONS: &[&str] = &[
     "-o",
@@ -1662,7 +1664,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     {
         let proof = if args.seeded_ssh_key.is_some() {
             // The seeded result already includes authenticated SSH and sync.
-            Ok(())
+            Ok(Instant::now())
         } else {
             let key = ssh_key
                 .as_ref()
@@ -1678,8 +1680,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )
         };
         match proof {
-            Ok(()) => {
-                let elapsed_ms = boot_clock.elapsed().as_millis();
+            Ok(ssh_ready) => {
+                // Preserve the v2 readiness timing boundary; functional session
+                // acceptance is also required before publishing a passed receipt.
+                let elapsed_ms = ssh_ready.duration_since(boot_clock).as_millis();
                 let timing_path = log_path.with_extension("boot-timing.json");
                 let timing_source_tree_clean = timing_source_tree_clean
                     && agentos_worktree_clean(&repo_root)?
@@ -1718,8 +1722,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     }),
                 ));
                 result = Ok(format!(
-                    "{}; profile SSH reachable",
-                    result.as_deref().unwrap_or("guest profile ready")
+                    "{}; {}",
+                    result.as_deref().unwrap_or("guest profile ready"),
+                    if args.seeded_ssh_key.is_some() {
+                        "profile seeded SSH proof verified"
+                    } else {
+                        "profile functional SSH session verified"
+                    }
                 ));
             }
             Err(error) => result = Err(error),
@@ -3294,7 +3303,11 @@ fn seeded_ssh_via_cc(
 }
 
 fn apply_test_ssh_identity(command: &mut std::process::Command, key: &SshTestKey) {
-    if let Some(known) = &key.known_hosts {
+    apply_ssh_identity(command, key.known_hosts.as_deref());
+}
+
+pub(crate) fn apply_ssh_identity(command: &mut std::process::Command, known: Option<&Path>) {
+    if let Some(known) = known {
         command
             .args([
                 "-F",
@@ -5812,12 +5825,17 @@ fn wait_for_profile_ssh(
     while start.elapsed() < timeout {
         ensure_qemu_running(qemu, "waiting for profile SSH")?;
         let probe = spawn_ssh_probe(&ssh_key.private_key, ssh.host_port, account, None)?;
-        let output = probe
-            .wait_with_output()
-            .context("failed to wait for profile SSH probe")?;
+        let output = wait_ssh_probe(probe, timeout.saturating_sub(start.elapsed()))?;
         if output.status.success()
             && (marker.is_empty() || String::from_utf8_lossy(&output.stdout).trim() == marker)
         {
+            println!(
+                "[xtask:test] {} SSH remote exec uname -s: status={} stdout={:?} stderr={:?}",
+                profile.id,
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             return Ok(());
         }
         last = format!(
@@ -5837,7 +5855,7 @@ fn prove_profile_ssh(
     ssh_key: &SshTestKey,
     timeout: Duration,
     qemu: &mut Child,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Instant> {
     let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
     let provision_ssh = profile_provision_commands(profile, &ssh_key.public_key)?;
     run_guest_console_commands(
@@ -5856,7 +5874,17 @@ fn prove_profile_ssh(
         ssh_key,
         timeout.min(Duration::from_secs(600)),
         qemu,
-    )
+    )?;
+    let ssh_ready = Instant::now();
+    let ssh = profile.qemu.as_ref().and_then(|q| q.ssh.as_ref()).unwrap();
+    crate::guest_session::prove(
+        profile,
+        &ssh_key.private_key,
+        ssh.host_port,
+        None,
+        timeout.min(Duration::from_secs(600)),
+    )?;
+    Ok(ssh_ready)
 }
 
 fn wait_qualification_child(
@@ -6457,6 +6485,23 @@ fn spawn_ssh_probe(
         .with_context(|| format!("failed to launch SSH probe for {user} on port {port}"))
 }
 
+fn wait_ssh_probe(mut child: Child, timeout: Duration) -> anyhow::Result<std::process::Output> {
+    let deadline = Instant::now() + timeout.min(Duration::from_secs(45));
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output().context("collect SSH probe output");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            // Return the killed status and captured diagnostics for the retry log.
+            return child
+                .wait_with_output()
+                .context("collect timed-out SSH probe");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn profile_ssh_expectation(profile: &HostProfilePlan) -> anyhow::Result<(&str, &str)> {
     let step = profile
         .test
@@ -6524,9 +6569,7 @@ fn wait_for_scenario_guest_ssh(
             None
         };
         let probe = spawn_ssh_probe(&ssh_key.private_key, guest.ssh_host_port, account, known)?;
-        let output = probe
-            .wait_with_output()
-            .with_context(|| format!("failed to wait for {} SSH probe", guest.profile.id))?;
+        let output = wait_ssh_probe(probe, timeout.saturating_sub(start.elapsed()))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         attempt += 1;
         if retain_scenario_ssh_attempt(
@@ -6538,6 +6581,13 @@ fn wait_for_scenario_guest_ssh(
             marker,
             &output,
         )? {
+            println!(
+                "[xtask:test] {} SSH remote exec uname -s: status={} stdout={:?} stderr={:?}",
+                guest.profile.id,
+                output.status,
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            );
             return Ok(());
         }
         last = format!(
@@ -6935,6 +6985,20 @@ fn wait_for_dual_guest_consoles_via_cc(
         println!("[xtask:test] scenario guest recreated: retired={retired} fresh={deferred_handle} peer={lead_handle}; concurrent authenticated SSH and stale-handle rejection passed");
     }
 
+    for guest in &scenario.guests {
+        crate::guest_session::prove(
+            &guest.profile,
+            &ssh_key.private_key,
+            guest.ssh_host_port,
+            if guest.profile.seed.is_some() {
+                Some(ssh_key.known_hosts.as_deref().context("seeded session requires pinned identity")?)
+            } else {
+                None
+            },
+            Duration::from_secs(600),
+        )?;
+    }
+
     if !keep_running {
         destroy_guest_via_cc(&mut boot_cc, deferred_handle, Some(&deferred.profile))
             .with_context(|| format!("failed to destroy {}", deferred.profile.id))?;
@@ -6952,7 +7016,7 @@ fn wait_for_dual_guest_consoles_via_cc(
     }
 
     Ok(format!(
-        "scenario {} consoles ready: {} handle={} ({}); {} handle={} ({}); {ssh}; {}",
+        "scenario {} consoles ready: {} handle={} ({}); {} handle={} ({}); {ssh}; functional SSH sessions verified; {}",
         scenario.id,
         lead.profile.id,
         lead_handle,

@@ -118,6 +118,16 @@ args = { source = "freebsd-15.0-aarch64.iso", member = "boot/kernel/kernel", out
 action = "send-console"
 args = { text = "mkdir -p /tmp/agentos-ssh 2>/dev/null || { mount -t tmpfs tmpfs /tmp && mkdir -p /tmp/agentos-ssh; }" }
 
+# Preserve DVD contents in bounded RAM-backed live mounts. These are ephemeral;
+# this profile does not claim a persistent installation or a writable DVD root.
+[[host.provision]]
+action = "send-console"
+args = { text = "for dir in etc var usr/local; do if touch /$dir/.agentos-write-test 2>/dev/null; then rm /$dir/.agentos-write-test; else tar -C /$dir -cf /tmp/agentos-seed.tar . && mount -t tmpfs -o size=96m tmpfs /$dir && tar -C /$dir -xf /tmp/agentos-seed.tar && rm /tmp/agentos-seed.tar || exit 1; fi; done" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "rm -f /etc/resolv.conf && printf 'nameserver 10.0.2.3\\n' > /etc/resolv.conf && mkdir -p /var/db/pkg /var/cache/pkg" }
+
 [[host.provision]]
 action = "send-console"
 args = { text = "rm -f /tmp/agentos-ssh/host_key /tmp/agentos-ssh/host_key.pub /tmp/agentos-ssh/sshd.pid && printf '%s\\n' '{{ssh_public_key}}' > /tmp/agentos-ssh/authorized_keys && chmod 600 /tmp/agentos-ssh/authorized_keys" }
@@ -144,7 +154,15 @@ args = { marker = "# " }
 
 [[host.test]]
 action = "wait-ssh"
-args = { account = "root", marker = "FreeBSD" }
+args = { account = "root", marker = "FreeBSD", prompt = "# " }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "network", script = "ping -c 3 -W 5000 10.0.2.2; getent hosts pkg.FreeBSD.org" }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "packages", script = "pkg add /packages/FreeBSD:15:aarch64/All/cmark-0.31.1.pkg; test \"$(pkg query '%n-%v' cmark)\" = cmark-0.31.1; test \"$(printf '# agentos\\n' | /usr/local/bin/cmark -t commonmark)\" = '# agentos'; pkg delete -y cmark; test ! -e /usr/local/bin/cmark; ! pkg info -e cmark" }
 
 [[host.test]]
 action = "assert-virtio"

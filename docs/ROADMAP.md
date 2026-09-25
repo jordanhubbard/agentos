@@ -9,6 +9,29 @@ The current published line is `v0.3.x`. New work lands on the default branch
 first. Patch releases may carry bounded correctness and security fixes without
 changing the dependency order below.
 
+## Immediate guest usability qualification
+
+The September 2026 dual-guest receipt checked authenticated remote execution
+of `uname -s`. It did not qualify PTY allocation, login-shell startup, ordinary
+filesystem/process operations, or package installation. Those historical
+receipts must not be presented as evidence of a fully usable guest session.
+
+| Order | MAC task | Required outcome |
+| --- | --- | --- |
+| 1 | `task_e49d2ed2bb3c49339cfb4f6657cf0a62` | Reproduce remote-exec versus interactive-login behavior; replace SSH-only acceptance with bounded sessions asserting identity, terminal, filesystem, process, network and package operations; retain transcripts and prove negative cases fail. |
+| 2 | `task_dfc0f3dc0b8e4275b36cfe4e74e92fcc` | Repair Ubuntu live runtime mounts and shell startup; pass the functional session proof through agentOS devices. |
+| 3 | `task_3086b8c0ea594264a8fea160d57fcef7` | Provide writable FreeBSD package state and installation destinations; prove install, execution and removal; explicitly distinguish ephemeral live storage from persistent installation. |
+
+These are prerequisites for guest usability claims on every supported profile,
+including Debian. A listening daemon, authentication, or a kernel-name command
+alone is insufficient. The generic OS/device gate remains required in addition
+to these guest-level checks.
+
+Follow-up `task_d14f86b7a6894fedaed4e3f1b06607a8` investigates intermittent
+initial FreeBSD ICMP loss observed during qualification. The session requires
+a successful three-probe ping and retains packet-loss output; its cause is
+not yet established.
+
 ## Release map
 
 | Release | Theme | Required outcome |

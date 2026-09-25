@@ -1384,5 +1384,8 @@ requests and successfully attaches the operator's own channel.
 `GUEST_OS=none`, and `gate-guest-io` (`make test-guest-net`,
 `make test-guest-blk`, `make test-guest-console`). `GUEST_OS=none` alone is a
 stub VMM and proves only that PDs load. `make demo-test` is the concurrent
-dual-guest SSH acceptance path. The Ubuntu live-media proof is a nightly
+dual-guest SSH acceptance path. It now requires functional login sessions,
+PTYs, file/process operations, gateway/DNS checks and package install/run/remove
+checks; the [session contract](guest-session-acceptance.md) distinguishes this
+from historical `uname -s`-only receipts. The Ubuntu live-media proof is a nightly
 release qualification, not a per-push gate.

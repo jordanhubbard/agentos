@@ -19,6 +19,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Verify a running guest through a functional interactive SSH session.
+    GuestSession(xtask::guest_session::GuestSessionArgs),
     /// Compile and run host-side TAP test suites (API + integration)
     Test(HostTestArgs),
     /// Build the seL4 image and run a QEMU boot test
@@ -91,6 +93,7 @@ enum Cmd {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Cmd::GuestSession(a) => xtask::guest_session::run(&a),
         Cmd::Test(a) => cmd_host_test::run(&a),
         Cmd::QemuTest(a) => cmd_test::run(&a),
         Cmd::QemuLaunch(a) => cmd_test::launch(&a),

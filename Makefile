@@ -500,7 +500,7 @@ demo-smoke: demo-check
 
 demo-test: demo-check
 	@echo ""
-	@echo "Running the non-interactive pinned Debian + FreeBSD authenticated-SSH proof..."
+	@echo "Running the pinned Debian + FreeBSD functional SSH session proof..."
 	@$(MAKE) e2e-dual-os BOARD=qemu_virt_aarch64
 
 demo: demo-check
@@ -508,7 +508,7 @@ demo: demo-check
 		(echo "ERROR: 'make demo' requires an interactive terminal; use 'make demo-test' in automation." && exit 1)
 	@echo ""
 	@echo "Starting the agentOS dual-guest demonstration."
-	@echo "The gate boots pinned Debian and FreeBSD concurrently and proves key-only SSH."
+	@echo "The gate boots both guests and checks SSH terminals, files, processes, networking and packages."
 	@echo "After it passes, open the printed SSH commands in two other terminals."
 	@echo "Press Enter here when the demonstration is complete."
 	@echo ""
@@ -2140,6 +2140,17 @@ test-integration:
 # =============================================================================
 e2e: e2e-dual-os
 
+# Recheck a retained guest with the same functional session gate used by E2E.
+# Example: make test-guest-session SESSION_PROFILE=ubuntu-live.toml SESSION_PORT=12222
+SESSION_PROFILE ?= ubuntu-live.toml
+SESSION_PORT ?= 12222
+SESSION_KEY ?= build/tmp/dual-ssh/id_ed25519
+SESSION_TIMEOUT ?= 600
+.PHONY: test-guest-session
+test-guest-session:
+	@cargo xtask guest-session --profile $(SESSION_PROFILE) --key $(SESSION_KEY) \
+		--port $(SESSION_PORT) --timeout-secs $(SESSION_TIMEOUT)
+
 e2e-guest:
 	@chmod +x tests/e2e/suite_common.sh
 	@bash tests/e2e/suite_common.sh
@@ -2176,7 +2187,7 @@ e2e-nixos:
 	@exit 1
 
 e2e-freebsd15:
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --assert-live --timeout-secs $(QEMU_TEST_TIMEOUT)
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --assert-live --timeout-secs $(QEMU_TEST_TIMEOUT) --ssh-port $(QEMU_TEST_SSH_PORT)
 
 e2e-all: demo-test
 
@@ -2298,7 +2309,7 @@ help:
 	@echo "  make help             Show this help text"
 	@echo "  make setup            Install host dependencies + shared Microkit SDK"
 	@echo "  make demo             Boot, prove, and retain Ubuntu + FreeBSD for SSH"
-	@echo "  make demo-test        Run the dual authenticated-SSH proof and exit"
+	@echo "  make demo-test        Verify both guests through functional SSH sessions"
 	@echo "  make demo-desktop     Boot, prove, and retain an Ubuntu VNC desktop"
 	@echo "  make demo-desktop-test Run the Ubuntu RFB frame proof and exit"
 	@echo "  make demo-smoke       Fast host-only checks; no QEMU and not a boot proof"

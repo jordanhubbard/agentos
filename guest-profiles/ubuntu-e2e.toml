@@ -63,6 +63,18 @@ args = { source = "ubuntu-26.04-aarch64.iso", member = "casper/vmlinuz", output 
 
 [[host.provision]]
 action = "send-console"
+args = { text = "sudo -n mkdir -p /dev/pts && { mountpoint -q /dev/pts || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts; } && test -c /dev/ptmx && test -c /dev/pts/ptmx" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n mkdir -p /sys/fs/cgroup && { mountpoint -q /sys/fs/cgroup || sudo -n mount -t cgroup2 none /sys/fs/cgroup; } && test -r /sys/fs/cgroup/cgroup.controllers" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sudo -n sh -c 'if ! test -S /run/systemd/journal/stdout; then mkdir -p /run/systemd/journal; /usr/lib/systemd/systemd-journald </dev/null >/run/agentos-journald.log 2>&1 & fi; n=0; until test -S /run/systemd/journal/stdout; do n=$((n+1)); test $n -lt 30 || exit 1; sleep 1; done' && printf 'agentos journal probe\\n' | systemd-cat -t agentos-session" }
+
+[[host.provision]]
+action = "send-console"
 args = { text = "sudo -n ip link set eth0 up && sudo -n ip addr flush dev eth0 scope global && sudo -n ip addr add 10.0.2.15/24 dev eth0 && sudo -n ip route replace default via 10.0.2.2" }
 
 [[host.provision]]
