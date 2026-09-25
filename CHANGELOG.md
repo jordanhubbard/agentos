@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-25
+
 ### Added
 
 - Add a transport-independent RemoteOS protocol-v2 client foundation with
