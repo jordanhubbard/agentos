@@ -23,6 +23,7 @@ pub mod cmd_setup;
 pub mod cmd_test;
 pub mod cmd_test_api;
 pub mod guest_scenario;
+pub mod guest_session;
 mod persistent_media;
 pub mod rfb;
 

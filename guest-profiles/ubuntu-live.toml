@@ -140,11 +140,19 @@ args = { devices = "net,block,console", scope = "host-backed", console_io = "bid
 
 [[host.test]]
 action = "wait-ssh"
-args = { account = "ubuntu", marker = "Linux" }
+args = { account = "ubuntu", marker = "Linux", prompt = "$ " }
 
 [[host.acquire]]
 action = "stage-url"
 args = { cache_name = "ubuntu-26.04-desktop-arm64.iso", output = "ubuntu-26.04-aarch64.iso", url = "https://cdimage.ubuntu.com/releases/26.04/release/ubuntu-26.04-desktop-arm64.iso" }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "network", script = "sudo -n ping -c 3 -W 5 10.0.2.2; getent ahostsv4 archive.ubuntu.com" }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "packages", script = "d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT; mkdir -p \"$d/p/DEBIAN\" \"$d/p/usr/local/bin\"; cp /usr/bin/getconf \"$d/p/usr/local/bin/agentos-acceptance-probe\"; printf 'Package: agentos-acceptance-probe\\nVersion: 1.0\\nArchitecture: %s\\nMaintainer: agentOS <test@localhost>\\nDescription: Guest acceptance fixture\\n' \"$(dpkg --print-architecture)\" >\"$d/p/DEBIAN/control\"; dpkg-deb --root-owner-group --build \"$d/p\" \"$d/probe.deb\"; sudo -n dpkg -i \"$d/probe.deb\"; dpkg-query -W agentos-acceptance-probe; test \"$(/usr/local/bin/agentos-acceptance-probe LONG_BIT)\" = 64; sudo -n dpkg --purge agentos-acceptance-probe; test ! -e /usr/local/bin/agentos-acceptance-probe" }
 
 [[host.acquire]]
 action = "extract-iso-file"

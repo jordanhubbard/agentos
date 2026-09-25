@@ -147,9 +147,12 @@ Save each response before decoding it (for example, with
 with an active qualification harness for the console stream.
 
 The dual-guest demonstration (`make demo`, `make demo-test`) boots pinned Debian and
-FreeBSD concurrently and proves key-only SSH to both. See
-[`docs/demo.md`](docs/demo.md). It downloads the pinned Debian generic image
-and FreeBSD installation media and runs for a long time under TCG.
+FreeBSD concurrently and checks authenticated login terminals, file/process
+operations, networking, and package installation/removal in both guests. See
+[`docs/demo.md`](docs/demo.md) and the
+[session acceptance contract](docs/guest-session-acceptance.md). It downloads the
+pinned Debian generic image and FreeBSD installation media and runs for a long
+time under TCG.
 
 ## Project structure
 

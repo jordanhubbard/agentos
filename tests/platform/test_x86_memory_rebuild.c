@@ -3,17 +3,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #include <sel4/sel4.h>
 #include <platform/x86_memory_rebuild.h>
 #include <libvmm/virtio/gpa.h>
 #include "contracts/x86_guest_memory_caps.h"
 #include "contracts/x86_vtx_proof.h"
-
-#if defined(__APPLE__)
-#define TEST_MAP_FIXED MAP_FIXED
-#else
-#define TEST_MAP_FIXED MAP_FIXED_NOREPLACE
-#endif
 
 enum operation { RETYPE, COPY, MAP, UNMAP, EPT };
 struct expected { enum operation op; uintptr_t a, b, c; };
@@ -50,10 +48,19 @@ seL4_Error seL4_X86_Page_Map(seL4_CPtr frame, seL4_CPtr vspace, seL4_Word va,
     int err = step(MAP, frame, va, rights);
     if (err) return err;
     if (rights == seL4_AllRights) {
-        void *mapped = mmap((void *)va, frame_size, PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS | TEST_MAP_FIXED, -1, 0);
-        if (mapped != (void *)va) perror("mmap guest frame");
-        assert(mapped == (void *)va);
+#ifdef __APPLE__
+        /* Darwin mmap treats addresses as hints and has no NOREPLACE flag.
+         * Mach fixed allocation fails on overlap without replacing memory. */
+        mach_vm_address_t address = va;
+        kern_return_t result = mach_vm_allocate(mach_task_self(), &address, frame_size,
+            VM_FLAGS_FIXED);
+        if (result != KERN_SUCCESS) fprintf(stderr, "fixed allocation %p: %s (failure case %u, call %u)\n",
+            (void *)va, mach_error_string(result), fail_at, calls);
+        assert(result == KERN_SUCCESS && address == va);
+#else
+        assert(mmap((void *)va, frame_size, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0) == (void *)va);
+#endif
     } else {
         assert(rights == 1 && mprotect((void *)va, frame_size, PROT_READ) == 0);
     }

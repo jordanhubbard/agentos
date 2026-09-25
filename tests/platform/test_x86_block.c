@@ -60,13 +60,15 @@ void sel4_call(seL4_CPtr cap, const sel4_msg_t *request, sel4_msg_t *reply)
         if (detach_failure==3) reply->data[0]=BLK_VIRT_ERR_BUSY;
     }
 }
-/* Darwin arm64 uses 16 KiB host pages; Linux accepts the stronger alignment. */
-static _Alignas(16384) uint8_t ram[0x20000];
-static _Alignas(16384) uint8_t region[AOS_BLK_SHMEM_SIZE];
+enum { RAM_BYTES = 0x20000 };
+static uint8_t *ram, *region;
 static void wr(uintptr_t base, uint32_t offset, uint32_t value)
 { assert(aos_x86_virtio_access(base+offset,4,true,&value)); }
 int main(void)
 {
+    ram=mmap(NULL,RAM_BYTES,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    region=mmap(NULL,AOS_BLK_SHMEM_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    assert(ram!=MAP_FAILED && region!=MAP_FAILED);
     uintptr_t base=AOS_X86_VIRTIO_BASE+AOS_X86_VIRTIO_STRIDE;
     assert(!aos_vmm_virtio_blk_init_at(0,0,17,region));
     assert(!aos_vmm_virtio_blk_init_at(0,base+1,17,region));
@@ -77,7 +79,7 @@ int main(void)
     aos_blk_client_bind(region,0,&client);
     aos_x86_ioapic_t ioapic;
     assert(aos_x86_ioapic_init(&ioapic,1));
-    assert(aos_x86_virtio_init(&ioapic,ram,sizeof(ram)));
+    assert(aos_x86_virtio_init(&ioapic,ram,RAM_BYTES));
     assert(aos_vmm_virtio_blk_init_at(0,base,17,region) && attachments==1);
     assert(!aos_vmm_virtio_blk_guest_io_completed());
     uint32_t value=0;
@@ -125,12 +127,12 @@ int main(void)
     aos_vmm_virtio_blk_after_fault();
     assert(!aos_vmm_virtio_blk_init_at(0,base,17,region) && attachments==1);
     aos_x86_virtio_retire();
-    assert(mprotect(ram,sizeof(ram),PROT_NONE)==0);
-    assert(mprotect(region,sizeof(region),PROT_NONE)==0);
+    assert(mprotect(ram,RAM_BYTES,PROT_NONE)==0);
+    assert(mprotect(region,AOS_BLK_SHMEM_SIZE,PROT_NONE)==0);
     for (unsigned generation=1; generation<=3; generation++) {
         uint8_t *fresh=mmap(NULL,AOS_BLK_SHMEM_SIZE,PROT_READ|PROT_WRITE,
             MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-        uint8_t *fresh_ram=mmap(NULL,sizeof(ram),PROT_READ|PROT_WRITE,
+        uint8_t *fresh_ram=mmap(NULL,RAM_BYTES,PROT_READ|PROT_WRITE,
             MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
         assert(fresh!=MAP_FAILED && fresh_ram!=MAP_FAILED);
         aos_blk_client_bind(fresh,0,&client);
@@ -154,7 +156,7 @@ int main(void)
             assert(aos_vmm_virtio_blk_detach() && detachments==5);
         } else {
             assert(aos_x86_ioapic_init(&ioapic,1));
-            assert(aos_x86_virtio_init(&ioapic,fresh_ram,sizeof(ram)));
+            assert(aos_x86_virtio_init(&ioapic,fresh_ram,RAM_BYTES));
             attachment.generation=generation-1;
             assert(!aos_vmm_virtio_blk_adopt(0,fresh,&attachment));
             attachment.generation=generation;
@@ -204,14 +206,14 @@ int main(void)
         }
         unsigned old_kicks=kicks;
         assert(mprotect(fresh,AOS_BLK_SHMEM_SIZE,PROT_NONE)==0);
-        assert(mprotect(fresh_ram,sizeof(ram),PROT_NONE)==0);
+        assert(mprotect(fresh_ram,RAM_BYTES,PROT_NONE)==0);
         aos_vmm_virtio_blk_resp_ready();
         aos_vmm_virtio_blk_after_fault();
         assert(kicks==old_kicks);
         assert(munmap(fresh,AOS_BLK_SHMEM_SIZE)==0);
-        assert(munmap(fresh_ram,sizeof(ram))==0);
+        assert(munmap(fresh_ram,RAM_BYTES)==0);
     }
-    assert(mprotect(ram,sizeof(ram),PROT_READ|PROT_WRITE)==0);
-    assert(mprotect(region,sizeof(region),PROT_READ|PROT_WRITE)==0);
+    assert(munmap(ram,RAM_BYTES)==0);
+    assert(munmap(region,AOS_BLK_SHMEM_SIZE)==0);
     puts("PASS: block rebind adoption, fresh descriptor reads and failed-registration cleanup");
 }

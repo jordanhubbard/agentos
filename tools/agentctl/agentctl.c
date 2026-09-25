@@ -9,6 +9,9 @@
 #define _DARWIN_C_SOURCE
 #endif
 #define _POSIX_C_SOURCE 200809L
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -137,7 +140,7 @@ static int connect_cc(void)
 }
 
 /* Absolute deadline per frame direction, including partial progress. */
-static bool transfer_full(int fd, void *buf, size_t n, bool writing)
+static bool transfer_nonblocking(int fd, void *buf, size_t n, bool writing)
 {
     int descriptor_flags = fcntl(fd, F_GETFL, 0);
     if (descriptor_flags < 0 ||
@@ -168,6 +171,21 @@ static bool transfer_full(int fd, void *buf, size_t n, bool writing)
         n -= (size_t)count;
     }
     return true;
+}
+
+static bool transfer_full(int fd, void *buf, size_t n, bool writing)
+{
+    /* MSG_DONTWAIT alone does not bound a large Unix-socket send on macOS.
+     * Keep the descriptor nonblocking for the entire deadline-bound transfer. */
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0) return false;
+    bool restore = !(flags & O_NONBLOCK);
+    if (restore && fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return false;
+    bool ok = transfer_nonblocking(fd, buf, n, writing);
+    int error = errno;
+    if (restore && fcntl(fd, F_SETFL, flags) < 0) return false;
+    errno = error;
+    return ok;
 }
 
 static bool write_full(int fd, const void *buf, size_t n)

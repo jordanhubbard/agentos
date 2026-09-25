@@ -35,7 +35,7 @@ jobs:
   sdk-candidate:
     uses: ./.github/workflows/sdk-candidate.yml
   dual-ssh:
-    name: Concurrent SSH (${{ inputs.guests }})
+    name: Functional SSH sessions (${{ inputs.guests }})
     runs-on: ubuntu-24.04
     needs: sdk-candidate
     timeout-minutes: 330
@@ -49,7 +49,20 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential clang lld llvm qemu-system-arm qemu-utils \
-            device-tree-compiler libarchive-tools e2fsprogs zstd curl openssh-client
+            device-tree-compiler libarchive-tools e2fsprogs zstd curl openssh-client gnupg
+
+      - name: Install pinned guest helper compiler
+        run: |
+          curl --fail --silent --show-error https://apt.llvm.org/llvm-snapshot.gpg.key -o /tmp/llvm-signing-key.asc
+          fingerprint=$(gpg --show-keys --with-colons /tmp/llvm-signing-key.asc | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          gpg --dearmor < /tmp/llvm-signing-key.asc | sudo tee /usr/share/keyrings/llvm.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' | sudo tee /etc/apt/sources.list.d/llvm21.list
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang-21 lld-21 llvm-21
+          # Guest helper artifact hashes are compiler-sensitive. Keep the
+          # acquisition compiler independent of the kernel build's PATH.
+          echo "AGENTOS_HOST_TOOL_PATH=/usr/lib/llvm-21/bin:$PATH" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -65,7 +78,7 @@ jobs:
           path: ~/.cache/agentos/isos/
           key: dual-ssh-${{ runner.os }}-${{ inputs.guests }}-${{ hashFiles('guest-profiles/*.toml', 'xtask/src/guest_manifest.rs') }}
 
-      - name: Prove concurrent SSH and peer survival across recreation
+      - name: Prove functional SSH sessions and peer survival across recreation
         timeout-minutes: 300
         env:
           GUEST_PAIR: ${{ inputs.guests }}
@@ -78,8 +91,9 @@ jobs:
           mkdir -p build/evidence/dual-ssh
           git rev-parse HEAD > build/evidence/dual-ssh/source-revision.txt
           # bash pipefail propagates the Make failure through tee. The existing
-          # harness requires exact FreeBSD/Linux replies from both concurrent
-          # SSH processes and repeats them after recreating the Linux guest.
+          # harness requires exact FreeBSD/Linux readiness replies, repeats
+          # them after Linux recreation, then checks real terminal sessions
+          # including file/process, network and package operations in both guests.
           make "$target" DUAL_OS_TEST_TIMEOUT=14400 2>&1 | tee build/evidence/dual-ssh/qualification.log
 
       - name: Retain qualification and authenticated SSH transcripts
@@ -89,6 +103,7 @@ jobs:
           name: dual-ssh-${{ inputs.guests }}-${{ github.sha }}
           path: |
             build/evidence/dual-ssh/
+            build/evidence/guest-session-*/
             build/tmp/agentos-qemu-*.log
             build/tmp/agentos-qemu-*.qemu.stderr
             build/tmp/agentos-qemu-*.ssh-evidence/

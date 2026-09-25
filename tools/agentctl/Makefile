@@ -12,7 +12,7 @@ PREFIX ?= /usr/local
 
 CC      ?= cc
 CFLAGS  := -O2 -Wall -Wextra -std=c11 -DAGENTOS_TEST_HOST \
-           -I../../kernel/agentos-root-task/include -I../../platform/include
+           -iquote ../../kernel/agentos-root-task/include -I../../platform/include
 LDFLAGS :=
 
 TARGET  := agentctl

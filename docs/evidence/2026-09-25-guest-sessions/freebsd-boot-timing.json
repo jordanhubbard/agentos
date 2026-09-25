@@ -1,0 +1,32 @@
+{
+  "agentos_image_sha256": "41fdda39944aba1385ec0c10e7ffc39a0f8c2ad4a17113d5c11b7d97034a34f5",
+  "agentos_revision": "436afaea615903d4f4a005878225ebbcea28ba32",
+  "board": "qemu_virt_aarch64",
+  "boundary": "host QEMU launch request to completed authenticated SSH proof",
+  "elapsed_ms": 255177,
+  "excludes": [
+    "artifact acquisition",
+    "build",
+    "persistent media preparation"
+  ],
+  "guest_bundle_sha256": "016eaeb1371a1b28d8c33ad0ad656dd48390a8423708be3d7882cfa2f5e791ae",
+  "host_arch": "aarch64",
+  "host_backed_virtio": false,
+  "host_os": "macos",
+  "includes": [
+    "host scheduling",
+    "QEMU startup",
+    "agentOS boot",
+    "guest boot",
+    "console provisioning",
+    "SSH authentication"
+  ],
+  "persistent_second_boot": false,
+  "profile": "freebsd-15-aarch64",
+  "qemu_config_sha256": "626c18bfd7472cf93ef9a095d16bbb921cd1a508b0b3d3bde1644ef3257b76cd",
+  "qualification_status": "passed",
+  "schema": "agentos.guest_boot_timing.v2",
+  "serial_log": "/Users/jordanh/Src/agentos/build/tmp/agentos-qemu-QKqFf1.log",
+  "source_tree_clean": true,
+  "status": "ssh_authenticated"
+}

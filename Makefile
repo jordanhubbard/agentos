@@ -230,10 +230,19 @@ MICROKIT_SDK_URL := https://github.com/seL4/microkit/releases/download/$(SEL4_SD
 
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
 export PATH := $(HOME)/.cargo/bin:$(PATH)
+# v0.4's target dependency tracking uses GNU Make 4 features. Preserve the
+# public `make` entry point on macOS while recursive builds use Homebrew Make.
+ifeq ($(UNAME_S),Darwin)
+export PATH := $(PATH):$(BREW_PREFIX)/opt/e2fsprogs/sbin
+ifneq ($(wildcard $(BREW_PREFIX)/bin/gmake),)
+MAKE := $(BREW_PREFIX)/bin/gmake
+export PATH := $(BREW_PREFIX)/opt/make/libexec/gnubin:$(PATH)
+endif
+endif
 # Native guest helpers must keep their acquisition toolchain when the kernel
 # sub-make prepends its own LLVM directory to PATH.
 ifndef AGENTOS_HOST_TOOL_PATH
-export AGENTOS_HOST_TOOL_PATH := $(PATH)
+export AGENTOS_HOST_TOOL_PATH := $(PATH):$(LLVM_BIN):$(LLD_BIN)
 endif
 
 # ─── Native arch / HW-accelerated QEMU ────────────────────────────────────
@@ -333,6 +342,7 @@ ifeq ($(UNAME_S),Darwin)
 		(echo "ERROR: Homebrew not found. Install from https://brew.sh" && exit 1)
 	@echo "[macOS] Installing dependencies via brew..."
 	@brew install --quiet \
+		make \
 		qemu \
 		llvm \
 		lld \
@@ -509,7 +519,7 @@ demo-smoke: demo-check
 
 demo-test: demo-check
 	@echo ""
-	@echo "Running the non-interactive pinned Debian + FreeBSD authenticated-SSH proof..."
+	@echo "Running the pinned Debian + FreeBSD functional SSH session proof..."
 	@$(MAKE) e2e-dual-os BOARD=qemu_virt_aarch64
 
 demo: demo-check
@@ -517,7 +527,7 @@ demo: demo-check
 		(echo "ERROR: 'make demo' requires an interactive terminal; use 'make demo-test' in automation." && exit 1)
 	@echo ""
 	@echo "Starting the agentOS dual-guest demonstration."
-	@echo "The gate boots pinned Debian and FreeBSD concurrently and proves key-only SSH."
+	@echo "The gate boots both guests and checks SSH terminals, files, processes, networking and packages."
 	@echo "After it passes, open the printed SSH commands in two other terminals."
 	@echo "Press Enter here when the demonstration is complete."
 	@echo ""
@@ -1435,7 +1445,7 @@ test-input-host:
 	$(ROOT_DIR)build/tmp/test_input_queue
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
 	$(BUILD_TMP_DIR)/test_virtio_input
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_input
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_input
 	$(BUILD_TMP_DIR)/test_agentctl_input
 ifeq ($(UNAME_S),Linux)
 	$(CC) -std=c11 -Wall -Wextra -Werror tests/platform/test_guest_input_probe.c -o $(BUILD_TMP_DIR)/test_guest_input_probe
@@ -1459,13 +1469,13 @@ host-frame-pattern:
 .PHONY: test-agentctl-console-host
 test-agentctl-console-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_console
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_console
 	$(BUILD_TMP_DIR)/test_agentctl_console
 
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
 	@mkdir -p $(ROOT_DIR)build/tmp
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -I kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)build/tmp/test_agentctl_frame_capture
 	$(ROOT_DIR)build/tmp/test_agentctl_frame_capture
 
 test-framebuffer-host:
@@ -2172,6 +2182,19 @@ test-integration:
 # =============================================================================
 e2e: e2e-dual-os
 
+# Recheck a retained guest with the same functional session gate used by E2E.
+# Example: make test-guest-session SESSION_PROFILE=ubuntu-live.toml SESSION_PORT=12222
+SESSION_PROFILE ?= ubuntu-live.toml
+SESSION_PORT ?= 12222
+SESSION_KEY ?= build/tmp/dual-ssh/id_ed25519
+SESSION_TIMEOUT ?= 600
+SESSION_KNOWN_HOSTS ?=
+.PHONY: test-guest-session
+test-guest-session:
+	@cargo xtask guest-session --profile $(SESSION_PROFILE) --key $(SESSION_KEY) \
+		--port $(SESSION_PORT) --timeout-secs $(SESSION_TIMEOUT) \
+		$(if $(SESSION_KNOWN_HOSTS),--known-hosts $(SESSION_KNOWN_HOSTS),)
+
 e2e-guest:
 	@chmod +x tests/e2e/suite_common.sh
 	@bash tests/e2e/suite_common.sh
@@ -2208,7 +2231,7 @@ e2e-nixos:
 	@exit 1
 
 e2e-freebsd15:
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --assert-live --timeout-secs $(QEMU_TEST_TIMEOUT)
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os freebsd --assert-live --timeout-secs $(QEMU_TEST_TIMEOUT) --ssh-port $(QEMU_TEST_SSH_PORT)
 
 e2e-all: demo-test
 
@@ -2330,7 +2353,7 @@ help:
 	@echo "  make help             Show this help text"
 	@echo "  make setup            Install host dependencies + shared Microkit SDK"
 	@echo "  make demo             Boot, prove, and retain Ubuntu + FreeBSD for SSH"
-	@echo "  make demo-test        Run the dual authenticated-SSH proof and exit"
+	@echo "  make demo-test        Verify both guests through functional SSH sessions"
 	@echo "  make demo-desktop     Boot, prove, and retain an Ubuntu VNC desktop"
 	@echo "  make demo-desktop-test Run the Ubuntu RFB frame proof and exit"
 	@echo "  make demo-smoke       Fast host-only checks; no QEMU and not a boot proof"

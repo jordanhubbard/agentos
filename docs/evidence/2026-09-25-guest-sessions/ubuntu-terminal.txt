@@ -1,0 +1,76 @@
+ubuntu@(none):~$ ^M<ntos-%s-%s\n' guest-session-HZLLt2 ready || exit 91^M
+^M
+agentos-guest-session-HZLLt2-ready^M
+ubuntu@(none):~$ /dev/pts/0speed 9600 baud; rows 24; columns 80; line = 0;^M
+intr = ^C; quit = ^\; erase = ^?; kill = ^U; eof = ^D; eol = <undef>;^M
+eol2 = <undef>; swtch = <undef>; start = ^Q; stop = ^S; susp = ^Z; rprnt = ^R;^M
+werase = ^W; lnext = ^V; discard = ^O; min = 1; time = 0;^M
+-parenb -parodd -cmspar cs8 -hupcl -cstopb cread -clocal -crtscts^M
+-ignbrk -brkint -ignpar -parmrk -inpck -istrip -inlcr -igncr icrnl -ixoff^M
+-tandem ixon ixany imaxbel -iutf8^M
+opost -olcuc -ocrnl onlcr -onocr -onlret -ofdel nl0 cr0 tab0 bs0 vt0 ff0^M
+isig icanon iexten -echo echoe -echok -echonl -noflsh -tostop -echoprt echoctl^M
+echoke -flusho -extproc^M
+^M
+agentos-guest-session-HZLLt2-terminal^M
+ubuntu@(none):~$ uid=1000(ubuntu) gid=1000(ubuntu) groups=1000(ubuntu),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),100(users),111(lpadmin),115(sambashare)^M
+Linux (none) 7.0.0-14-generic #14-Ubuntu SMP PREEMPT_DYNAMIC Mon Apr 13 10:52:31 UTC 2026 aarch64 GNU/Linux^M
+^M
+agentos-guest-session-HZLLt2-identity^M
+ubuntu@(none):~$ Filesystem      Size  Used Avail Use% Mounted on^M
+/cow            475M  9.3M  466M   2% /^M
+/cow            475M  9.3M  466M   2% /^M
+  PID TTY          TIME CMD^M
+  852 pts/0    00:00:00 sh^M
+^M
+agentos-guest-session-HZLLt2-files-processes^M
+ubuntu@(none):~$ PING 10.0.2.2 (10.0.2.2) 56(84) bytes of data.^M
+64 bytes from 10.0.2.2: icmp_seq=1 ttl=255 time=81.5 ms^M
+64 bytes from 10.0.2.2: icmp_seq=2 ttl=255 time=1.43 ms^M
+64 bytes from 10.0.2.2: icmp_seq=3 ttl=255 time=1.55 ms^M
+^M
+--- 10.0.2.2 ping statistics ---^M
+3 packets transmitted, 3 received, 0% packet loss, time 2093ms^M
+rtt min/avg/max/mdev = 1.433/28.175/81.540/37.734 ms^M
+91.189.91.81    STREAM archive.ubuntu.com^M
+91.189.91.81    DGRAM  ^M
+91.189.91.81    RAW    ^M
+91.189.91.82    STREAM ^M
+91.189.91.82    DGRAM  ^M
+91.189.91.82    RAW    ^M
+91.189.92.23    STREAM ^M
+91.189.92.23    DGRAM  ^M
+91.189.92.23    RAW    ^M
+91.189.92.24    STREAM ^M
+91.189.92.24    DGRAM  ^M
+91.189.92.24    RAW    ^M
+185.125.190.81  STREAM ^M
+185.125.190.81  DGRAM  ^M
+185.125.190.81  RAW    ^M
+185.125.190.83  STREAM ^M
+185.125.190.83  DGRAM  ^M
+185.125.190.83  RAW    ^M
+185.125.190.82  STREAM ^M
+185.125.190.82  DGRAM  ^M
+185.125.190.82  RAW    ^M
+91.189.92.22    STREAM ^M
+91.189.92.22    DGRAM  ^M
+91.189.92.22    RAW    ^M
+91.189.91.83    STREAM ^M
+91.189.91.83    DGRAM  ^M
+91.189.91.83    RAW    ^M
+^M
+agentos-guest-session-HZLLt2-network^M
+ubuntu@(none):~$ ^[[1mdpkg-deb:^[[0m building package 'agentos-acceptance-probe' in '/tmp/tmp.2VOyIONclO/probe.deb'.^M
+Selecting previously unselected package agentos-acceptance-probe.^M
+(Reading database ... ^M(Reading database ... 5%^M(Reading database ... 10%^M(Reading database ... 15%^M(Reading database ... 20%^M(Reading database ... 25%^M(Reading database ... 30%^M(Reading database ... 35%^M(Reading database ... 40%^M(Reading database ... 45%^M(Reading database ... 50%^M(Reading database ... 55%^M(Reading database ... 60%^M(Reading database ... 65%^M(Reading database ... 70%^M(Reading database ... 75%^M(Reading database ... 80%^M(Reading database ... 85%^M(Reading database ... 90%^M(Reading database ... 95%^M(Reading database ... 100%^M(Reading database ... 215272 files and directories currently installed.)^M
+Preparing to unpack /tmp/tmp.2VOyIONclO/probe.deb ...^M
+Unpacking agentos-acceptance-probe (1.0) ...^M
+Setting up agentos-acceptance-probe (1.0) ...^M
+agentos-acceptance-probe	1.0^M
+(Reading database ... ^M(Reading database ... 5%^M(Reading database ... 10%^M(Reading database ... 15%^M(Reading database ... 20%^M(Reading database ... 25%^M(Reading database ... 30%^M(Reading database ... 35%^M(Reading database ... 40%^M(Reading database ... 45%^M(Reading database ... 50%^M(Reading database ... 55%^M(Reading database ... 60%^M(Reading database ... 65%^M(Reading database ... 70%^M(Reading database ... 75%^M(Reading database ... 80%^M(Reading database ... 85%^M(Reading database ... 90%^M(Reading database ... 95%^M(Reading database ... 100%^M(Reading database ... 215273 files and directories currently installed.)^M
+Removing agentos-acceptance-probe (1.0) ...^M
+^[[1mdpkg:^[[0m ^[[1;33mwarning:^[[0m while removing agentos-acceptance-probe, directory '/usr/local' not empty so not removed^M
+^M
+agentos-guest-session-HZLLt2-packages^M
+ubuntu@(none):~$ logout^M
