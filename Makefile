@@ -224,6 +224,7 @@ export PATH := $(HOME)/.cargo/bin:$(PATH)
 # v0.4's target dependency tracking uses GNU Make 4 features. Preserve the
 # public `make` entry point on macOS while recursive builds use Homebrew Make.
 ifeq ($(UNAME_S),Darwin)
+export PATH := $(PATH):$(BREW_PREFIX)/opt/e2fsprogs/sbin
 ifneq ($(wildcard $(BREW_PREFIX)/bin/gmake),)
 MAKE := $(BREW_PREFIX)/bin/gmake
 export PATH := $(BREW_PREFIX)/opt/make/libexec/gnubin:$(PATH)
