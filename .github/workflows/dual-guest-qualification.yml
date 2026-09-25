@@ -49,7 +49,20 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential clang lld llvm qemu-system-arm qemu-utils \
-            device-tree-compiler libarchive-tools e2fsprogs zstd curl openssh-client
+            device-tree-compiler libarchive-tools e2fsprogs zstd curl openssh-client gnupg
+
+      - name: Install pinned guest helper compiler
+        run: |
+          curl --fail --silent --show-error https://apt.llvm.org/llvm-snapshot.gpg.key -o /tmp/llvm-signing-key.asc
+          fingerprint=$(gpg --show-keys --with-colons /tmp/llvm-signing-key.asc | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          gpg --dearmor < /tmp/llvm-signing-key.asc | sudo tee /usr/share/keyrings/llvm.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' | sudo tee /etc/apt/sources.list.d/llvm21.list
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang-21 lld-21 llvm-21
+          # Guest helper artifact hashes are compiler-sensitive. Keep the
+          # acquisition compiler independent of the kernel build's PATH.
+          echo "AGENTOS_HOST_TOOL_PATH=/usr/lib/llvm-21/bin:$PATH" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
