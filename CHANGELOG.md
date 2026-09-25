@@ -5,7 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-09-20
+### Added
+
+- Add a transport-independent RemoteOS protocol-v2 client foundation with
+  bounded framing, parsing and binary pixel upload, plus deterministic mock
+  coverage and live headless RemoteOS-SDL interoperability. This is host-side
+  protocol evidence only: the release image does not yet contain a display
+  relay, and graphical CC framebuffer/input integration remains unqualified.
+- Record the GUI architecture decision: `agentos_gui` remains the AgentOS
+  control plane while RemoteOS-SDL is the common graphical presentation/input
+  backend. The future relay stays outside the TCB and uses existing CC,
+  framebuffer-observer and input-virtualizer contracts.
+
+## [0.4.0] - 2026-09-22
 
 ### Added
 
@@ -13,11 +25,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bounded guest memory, and agentOS-emulated network, block and console devices.
   Retained Intel qualification covers Debian userspace, managed recreation,
   two-vCPU workloads, writable-media isolation and detached snapshots. These
-  are scoped development results; final v0.4 integration remains pending.
+  results include a final-SDK 2 GiB terminal teardown and zeroed-pool reuse
+  check. Exact revisions and limits are retained in
+  `docs/evidence/2026-09-22-release/resource-profiles.json`.
 - Live AArch64 framebuffer and input services, emulated virtio-gpu and
   virtio-input, bounded CC frame export, and keyboard/pointer delivery. The
   external `agentos_gui` consumes these contracts; no human UI is embedded in
-  the OS repository.
+  the OS repository. GUI revision `41b6c1e` passed native binary-IPC rendering,
+  exact keyboard/pointer delivery, held-input release after abrupt disconnect,
+  reconnect, suspend/resume and normal shutdown against core `c2a25050`.
+  See `docs/evidence/2026-09-22-release/native-gui.json`.
 - Managed AArch64 Debian reconstruction after teardown, including fresh queue,
   input and graphics bindings. Retained qualification checks a second guest
   identity, stale-handle rejection, pinned SSH and a persistent disk witness.
@@ -42,7 +59,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Route guest consoles through a separate `serial_virt` PD with isolated
   VMM/frontend pages, authenticated attachment and bounded byte queues.
   Retain descriptor progress during backpressure. Qualify sustained output
-  and concurrent Ubuntu/FreeBSD SSH, including FreeBSD suspend/resume.
+  and concurrent Ubuntu/FreeBSD SSH, including FreeBSD suspend/resume,
+  peer survival during Ubuntu destruction, and authenticated SSH after fresh
+  Ubuntu creation. Local and hosted recreation gates passed at `c2a25050`;
+  `docs/evidence/2026-09-22-release/dual-recreation.json` retains both results.
+
+### Qualification boundaries
+
+- Intel results use Linux KVM with nested VMX; graphics/input results use
+  AArch64 QEMU and a Linux/X11 native GUI. These do not qualify arbitrary
+  physical hardware, x86 desktop graphics, Omarchy, or live memory snapshots.
+- SDK installation verifies the pinned target archive. The coordinated GUI
+  remains an external source build; use the recorded revision above. Disk
+  snapshots are detached, offline snapshots. Back up persistent guest media
+  before migration; no cross-version live-state restore is promised.
 
 ### Fixed
 

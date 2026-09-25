@@ -742,12 +742,19 @@ fn build_static_linux_elf(step: &RecipeStep, root: &Path, output_dir: &Path) -> 
         .status()
         .context("compile native Linux helper")?;
     anyhow::ensure!(status.success(), "native Linux helper compilation failed");
-    let status = std::process::Command::new("llvm-objcopy")
-        .env("PATH", &tool_path)
+    let objcopy = find_tool(&[
+        "llvm-objcopy",
+        "/opt/homebrew/opt/llvm/bin/llvm-objcopy",
+        "/opt/homebrew/opt/llvm@22/bin/llvm-objcopy",
+        "/opt/homebrew/opt/llvm@21/bin/llvm-objcopy",
+        "/usr/local/opt/llvm/bin/llvm-objcopy",
+        "/usr/bin/llvm-objcopy",
+    ])?;
+    let status = std::process::Command::new(&objcopy)
         .args(["--strip-all", "--remove-section=.comment"])
         .arg(&temp)
         .status()
-        .context("normalize native Linux helper")?;
+        .with_context(|| format!("failed to run {}", objcopy.display()))?;
     anyhow::ensure!(status.success(), "native Linux helper normalization failed");
     fs::rename(temp, output)?;
     Ok(())

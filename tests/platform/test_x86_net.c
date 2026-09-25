@@ -23,7 +23,8 @@ static bool host_fixture;
 static const uintptr_t base = AOS_X86_VIRTIO_BASE + 2u*AOS_X86_VIRTIO_STRIDE;
 static unsigned char *ram;
 enum { RAM_BYTES = 0x20000 };
-static _Alignas(4096) unsigned char region[AOS_NET_SHMEM_SIZE];
+/* Darwin arm64 uses 16 KiB host pages; Linux accepts the stronger alignment. */
+static _Alignas(16384) unsigned char region[AOS_NET_SHMEM_SIZE];
 int printf_(const char *fmt, ...)
 {
     va_list ap; va_start(ap,fmt); int n=vprintf(fmt,ap); va_end(ap); return n;

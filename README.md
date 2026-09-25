@@ -228,7 +228,8 @@ image asserted by an automated QEMU test can.
 - [`docs/security-architecture.md`](docs/security-architecture.md): detailed
   architecture diagrams, capability boundaries, and current security limits.
 - [Systems and security presentation](docs/presentations/agentos-systems-security/README.md):
-  editable narrative and claim ledger; native Google Slides publication is pending.
+  editable narrative and claim ledger, with the
+  [native Google Slides deck](https://docs.google.com/presentation/d/1MR9hUcXfWos6q01fWb12rNDMQmv7uRMgI1AlVYGYeMc/edit).
 
 ## FreeBSD guest
 

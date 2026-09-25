@@ -9,6 +9,12 @@
 #include "contracts/x86_guest_memory_caps.h"
 #include "contracts/x86_vtx_proof.h"
 
+#if defined(__APPLE__)
+#define TEST_MAP_FIXED MAP_FIXED
+#else
+#define TEST_MAP_FIXED MAP_FIXED_NOREPLACE
+#endif
+
 enum operation { RETYPE, COPY, MAP, UNMAP, EPT };
 struct expected { enum operation op; uintptr_t a, b, c; };
 static struct expected expected[128];
@@ -44,8 +50,10 @@ seL4_Error seL4_X86_Page_Map(seL4_CPtr frame, seL4_CPtr vspace, seL4_Word va,
     int err = step(MAP, frame, va, rights);
     if (err) return err;
     if (rights == seL4_AllRights) {
-        assert(mmap((void *)va, frame_size, PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0) == (void *)va);
+        void *mapped = mmap((void *)va, frame_size, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | TEST_MAP_FIXED, -1, 0);
+        if (mapped != (void *)va) perror("mmap guest frame");
+        assert(mapped == (void *)va);
     } else {
         assert(rights == 1 && mprotect((void *)va, frame_size, PROT_READ) == 0);
     }

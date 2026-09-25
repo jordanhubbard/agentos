@@ -257,7 +257,10 @@ host `madmax` at commit `2efbe1e`: `make gate-x86_64-vtx` entered the isolated
 HLT guest and checked its exit reason, RIP and instruction length. The
 [retained receipt](evidence/2026-09-16-madmax/vmx-hlt.json) records the host,
 nested-KVM setting and artifact hashes. This resolves access to a usable Intel
-test host; Linux execution and the remaining requirements below are still open.
+test host. Subsequent Linux execution, canonical I/O, firmware, persistence,
+resource and teardown evidence is indexed in
+[the September 22 release qualification](evidence/2026-09-22-release/README.md).
+The acceptance requirements below remain the contract for final release checks.
 
 Acceptance evidence:
 

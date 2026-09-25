@@ -4,6 +4,12 @@
 and must not own a device frame, an IRQ, or guest RAM. QEMU is a hardware
 emulator for prototyping. On a board, the same PDs own the real devices.
 
+September 22 qualification checkpoint: the [release evidence index](evidence/2026-09-22-release/README.md)
+adds final-SDK 2 GiB reclamation, concurrent guest recreation and paired native
+GUI results. Revision-specific paragraphs below preserve their original
+qualification boundaries; later evidence supersedes only the named tests,
+not their physical-hardware or broader security limitations.
+
 This page describes two things and keeps them apart: what **boots today**
 (verifiable against `kernel/agentos-root-task/agentos.toml`) and the **target
 shape**. A claim that belongs to the target column is not an OS claim until the

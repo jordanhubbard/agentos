@@ -1,0 +1,7 @@
+flowchart LR
+  guest_vmm_primary[guest_vmm_primary]
+  vm_manager[vm_manager]
+  vm_manager -->|slot 11| guest_vmm_primary
+  cc_pd[cc_pd]
+  cc_pd -->|slot 5| guest_vmm_primary
+  cc_pd -->|slot 10| vm_manager
