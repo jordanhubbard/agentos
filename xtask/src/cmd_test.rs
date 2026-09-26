@@ -9253,6 +9253,8 @@ mod tests {
         );
         assert!(script.contains("https://geo.mirror.pkgbuild.com/extra/os/x86_64/aml-1.0.0-1-x86_64.pkg.tar.zst"));
         assert_eq!(script.matches("sha256sum -c").count(), 2);
+        assert!(script.contains("sway-ipc.*.sock"));
+        assert_eq!(script.matches("SWAYSOCK=\"$ipc\"").count(), 2);
         assert!(!script.contains("SigLevel = Never"));
         assert!(!script.contains("--skippgpcheck"));
     }
