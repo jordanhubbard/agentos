@@ -353,7 +353,8 @@ static seL4_Error allocate_guest_queue_frame(unsigned kind, unsigned client,
 static seL4_Error allocate_guest_graphics_frame(unsigned client, unsigned index,
                                                 seL4_CPtr *frame)
 {
-#if defined(__aarch64__) && defined(AGENTOS_GUEST_GRAPHICS)
+#if (defined(__aarch64__) || (defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET))) && \
+    defined(AGENTOS_GUEST_GRAPHICS)
     _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_GRAPHICS_POOL_BITS,
                    "one large graphics frame per private pool");
     if (index >= AOS_GUEST_GRAPHICS_POOL_COUNT) return seL4_InvalidArgument;
@@ -1896,7 +1897,11 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
     }
     dbg_puts("[rt] x86 private RAM and ROM pools delegated to owning VMM\n");
     const unsigned queue_owner = pd_is_secondary_guest_vmm(pd) ? 1u : 0u;
-    for (unsigned kind = 0; kind < AOS_GUEST_QUEUE_INPUT; kind++) {
+    unsigned queue_count = AOS_GUEST_QUEUE_INPUT;
+#ifdef AGENTOS_GUEST_INPUT
+    queue_count = AOS_GUEST_QUEUE_POOL_COUNT;
+#endif
+    for (unsigned kind = 0; kind < queue_count; kind++) {
         seL4_CPtr *pool = &g_guest_queue_pools[queue_owner][kind];
         if (*pool == seL4_CapNull) return seL4_InvalidCapability;
         err = seL4_CNode_Move(pd_cnode, AOS_GUEST_QUEUE_POOL_BASE + kind,
@@ -1905,6 +1910,17 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         *pool = seL4_CapNull;
     }
     dbg_puts("[rt] x86 private device queue pools delegated to owning VMM\n");
+#ifdef AGENTOS_GUEST_GRAPHICS
+    for (unsigned index = 0; index < AOS_GUEST_GRAPHICS_POOL_COUNT; index++) {
+        seL4_CPtr *pool = &g_guest_graphics_pools[queue_owner][index];
+        if (*pool == seL4_CapNull) return seL4_InvalidCapability;
+        err = seL4_CNode_Move(pd_cnode, AOS_GUEST_GRAPHICS_POOL_BASE + index,
+            pd->cnode_size_bits, seL4_CapInitThreadCNode, *pool, 64u);
+        if (err != seL4_NoError) return err;
+        *pool = seL4_CapNull;
+    }
+    dbg_puts("[rt] x86 private graphics pools delegated to owning VMM\n");
+#endif
     err = seL4_CNode_Move(pd_cnode, AOS_X86_GUEST_ASID_POOL_CAP,
         (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode, guest_asid_pool, 64u);
     if (err != seL4_NoError) return err;

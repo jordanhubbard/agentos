@@ -1,5 +1,6 @@
 use crate::cmd_guest_profile::{self, DesktopPlan, HostProfilePlan};
 use crate::guest_scenario::{self, HostScenarioPlan, ScenarioGuestPlan};
+use crate::guest_session;
 use crate::{rfb, QemuLaunchArgs, TestArgs};
 use anyhow::Context;
 use sha2::{Digest, Sha256};
@@ -11,6 +12,12 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    net::TcpListener,
+    sync::atomic::{AtomicBool, Ordering},
+    sync::Arc,
+    thread::JoinHandle,
+};
 
 pub(crate) const SSH_AUTH_OPTIONS: &[&str] = &[
     "-F",
@@ -371,6 +378,127 @@ pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn run_x86_arch_install(timeout_secs: u64, ssh_port: u16) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        host_kvm_available("x86_64_generic_vtx"),
+        "Arch installation qualification requires nested VMX/KVM"
+    );
+    anyhow::ensure!(
+        ssh_port != 0,
+        "Arch qualification requires a nonzero SSH port"
+    );
+    let root = repo_root()?;
+    let evidence_root = root.join("build/evidence");
+    std::fs::create_dir_all(&evidence_root)?;
+    let evidence = tempfile::Builder::new()
+        .prefix("x86-arch-install-")
+        .tempdir_in(&evidence_root)?
+        .keep();
+    let disk = evidence.join("arch-root.raw");
+    let disk_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&disk)?;
+    disk_file.set_len(8 * 1024 * 1024 * 1024)?;
+    disk_file.sync_all()?;
+    drop(disk_file);
+
+    let key = evidence.join("id_ed25519");
+    let key_status = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&key)
+        .status()
+        .context("failed to run ssh-keygen for Arch qualification")?;
+    anyhow::ensure!(key_status.success(), "ssh-keygen failed with {key_status}");
+
+    let revision = agentos_revision(&root)?;
+    let receipt_path = evidence.join("receipt.json");
+    let mut receipt = serde_json::json!({
+        "schema": "agentos.x86_arch_install.v1",
+        "status": "running",
+        "source_revision": revision,
+        "source_worktree_clean": agentos_worktree_clean(&root)?,
+        "disk": disk,
+        "disk_bytes": 8_u64 * 1024 * 1024 * 1024,
+        "ssh_public_key": key.with_extension("pub"),
+        "phases": []
+    });
+    std::fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
+    println!(
+        "[x86-arch-install] Retaining disk, key, logs, and receipt in {}",
+        evidence.display()
+    );
+
+    let timeout = timeout_secs.to_string();
+    let port = ssh_port.to_string();
+    for (phase, profile) in [
+        ("install", "arch-amd64-installer.toml"),
+        ("reboot", "arch-amd64.toml"),
+    ] {
+        let stdout_path = evidence.join(format!("{phase}.stdout.log"));
+        let stderr_path = evidence.join(format!("{phase}.stderr.log"));
+        let stdout = std::fs::File::create(&stdout_path)?;
+        let stderr = std::fs::File::create(&stderr_path)?;
+        println!("[x86-arch-install] Starting {phase} phase with {profile}");
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .current_dir(&root)
+            .args([
+                "qemu-test",
+                "--board",
+                "x86_64_generic_vtx",
+                "--guest-os",
+                "none",
+                "--assert-vmx-exit",
+                "--assert-firmware-reset",
+                "--assert-x86-linux-login",
+                "--x86-boot-profile",
+                profile,
+                "--x86-ssh-key",
+            ])
+            .arg(&key)
+            .args(["--ssh-port", &port, "--x86-block-image"])
+            .arg(&disk)
+            .args(["--x86-block-write", "--timeout-secs", &timeout])
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .status()
+            .with_context(|| format!("failed to start {phase} phase"))?;
+        receipt["phases"]
+            .as_array_mut()
+            .expect("receipt phases is an array")
+            .push(serde_json::json!({
+                "phase": phase,
+                "profile": profile,
+                "status": if status.success() { "pass" } else { "fail" },
+                "stdout": stdout_path,
+                "stderr": stderr_path
+            }));
+        if !status.success() {
+            receipt["status"] = serde_json::json!("failed");
+            receipt["failed_phase"] = serde_json::json!(phase);
+            std::fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
+            anyhow::bail!(
+                "Arch {phase} phase failed with {status}; retained {}",
+                evidence.display()
+            );
+        }
+        std::fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
+    }
+
+    let disk_sha256 = sha256_file(&disk)?;
+    receipt["status"] = serde_json::json!("pass");
+    receipt["disk_sha256"] = serde_json::json!(disk_sha256);
+    receipt["completed_unix_seconds"] = serde_json::json!(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before Unix epoch")?
+        .as_secs());
+    std::fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
+    println!(
+        "PASS: pinned Arch Linux installed to writable virtio storage, rebooted, and passed key-only SSH proofs"
+    );
+    Ok(())
+}
+
 fn seeded_boot_guard(
     directory: &Path,
     plan: &str,
@@ -622,7 +750,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     } else {
         None
     };
-    let mut profile_plan = if matches!(args.guest_os.as_str(), "none" | "both") {
+    let mut profile_plan = if let Some(path) = &args.x86_boot_profile {
+        Some(cmd_guest_profile::host_profile_plan(&profile_root, path)?)
+    } else if matches!(args.guest_os.as_str(), "none" | "both") {
         None
     } else {
         let path = cmd_guest_profile::resolve_alias(&profile_root, &args.guest_os)?;
@@ -649,16 +779,21 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             .as_ref()
             .is_some_and(|p| p.test.iter().any(|s| s.action == "assert-ssh-output"))
             || args.seed_profile
-            || args.seeded_ssh_key.is_some(),
+            || args.seeded_ssh_key.is_some()
+            || args.x86_ssh_key.is_some(),
         "profile SSH output assertions require seeded authentication"
     );
     anyhow::ensure!(
-        !args.assert_guest_display || (args.board == "qemu_virt_aarch64"
-            && (args.assert_live || args.seed_profile || args.seeded_ssh_key.is_some())
+        !args.assert_guest_display || ((args.board == "qemu_virt_aarch64"
+            || args.board == "x86_64_generic_vtx")
+            && (args.assert_live
+                || args.seed_profile
+                || args.seeded_ssh_key.is_some()
+                || args.x86_ssh_key.is_some())
             && !args.no_build && profile_plan.as_ref().is_some_and(|p|
                 p.devices.iter().any(|d| d == "gpu")
                 && p.test.iter().any(|s| s.action == "assert-frame-pixels"))),
-        "guest display qualification requires a fresh AArch64 graphics profile with pixel assertions"
+        "guest display qualification requires a fresh supported graphics profile with pixel assertions"
     );
     if let Some(profile) = &profile_plan {
         println!(
@@ -728,13 +863,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         || args.assert_live
         || args.assert_desktop
     {
+        let x86_desktop = args.board == "x86_64_generic_vtx"
+            && args.assert_x86_cc
+            && args.assert_desktop
+            && args.x86_boot_profile.is_some();
         anyhow::ensure!(
-            args.board == "qemu_virt_aarch64",
-            "emulated VirtIO assertions require --board qemu_virt_aarch64"
+            args.board == "qemu_virt_aarch64" || x86_desktop,
+            "emulated VirtIO assertions require a supported runtime guest"
         );
         anyhow::ensure!(
-            args.guest_os != "none",
-            "emulated VirtIO assertions need a real guest; GUEST_OS=none is a stub VMM"
+            args.guest_os != "none" || x86_desktop,
+            "emulated VirtIO assertions need a real runtime guest"
         );
     }
     if args.assert_emulated_console || args.assert_agentos_virtio {
@@ -780,8 +919,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "GUEST_SCENARIO={}",
                 args.scenario.as_deref().unwrap_or(&args.guest_os)
             ));
-        } else if let Some(profile) = &profile_plan {
-            make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
+        } else if args.x86_boot_profile.is_none() {
+            if let Some(profile) = &profile_plan {
+                make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
+            }
         }
         if let Some(mode) = args.block_isolation_probe {
             make_args.push(format!("BLK_ISOLATION_PROBE={mode}"));
@@ -810,7 +951,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
         }
-        if args.assert_display || args.assert_guest_display {
+        if args.assert_display || (args.assert_guest_display && args.board == "qemu_virt_aarch64") {
             make_args.push(String::from("DISPLAY_RAMFB=1"));
         }
         make_args.extend(profile_device_build_args(
@@ -1066,27 +1207,41 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )?;
         }
     }
-    let input_helper = if (args.assert_live || args.seeded_ssh_key.is_some())
-        && profile_plan
-            .as_ref()
-            .is_some_and(|p| p.devices.iter().any(|d| d == "input"))
-    {
-        anyhow::ensure!(
-            args.board == "qemu_virt_aarch64",
-            "input probe requires AArch64 Linux"
-        );
-        run_make(&["guest-input-probe"], &repo_root)?;
-        run_make(&["-C", "tools/agentctl"], &repo_root)?;
-        let path = repo_root.join("build/tmp/guest-input-probe-aarch64");
-        let bytes = std::fs::read(&path)?;
-        anyhow::ensure!(
-            bytes.len() >= 20 && &bytes[..6] == b"\x7fELF\x02\x01" && bytes[18..20] == [183, 0],
-            "input probe is not little-endian AArch64 ELF64"
-        );
-        Some(path)
-    } else {
-        None
-    };
+    let input_helper =
+        if (args.assert_live || args.seeded_ssh_key.is_some() || args.x86_ssh_key.is_some())
+            && profile_plan
+                .as_ref()
+                .is_some_and(|p| p.devices.iter().any(|d| d == "input"))
+        {
+            let (target, path, machine) = if args.board == "x86_64_generic_vtx" {
+                (
+                    "guest-input-probe-x86_64",
+                    "build/tmp/guest-input-probe-x86_64",
+                    [62, 0],
+                )
+            } else {
+                anyhow::ensure!(
+                    args.board == "qemu_virt_aarch64",
+                    "input probe requires supported Linux architecture"
+                );
+                (
+                    "guest-input-probe",
+                    "build/tmp/guest-input-probe-aarch64",
+                    [183, 0],
+                )
+            };
+            run_make(&[target], &repo_root)?;
+            run_make(&["-C", "tools/agentctl"], &repo_root)?;
+            let path = repo_root.join(path);
+            let bytes = std::fs::read(&path)?;
+            anyhow::ensure!(
+                bytes.len() >= 20 && &bytes[..6] == b"\x7fELF\x02\x01" && bytes[18..20] == machine,
+                "input probe has the wrong ELF64 architecture"
+            );
+            Some(path)
+        } else {
+            None
+        };
     let tmp_dir = qemu_tmp_dir(&repo_root);
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
@@ -1107,6 +1262,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         std::fs::write(directory.join(name), format!("{}\n", log_path.display()))?;
     }
     let mut ssh_key = if let Some(key) = &args.seeded_ssh_key {
+        Some(SshTestKey {
+            _temporary_dir: None,
+            private_key: key.clone(),
+            public_key: String::new(),
+            known_hosts: Some(log_path.with_extension("known_hosts")),
+        })
+    } else if let Some(key) = &args.x86_ssh_key {
         Some(SshTestKey {
             _temporary_dir: None,
             private_key: key.clone(),
@@ -1184,6 +1346,20 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     // Measure the host-observed launch-to-authentication interval. Acquisition,
     // compilation and persistent-disk preparation have already completed.
     let boot_clock = Instant::now();
+    let _arch_http = if profile_plan
+        .as_ref()
+        .is_some_and(|profile| profile.id == "arch-linux-x86-64-installer")
+    {
+        let server =
+            StaticHttpServer::start(&repo_root.join("build/guest-images/arch-amd64/http"), 18080)?;
+        println!(
+            "[xtask:test] Serving pinned Arch installer root on 10.0.2.2:{}",
+            server.port
+        );
+        Some(server)
+    } else {
+        None
+    };
     let mut qemu = ChildGuard::new(spawn_qemu_with_guest(
         &args.board,
         &repo_root,
@@ -1432,10 +1608,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     0,
                 )
             }
-        } else if args.assert_emulated_console
-            || profile_plan
-                .as_ref()
-                .is_some_and(|profile| !profile_console_markers(profile).is_empty())
+        } else if !args.assert_vmx_exit
+            && (args.assert_emulated_console
+                || profile_plan
+                    .as_ref()
+                    .is_some_and(|profile| !profile_console_markers(profile).is_empty()))
         {
             let profile = profile_plan.as_ref().unwrap();
             println!(
@@ -1553,6 +1730,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             }
             if args.assert_x86_cc {
                 x86_cc_linux_probe(
+                    &repo_root,
                     &cc_sock,
                     &log_path,
                     Duration::from_secs(args.timeout_secs),
@@ -1560,6 +1738,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                         .as_deref()
                         .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
                     args.x86_smp_probe.as_deref(),
+                    profile_plan.as_ref(),
+                    input_helper.as_deref(),
+                    args.assert_guest_display,
                     &mut qemu,
                 )
             } else if args.assert_x86_linux_login {
@@ -1570,6 +1751,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     args.x86_ssh_key
                         .as_deref()
                         .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
+                    profile_plan.as_ref(),
                 )
             } else {
                 if args.assert_x86_userspace {
@@ -1760,7 +1942,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         cc_send_raw_byte(&mut cc, 0, b'\r')?;
     }
     if result.is_ok() && !args.assert_seeded_recreation {
-        if let Some(helper) = &input_helper {
+        if let Some(helper) = &input_helper.filter(|_| !args.assert_x86_cc) {
             result = prove_profile_input(
                 &repo_root,
                 &cc_sock,
@@ -2389,6 +2571,128 @@ struct ChildGuard {
     child: Child,
 }
 
+struct StaticHttpServer {
+    stop: Arc<AtomicBool>,
+    port: u16,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl StaticHttpServer {
+    fn start(root: &Path, port: u16) -> anyhow::Result<Self> {
+        let root = std::fs::canonicalize(root)
+            .with_context(|| format!("resolve HTTP root {}", root.display()))?;
+        let listener = TcpListener::bind(("0.0.0.0", port))?;
+        let port = listener.local_addr()?.port();
+        listener.set_nonblocking(true)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(value) => value,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(20));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut request = Vec::with_capacity(4096);
+                while request.len() < 4096
+                    && !request.windows(4).any(|window| window == b"\r\n\r\n")
+                {
+                    let mut chunk = [0u8; 1024];
+                    let Ok(count) = stream.read(&mut chunk) else {
+                        break;
+                    };
+                    if count == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                let Some(line) = std::str::from_utf8(&request)
+                    .ok()
+                    .and_then(|request| request.lines().next())
+                else {
+                    continue;
+                };
+                let fields: Vec<_> = line.split_whitespace().collect();
+                if fields.len() != 3 || fields[0] != "GET" || !fields[2].starts_with("HTTP/1.") {
+                    let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+                    continue;
+                }
+                let relative = Path::new(fields[1].trim_start_matches('/'));
+                if relative.as_os_str().is_empty()
+                    || relative
+                        .components()
+                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                    );
+                    continue;
+                }
+                let Ok(path) = std::fs::canonicalize(root.join(relative)) else {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                    );
+                    continue;
+                };
+                if !path.starts_with(&root) || !path.is_file() {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                    );
+                    continue;
+                }
+                let Ok(mut file) = std::fs::File::open(&path) else {
+                    continue;
+                };
+                let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+                    continue;
+                };
+                let range_probe = request
+                    .windows(b"\r\nRange: bytes=0-0\r\n".len())
+                    .any(|window| window.eq_ignore_ascii_case(b"\r\nRange: bytes=0-0\r\n"));
+                let (status, response_length, content_range) = if range_probe && length > 0 {
+                    (
+                        "206 Partial Content",
+                        1,
+                        format!("Content-Range: bytes 0-0/{length}\r\n"),
+                    )
+                } else {
+                    ("200 OK", length, String::new())
+                };
+                if write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n{content_range}Content-Length: {response_length}\r\nConnection: close\r\n\r\n").is_ok() {
+                    if range_probe {
+                        let mut byte = [0u8; 1];
+                        if file.read_exact(&mut byte).is_ok() {
+                            let _ = stream.write_all(&byte);
+                        }
+                        continue;
+                    }
+                    let _ = std::io::copy(&mut file, &mut stream);
+                }
+            }
+        });
+        Ok(Self {
+            stop,
+            port,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for StaticHttpServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 impl ChildGuard {
     fn new(child: Child) -> Self {
         Self { child }
@@ -2699,8 +3003,8 @@ pub(crate) fn spawn_qemu_with_guest(
     x86_cc: bool,
 ) -> anyhow::Result<std::process::Child> {
     anyhow::ensure!(
-        !display || board == "qemu_virt_aarch64",
-        "ramfb requires AArch64"
+        !display || matches!(board, "qemu_virt_aarch64" | "x86_64_generic_vtx"),
+        "display qualification requires AArch64 ramfb or x86 virtio-GPU"
     );
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port, profile, scenario)?;
@@ -2955,11 +3259,17 @@ pub(crate) fn spawn_qemu_with_guest(
                     .arg("-device")
                     .arg("virtio-blk-pci,drive=agentos_blk_secondary,addr=08.0,disable-legacy=on");
             }
+            let restrict =
+                if profile.is_some_and(|profile| profile.id == "arch-linux-x86-64-installer") {
+                    "off"
+                } else {
+                    "on"
+                };
             c.arg("-netdev")
-                .arg(if ssh_port == 0 { "user,id=agentos_net,restrict=on".into() } else { format!("user,id=agentos_net,restrict=on,hostfwd=tcp:127.0.0.1:{ssh_port}-10.0.2.15:22") })
+                .arg(if ssh_port == 0 { format!("user,id=agentos_net,restrict={restrict}") } else { format!("user,id=agentos_net,restrict={restrict},hostfwd=tcp:127.0.0.1:{ssh_port}-10.0.2.15:22") })
                 .arg("-device")
                 .arg("virtio-net-pci,netdev=agentos_net,addr=06.0,disable-legacy=on,mac=52:54:00:12:34:56");
-            let capture = log_path.with_extension("pcap");
+            let capture = log_path.with_extension(if capture_net { "net.pcap" } else { "pcap" });
             println!("[xtask:test] Intel NIC capture: {}", capture.display());
             c.arg("-object").arg(format!(
                 "filter-dump,id=agentos_net_capture,netdev=agentos_net,file={}",
@@ -2994,7 +3304,7 @@ pub(crate) fn spawn_qemu_with_guest(
         }
     };
 
-    if capture_net {
+    if capture_net && board != "x86_64_generic_vtx" {
         let capture_path = log_path.with_extension("net.pcap");
         println!(
             "[xtask:test] Capturing host-backed guest packets in {}",
@@ -3603,7 +3913,7 @@ fn seeded_ssh_proof(
 
 #[cfg(test)]
 fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
-    x86_linux_login_probe(socket, log_path, timeout, None)
+    x86_linux_login_probe(socket, log_path, timeout, None, None)
 }
 
 fn x86_has_login_prompt(text: &str) -> bool {
@@ -3640,11 +3950,24 @@ fn x86_has_login_prompt(text: &str) -> bool {
     })
 }
 
+fn x86_console_ready(text: &str, profile: Option<&HostProfilePlan>) -> bool {
+    x86_has_login_prompt(text)
+        || profile.is_some_and(|profile| {
+            !profile.console.success.is_empty()
+                && profile
+                    .console
+                    .success
+                    .iter()
+                    .all(|marker| text.contains(marker))
+        })
+}
+
 fn x86_linux_login_probe(
     socket: &Path,
     log_path: &Path,
     timeout: Duration,
     ssh: Option<(&Path, u16, Option<&Path>)>,
+    profile: Option<&HostProfilePlan>,
 ) -> anyhow::Result<String> {
     let deadline = Instant::now() + timeout;
     let mut stream = loop {
@@ -3658,16 +3981,61 @@ fn x86_linux_login_probe(
     // when unread diagnostic bytes remain. Drain those bytes nonblocking;
     // the reader already enforces the host deadline.
     stream.set_nonblocking(true)?;
-    x86_linux_login_reader(|chunk| stream.read(chunk), log_path, deadline, ssh)
+    let mut writer = stream.try_clone()?;
+    let mut send = |bytes: &[u8]| writer.write_all(bytes);
+    x86_linux_login_reader_with_artifacts(
+        |chunk| stream.read(chunk),
+        log_path,
+        log_path,
+        deadline,
+        ssh,
+        profile,
+        Some(&mut send),
+    )
 }
 
-fn x86_linux_login_reader(
-    read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
-    log_path: &Path,
-    deadline: Instant,
-    ssh: Option<(&Path, u16, Option<&Path>)>,
-) -> anyhow::Result<String> {
-    x86_linux_login_reader_with_artifacts(read, log_path, log_path, deadline, ssh)
+const X86_PROVISION_COMPLETE: &str = "agentos-x86-profile-provision-complete";
+
+fn x86_provision_commands(profile: &HostProfilePlan, key: &Path) -> anyhow::Result<Vec<Vec<u8>>> {
+    let public_key_path = key.with_extension("pub");
+    let public_key = std::fs::read_to_string(&public_key_path)
+        .with_context(|| format!("read {}", public_key_path.display()))?;
+    let public_key = public_key.trim();
+    anyhow::ensure!(
+        public_key.starts_with("ssh-ed25519 ")
+            && public_key.len() <= 256
+            && !public_key.contains(['\n', '\r', '\'', '"']),
+        "Intel provisioning requires one bounded Ed25519 public key"
+    );
+    let mut commands = Vec::new();
+    let mut total_bytes = 0usize;
+    for (index, step) in profile.provision.iter().enumerate() {
+        anyhow::ensure!(
+            step.action == "send-console",
+            "Intel profile provisioning only accepts send-console actions"
+        );
+        let command = step.args["text"].replace("{{ssh_public_key}}", public_key);
+        anyhow::ensure!(
+            !command.contains(['\n', '\r']) && command.len() < 3000,
+            "Intel provision command {index} exceeds the console line bound"
+        );
+        let marker = format!("agentos-x86-provision-{index}-ok");
+        let complete = if index + 1 == profile.provision.len() {
+            format!(" printf '{X86_PROVISION_COMPLETE}\\n';")
+        } else {
+            String::new()
+        };
+        let line = format!(
+            "if {{ {command}; }}; then printf '{marker}\\n';{complete} else printf 'agentos-x86-provision-{index}-failed\\n'; fi\n"
+        );
+        total_bytes += line.len();
+        commands.push(line.into_bytes());
+    }
+    anyhow::ensure!(
+        !commands.is_empty() && total_bytes <= 64 * 1024,
+        "Intel provision script exceeds 64 KiB"
+    );
+    Ok(commands)
 }
 
 fn x86_linux_login_reader_with_artifacts(
@@ -3676,6 +4044,8 @@ fn x86_linux_login_reader_with_artifacts(
     log_path: &Path,
     deadline: Instant,
     ssh: Option<(&Path, u16, Option<&Path>)>,
+    profile: Option<&HostProfilePlan>,
+    mut send: Option<&mut dyn FnMut(&[u8]) -> std::io::Result<()>>,
 ) -> anyhow::Result<String> {
     let retained_key = ssh
         .and_then(|(_, port, known)| known.map(|path| x86_retained_host_key(path, port)))
@@ -3687,6 +4057,9 @@ fn x86_linux_login_reader_with_artifacts(
         transcript_path.display()
     );
     let mut transcript = Vec::new();
+    let mut provision_commands: Option<Vec<Vec<u8>>> = None;
+    let mut provision_echo_boundary = None;
+    let mut provision_waiting: Option<usize> = None;
     while Instant::now() < deadline {
         let target_log = std::fs::read_to_string(target_log_path)?;
         anyhow::ensure!(
@@ -3716,7 +4089,64 @@ fn x86_linux_login_reader_with_artifacts(
                     "Intel Linux boot failed; see {}",
                     transcript_path.display()
                 );
-                if x86_has_login_prompt(&text) {
+                reject_profile_console(profile.map(|profile| &profile.console), &text)?;
+                anyhow::ensure!(
+                    !text.contains("agentos-x86-provision-") || !text.contains("-failed"),
+                    "Intel profile provisioning failed; see {}",
+                    transcript_path.display()
+                );
+                let provision_complete = text.contains(X86_PROVISION_COMPLETE);
+                if provision_complete {
+                    let needs_ssh = profile.is_some_and(|profile| {
+                        profile.test.iter().any(|step| step.action == "wait-ssh")
+                    });
+                    if !needs_ssh {
+                        return Ok("Intel profile console provisioning completed".into());
+                    }
+                }
+                if let Some(commands) = provision_commands.as_ref().filter(|_| !provision_complete)
+                {
+                    if let Some(index) = provision_waiting {
+                        let marker = format!("agentos-x86-provision-{index}-ok");
+                        if text.contains(&marker) && index + 1 < commands.len() {
+                            send.as_mut()
+                                .context("Intel profile console provisioning has no input path")?(
+                                &commands[index + 1],
+                            )?;
+                            provision_waiting = Some(index + 1);
+                        }
+                    } else if provision_echo_boundary.is_some_and(|boundary| {
+                        x86_console_ready(
+                            &String::from_utf8_lossy(&transcript[boundary..]),
+                            profile,
+                        )
+                    }) {
+                        send.as_mut()
+                            .context("Intel profile console provisioning has no input path")?(
+                            &commands[0],
+                        )?;
+                        provision_waiting = Some(0);
+                    }
+                    continue;
+                }
+                if x86_console_ready(&text, profile) {
+                    if let Some(profile) = profile.filter(|profile| !profile.provision.is_empty()) {
+                        if provision_commands.is_none() {
+                            let (key, _, _) = ssh.context(
+                                "Intel profile console provisioning requires an SSH identity",
+                            )?;
+                            let commands = x86_provision_commands(profile, key)?;
+                            send.as_mut()
+                                .context("Intel profile console provisioning has no input path")?(
+                                b"stty -echo\n",
+                            )?;
+                            provision_echo_boundary = Some(transcript.len());
+                            provision_commands = Some(commands);
+                        }
+                        if !provision_complete {
+                            continue;
+                        }
+                    }
                     if let Some((key, port, _)) = ssh {
                         let host_key = if let Some(key) = &retained_key {
                             Some(key.clone())
@@ -3726,9 +4156,25 @@ fn x86_linux_login_reader_with_artifacts(
                         let Some(host_key) = host_key else {
                             continue;
                         };
-                        return seeded_ssh_proof(
-                            key, port, &host_key, log_path, deadline, "debian", "x86_64", None,
-                        );
+                        let account = if let Some(profile) = profile {
+                            profile_ssh_expectation(profile)?.0
+                        } else {
+                            "debian"
+                        };
+                        let proof = seeded_ssh_proof(
+                            key, port, &host_key, log_path, deadline, account, "x86_64", None,
+                        )?;
+                        if let Some(profile) = profile {
+                            guest_session::prove(
+                                profile,
+                                key,
+                                port,
+                                Some(&log_path.with_extension("known_hosts")),
+                                deadline.saturating_duration_since(Instant::now()),
+                            )?;
+                            return Ok(format!("{proof}; profile functional SSH session passed"));
+                        }
+                        return Ok(proof);
                     }
                     return Ok(
                         "Linux login prompt through canonical virtio-console and serial_virt"
@@ -3841,11 +4287,15 @@ fn x86_reject_oversized_create(cc: &mut CcClient) -> anyhow::Result<()> {
 }
 
 fn x86_cc_linux_probe(
+    repo: &Path,
     socket: &Path,
     log_path: &Path,
     timeout: Duration,
     ssh: Option<(&Path, u16, Option<&Path>)>,
     smp_probe: Option<&Path>,
+    profile: Option<&HostProfilePlan>,
+    input_helper: Option<&Path>,
+    capture_display: bool,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
@@ -3904,6 +4354,8 @@ fn x86_cc_linux_probe(
             &generation_log,
             Instant::now() + timeout,
             generation_ssh,
+            profile,
+            None,
         )?;
         // Cloud-init prints the host key only on first boot. Recreated guests
         // must authenticate against the key that already passed SSH, including
@@ -3939,6 +4391,52 @@ fn x86_cc_linux_probe(
             echoed.windows(marker.len()).any(|w| w == marker),
             "Intel CC input was not echoed by Linux"
         );
+        let peripheral_profile = profile.is_some_and(|plan| {
+            plan.devices
+                .iter()
+                .any(|device| device == "gpu" || device == "input")
+        });
+        if peripheral_profile {
+            let (key, _, _) = ssh.context("Intel peripheral qualification requires pinned SSH")?;
+            let identity = SshTestKey {
+                _temporary_dir: None,
+                private_key: key.to_path_buf(),
+                public_key: String::new(),
+                known_hosts: Some(generation_log.with_extension("known_hosts")),
+            };
+            drop(cc);
+            let plan = profile.context("Intel peripheral profile missing")?;
+            prove_seeded_profile_steps(
+                socket,
+                &generation_log,
+                plan,
+                &identity,
+                false,
+                qemu,
+                handle,
+            )?;
+            if plan.devices.iter().any(|device| device == "input") {
+                prove_profile_input(
+                    repo,
+                    socket,
+                    &generation_log,
+                    input_helper.context("Intel input helper missing")?,
+                    plan,
+                    &identity,
+                    qemu,
+                    handle,
+                )?;
+            }
+            anyhow::ensure!(
+                !capture_display || plan.devices.iter().any(|device| device == "gpu"),
+                "Intel display capture requested without GPU"
+            );
+            proofs.push(proof);
+            return Ok(format!(
+                "{}; binary CC CREATE and console input verified; GPU/input guest retained for desktop proof",
+                proofs.join("; ")
+            ));
+        }
         let destroyed = cc.call(MSG_CC_DESTROY_GUEST, handle, GUEST_DESTROY_NORMAL, 0, &[])?;
         anyhow::ensure!(
             destroyed.mr[0] == CC_OK,
@@ -7919,6 +8417,8 @@ mod tests {
                 artifact,
                 std::time::Instant::now() + std::time::Duration::from_secs(2),
                 None,
+                None,
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -7937,6 +8437,8 @@ mod tests {
             &target,
             &temp.path().join("failed.log"),
             std::time::Instant::now() + std::time::Duration::from_secs(2),
+            None,
+            None,
             None,
         )
         .is_err());
@@ -8136,6 +8638,72 @@ mod tests {
             profile_device_build_args(None, Some(&scenario)),
             ["GUEST_GRAPHICS=1", "GUEST_INPUT=1"]
         );
+    }
+
+    #[test]
+    fn x86_console_provisioning_templates_only_a_bounded_ed25519_key() {
+        let temporary = tempfile::tempdir().unwrap();
+        let key = temporary.path().join("identity");
+        std::fs::write(
+            key.with_extension("pub"),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAgentOsFixture agentos\n",
+        )
+        .unwrap();
+        let mut profile = test_profile("debian-amd64");
+        profile.provision = vec![
+            cmd_guest_profile::RecipeStep {
+                action: "send-console".into(),
+                args: std::collections::BTreeMap::from([(
+                    "text".into(),
+                    "printf '%s\\n' '{{ssh_public_key}}' > /tmp/key".into(),
+                )]),
+            },
+            cmd_guest_profile::RecipeStep {
+                action: "send-console".into(),
+                args: std::collections::BTreeMap::from([("text".into(), "sync".into())]),
+            },
+        ];
+        let commands = x86_provision_commands(&profile, &key).unwrap();
+        assert_eq!(commands.len(), 2);
+        let command = String::from_utf8(commands[0].clone()).unwrap();
+        assert!(command.contains("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAgentOsFixture agentos"));
+        assert!(!command.contains(X86_PROVISION_COMPLETE));
+        assert!(String::from_utf8(commands[1].clone())
+            .unwrap()
+            .contains(X86_PROVISION_COMPLETE));
+        profile.provision[0].action = "run-ssh".into();
+        assert!(x86_provision_commands(&profile, &key).is_err());
+        std::fs::write(key.with_extension("pub"), "ssh-rsa invalid\n").unwrap();
+        assert!(x86_provision_commands(&test_profile("debian-amd64"), &key).is_err());
+    }
+
+    #[test]
+    fn arch_installer_http_server_is_confined_and_exact() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temporary.path().join("arch")).unwrap();
+        std::fs::write(temporary.path().join("arch/aitab"), b"pinned-arch\n").unwrap();
+        let server = StaticHttpServer::start(temporary.path(), 0).unwrap();
+        let request = |path: &str| {
+            let mut stream = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+            write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).unwrap();
+            response
+        };
+        let found = request("/arch/aitab");
+        assert!(found.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(found.ends_with(b"pinned-arch\n"));
+        let mut stream = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        write!(
+            stream,
+            "GET /arch/aitab HTTP/1.1\r\nHost: localhost\r\nRange: bytes=0-0\r\n\r\n"
+        )
+        .unwrap();
+        let mut ranged = Vec::new();
+        stream.read_to_end(&mut ranged).unwrap();
+        assert!(ranged.starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
+        assert!(ranged.ends_with(b"p"));
+        assert!(request("/../Cargo.toml").starts_with(b"HTTP/1.1 404 Not Found\r\n"));
     }
 
     #[test]

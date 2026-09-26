@@ -21,6 +21,7 @@ typedef struct {
     uint8_t host[256], pm[256], cmos_index;
     uint8_t cmos_shutdown; /* private cold/warm CPU-start marker, no S3 state */
     uint32_t pci_reads, timer_reads, fw_reads;
+    uint64_t fw_dma_address;
     uint32_t cpu_selector;
     uint8_t cpu_command;
     uint8_t pit_disable_remaining;
@@ -50,4 +51,10 @@ bool aos_x86_config_boot(aos_x86_config_t *s, const aos_x86_boot_blobs_t *boot);
 bool aos_x86_config_acpi(aos_x86_config_t *s, const aos_x86_acpi_bundle_t *acpi);
 bool aos_x86_config_io(aos_x86_config_t *s, uint16_t port, unsigned width,
                        bool write, uint32_t *value, uint64_t timer_ticks);
+/* Execute one bounded fw_cfg DMA read/skip after the caller has validated the
+ * guest descriptor and destination. Control uses the standard big-endian
+ * descriptor value after decoding. All configuration state is atomic on
+ * rejection; fw_cfg items remain read-only. */
+bool aos_x86_config_dma(aos_x86_config_t *s, uint32_t control,
+                        uint8_t *destination, uint32_t length);
 #endif
