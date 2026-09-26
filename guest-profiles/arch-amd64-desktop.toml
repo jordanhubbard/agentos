@@ -49,6 +49,7 @@ pacman -Syy --noconfirm --noprogressbar --disable-download-timeout --needed mesa
 usermod -aG seat agentos
 systemctl enable --now seatd
 pacman -Q mesa sway swaybg wayvnc foot seatd dbus ttf-dejavu | tee /tmp/agentos-desktop-packages.txt
+sync
 test -e /dev/dri/card0
 grep -q 'agentOS keyboard' /sys/class/input/event*/device/name
 grep -q 'agentOS pointer' /sys/class/input/event*/device/name
@@ -99,6 +100,7 @@ done
 ss -ltn | grep -q '127.0.0.1:5900' || { cat /tmp/agentos-wayvnc.log >&2; exit 1; }
 pgrep -u agentos -x sway >/dev/null
 pgrep -u agentos -x wayvnc >/dev/null
+sync
 printf 'agentos-x86-wayland-rfb-ready\n'
 '''
 
