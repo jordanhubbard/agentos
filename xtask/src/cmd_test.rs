@@ -9238,8 +9238,21 @@ mod tests {
         let script = &profile.desktop.as_ref().unwrap().provision_script;
         let init = script.find("pacman-key --init").unwrap();
         let populate = script.find("pacman-key --populate archlinux").unwrap();
+        let aml_package = script
+            .find("d3a87fac8acf0b557f408a6911cabc2385b54275f7b81049fc0227e4af8a13cb")
+            .unwrap();
+        let aml_signature = script
+            .find("7281dc807a84ee2fb73f7f420464118486c5c9172e5667c6ee7f9528f0e839c5")
+            .unwrap();
         let install = script.find("pacman -Syy").unwrap();
-        assert!(init < populate && populate < install);
+        assert!(
+            init < populate
+                && populate < aml_package
+                && aml_package < aml_signature
+                && aml_signature < install
+        );
+        assert!(script.contains("https://geo.mirror.pkgbuild.com/extra/os/x86_64/aml-1.0.0-1-x86_64.pkg.tar.zst"));
+        assert_eq!(script.matches("sha256sum -c").count(), 2);
         assert!(!script.contains("SigLevel = Never"));
         assert!(!script.contains("--skippgpcheck"));
     }

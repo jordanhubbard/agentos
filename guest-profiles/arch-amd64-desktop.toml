@@ -50,6 +50,18 @@ sed -i 's/^ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
 pacman-key --init
 pacman-key --populate archlinux
 sync
+# The 2026-09-01 archive database contains the rebuilt aml payload and
+# signature, but its dated package path exposes older bytes under the same
+# filename. Seed the database-matching pair from the official mirror and bind
+# both files to their exact digests before pacman performs signature checking.
+aml_pkg=/var/cache/pacman/pkg/aml-1.0.0-1-x86_64.pkg.tar.zst
+aml_url=https://geo.mirror.pkgbuild.com/extra/os/x86_64/aml-1.0.0-1-x86_64.pkg.tar.zst
+curl -fsSL --retry 3 --retry-all-errors -o "$aml_pkg.part" "$aml_url"
+printf 'd3a87fac8acf0b557f408a6911cabc2385b54275f7b81049fc0227e4af8a13cb  %s\n' "$aml_pkg.part" | sha256sum -c -
+mv "$aml_pkg.part" "$aml_pkg"
+curl -fsSL --retry 3 --retry-all-errors -o "$aml_pkg.sig.part" "$aml_url.sig"
+printf '7281dc807a84ee2fb73f7f420464118486c5c9172e5667c6ee7f9528f0e839c5  %s\n' "$aml_pkg.sig.part" | sha256sum -c -
+mv "$aml_pkg.sig.part" "$aml_pkg.sig"
 pacman -Syy --noconfirm --noprogressbar --disable-download-timeout --needed mesa sway swaybg wayvnc foot seatd dbus ttf-dejavu
 usermod -aG seat agentos
 systemctl enable --now seatd
