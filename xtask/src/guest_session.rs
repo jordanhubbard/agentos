@@ -433,6 +433,7 @@ mod tests {
             "freebsd.toml",
             "debian.toml",
             "debian-scenario.toml",
+            "debian-amd64.toml",
         ] {
             let profile = cmd_guest_profile::host_profile_plan(&root, Path::new(name)).unwrap();
             let checks = steps(&profile).unwrap();

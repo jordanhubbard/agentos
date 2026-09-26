@@ -1,5 +1,6 @@
 use crate::cmd_guest_profile::{self, DesktopPlan, HostProfilePlan};
 use crate::guest_scenario::{self, HostScenarioPlan, ScenarioGuestPlan};
+use crate::guest_session;
 use crate::{rfb, QemuLaunchArgs, TestArgs};
 use anyhow::Context;
 use sha2::{Digest, Sha256};
@@ -622,7 +623,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     } else {
         None
     };
-    let mut profile_plan = if matches!(args.guest_os.as_str(), "none" | "both") {
+    let mut profile_plan = if let Some(path) = &args.x86_boot_profile {
+        Some(cmd_guest_profile::host_profile_plan(&profile_root, path)?)
+    } else if matches!(args.guest_os.as_str(), "none" | "both") {
         None
     } else {
         let path = cmd_guest_profile::resolve_alias(&profile_root, &args.guest_os)?;
@@ -780,8 +783,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "GUEST_SCENARIO={}",
                 args.scenario.as_deref().unwrap_or(&args.guest_os)
             ));
-        } else if let Some(profile) = &profile_plan {
-            make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
+        } else if args.x86_boot_profile.is_none() {
+            if let Some(profile) = &profile_plan {
+                make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
+            }
         }
         if let Some(mode) = args.block_isolation_probe {
             make_args.push(format!("BLK_ISOLATION_PROBE={mode}"));
@@ -1560,6 +1565,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                         .as_deref()
                         .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
                     args.x86_smp_probe.as_deref(),
+                    profile_plan.as_ref(),
                     &mut qemu,
                 )
             } else if args.assert_x86_linux_login {
@@ -1570,6 +1576,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     args.x86_ssh_key
                         .as_deref()
                         .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
+                    profile_plan.as_ref(),
                 )
             } else {
                 if args.assert_x86_userspace {
@@ -3603,7 +3610,7 @@ fn seeded_ssh_proof(
 
 #[cfg(test)]
 fn x86_linux_login(socket: &Path, log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
-    x86_linux_login_probe(socket, log_path, timeout, None)
+    x86_linux_login_probe(socket, log_path, timeout, None, None)
 }
 
 fn x86_has_login_prompt(text: &str) -> bool {
@@ -3645,6 +3652,7 @@ fn x86_linux_login_probe(
     log_path: &Path,
     timeout: Duration,
     ssh: Option<(&Path, u16, Option<&Path>)>,
+    profile: Option<&HostProfilePlan>,
 ) -> anyhow::Result<String> {
     let deadline = Instant::now() + timeout;
     let mut stream = loop {
@@ -3658,7 +3666,7 @@ fn x86_linux_login_probe(
     // when unread diagnostic bytes remain. Drain those bytes nonblocking;
     // the reader already enforces the host deadline.
     stream.set_nonblocking(true)?;
-    x86_linux_login_reader(|chunk| stream.read(chunk), log_path, deadline, ssh)
+    x86_linux_login_reader(|chunk| stream.read(chunk), log_path, deadline, ssh, profile)
 }
 
 fn x86_linux_login_reader(
@@ -3666,8 +3674,9 @@ fn x86_linux_login_reader(
     log_path: &Path,
     deadline: Instant,
     ssh: Option<(&Path, u16, Option<&Path>)>,
+    profile: Option<&HostProfilePlan>,
 ) -> anyhow::Result<String> {
-    x86_linux_login_reader_with_artifacts(read, log_path, log_path, deadline, ssh)
+    x86_linux_login_reader_with_artifacts(read, log_path, log_path, deadline, ssh, profile)
 }
 
 fn x86_linux_login_reader_with_artifacts(
@@ -3676,6 +3685,7 @@ fn x86_linux_login_reader_with_artifacts(
     log_path: &Path,
     deadline: Instant,
     ssh: Option<(&Path, u16, Option<&Path>)>,
+    profile: Option<&HostProfilePlan>,
 ) -> anyhow::Result<String> {
     let retained_key = ssh
         .and_then(|(_, port, known)| known.map(|path| x86_retained_host_key(path, port)))
@@ -3726,9 +3736,25 @@ fn x86_linux_login_reader_with_artifacts(
                         let Some(host_key) = host_key else {
                             continue;
                         };
-                        return seeded_ssh_proof(
-                            key, port, &host_key, log_path, deadline, "debian", "x86_64", None,
-                        );
+                        let account = if let Some(profile) = profile {
+                            profile_ssh_expectation(profile)?.0
+                        } else {
+                            "debian"
+                        };
+                        let proof = seeded_ssh_proof(
+                            key, port, &host_key, log_path, deadline, account, "x86_64", None,
+                        )?;
+                        if let Some(profile) = profile {
+                            guest_session::prove(
+                                profile,
+                                key,
+                                port,
+                                Some(&log_path.with_extension("known_hosts")),
+                                deadline.saturating_duration_since(Instant::now()),
+                            )?;
+                            return Ok(format!("{proof}; profile functional SSH session passed"));
+                        }
+                        return Ok(proof);
                     }
                     return Ok(
                         "Linux login prompt through canonical virtio-console and serial_virt"
@@ -3846,6 +3872,7 @@ fn x86_cc_linux_probe(
     timeout: Duration,
     ssh: Option<(&Path, u16, Option<&Path>)>,
     smp_probe: Option<&Path>,
+    profile: Option<&HostProfilePlan>,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
@@ -3904,6 +3931,7 @@ fn x86_cc_linux_probe(
             &generation_log,
             Instant::now() + timeout,
             generation_ssh,
+            profile,
         )?;
         // Cloud-init prints the host key only on first boot. Recreated guests
         // must authenticate against the key that already passed SSH, including
@@ -7919,6 +7947,7 @@ mod tests {
                 artifact,
                 std::time::Instant::now() + std::time::Duration::from_secs(2),
                 None,
+                None,
             )
             .unwrap();
             assert_eq!(
@@ -7937,6 +7966,7 @@ mod tests {
             &target,
             &temp.path().join("failed.log"),
             std::time::Instant::now() + std::time::Duration::from_secs(2),
+            None,
             None,
         )
         .is_err());
