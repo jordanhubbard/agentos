@@ -3590,6 +3590,20 @@ fn prove_seeded_profile_steps(
             "seeded graphics requires SSH preparation and exact frame assertions"
         );
         let mut cc = connect_cc_client(socket, Duration::from_secs(30), qemu)?;
+        // The SSH command completing its fbdev write is not a display fence.
+        // Wait for the declared pixels to reach a committed framebuffer before
+        // suspending the guest for the immutable capture and scanout check.
+        let (attempts, sequence) = wait_frame_ready(
+            || {
+                ensure_qemu_running(qemu, "waiting for seeded profile frame pixels")?;
+                probe_guest_frame_pixels(&mut cc, handle, &profile.test)
+            },
+            Duration::from_secs(30),
+            Duration::from_millis(250),
+        )?;
+        println!(
+            "[xtask:test] seeded profile framebuffer pixels ready: probes={attempts}, sequence={sequence}"
+        );
         if display {
             suspend_guest_via_cc(&mut cc, handle)?;
         }
