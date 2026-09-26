@@ -2137,7 +2137,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             .context("persistent proof requires authenticated SSH")?;
         let script = persistence_script(&args.persistent_token, args.persistent_second_boot)?;
         result = run_ssh_script(
-            &key.private_key,
+            key,
             ssh.host_port,
             &ssh.account,
             Duration::from_secs(120),
@@ -6249,7 +6249,7 @@ fn profile_provision_commands(
 }
 
 fn run_ssh_script(
-    private_key: &Path,
+    key: &SshTestKey,
     port: u16,
     account: &str,
     timeout: Duration,
@@ -6261,11 +6261,12 @@ fn run_ssh_script(
         format!("sudo -n timeout {} sh -s", timeout.as_secs())
     };
     let mut child = std::process::Command::new("ssh");
+    apply_test_ssh_identity(&mut child, key);
     child
         .arg("-i")
-        .arg(private_key)
+        .arg(&key.private_key)
         .args(["-p", &port.to_string()])
-        .args(SSH_AUTH_OPTIONS)
+        .args(["-o", "ConnectTimeout=30", "-o", "ConnectionAttempts=1"])
         .args(SSH_SESSION_LIVENESS_OPTIONS)
         .args([&format!("{account}@127.0.0.1"), &remote_shell])
         .stdin(Stdio::piped())
@@ -6343,6 +6344,20 @@ fn wait_for_profile_ssh(
     anyhow::bail!("profile SSH did not become ready: {last}")
 }
 
+fn ssh_console_provision_commands(
+    profile: &HostProfilePlan,
+    key: &SshTestKey,
+) -> anyhow::Result<Option<Vec<String>>> {
+    if profile.provision.is_empty() {
+        anyhow::ensure!(
+            key.known_hosts.is_some(),
+            "preinstalled guest SSH requires a pinned host identity"
+        );
+        return Ok(None);
+    }
+    profile_provision_commands(profile, &key.public_key).map(Some)
+}
+
 fn prove_profile_ssh(
     cc_sock: &Path,
     profile: &HostProfilePlan,
@@ -6350,19 +6365,19 @@ fn prove_profile_ssh(
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<Instant> {
-    let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
-    let provision_ssh = profile_provision_commands(profile, &ssh_key.public_key)?;
-    run_guest_console_commands(
-        cc_sock,
-        &mut cc,
-        0,
-        &profile.id,
-        Some(profile),
-        &provision_ssh,
-        timeout.min(Duration::from_secs(600)),
-        qemu,
-    )?;
-    drop(cc);
+    if let Some(provision_ssh) = ssh_console_provision_commands(profile, ssh_key)? {
+        let mut cc = connect_cc_client(cc_sock, timeout.min(Duration::from_secs(30)), qemu)?;
+        run_guest_console_commands(
+            cc_sock,
+            &mut cc,
+            0,
+            &profile.id,
+            Some(profile),
+            &provision_ssh,
+            timeout.min(Duration::from_secs(600)),
+            qemu,
+        )?;
+    }
     wait_for_profile_ssh(
         profile,
         ssh_key,
@@ -6375,7 +6390,7 @@ fn prove_profile_ssh(
         profile,
         &ssh_key.private_key,
         ssh.host_port,
-        None,
+        ssh_key.known_hosts.as_deref(),
         timeout.min(Duration::from_secs(600)),
     )?;
     Ok(ssh_ready)
@@ -6844,16 +6859,18 @@ fn desktop_tunnel_forward_spec(desktop: &DesktopPlan) -> String {
 }
 
 fn spawn_desktop_tunnel(
-    private_key: &Path,
+    key: &SshTestKey,
     port: u16,
     account: &str,
     desktop: &DesktopPlan,
 ) -> anyhow::Result<Child> {
-    std::process::Command::new("ssh")
+    let mut command = std::process::Command::new("ssh");
+    apply_test_ssh_identity(&mut command, key);
+    command
         .arg("-i")
-        .arg(private_key)
+        .arg(&key.private_key)
         .args(["-p", &port.to_string()])
-        .args(SSH_AUTH_OPTIONS)
+        .args(["-o", "ConnectTimeout=30", "-o", "ConnectionAttempts=1"])
         .args(SSH_SESSION_LIVENESS_OPTIONS)
         .args([
             "-o",
@@ -6893,7 +6910,7 @@ fn prove_profile_desktop(
         .as_secs();
     let provisioning_script = render_desktop_script(&desktop.provision_script, host_unix_time)?;
     let provisioning = run_ssh_script(
-        &ssh_key.private_key,
+        ssh_key,
         ssh.host_port,
         &ssh.account,
         Duration::from_secs(desktop.provision_timeout_secs),
@@ -6901,8 +6918,7 @@ fn prove_profile_desktop(
     )?;
     println!("[xtask:test] profile desktop provisioning:\n{provisioning}");
 
-    let mut tunnel =
-        spawn_desktop_tunnel(&ssh_key.private_key, ssh.host_port, &ssh.account, desktop)?;
+    let mut tunnel = spawn_desktop_tunnel(ssh_key, ssh.host_port, &ssh.account, desktop)?;
     let start = Instant::now();
     let mut last = String::from("SSH tunnel did not accept a connection");
     while start.elapsed() < timeout.min(Duration::from_secs(desktop.frame_timeout_secs)) {
@@ -9135,6 +9151,32 @@ mod tests {
         assert!(probe.contains("ServerAliveCountMax=1"));
         assert!(session.contains("ServerAliveInterval=30"));
         assert!(session.contains("ServerAliveCountMax=20"));
+    }
+
+    #[test]
+    fn preinstalled_desktop_reuses_pinned_ssh_without_console_provisioning() {
+        let mut key = SshTestKey {
+            _temporary_dir: None,
+            private_key: PathBuf::from("identity"),
+            public_key: "ssh-ed25519 test-public-key".into(),
+            known_hosts: Some(PathBuf::from("pinned-hosts")),
+        };
+        let installed = test_profile("arch-amd64-desktop");
+        assert!(ssh_console_provision_commands(&installed, &key)
+            .unwrap()
+            .is_none());
+        key.known_hosts = None;
+        assert!(ssh_console_provision_commands(&installed, &key).is_err());
+        let live = test_profile("ubuntu-live");
+        let commands = ssh_console_provision_commands(&live, &key)
+            .unwrap()
+            .unwrap();
+        assert!(commands
+            .iter()
+            .any(|command| command.contains(&key.public_key)));
+        assert!(commands
+            .iter()
+            .all(|command| !command.contains("{{ssh_public_key}}")));
     }
 
     #[test]

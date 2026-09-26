@@ -41,19 +41,20 @@ provision_timeout_secs = 3600
 frame_timeout_secs = 600
 io_timeout_secs = 180
 provision_script = '''set -eu
-sudo -n date -u -s '@{{host_unix_time}}' >/dev/null
-sudo -n sh -c "printf 'Server = https://archive.archlinux.org/repos/2026/09/01/\$repo/os/\$arch\n' > /etc/pacman.d/mirrorlist"
-sudo -n sed -i 's/^ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
-sudo -n pacman -Syy --noconfirm --noprogressbar --disable-download-timeout --needed mesa sway wayvnc foot seatd dbus ttf-dejavu
-sudo -n usermod -aG seat agentos
-sudo -n systemctl enable --now seatd
+# Provisioning runs as root; the compositor and RFB server run as agentos.
+date -u -s '@{{host_unix_time}}' >/dev/null
+printf 'Server = https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch\n' > /etc/pacman.d/mirrorlist
+sed -i 's/^ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
+pacman -Syy --noconfirm --noprogressbar --disable-download-timeout --needed mesa sway wayvnc foot seatd dbus ttf-dejavu
+usermod -aG seat agentos
+systemctl enable --now seatd
 pacman -Q mesa sway wayvnc foot seatd dbus ttf-dejavu | tee /tmp/agentos-desktop-packages.txt
 test -e /dev/dri/card0
 grep -q 'agentOS keyboard' /sys/class/input/event*/device/name
 grep -q 'agentOS pointer' /sys/class/input/event*/device/name
-install -d -m 0700 "$HOME/.config/sway"
-runtime=$(mktemp -d /tmp/agentos-runtime.XXXXXX)
-cat >"$HOME/.config/sway/config" <<'EOF'
+install -d -m 0700 -o agentos -g agentos /home/agentos/.config /home/agentos/.config/sway
+runtime=$(runuser -u agentos -- mktemp -d /tmp/agentos-runtime.XXXXXX)
+cat >/home/agentos/.config/sway/config <<'EOF'
 output * bg #112233 solid
 xwayland disable
 bar mode invisible
@@ -61,9 +62,10 @@ default_border none
 for_window [app_id="agentos-proof"] floating enable, resize set 400 300, move position 100 100
 exec foot --app-id=agentos-proof --override=colors.background=445566
 EOF
+chown agentos:agentos /home/agentos/.config/sway/config
 pkill -x wayvnc 2>/dev/null || true
 pkill -x sway 2>/dev/null || true
-setsid -f sg seat -c "exec env HOME=/home/agentos USER=agentos XDG_RUNTIME_DIR='$runtime' LIBSEAT_BACKEND=seatd WLR_RENDERER=pixman WLR_BACKENDS=drm,libinput WLR_NO_HARDWARE_CURSORS=1 sway -c /home/agentos/.config/sway/config" </dev/null >/tmp/agentos-sway.log 2>&1
+setsid -f runuser -u agentos -- env HOME=/home/agentos USER=agentos XDG_RUNTIME_DIR="$runtime" LIBSEAT_BACKEND=seatd WLR_RENDERER=pixman WLR_BACKENDS=drm,libinput WLR_NO_HARDWARE_CURSORS=1 sway -c /home/agentos/.config/sway/config </dev/null >/tmp/agentos-sway.log 2>&1
 attempt=0
 display=
 while test "$attempt" -lt 120; do
@@ -75,8 +77,8 @@ while test "$attempt" -lt 120; do
     sleep 1
 done
 test -n "$display" || { cat /tmp/agentos-sway.log >&2; exit 1; }
-env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" swaymsg -t get_outputs | grep -q '"active": true'
-setsid -f env HOME=/home/agentos USER=agentos XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" wayvnc 127.0.0.1 5900 </dev/null >/tmp/agentos-wayvnc.log 2>&1
+runuser -u agentos -- env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" swaymsg -t get_outputs | grep -q '"active": true'
+setsid -f runuser -u agentos -- env HOME=/home/agentos USER=agentos XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" wayvnc 127.0.0.1 5900 </dev/null >/tmp/agentos-wayvnc.log 2>&1
 attempt=0
 while test "$attempt" -lt 120; do
     ss -ltn | grep -q '127.0.0.1:5900' && break
