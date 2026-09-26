@@ -33,7 +33,7 @@ max_bytes = 33554432
 [artifacts.initrd]
 source = "archlinux:2026.09.01:arch/boot/x86_64/initramfs-linux.img"
 cache = "build/guest-images/arch-amd64/initramfs-linux.img"
-sha256 = "04bc4104142d6004060f4235904c791be1077fda2f76080d920ac9b639fbebeb"
+sha256 = "316309b91ace792009da270038231e18eef2b389766f7ba15eabb32277b11599"
 max_bytes = 67108864
 
 [placements.default]
