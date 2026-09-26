@@ -5,6 +5,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-26
+
+### Added
+
+- Add a checksum-pinned vanilla Arch Linux x86_64 installation profile that
+  installs to persistent virtio block storage, reboots through the canonical
+  agentOS console, network and block backends, and proves key-only SSH plus
+  terminal, identity, process, network, DNS and package-lifecycle operations.
+- Add an x86 desktop profile over the canonical virtio GPU and input
+  virtualizers. Native Intel qualification covers DRM/KMS enumeration, exact
+  keyboard and pointer delivery, an active Sway output with both agentOS input
+  devices, and a non-empty 1024x768 WayVNC RFB capture.
+- Add reproducible desktop package provisioning with exact archive database,
+  package and detached-signature hashes followed by normal pacman signature
+  verification. No signature bypass is used.
+
+### Changed
+
+- Consolidate generated objects, archives, executables, images, Cargo output
+  and test evidence under `_build`, with a standalone cleanup path.
+- Wait for a newly committed framebuffer sequence before desktop capture, so
+  asynchronous display readiness cannot accept the initial black frame.
+- Keep `agentos_gui` as the AgentOS control plane and RemoteOS-SDL as the
+  shared graphical presentation and input backend. The architecture decision
+  remains a design record; no human UI is embedded in this repository.
+
+### Qualification boundaries
+
+- Desktop and persistent-install results are from one-vCPU Intel KVM with
+  nested VMX and a pinned external kernel/initramfs. They do not qualify the
+  installed bootloader, kernel updates, Omarchy, arbitrary physical hardware,
+  or host display/input passthrough.
+- The retained native desktop archive has SHA-256
+  `1bf2287b690a4b92064f5654748adc3b51d2258621d5feb256085f5acd007155`.
+  The working disk was derived by offline journal recovery after interrupted
+  diagnostics; the original base and failed images remain preserved.
+
 ## [0.4.1] - 2026-09-25
 
 ### Added

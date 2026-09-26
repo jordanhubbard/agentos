@@ -1,6 +1,6 @@
 [package]
 name = "agentos-tool-registry"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "Tool Registry - capability-gated tool registration and dispatch for agentOS"
 

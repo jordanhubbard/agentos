@@ -1,6 +1,6 @@
 [package]
 name = "agentos-vibe-engine"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "Vibe Engine - service hot-swap protocol for agentOS vibe-coding"
 
