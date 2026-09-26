@@ -2075,7 +2075,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
     let (required_args, optional_args): (&[&str], &[&str]) = match step.action.as_str() {
         "stage-url" => (
             &["cache_name", "output", "url"],
-            &["override_env", "sha512"],
+            &["override_env", "sha256", "sha512"],
         ),
         "download-tar-member" => (&["url", "member", "output"], &[]),
         "build-static-linux-elf" => (&["source", "output", "architecture"], &[]),
@@ -2151,6 +2151,14 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
                 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
                 && value.bytes().any(|byte| byte != b'0'),
             "sha512 must be a nonzero 128-digit hexadecimal digest"
+        );
+    }
+    if let Some(value) = step.args.get("sha256") {
+        ensure!(
+            value.len() == 64
+                && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && value.bytes().any(|byte| byte != b'0'),
+            "sha256 must be a nonzero 64-digit hexadecimal digest"
         );
     }
     if let Some(value) = step.args.get("min_bytes") {
@@ -2925,6 +2933,12 @@ mod tests {
             ]),
         };
         assert!(validate_host_action(&valid).is_ok());
+
+        let mut sha256 = valid.clone();
+        sha256.args.insert("sha256".to_string(), "a".repeat(64));
+        assert!(validate_host_action(&sha256).is_ok());
+        sha256.args.insert("sha256".to_string(), "0".repeat(64));
+        assert!(validate_host_action(&sha256).is_err());
 
         let mut typo = valid.clone();
         typo.args

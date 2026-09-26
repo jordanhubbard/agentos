@@ -208,6 +208,9 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             if let Some(expected) = step.args.get("sha512") {
                 verify_sha512(&dest, expected)?;
             }
+            if let Some(expected) = step.args.get("sha256") {
+                verify_sha256(&dest, expected)?;
+            }
         }
         "download-tar-member" => download_tar_member(
             recipe_arg(step, "url")?,
@@ -688,6 +691,32 @@ fn verify_sha512(path: &Path, expected: &str) -> anyhow::Result<()> {
         actual
     );
     println!("[fetch-guest] SHA-512 verified: {}", path.display());
+    Ok(())
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
+    let mut input = fs::File::open(path)
+        .with_context(|| format!("failed to open {} for SHA-256", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let bytes = input
+            .read(&mut buffer)
+            .with_context(|| format!("failed to hash {}", path.display()))?;
+        if bytes == 0 {
+            break;
+        }
+        digest.update(&buffer[..bytes]);
+    }
+    let actual = format!("{:x}", digest.finalize());
+    anyhow::ensure!(
+        actual.eq_ignore_ascii_case(expected),
+        "SHA-256 mismatch for {}: expected {}, got {}",
+        path.display(),
+        expected,
+        actual
+    );
+    println!("[fetch-guest] SHA-256 verified: {}", path.display());
     Ok(())
 }
 
@@ -1786,6 +1815,16 @@ mod tests {
         let expected = format!("{:x}", Sha512::digest(b"agentOS\n"));
         verify_sha512(&artifact, &expected).unwrap();
         assert!(verify_sha512(&artifact, &"0".repeat(128)).is_err());
+    }
+
+    #[test]
+    fn sha256_verification_accepts_exact_content_and_rejects_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("artifact");
+        fs::write(&artifact, b"agentOS\n").unwrap();
+        let expected = format!("{:x}", Sha256::digest(b"agentOS\n"));
+        verify_sha256(&artifact, &expected).unwrap();
+        assert!(verify_sha256(&artifact, &"0".repeat(64)).is_err());
     }
 
     #[test]
