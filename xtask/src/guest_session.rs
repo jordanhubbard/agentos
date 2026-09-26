@@ -438,6 +438,16 @@ mod tests {
             "arch-amd64-desktop.toml",
         ] {
             let profile = cmd_guest_profile::host_profile_plan(&root, Path::new(name)).unwrap();
+            if let Some(desktop) = &profile.desktop {
+                assert!(
+                    Command::new("sh")
+                        .args(["-n", "-c", &desktop.provision_script])
+                        .status()
+                        .unwrap()
+                        .success(),
+                    "{name} desktop provisioning syntax"
+                );
+            }
             let checks = steps(&profile).unwrap();
             assert_eq!(checks.len(), 5);
             for (_, script) in checks {

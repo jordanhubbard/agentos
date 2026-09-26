@@ -20,7 +20,7 @@ send = "root\r"
 
 [[host.provision]]
 action = "send-console"
-args = { text = "test -f /run/archiso/copytoram/airootfs.sfs && ! mountpoint -q /run/archiso/bootmnt && sgdisk --zap-all /dev/vda && sgdisk -n 1:1MiB:+512MiB -t 1:ef00 -c 1:EFI /dev/vda && sgdisk -n 2:0:0 -t 2:8300 -c 2:agentos-root /dev/vda && partprobe /dev/vda" }
+args = { text = "test -f /run/archiso/copytoram/airootfs.sfs && ! mountpoint -q /run/archiso/bootmnt && wipefs --all --force /dev/vda && sgdisk --clear -n 1:1MiB:+512MiB -t 1:ef00 -c 1:EFI -n 2:0:0 -t 2:8300 -c 2:agentos-root /dev/vda && partprobe /dev/vda" }
 
 [[host.provision]]
 action = "send-console"
