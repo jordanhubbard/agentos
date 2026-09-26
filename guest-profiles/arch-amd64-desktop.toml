@@ -42,6 +42,8 @@ frame_timeout_secs = 600
 io_timeout_secs = 180
 provision_script = '''set -eu
 # Provisioning runs as root; the compositor and RFB server run as agentos.
+# Retain downloaded packages even when verification or compositor setup fails.
+trap 'sync' EXIT
 date -u -s '@{{host_unix_time}}' >/dev/null
 printf 'Server = https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch\n' > /etc/pacman.d/mirrorlist
 sed -i 's/^ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
