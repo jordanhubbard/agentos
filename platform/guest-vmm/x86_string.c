@@ -64,9 +64,10 @@ bool aos_x86_fw_insb(const aos_x86_memory_t *memory, uint8_t *writable_ram,
     if (!n) return true;
     /* Reject wrapping the destination, including its post-transfer value. */
     if (backwards ? *address < n : *address > UINT64_MAX-n) return false;
-    uint64_t physical[AOS_X86_STRING_BATCH];
-    uint64_t entries[8];
-    uint8_t flags[8];
+    struct segment { uint64_t physical; unsigned start, length; } segments[5];
+    unsigned segment_count=0;
+    uint64_t entries[32];
+    uint8_t flags[32];
     unsigned entry_count=0;
     for (unsigned i=0; i<n;) {
         uint64_t va = backwards ? *address-i : *address+i;
@@ -85,13 +86,13 @@ bool aos_x86_fw_insb(const aos_x86_memory_t *memory, uint8_t *writable_ram,
         unsigned run=available>n-i ? n-i : (unsigned)available;
         if (run>memory->ram_size || walk.physical > memory->ram_size-run ||
             (backwards && walk.physical+1u<run)) return false;
-        for (unsigned j=0;j<run;j++)
-            physical[i+j]=backwards ? walk.physical-j : walk.physical+j;
+        if (segment_count==sizeof(segments)/sizeof(segments[0])) return false;
+        segments[segment_count++]=(struct segment){walk.physical,i,run};
         for (unsigned level=0; level<walk.levels; level++) {
             unsigned j=0;
             while (j<entry_count && entries[j]!=walk.entries[level]) j++;
             if (j==entry_count) {
-                if (entry_count==8) return false;
+                if (entry_count==sizeof(entries)/sizeof(entries[0])) return false;
                 entries[j]=walk.entries[level]; flags[j]=0; entry_count++;
             }
             flags[j] |= level+1==walk.levels ? 0x60u : 0x20u;
@@ -109,7 +110,10 @@ bool aos_x86_fw_insb(const aos_x86_memory_t *memory, uint8_t *writable_ram,
     /* Commit A/D before data, as a store into a page-table byte may overwrite
      * that byte. All offsets were validated while this single vCPU was stopped. */
     for (unsigned i=0; i<entry_count; i++) writable_ram[entries[i]] |= flags[i];
-    for (unsigned i=0; i<n; i++) writable_ram[physical[i]]=bytes[i];
+    for (unsigned i=0;i<segment_count;i++)
+        for (unsigned j=0;j<segments[i].length;j++)
+            writable_ram[backwards ? segments[i].physical-j : segments[i].physical+j]=
+                bytes[segments[i].start+j];
     *config=next;
     *address = backwards ? *address-n : *address+n;
     *count -= n;
