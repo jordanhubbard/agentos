@@ -31,7 +31,7 @@ args = { name = "packages", script = "d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT;
 
 [[host.test]]
 action = "assert-ssh-output"
-args = { command = "sudo -n modprobe virtio_gpu virtio_input && test -e /dev/dri/card0 && grep -q 'agentOS keyboard' /sys/class/input/event*/device/name && grep -q 'agentOS pointer' /sys/class/input/event*/device/name && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | sudo -n dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none 2>/dev/null && printf 'agentos-x86-drm-frame-ready\\n'", stdout = "agentos-x86-drm-frame-ready\n" }
+args = { command = "sudo -n modprobe -a virtio_gpu virtio_input && test -e /dev/dri/card0 && grep -q 'agentOS keyboard' /sys/class/input/event*/device/name && grep -q 'agentOS pointer' /sys/class/input/event*/device/name && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | sudo -n dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none 2>/dev/null && printf 'agentos-x86-drm-frame-ready\\n'", stdout = "agentos-x86-drm-frame-ready\n" }
 
 [host.desktop]
 adapter = "rfb-over-ssh"
@@ -41,6 +41,7 @@ provision_timeout_secs = 3600
 frame_timeout_secs = 600
 io_timeout_secs = 180
 provision_script = '''set -eu
+sudo -n date -u -s '@{{host_unix_time}}' >/dev/null
 sudo -n sh -c "printf 'Server = https://archive.archlinux.org/repos/2026/09/01/\$repo/os/\$arch\n' > /etc/pacman.d/mirrorlist"
 sudo -n pacman -Syy --noconfirm --needed mesa sway wayvnc foot seatd dbus ttf-dejavu
 sudo -n usermod -aG seat agentos

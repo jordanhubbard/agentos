@@ -28,7 +28,7 @@ args = { text = "mkfs.fat -F 32 -n AGENTOSEFI /dev/vda1 && mkfs.ext4 -F -L agent
 
 [[host.provision]]
 action = "send-console"
-args = { text = "printf 'Server = https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch\\n' > /etc/pacman.d/mirrorlist && pacstrap -K /mnt base linux openssh sudo" }
+args = { text = "printf 'Server = https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch\\n' > /etc/pacman.d/mirrorlist && pacstrap -K /mnt base linux openssh sudo --noprogressbar" }
 
 [[host.provision]]
 action = "send-console"

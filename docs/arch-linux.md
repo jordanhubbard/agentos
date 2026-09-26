@@ -55,6 +55,8 @@ make gate-x86_64-desktop GUEST_OS=none QEMU_TEST_TIMEOUT=14400 \
 
 This profile adds emulated virtio GPU and input, installs Sway and WayVNC,
 and checks display/input through the existing desktop qualification harness.
+The provisioning recipe sets the guest clock from the host timestamp before
+HTTPS downloads; the private RTC does not provide persistent wall-clock time.
 WayVNC listens on guest loopback and is reached through authenticated SSH.
 Host tests and profile validation alone do not establish a passing native
 desktop run.
