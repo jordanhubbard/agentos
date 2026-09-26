@@ -1,0 +1,17 @@
+{
+  "qualification": "Diagnostic systemd console logging during seeded cold boots",
+  "runtime_revision": "0bee3b9",
+  "command": "make test-debian-nocloud-cold-boots",
+  "result": "FAIL, exit 2 on first boot: seeded guest console identity timed out",
+  "timeout_seconds": 1200,
+  "changes_from_failed_baseline": "Added systemd.log_level=debug and systemd.log_target=console, pinned the resulting DTB, and rejected explicit fatal manager messages. Sandbox policy and timeout were unchanged.",
+  "observed": [
+    "Both observed sd-gens/sd-exec-strv executions reported success.",
+    "AppArmor profiles loaded, cloud-init progressed, serial-getty started, and ssh.service reported READY=1.",
+    "No completed pinned SSH proof or witness write before the deadline; the second cold boot was not started."
+  ],
+  "full_log_sha256": "25bf3d6c6fb4be1c256b5266e9839ec9c1084a38db503fa4feb2454a09e1704f",
+  "console_sha256": "d47f2467f5384690c21fc5b118119948af477b125f2d593d3c0c37dc43eca3a7",
+  "retained_directory": "/tmp/agentos-v04-seeded-witness/build/evidence/seeded-cold-boots-Lgw1gf",
+  "limits": "Verbose logging changes the workload. This run neither reproduced nor explained the original second-boot generator freeze and provides no persistence qualification."
+}

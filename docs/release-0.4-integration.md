@@ -26,3 +26,22 @@ passed the workspace command with 372 tests, excluding the three target-only
 crates selected by CI. These host and focused results do not replace the
 pending persistence runs, required hosted checks, milestone reconciliation,
 or exact-revision release checks.
+
+## v0.4.2 follow-up integration
+
+PR #284 carries the subsequent build-output cleanup and Arch work. The local
+and remote branch audit compares topic histories with merged PR heads as well
+as main, because squash merges do not preserve topic commit ancestry.
+
+The remaining functional changes from `fix/functional-guest-ssh` and
+`platform/v05-arch-install` are integrated on the release candidate. Historical
+network/block virtualizer and documentation branches are superseded by the
+current implementations. The v0.4 reconciliation above covers the remaining
+diagnostic and qualification branches. The previously omitted
+[seeded-generator diagnostic receipt](evidence/2026-09-18-spark/seeded-generator-debug.json)
+is restored as a historical failure; its experimental boot arguments are not
+part of the release candidate.
+
+Arch installation and desktop acceptance remain pending until native receipts
+are retained. This branch reconciliation is not itself a release or runtime
+qualification.
