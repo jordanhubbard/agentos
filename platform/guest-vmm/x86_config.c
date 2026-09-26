@@ -45,7 +45,8 @@ bool aos_x86_config_acpi(aos_x86_config_t *s, const aos_x86_acpi_bundle_t *acpi)
 {
     if (!s || !s->ram_bytes || !acpi || s->acpi || s->fw_reads ||
         !acpi->cpu_count || acpi->cpu_count>AOS_X86_ACPI_MAX_CPUS ||
-        acpi->table_bytes!=846u+37u*(acpi->cpu_count-1u)) return false;
+        acpi->table_bytes!=846u+75u*(AOS_X86_ACPI_VIRTIO_DEVICES-3u)+
+            37u*(acpi->cpu_count-1u)) return false;
     s->acpi=acpi;
     /* ACPI-only mode: no SMI handler or legacy-to-ACPI transition. */
     s->pm_control=1;

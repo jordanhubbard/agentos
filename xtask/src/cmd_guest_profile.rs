@@ -518,13 +518,16 @@ fn validate_x86_slot_profile(profile: &Profile, slot: X86BuildSlot) -> Result<()
     }
     let devices = target.devices.as_ref().unwrap();
     ensure!(
-        devices.len() == 3
+        (3..=5).contains(&devices.len())
+            && devices
+                .iter()
+                .all(|device| ["net", "block", "console", "gpu", "input"].contains(&device.as_str()))
             && ["net", "block", "console"]
                 .iter()
                 .all(|d| devices.iter().any(|v| v == d))
             && target.network_client == Some(slot.owner() as u16)
             && target.block_media == Some(slot.owner() as u16),
-        "x86 boot requires canonical net, block and console devices owned by the selected slot"
+        "x86 boot requires canonical net, block and console devices, with optional gpu/input, owned by the selected slot"
     );
     ensure!(
         !profile.artifacts.contains_key("dtb")
@@ -1965,7 +1968,12 @@ fn validate_repo_relative(value: &str, field: &str) -> Result<()> {
 fn validate_qemu(qemu: &Qemu) -> Result<()> {
     enum_value(
         &qemu.board,
-        &["qemu_virt_aarch64", "qemu_virt_riscv64", "x86_64_generic"],
+        &[
+            "qemu_virt_aarch64",
+            "qemu_virt_riscv64",
+            "x86_64_generic",
+            "x86_64_generic_vtx",
+        ],
     )?;
     ensure!(
         !qemu.machine.is_empty()

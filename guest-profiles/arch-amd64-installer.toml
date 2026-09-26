@@ -54,7 +54,7 @@ args = { text = "printf '[Unit]\\nDescription=Report pinned SSH host key on agen
 
 [[host.provision]]
 action = "send-console"
-args = { text = "arch-chroot /mnt pacman -Q | tee /mnt/root/agentos-packages.txt > /dev/hvc0 && sync && test -s /mnt/root/agentos-packages.txt" }
+args = { text = "printf 'Server = https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch\\n' > /mnt/etc/pacman.d/mirrorlist && arch-chroot /mnt pacman -Q | tee /mnt/root/agentos-packages.txt > /dev/hvc0 && sync && test -s /mnt/root/agentos-packages.txt" }
 
 [[host.test]]
 action = "wait-console"

@@ -779,16 +779,21 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             .as_ref()
             .is_some_and(|p| p.test.iter().any(|s| s.action == "assert-ssh-output"))
             || args.seed_profile
-            || args.seeded_ssh_key.is_some(),
+            || args.seeded_ssh_key.is_some()
+            || args.x86_ssh_key.is_some(),
         "profile SSH output assertions require seeded authentication"
     );
     anyhow::ensure!(
-        !args.assert_guest_display || (args.board == "qemu_virt_aarch64"
-            && (args.assert_live || args.seed_profile || args.seeded_ssh_key.is_some())
+        !args.assert_guest_display || ((args.board == "qemu_virt_aarch64"
+            || args.board == "x86_64_generic_vtx")
+            && (args.assert_live
+                || args.seed_profile
+                || args.seeded_ssh_key.is_some()
+                || args.x86_ssh_key.is_some())
             && !args.no_build && profile_plan.as_ref().is_some_and(|p|
                 p.devices.iter().any(|d| d == "gpu")
                 && p.test.iter().any(|s| s.action == "assert-frame-pixels"))),
-        "guest display qualification requires a fresh AArch64 graphics profile with pixel assertions"
+        "guest display qualification requires a fresh supported graphics profile with pixel assertions"
     );
     if let Some(profile) = &profile_plan {
         println!(
@@ -858,13 +863,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         || args.assert_live
         || args.assert_desktop
     {
+        let x86_desktop = args.board == "x86_64_generic_vtx"
+            && args.assert_x86_cc
+            && args.assert_desktop
+            && args.x86_boot_profile.is_some();
         anyhow::ensure!(
-            args.board == "qemu_virt_aarch64",
-            "emulated VirtIO assertions require --board qemu_virt_aarch64"
+            args.board == "qemu_virt_aarch64" || x86_desktop,
+            "emulated VirtIO assertions require a supported runtime guest"
         );
         anyhow::ensure!(
-            args.guest_os != "none",
-            "emulated VirtIO assertions need a real guest; GUEST_OS=none is a stub VMM"
+            args.guest_os != "none" || x86_desktop,
+            "emulated VirtIO assertions need a real runtime guest"
         );
     }
     if args.assert_emulated_console || args.assert_agentos_virtio {
@@ -942,7 +951,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
         }
-        if args.assert_display || args.assert_guest_display {
+        if args.assert_display || (args.assert_guest_display && args.board == "qemu_virt_aarch64") {
             make_args.push(String::from("DISPLAY_RAMFB=1"));
         }
         make_args.extend(profile_device_build_args(
@@ -1198,27 +1207,41 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )?;
         }
     }
-    let input_helper = if (args.assert_live || args.seeded_ssh_key.is_some())
-        && profile_plan
-            .as_ref()
-            .is_some_and(|p| p.devices.iter().any(|d| d == "input"))
-    {
-        anyhow::ensure!(
-            args.board == "qemu_virt_aarch64",
-            "input probe requires AArch64 Linux"
-        );
-        run_make(&["guest-input-probe"], &repo_root)?;
-        run_make(&["-C", "tools/agentctl"], &repo_root)?;
-        let path = repo_root.join("build/tmp/guest-input-probe-aarch64");
-        let bytes = std::fs::read(&path)?;
-        anyhow::ensure!(
-            bytes.len() >= 20 && &bytes[..6] == b"\x7fELF\x02\x01" && bytes[18..20] == [183, 0],
-            "input probe is not little-endian AArch64 ELF64"
-        );
-        Some(path)
-    } else {
-        None
-    };
+    let input_helper =
+        if (args.assert_live || args.seeded_ssh_key.is_some() || args.x86_ssh_key.is_some())
+            && profile_plan
+                .as_ref()
+                .is_some_and(|p| p.devices.iter().any(|d| d == "input"))
+        {
+            let (target, path, machine) = if args.board == "x86_64_generic_vtx" {
+                (
+                    "guest-input-probe-x86_64",
+                    "build/tmp/guest-input-probe-x86_64",
+                    [62, 0],
+                )
+            } else {
+                anyhow::ensure!(
+                    args.board == "qemu_virt_aarch64",
+                    "input probe requires supported Linux architecture"
+                );
+                (
+                    "guest-input-probe",
+                    "build/tmp/guest-input-probe-aarch64",
+                    [183, 0],
+                )
+            };
+            run_make(&[target], &repo_root)?;
+            run_make(&["-C", "tools/agentctl"], &repo_root)?;
+            let path = repo_root.join(path);
+            let bytes = std::fs::read(&path)?;
+            anyhow::ensure!(
+                bytes.len() >= 20 && &bytes[..6] == b"\x7fELF\x02\x01" && bytes[18..20] == machine,
+                "input probe has the wrong ELF64 architecture"
+            );
+            Some(path)
+        } else {
+            None
+        };
     let tmp_dir = qemu_tmp_dir(&repo_root);
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
@@ -1239,6 +1262,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         std::fs::write(directory.join(name), format!("{}\n", log_path.display()))?;
     }
     let mut ssh_key = if let Some(key) = &args.seeded_ssh_key {
+        Some(SshTestKey {
+            _temporary_dir: None,
+            private_key: key.clone(),
+            public_key: String::new(),
+            known_hosts: Some(log_path.with_extension("known_hosts")),
+        })
+    } else if let Some(key) = &args.x86_ssh_key {
         Some(SshTestKey {
             _temporary_dir: None,
             private_key: key.clone(),
@@ -1699,6 +1729,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             }
             if args.assert_x86_cc {
                 x86_cc_linux_probe(
+                    &repo_root,
                     &cc_sock,
                     &log_path,
                     Duration::from_secs(args.timeout_secs),
@@ -1707,6 +1738,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                         .map(|key| (key, ssh_port, args.x86_ssh_known_hosts.as_deref())),
                     args.x86_smp_probe.as_deref(),
                     profile_plan.as_ref(),
+                    input_helper.as_deref(),
+                    args.assert_guest_display,
                     &mut qemu,
                 )
             } else if args.assert_x86_linux_login {
@@ -1908,7 +1941,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         cc_send_raw_byte(&mut cc, 0, b'\r')?;
     }
     if result.is_ok() && !args.assert_seeded_recreation {
-        if let Some(helper) = &input_helper {
+        if let Some(helper) = &input_helper.filter(|_| !args.assert_x86_cc) {
             result = prove_profile_input(
                 &repo_root,
                 &cc_sock,
@@ -2969,8 +3002,8 @@ pub(crate) fn spawn_qemu_with_guest(
     x86_cc: bool,
 ) -> anyhow::Result<std::process::Child> {
     anyhow::ensure!(
-        !display || board == "qemu_virt_aarch64",
-        "ramfb requires AArch64"
+        !display || matches!(board, "qemu_virt_aarch64" | "x86_64_generic_vtx"),
+        "display qualification requires AArch64 ramfb or x86 virtio-GPU"
     );
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port, profile, scenario)?;
@@ -3235,7 +3268,7 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg(if ssh_port == 0 { format!("user,id=agentos_net,restrict={restrict}") } else { format!("user,id=agentos_net,restrict={restrict},hostfwd=tcp:127.0.0.1:{ssh_port}-10.0.2.15:22") })
                 .arg("-device")
                 .arg("virtio-net-pci,netdev=agentos_net,addr=06.0,disable-legacy=on,mac=52:54:00:12:34:56");
-            let capture = log_path.with_extension("pcap");
+            let capture = log_path.with_extension(if capture_net { "net.pcap" } else { "pcap" });
             println!("[xtask:test] Intel NIC capture: {}", capture.display());
             c.arg("-object").arg(format!(
                 "filter-dump,id=agentos_net_capture,netdev=agentos_net,file={}",
@@ -3270,7 +3303,7 @@ pub(crate) fn spawn_qemu_with_guest(
         }
     };
 
-    if capture_net {
+    if capture_net && board != "x86_64_generic_vtx" {
         let capture_path = log_path.with_extension("net.pcap");
         println!(
             "[xtask:test] Capturing host-backed guest packets in {}",
@@ -4253,12 +4286,15 @@ fn x86_reject_oversized_create(cc: &mut CcClient) -> anyhow::Result<()> {
 }
 
 fn x86_cc_linux_probe(
+    repo: &Path,
     socket: &Path,
     log_path: &Path,
     timeout: Duration,
     ssh: Option<(&Path, u16, Option<&Path>)>,
     smp_probe: Option<&Path>,
     profile: Option<&HostProfilePlan>,
+    input_helper: Option<&Path>,
+    capture_display: bool,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
     let mut cc = connect_cc_client(socket, timeout.min(Duration::from_secs(30)), qemu)?;
@@ -4354,6 +4390,52 @@ fn x86_cc_linux_probe(
             echoed.windows(marker.len()).any(|w| w == marker),
             "Intel CC input was not echoed by Linux"
         );
+        let peripheral_profile = profile.is_some_and(|plan| {
+            plan.devices
+                .iter()
+                .any(|device| device == "gpu" || device == "input")
+        });
+        if peripheral_profile {
+            let (key, _, _) = ssh.context("Intel peripheral qualification requires pinned SSH")?;
+            let identity = SshTestKey {
+                _temporary_dir: None,
+                private_key: key.to_path_buf(),
+                public_key: String::new(),
+                known_hosts: Some(generation_log.with_extension("known_hosts")),
+            };
+            drop(cc);
+            let plan = profile.context("Intel peripheral profile missing")?;
+            prove_seeded_profile_steps(
+                socket,
+                &generation_log,
+                plan,
+                &identity,
+                false,
+                qemu,
+                handle,
+            )?;
+            if plan.devices.iter().any(|device| device == "input") {
+                prove_profile_input(
+                    repo,
+                    socket,
+                    &generation_log,
+                    input_helper.context("Intel input helper missing")?,
+                    plan,
+                    &identity,
+                    qemu,
+                    handle,
+                )?;
+            }
+            anyhow::ensure!(
+                !capture_display || plan.devices.iter().any(|device| device == "gpu"),
+                "Intel display capture requested without GPU"
+            );
+            proofs.push(proof);
+            return Ok(format!(
+                "{}; binary CC CREATE and console input verified; GPU/input guest retained for desktop proof",
+                proofs.join("; ")
+            ));
+        }
         let destroyed = cc.call(MSG_CC_DESTROY_GUEST, handle, GUEST_DESTROY_NORMAL, 0, &[])?;
         anyhow::ensure!(
             destroyed.mr[0] == CC_OK,

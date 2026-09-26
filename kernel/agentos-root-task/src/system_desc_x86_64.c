@@ -16,6 +16,12 @@
 const system_desc_t system_desc_x86_64 = {
 #ifdef AGENTOS_X86_FIRMWARE_RESET
     .pd_count = 9u
+#ifdef AGENTOS_GUEST_INPUT
+        + 1u
+#endif
+#ifdef AGENTOS_GUEST_GRAPHICS
+        + 1u
+#endif
 #ifdef AGENTOS_X86_DUAL_GUEST
         + 3u
 #endif
@@ -105,6 +111,26 @@ const system_desc_t system_desc_x86_64 = {
             .priority = 250u,
             .self_svc_id = SVC_ID_X86_AP_RUNNER,
         },
+#ifdef AGENTOS_GUEST_INPUT
+        {
+            .name = "input_virt",
+            .elf_path = "input_virt.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 10u,
+            .priority = 215u,
+            .self_svc_id = SVC_ID_INPUT_VIRT,
+        },
+#endif
+#ifdef AGENTOS_GUEST_GRAPHICS
+        {
+            .name = "framebuffer_queue",
+            .elf_path = "framebuffer_queue.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 10u,
+            .priority = 215u,
+            .self_svc_id = SVC_ID_FRAMEBUFFER_QUEUE,
+        },
+#endif
 #endif
         {
             .name = "guest_vmm_primary",
