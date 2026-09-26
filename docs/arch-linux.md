@@ -57,6 +57,10 @@ The [September 26 native receipt](evidence/2026-09-26-release/arch-install.json)
 records a passing installation and reboot with all five functional SSH checks.
 It includes the source patch digest because that run began from a working
 candidate before the fixes were committed.
+The subsequent [package persistence regression](evidence/2026-09-26-release/arch-package-sync.json)
+records two cold boots with the corrected final-sync behavior. The original
+run exposed a stale pacman lock after stopping the VM immediately after its
+package check; the current harness flushes those changes before returning.
 
 ## Desktop qualification
 

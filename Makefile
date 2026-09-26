@@ -1031,6 +1031,12 @@ test-x86-control-host:
 		platform/guest-vmm/x86_control.c platform/guest-vmm/runtime.c \
 		-o $(BUILD_TMP_DIR)/test_x86_control_proof
 	$(BUILD_TMP_DIR)/test_x86_control_proof
+	gcc -std=c11 -Wall -Wextra -Werror -DCONFIG_KERNEL_MCS -DAGENTOS_GUEST_INPUT \
+		-I tests/platform/control-stubs -I platform/include \
+		-idirafter kernel/agentos-root-task/include tests/platform/test_x86_control.c \
+		platform/guest-vmm/x86_control.c platform/guest-vmm/runtime.c \
+		-o $(BUILD_TMP_DIR)/test_x86_control_input
+	$(BUILD_TMP_DIR)/test_x86_control_input
 
 .PHONY: test-x86-teardown-host
 test-x86-teardown-host:

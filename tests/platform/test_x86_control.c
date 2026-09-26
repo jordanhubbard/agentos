@@ -9,6 +9,9 @@
 #include "contracts/blk_virt_contract.h"
 #include "contracts/net_virt_contract.h"
 #include "contracts/x86_vtx_proof.h"
+#ifdef AGENTOS_GUEST_INPUT
+#include <platform/input.h>
+#endif
 #ifdef AGENTOS_X86_USERSPACE_PROOF
 bool aos_x86_lifecycle_ack;
 bool aos_x86_lifecycle_boot_ack;
@@ -57,8 +60,7 @@ static bool teardown_guest(void) { teardowns++; return teardown_ok; }
 static void wake(seL4_Word badge, void *context)
 {
     assert(context == &state);
-    assert(badge == (SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE |
-                     NET_VIRT_VMM_WAKE_BADGE));
+    assert(badge == incoming_badge);
     wakes++;
     memset(mrs, 0xdb, sizeof(mrs));
 }
@@ -188,5 +190,30 @@ int main(void)
     assert(!aos_x86_control_poll_initializing(&boot_wake));
     incoming_badge = 0;
     assert(!aos_x86_control_wait_initializing(&boot_wake));
+#ifdef AGENTOS_GUEST_INPUT
+    /* Input is a notification, including when coalesced with other devices.
+     * It must never be decoded/replied to as a lifecycle request. */
+    const seL4_Word input_badges[] = { AOS_INPUT_VMM_WAKE_BADGE,
+        AOS_INPUT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE |
+        SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE };
+    for (unsigned i=0; i<2; i++) {
+        incoming_badge=input_badges[i];
+        old_replies=replies;
+        unsigned old_wakes=wakes;
+        assert(aos_x86_control_wait_initializing(&boot_wake));
+        assert(boot_wake==incoming_badge && replies==old_replies);
+        assert(aos_x86_control_poll_initializing(&boot_wake));
+        assert(boot_wake==incoming_badge && replies==old_replies);
+        state=GUEST_STATE_SUSPENDED;
+        assert(aos_x86_control_step(&runtime,wake,&state)==AOS_X86_CONTROL_STOPPED);
+        state=GUEST_STATE_RUNNING;
+        assert(aos_x86_control_step(&runtime,wake,&state)==AOS_X86_CONTROL_RUNNING);
+        assert(wakes==old_wakes+2 && replies==old_replies);
+        incoming_badge |= 1u;
+        assert(aos_x86_control_step(&runtime,wake,&state)==AOS_X86_CONTROL_ERROR);
+        assert(wakes==old_wakes+2 && replies==old_replies);
+        state=GUEST_STATE_DEAD;
+    }
+#endif
     puts("PASS: x86 control framing, notification dispatch, suspend/resume and terminal retries");
 }
