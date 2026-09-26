@@ -9219,6 +9219,18 @@ mod tests {
     }
 
     #[test]
+    fn arch_desktop_populates_the_pinned_package_keyring() {
+        let profile = test_profile("arch-amd64-desktop");
+        let script = &profile.desktop.as_ref().unwrap().provision_script;
+        let init = script.find("pacman-key --init").unwrap();
+        let populate = script.find("pacman-key --populate archlinux").unwrap();
+        let install = script.find("pacman -Syy").unwrap();
+        assert!(init < populate && populate < install);
+        assert!(!script.contains("SigLevel = Never"));
+        assert!(!script.contains("--skippgpcheck"));
+    }
+
+    #[test]
     fn manual_dual_ssh_commands_use_persistent_key_and_distinct_ports() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let scenario = guest_scenario::resolve_alias(

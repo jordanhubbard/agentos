@@ -47,6 +47,9 @@ trap 'sync' EXIT
 date -u -s '@{{host_unix_time}}' >/dev/null
 printf 'Server = https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch\n' > /etc/pacman.d/mirrorlist
 sed -i 's/^ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
+pacman-key --init
+pacman-key --populate archlinux
+sync
 pacman -Syy --noconfirm --noprogressbar --disable-download-timeout --needed mesa sway swaybg wayvnc foot seatd dbus ttf-dejavu
 usermod -aG seat agentos
 systemctl enable --now seatd
