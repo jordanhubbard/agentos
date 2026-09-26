@@ -22,7 +22,7 @@ required = ["fp", "simd"]
 prohibited = ["crypto", "rng", "vector", "nested-virt"]
 
 [boot]
-command_line = "console=hvc0 root=/dev/vda2 rw rootwait net.ifnames=0 biosdevname=0 disablehooks=archiso,archiso_loop_mnt,archiso_pxe_common,archiso_pxe_nbd,archiso_pxe_http,archiso_pxe_nfs panic=0"
+command_line = "console=hvc0 earlymodules=virtio_mmio root=/dev/vda2 rw rootwait net.ifnames=0 biosdevname=0 disablehooks=archiso,archiso_loop_mnt,archiso_pxe_common,archiso_pxe_nbd,archiso_pxe_http,archiso_pxe_nfs panic=0"
 
 [artifacts.kernel]
 source = "archlinux:2026.09.01:arch/boot/x86_64/vmlinuz-linux"
