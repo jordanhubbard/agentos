@@ -37,6 +37,7 @@
     "archive_sha256": "5df8ac65890b7e209eaf09b28857d4ec35d28bd81e37c34f7d60e327cf4db499",
     "archive_contents": "Original receipt, exact source patch and installation artifact hashes, both phase logs, console logs, packet captures, public SSH key and host-key pin, and functional-session transcripts. Private identity and disk are excluded.",
     "proofs": ["Pinned live ISO installation to fresh 8 GiB writable virtio disk", "Fresh platform boot using the persistent root partition", "Console-pinned key-only SSH, interactive terminal, identity, file/process, network/DNS, and package install/execute/remove"],
-    "limits": "One vCPU and 2 GiB RAM on a shared Intel KVM host. Reboot uses the externally pinned ISO kernel and filtered initramfs, not the installed bootloader. No kernel-update, concurrent bulk-download, bare-metal, or desktop claim. Desktop qualification uses a separate copy of this disk."
+    "limits": "One vCPU and 2 GiB RAM on a shared Intel KVM host. Reboot uses the externally pinned ISO kernel and filtered initramfs, not the installed bootloader. No kernel-update, concurrent bulk-download, bare-metal, or desktop claim. Desktop qualification uses a separate copy of this disk.",
+    "subsequent_finding": "The initial SSH acceptance harness lacked a final sync after package operations. A later boot of the copied disk recovered its ext4 journal but retained pacman's lock. The original receipt and disk are preserved; a disposable copy was checked offline and the stale lock removed. Final-sync and repeated cold-boot qualification are recorded separately."
   }
 }

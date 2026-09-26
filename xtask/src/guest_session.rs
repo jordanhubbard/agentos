@@ -302,7 +302,9 @@ pub(crate) fn prove(
             session.wait_marker(&format!("agentos-{nonce}-{name}"))?;
             println!("[xtask:test] {} SSH {name}: PASS", profile.id);
         }
-        session.send("exit 0")?;
+        // The caller may stop the VM immediately after acceptance. Persist
+        // package database changes and removed locks before it does so.
+        session.send("sync && exit 0 || exit 91")?;
         session.finish()
     })();
     fs::write(
