@@ -3832,6 +3832,8 @@ fn x86_has_login_prompt(text: &str) -> bool {
 }
 
 fn x86_console_ready(text: &str, profile: Option<&HostProfilePlan>) -> bool {
+    let visible = visible_console_text(text);
+    let text = visible.as_str();
     if let Some(profile) = profile {
         if !profile
             .console
@@ -3851,6 +3853,60 @@ fn x86_console_ready(text: &str, profile: Option<&HostProfilePlan>) -> bool {
     }
     x86_has_login_prompt(text)
 }
+
+fn visible_console_text(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut visible = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != 0x1b {
+            visible.push(bytes[at]);
+            at += 1;
+            continue;
+        }
+        at += 1;
+        let Some(&kind) = bytes.get(at) else { break };
+        at += 1;
+        match kind {
+            b'[' => {
+                while at < bytes.len() {
+                    let byte = bytes[at];
+                    at += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            b']' | b'P' | b'^' | b'_' => {
+                while at < bytes.len() {
+                    if bytes[at] == 7 {
+                        at += 1;
+                        break;
+                    }
+                    if bytes[at..].starts_with(b"\x1b\\") {
+                        at += 2;
+                        break;
+                    }
+                    at += 1;
+                }
+            }
+            0x20..=0x2f => {
+                while at < bytes.len() && (0x20..=0x2f).contains(&bytes[at]) {
+                    at += 1;
+                }
+                if at < bytes.len() {
+                    at += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    String::from_utf8_lossy(&visible).into_owned()
+}
+
+const X86_PROVISION_SHELL_READY: &str = "agentos-shell-ready> ";
+const X86_PROVISION_SHELL: &[u8] =
+    b"stty -echo; export PS1=\"$(printf 'agentos-shell-%s> ' ready)\"; exec /bin/sh -i\n";
 
 fn x86_linux_login_probe(
     socket: &Path,
@@ -4021,10 +4077,8 @@ fn x86_linux_login_reader_with_artifacts(
                             provision_waiting = Some(index + 1);
                         }
                     } else if provision_echo_boundary.is_some_and(|boundary| {
-                        x86_console_ready(
-                            &String::from_utf8_lossy(&transcript[boundary..]),
-                            profile,
-                        )
+                        String::from_utf8_lossy(&transcript[boundary..])
+                            .contains(X86_PROVISION_SHELL_READY)
                     }) {
                         send.as_mut()
                             .context("Intel profile console provisioning has no input path")?(
@@ -4043,7 +4097,7 @@ fn x86_linux_login_reader_with_artifacts(
                             let commands = x86_provision_commands(profile, key)?;
                             send.as_mut()
                                 .context("Intel profile console provisioning has no input path")?(
-                                b"stty -echo\n",
+                                X86_PROVISION_SHELL,
                             )?;
                             provision_echo_boundary = Some(transcript.len());
                             provision_commands = Some(commands);
@@ -8333,12 +8387,28 @@ mod tests {
             let mut username = [0; 5];
             stream.read_exact(&mut username).unwrap();
             assert_eq!(&username, b"root\r");
-            stream.write_all(b"root@archiso ~ # ").unwrap();
+            stream
+                .write_all(b"\x1b[31mroot\x1b[0m\x1b(B@archiso ~ # ")
+                .unwrap();
         });
         x86_linux_login_probe(&socket, &log, Duration::from_secs(2), None, Some(&profile)).unwrap();
         guest.join().unwrap();
         let transcript = std::fs::read_to_string(log.with_extension("console.log")).unwrap();
-        assert!(transcript.ends_with("root@archiso ~ # "));
+        assert!(visible_console_text(&transcript).ends_with("root@archiso ~ # "));
+    }
+
+    #[test]
+    fn console_prompt_ignores_terminal_metadata_and_shell_setup_echo() {
+        assert_eq!(
+            visible_console_text("\x1b]0;root@archiso\x07waiting"),
+            "waiting"
+        );
+        assert_eq!(
+            visible_console_text("\x1bP+qroot@archiso\x1b\\waiting"),
+            "waiting"
+        );
+        assert_eq!(visible_console_text("root\x1b[31"), "root");
+        assert!(!String::from_utf8_lossy(X86_PROVISION_SHELL).contains(X86_PROVISION_SHELL_READY));
     }
 
     #[test]
