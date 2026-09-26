@@ -12,12 +12,6 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{
-    net::TcpListener,
-    sync::atomic::{AtomicBool, Ordering},
-    sync::Arc,
-    thread::JoinHandle,
-};
 
 pub(crate) const SSH_AUTH_OPTIONS: &[&str] = &[
     "-F",
@@ -388,6 +382,12 @@ pub fn run_x86_arch_install(timeout_secs: u64, ssh_port: u16) -> anyhow::Result<
         "Arch qualification requires a nonzero SSH port"
     );
     let root = repo_root()?;
+    crate::cmd_fetch_guest::run(&crate::FetchGuestArgs {
+        profile: "arch-amd64-installer.toml".into(),
+        profile_root: "guest-profiles".into(),
+        output_dir: None,
+    })?;
+    let iso = root.join("_build/guest-images/arch-amd64/archlinux-2026.09.01-x86_64.iso");
     let evidence_root = root.join("_build/evidence");
     std::fs::create_dir_all(&evidence_root)?;
     let evidence = tempfile::Builder::new()
@@ -395,13 +395,7 @@ pub fn run_x86_arch_install(timeout_secs: u64, ssh_port: u16) -> anyhow::Result<
         .tempdir_in(&evidence_root)?
         .keep();
     let disk = evidence.join("arch-root.raw");
-    let disk_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&disk)?;
-    disk_file.set_len(8 * 1024 * 1024 * 1024)?;
-    disk_file.sync_all()?;
-    drop(disk_file);
+    stage_arch_install_disk(&iso, &disk, 8 * 1024 * 1024 * 1024)?;
 
     let key = evidence.join("id_ed25519");
     let key_status = std::process::Command::new("ssh-keygen")
@@ -420,6 +414,7 @@ pub fn run_x86_arch_install(timeout_secs: u64, ssh_port: u16) -> anyhow::Result<
         "source_worktree_clean": agentos_worktree_clean(&root)?,
         "disk": disk,
         "disk_bytes": 8_u64 * 1024 * 1024 * 1024,
+        "installer_iso_sha256": sha256_file(&iso)?,
         "ssh_public_key": key.with_extension("pub"),
         "phases": []
     });
@@ -496,6 +491,28 @@ pub fn run_x86_arch_install(timeout_secs: u64, ssh_port: u16) -> anyhow::Result<
     println!(
         "PASS: pinned Arch Linux installed to writable virtio storage, rebooted, and passed key-only SSH proofs"
     );
+    Ok(())
+}
+
+fn stage_arch_install_disk(iso: &Path, disk: &Path, bytes: u64) -> anyhow::Result<()> {
+    let mut source = std::fs::File::open(iso)?;
+    let length = source.metadata()?.len();
+    anyhow::ensure!(
+        length > 0 && length < bytes,
+        "installer ISO must fit the disposable disk"
+    );
+    // The stock live environment copies its squashfs into RAM and unmounts
+    // this medium before provisioning replaces its partition table.
+    let mut target = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(disk)?;
+    anyhow::ensure!(
+        std::io::copy(&mut source, &mut target)? == length,
+        "installer ISO changed while staging"
+    );
+    target.set_len(bytes)?;
+    target.sync_all()?;
     Ok(())
 }
 
@@ -1346,22 +1363,6 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     // Measure the host-observed launch-to-authentication interval. Acquisition,
     // compilation and persistent-disk preparation have already completed.
     let boot_clock = Instant::now();
-    let _arch_http = if profile_plan
-        .as_ref()
-        .is_some_and(|profile| profile.id == "arch-linux-x86-64-installer")
-    {
-        let server = StaticHttpServer::start(
-            &repo_root.join("_build/guest-images/arch-amd64/http"),
-            18080,
-        )?;
-        println!(
-            "[xtask:test] Serving pinned Arch installer root on 10.0.2.2:{}",
-            server.port
-        );
-        Some(server)
-    } else {
-        None
-    };
     let mut qemu = ChildGuard::new(spawn_qemu_with_guest(
         &args.board,
         &repo_root,
@@ -2571,128 +2572,6 @@ struct SshTestKey {
 
 struct ChildGuard {
     child: Child,
-}
-
-struct StaticHttpServer {
-    stop: Arc<AtomicBool>,
-    port: u16,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl StaticHttpServer {
-    fn start(root: &Path, port: u16) -> anyhow::Result<Self> {
-        let root = std::fs::canonicalize(root)
-            .with_context(|| format!("resolve HTTP root {}", root.display()))?;
-        let listener = TcpListener::bind(("0.0.0.0", port))?;
-        let port = listener.local_addr()?.port();
-        listener.set_nonblocking(true)?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
-        let thread = std::thread::spawn(move || {
-            while !thread_stop.load(Ordering::Acquire) {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(value) => value,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(20));
-                        continue;
-                    }
-                    Err(_) => break,
-                };
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                let mut request = Vec::with_capacity(4096);
-                while request.len() < 4096
-                    && !request.windows(4).any(|window| window == b"\r\n\r\n")
-                {
-                    let mut chunk = [0u8; 1024];
-                    let Ok(count) = stream.read(&mut chunk) else {
-                        break;
-                    };
-                    if count == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&chunk[..count]);
-                }
-                let Some(line) = std::str::from_utf8(&request)
-                    .ok()
-                    .and_then(|request| request.lines().next())
-                else {
-                    continue;
-                };
-                let fields: Vec<_> = line.split_whitespace().collect();
-                if fields.len() != 3 || fields[0] != "GET" || !fields[2].starts_with("HTTP/1.") {
-                    let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-                    continue;
-                }
-                let relative = Path::new(fields[1].trim_start_matches('/'));
-                if relative.as_os_str().is_empty()
-                    || relative
-                        .components()
-                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
-                {
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-                    );
-                    continue;
-                }
-                let Ok(path) = std::fs::canonicalize(root.join(relative)) else {
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-                    );
-                    continue;
-                };
-                if !path.starts_with(&root) || !path.is_file() {
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-                    );
-                    continue;
-                }
-                let Ok(mut file) = std::fs::File::open(&path) else {
-                    continue;
-                };
-                let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
-                    continue;
-                };
-                let range_probe = request
-                    .windows(b"\r\nRange: bytes=0-0\r\n".len())
-                    .any(|window| window.eq_ignore_ascii_case(b"\r\nRange: bytes=0-0\r\n"));
-                let (status, response_length, content_range) = if range_probe && length > 0 {
-                    (
-                        "206 Partial Content",
-                        1,
-                        format!("Content-Range: bytes 0-0/{length}\r\n"),
-                    )
-                } else {
-                    ("200 OK", length, String::new())
-                };
-                if write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n{content_range}Content-Length: {response_length}\r\nConnection: close\r\n\r\n").is_ok() {
-                    if range_probe {
-                        let mut byte = [0u8; 1];
-                        if file.read_exact(&mut byte).is_ok() {
-                            let _ = stream.write_all(&byte);
-                        }
-                        continue;
-                    }
-                    let _ = std::io::copy(&mut file, &mut stream);
-                }
-            }
-        });
-        Ok(Self {
-            stop,
-            port,
-            thread: Some(thread),
-        })
-    }
-}
-
-impl Drop for StaticHttpServer {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        let _ = TcpStream::connect(("127.0.0.1", self.port));
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
 }
 
 impl ChildGuard {
@@ -8680,32 +8559,21 @@ mod tests {
     }
 
     #[test]
-    fn arch_installer_http_server_is_confined_and_exact() {
+    fn arch_install_disk_preserves_iso_and_refuses_existing_media() {
         let temporary = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(temporary.path().join("arch")).unwrap();
-        std::fs::write(temporary.path().join("arch/aitab"), b"pinned-arch\n").unwrap();
-        let server = StaticHttpServer::start(temporary.path(), 0).unwrap();
-        let request = |path: &str| {
-            let mut stream = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
-            write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
-            let mut response = Vec::new();
-            stream.read_to_end(&mut response).unwrap();
-            response
-        };
-        let found = request("/arch/aitab");
-        assert!(found.starts_with(b"HTTP/1.1 200 OK\r\n"));
-        assert!(found.ends_with(b"pinned-arch\n"));
-        let mut stream = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
-        write!(
-            stream,
-            "GET /arch/aitab HTTP/1.1\r\nHost: localhost\r\nRange: bytes=0-0\r\n\r\n"
-        )
-        .unwrap();
-        let mut ranged = Vec::new();
-        stream.read_to_end(&mut ranged).unwrap();
-        assert!(ranged.starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
-        assert!(ranged.ends_with(b"p"));
-        assert!(request("/../Cargo.toml").starts_with(b"HTTP/1.1 404 Not Found\r\n"));
+        let iso = temporary.path().join("live.iso");
+        let disk = temporary.path().join("root.raw");
+        std::fs::write(&iso, b"pinned-live-image").unwrap();
+        stage_arch_install_disk(&iso, &disk, 4096).unwrap();
+        let bytes = std::fs::read(&disk).unwrap();
+        assert_eq!(&bytes[..17], b"pinned-live-image");
+        assert_eq!(bytes.len(), 4096);
+        assert!(bytes[17..].iter().all(|byte| *byte == 0));
+        assert!(stage_arch_install_disk(&iso, &disk, 8192).is_err());
+        assert_eq!(std::fs::read(&disk).unwrap(), bytes);
+        let too_small = temporary.path().join("too-small.raw");
+        assert!(stage_arch_install_disk(&iso, &too_small, 4).is_err());
+        assert!(!too_small.exists());
     }
 
     #[test]

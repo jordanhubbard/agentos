@@ -2610,7 +2610,7 @@ mod tests {
             .unwrap();
         assert!(command_line
             .split_ascii_whitespace()
-            .any(|arg| arg == "earlymodules=virtio_mmio,loop,squashfs,overlay"));
+            .any(|arg| arg == "earlymodules=virtio_mmio,loop,squashfs,overlay,isofs"));
 
         let modules = profile
             .host
@@ -2631,6 +2631,7 @@ mod tests {
             "loop",
             "squashfs",
             "overlay",
+            "isofs",
         ] {
             assert!(modules.contains(required), "missing {required}");
         }

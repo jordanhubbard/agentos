@@ -18,6 +18,18 @@ host_port = 12225
 guest_address = "10.0.2.15"
 
 [[host.test]]
+action = "wait-ssh"
+args = { account = "agentos", marker = "Linux", prompt = "$ " }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "network", script = "ping -c 3 -W 5 10.0.2.2; getent ahostsv4 archive.archlinux.org" }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "packages", script = "d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT; cp /usr/bin/printf \"$d/agentos-acceptance-probe\"; printf 'pkgname = agentos-acceptance-probe\\npkgver = 1.0-1\\npkgdesc = Guest acceptance fixture\\narch = x86_64\\nbuilddate = 0\\npackager = agentOS <test@localhost>\\nsize = 0\\n' >\"$d/.PKGINFO\"; tar --zstd -C \"$d\" -cf \"$d/probe.pkg.tar.zst\" .PKGINFO agentos-acceptance-probe; sudo -n pacman --noconfirm -U \"$d/probe.pkg.tar.zst\"; pacman -Q agentos-acceptance-probe; test \"$(/agentos-acceptance-probe '%s' package-executed)\" = package-executed; sudo -n pacman --noconfirm -R agentos-acceptance-probe; test ! -e /agentos-acceptance-probe" }
+
+[[host.test]]
 action = "assert-ssh-output"
 args = { command = "sudo -n modprobe virtio_gpu virtio_input && test -e /dev/dri/card0 && grep -q 'agentOS keyboard' /sys/class/input/event*/device/name && grep -q 'agentOS pointer' /sys/class/input/event*/device/name && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | sudo -n dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none 2>/dev/null && printf 'agentos-x86-drm-frame-ready\\n'", stdout = "agentos-x86-drm-frame-ready\n" }
 

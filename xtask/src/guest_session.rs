@@ -434,6 +434,8 @@ mod tests {
             "debian.toml",
             "debian-scenario.toml",
             "debian-amd64.toml",
+            "arch-amd64.toml",
+            "arch-amd64-desktop.toml",
         ] {
             let profile = cmd_guest_profile::host_profile_plan(&root, Path::new(name)).unwrap();
             let checks = steps(&profile).unwrap();

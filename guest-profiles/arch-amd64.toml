@@ -33,7 +33,7 @@ max_bytes = 33554432
 [artifacts.initrd]
 source = "archlinux:2026.09.01:arch/boot/x86_64/initramfs-linux.img"
 cache = "_build/guest-images/arch-amd64/initramfs-linux.img"
-sha256 = "9e14dfa07e7c9b8fb43e9231a26661c2e363110dae075a0ded293a56c2abae8c"
+sha256 = "cffefae41000640860876579da13d0ff8ce0aee856a2648ffebdf3fd292fe2a4"
 max_bytes = 67108864
 
 [placements.default]
@@ -61,15 +61,7 @@ args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/boot/x86_64/
 
 [[host.acquire]]
 action = "filter-initramfs-modules"
-args = { source = "initramfs-linux-full.img", output = "initramfs-linux.img", modules = "virtio_mmio,virtio_net,net_failover,failover,loop,squashfs,overlay" }
-
-[[host.acquire]]
-action = "extract-iso-file"
-args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/x86_64/airootfs.sfs", output = "http/arch/x86_64/airootfs.sfs", min_bytes = "268435456" }
-
-[[host.acquire]]
-action = "extract-iso-file"
-args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/x86_64/airootfs.sfs.cms.sig", output = "http/arch/x86_64/airootfs.sfs.cms.sig", min_bytes = "256" }
+args = { source = "initramfs-linux-full.img", output = "initramfs-linux.img", modules = "virtio_mmio,virtio_net,net_failover,failover,loop,squashfs,overlay,isofs" }
 
 [[host.test]]
 action = "wait-ssh"
@@ -81,4 +73,4 @@ args = { name = "network", script = "ping -c 3 -W 5 10.0.2.2; getent ahostsv4 ar
 
 [[host.test]]
 action = "ssh-check"
-args = { name = "packages", script = "d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT; cp /usr/bin/true \"$d/agentos-acceptance-probe\"; printf '.PKGINFO\\npkgname = agentos-acceptance-probe\\npkgver = 1.0-1\\npkgdesc = Guest acceptance fixture\\narch = x86_64\\nbuilddate = 0\\npackager = agentOS <test@localhost>\\nsize = 0\\n' >\"$d/.PKGINFO\"; tar --zstd -C \"$d\" -cf \"$d/probe.pkg.tar.zst\" .PKGINFO agentos-acceptance-probe; sudo -n pacman --noconfirm -U \"$d/probe.pkg.tar.zst\"; pacman -Q agentos-acceptance-probe; test -x /agentos-acceptance-probe; sudo -n pacman --noconfirm -R agentos-acceptance-probe; test ! -e /agentos-acceptance-probe" }
+args = { name = "packages", script = "d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT; cp /usr/bin/printf \"$d/agentos-acceptance-probe\"; printf 'pkgname = agentos-acceptance-probe\\npkgver = 1.0-1\\npkgdesc = Guest acceptance fixture\\narch = x86_64\\nbuilddate = 0\\npackager = agentOS <test@localhost>\\nsize = 0\\n' >\"$d/.PKGINFO\"; tar --zstd -C \"$d\" -cf \"$d/probe.pkg.tar.zst\" .PKGINFO agentos-acceptance-probe; sudo -n pacman --noconfirm -U \"$d/probe.pkg.tar.zst\"; pacman -Q agentos-acceptance-probe; test \"$(/agentos-acceptance-probe '%s' package-executed)\" = package-executed; sudo -n pacman --noconfirm -R agentos-acceptance-probe; test ! -e /agentos-acceptance-probe" }
