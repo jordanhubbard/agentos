@@ -882,9 +882,10 @@ GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
 # existing objects when they change; new objects already compile from source.
 # Otherwise an SDK switch can link old syscall/object-type definitions into
 # a new root task. EXTRA_PREREQS needs concrete targets, not a pattern binding.
-# EXTRA_PREREQS preserves recipes' $< / $^ source lists; private prevents the
-# dependency from being inherited by the stamp's own recipe.
-$(ROOT_TASK_OBJS) $(wildcard $(BUILD_DIR)/*.o): private .EXTRA_PREREQS = $(GUEST_CONFIG_STAMP)
+# Append the stamp after each object's source prerequisite so $< stays the
+# source file.  Avoid target-specific `private` and `.EXTRA_PREREQS`: macOS
+# ships GNU Make 3.81, which parses the newer `private` keyword as a target.
+$(ROOT_TASK_OBJS) $(wildcard $(BUILD_DIR)/*.o): $(GUEST_CONFIG_STAMP)
 ifeq ($(LOG_RING_TEST),1)
   CFLAGS += -DAGENTOS_LOG_RING_TEST=1
 endif
