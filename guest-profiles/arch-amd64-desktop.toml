@@ -45,17 +45,17 @@ provision_script = '''set -eu
 date -u -s '@{{host_unix_time}}' >/dev/null
 printf 'Server = https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch\n' > /etc/pacman.d/mirrorlist
 sed -i 's/^ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
-pacman -Syy --noconfirm --noprogressbar --disable-download-timeout --needed mesa sway wayvnc foot seatd dbus ttf-dejavu
+pacman -Syy --noconfirm --noprogressbar --disable-download-timeout --needed mesa sway swaybg wayvnc foot seatd dbus ttf-dejavu
 usermod -aG seat agentos
 systemctl enable --now seatd
-pacman -Q mesa sway wayvnc foot seatd dbus ttf-dejavu | tee /tmp/agentos-desktop-packages.txt
+pacman -Q mesa sway swaybg wayvnc foot seatd dbus ttf-dejavu | tee /tmp/agentos-desktop-packages.txt
 test -e /dev/dri/card0
 grep -q 'agentOS keyboard' /sys/class/input/event*/device/name
 grep -q 'agentOS pointer' /sys/class/input/event*/device/name
 install -d -m 0700 -o agentos -g agentos /home/agentos/.config /home/agentos/.config/sway
 runtime=$(runuser -u agentos -- mktemp -d /tmp/agentos-runtime.XXXXXX)
 cat >/home/agentos/.config/sway/config <<'EOF'
-output * bg #112233 solid
+output * bg #112233 solid_color
 xwayland disable
 bar mode invisible
 default_border none
