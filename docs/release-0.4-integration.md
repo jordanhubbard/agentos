@@ -42,6 +42,13 @@ diagnostic and qualification branches. The previously omitted
 is restored as a historical failure; its experimental boot arguments are not
 part of the release candidate.
 
+The later Arch branch commit `32c115ba` replaces HTTP live-root CMS checks
+with a pinned SHA-512 manifest. Its intent is covered by the tested local-media
+installer: the host verifies the entire ISO's pinned SHA-256 before staging it,
+including the live filesystem. The local-media recipe is retained because the
+HTTP copy-to-RAM path exceeds the 2 GiB guest's memory budget. Its obsolete
+HTTP acquisition steps and assertions are not reintroduced.
+
 Arch installation and reboot passed the retained
 [native installation qualification](evidence/2026-09-26-release/arch-install.json).
 Desktop acceptance remains pending. This branch reconciliation is not itself
