@@ -2593,6 +2593,50 @@ mod tests {
     }
 
     #[test]
+    fn arch_installer_retains_and_preloads_live_root_module_closure() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (profile, _) = resolve(
+            &root,
+            Path::new("arch-amd64-installer.toml"),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        validate_x86_boot_profile(&profile).unwrap();
+
+        let command_line = profile
+            .boot
+            .as_ref()
+            .and_then(|boot| boot.command_line.as_deref())
+            .unwrap();
+        assert!(command_line
+            .split_ascii_whitespace()
+            .any(|arg| arg == "earlymodules=virtio_mmio,loop,squashfs,overlay"));
+
+        let modules = profile
+            .host
+            .as_ref()
+            .unwrap()
+            .acquire
+            .iter()
+            .find(|step| step.action == "filter-initramfs-modules")
+            .and_then(|step| step.args.get("modules"))
+            .unwrap()
+            .split(',')
+            .collect::<std::collections::BTreeSet<_>>();
+        for required in [
+            "virtio_mmio",
+            "virtio_net",
+            "net_failover",
+            "failover",
+            "loop",
+            "squashfs",
+            "overlay",
+        ] {
+            assert!(modules.contains(required), "missing {required}");
+        }
+    }
+
+    #[test]
     fn x86_cpu_requests_match_fixed_target_exposure() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
         let (mut profile, _) =

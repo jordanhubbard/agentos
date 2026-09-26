@@ -33,7 +33,7 @@ max_bytes = 33554432
 [artifacts.initrd]
 source = "archlinux:2026.09.01:arch/boot/x86_64/initramfs-linux.img"
 cache = "build/guest-images/arch-amd64/initramfs-linux.img"
-sha256 = "316309b91ace792009da270038231e18eef2b389766f7ba15eabb32277b11599"
+sha256 = "9e14dfa07e7c9b8fb43e9231a26661c2e363110dae075a0ded293a56c2abae8c"
 max_bytes = 67108864
 
 [placements.default]
@@ -61,7 +61,7 @@ args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/boot/x86_64/
 
 [[host.acquire]]
 action = "filter-initramfs-modules"
-args = { source = "initramfs-linux-full.img", output = "initramfs-linux.img", modules = "virtio_mmio,virtio_net,net_failover,failover" }
+args = { source = "initramfs-linux-full.img", output = "initramfs-linux.img", modules = "virtio_mmio,virtio_net,net_failover,failover,loop,squashfs,overlay" }
 
 [[host.acquire]]
 action = "extract-iso-file"
