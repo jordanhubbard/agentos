@@ -95,7 +95,7 @@ jobs:
       - name: SDF diff (detect changes vs checked-in agentos.system)
         run: |
           mkdir -p _build/tmp
-          cargo run -p gen-sdf -- tools/topology.yaml -o _build_build/tmp/agentos-generated.system
+          cargo run -p gen-sdf -- tools/topology.yaml -o _build/tmp/agentos-generated.system
           if [ -f kernel/agentos-root-task/agentos.system ]; then
             echo "=== SDF diff (generated vs committed) ==="
             diff kernel/agentos-root-task/agentos.system _build/tmp/agentos-generated.system || true
