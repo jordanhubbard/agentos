@@ -3140,14 +3140,8 @@ pub(crate) fn spawn_qemu_with_guest(
                     .arg("-device")
                     .arg("virtio-blk-pci,drive=agentos_blk_secondary,addr=08.0,disable-legacy=on");
             }
-            let restrict =
-                if profile.is_some_and(|profile| profile.id == "arch-linux-x86-64-installer") {
-                    "off"
-                } else {
-                    "on"
-                };
             c.arg("-netdev")
-                .arg(if ssh_port == 0 { format!("user,id=agentos_net,restrict={restrict}") } else { format!("user,id=agentos_net,restrict={restrict},hostfwd=tcp:127.0.0.1:{ssh_port}-10.0.2.15:22") })
+                .arg(x86_qemu_netdev_arg(ssh_port, profile))
                 .arg("-device")
                 .arg("virtio-net-pci,netdev=agentos_net,addr=06.0,disable-legacy=on,mac=52:54:00:12:34:56");
             let capture = log_path.with_extension(if capture_net { "net.pcap" } else { "pcap" });
@@ -4524,6 +4518,21 @@ fn probe_arm_kvm() -> bool {
     false
 }
 
+fn x86_qemu_netdev_arg(ssh_port: u16, profile: Option<&HostProfilePlan>) -> String {
+    let restrict = profile
+        .and_then(|profile| profile.qemu.as_ref())
+        .and_then(|qemu| qemu.restrict_network)
+        .unwrap_or(true);
+    let mut value = format!(
+        "user,id=agentos_net,restrict={}",
+        if restrict { "on" } else { "off" }
+    );
+    if ssh_port != 0 {
+        value.push_str(&format!(",hostfwd=tcp:127.0.0.1:{ssh_port}-10.0.2.15:22"));
+    }
+    value
+}
+
 fn qemu_netdev_arg(
     ssh_port: u16,
     profile: Option<&HostProfilePlan>,
@@ -4535,8 +4544,19 @@ fn qemu_netdev_arg(
         }
         return Ok(scenario_qemu_netdev_arg(scenario));
     }
+    let mut netdev = String::from("user,id=net0");
+    if let Some(restrict) = profile
+        .and_then(|profile| profile.qemu.as_ref())
+        .and_then(|qemu| qemu.restrict_network)
+    {
+        netdev.push_str(if restrict {
+            ",restrict=on"
+        } else {
+            ",restrict=off"
+        });
+    }
     if ssh_port == 0 {
-        return Ok("user,id=net0".to_string());
+        return Ok(netdev);
     }
     ensure_host_port_available(ssh_port)?;
     let guest = profile
@@ -4554,9 +4574,8 @@ fn qemu_netdev_arg(
             ssh.account, ssh_port, guest
         );
     }
-    Ok(format!(
-        "user,id=net0,hostfwd=tcp:127.0.0.1:{ssh_port}-{guest}"
-    ))
+    netdev.push_str(&format!(",hostfwd=tcp:127.0.0.1:{ssh_port}-{guest}"));
+    Ok(netdev)
 }
 
 fn scenario_qemu_netdev_arg(scenario: &HostScenarioPlan) -> String {
@@ -8777,6 +8796,46 @@ mod tests {
 
     fn test_provision_commands(alias: &str, key: &str) -> Vec<String> {
         profile_provision_commands(&test_profile(alias), key).unwrap()
+    }
+
+    #[test]
+    fn x86_network_restriction_follows_profile_and_preserves_local_forward() {
+        assert_eq!(
+            x86_qemu_netdev_arg(0, None),
+            "user,id=agentos_net,restrict=on"
+        );
+        for name in [
+            "arch-amd64",
+            "arch-amd64-installer",
+            "arch-amd64-desktop",
+            "debian-amd64",
+            "debian-amd64-2cpu",
+        ] {
+            let mut profile = test_profile(name);
+            assert_eq!(
+                x86_qemu_netdev_arg(12227, Some(&profile)),
+                "user,id=agentos_net,restrict=off,hostfwd=tcp:127.0.0.1:12227-10.0.2.15:22",
+                "{name} needs DNS and package access"
+            );
+            assert_eq!(
+                qemu_netdev_arg(0, Some(&profile), None).unwrap(),
+                "user,id=net0,restrict=off"
+            );
+            profile.qemu.as_mut().unwrap().restrict_network = Some(true);
+            assert_eq!(
+                x86_qemu_netdev_arg(12227, Some(&profile)),
+                "user,id=agentos_net,restrict=on,hostfwd=tcp:127.0.0.1:12227-10.0.2.15:22"
+            );
+            assert_eq!(
+                qemu_netdev_arg(0, Some(&profile), None).unwrap(),
+                "user,id=net0,restrict=on"
+            );
+            profile.qemu.as_mut().unwrap().restrict_network = None;
+            assert_eq!(
+                x86_qemu_netdev_arg(0, Some(&profile)),
+                "user,id=agentos_net,restrict=on"
+            );
+        }
     }
 
     #[test]

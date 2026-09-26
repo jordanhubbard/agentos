@@ -43,7 +43,8 @@ io_timeout_secs = 180
 provision_script = '''set -eu
 sudo -n date -u -s '@{{host_unix_time}}' >/dev/null
 sudo -n sh -c "printf 'Server = https://archive.archlinux.org/repos/2026/09/01/\$repo/os/\$arch\n' > /etc/pacman.d/mirrorlist"
-sudo -n pacman -Syy --noconfirm --needed mesa sway wayvnc foot seatd dbus ttf-dejavu
+sudo -n sed -i 's/^ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
+sudo -n pacman -Syy --noconfirm --noprogressbar --disable-download-timeout --needed mesa sway wayvnc foot seatd dbus ttf-dejavu
 sudo -n usermod -aG seat agentos
 sudo -n systemctl enable --now seatd
 pacman -Q mesa sway wayvnc foot seatd dbus ttf-dejavu | tee /tmp/agentos-desktop-packages.txt

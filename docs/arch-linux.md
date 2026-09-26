@@ -4,6 +4,12 @@ The Arch profiles pin the official 2026.09.01 ISO, its kernel, and a reduced
 initramfs. Package installation uses the matching Arch Linux Archive snapshot.
 This is an Arch guest using agentOS's emulated virtio devices.
 
+The installer, base and desktop profiles configure one vCPU and 2 GiB of guest
+RAM. They require the x86 FP and SIMD baseline and prohibit crypto, RNG,
+extended-vector and nested-virtualization feature groups. The QEMU host
+composition reserves 4 GiB. These profiles do not establish arbitrary physical
+hardware compatibility or Omarchy support.
+
 ## Installation qualification
 
 On an Intel Linux host with nested VMX/KVM and the repository's pinned SDK:
@@ -32,7 +38,12 @@ the guest's deterministic RTC epoch.
 
 The recipe installs Arch, creates the `agentos` account, provisions a generated
 SSH public key, disables password authentication, and records installed
-packages. It then starts a fresh VM using the same disk and requires a pinned
+packages. Package provisioning uses one download stream and disables pacman's
+short low-speed timeout, while the qualification gate enforces its overall
+deadline. Parallel downloads stalled during native qualification; this recipe
+does not qualify concurrent bulk-download performance. See the documented
+[pacman timeout option](https://man.archlinux.org/man/pacman.8).
+It then starts a fresh VM using the same disk and requires a pinned
 SSH host key, a terminal, identity checks, file/process operations, networking,
 and package install/execute/remove checks. The reboot uses the profile's pinned
 kernel and initramfs with the persistent root partition; it does not qualify

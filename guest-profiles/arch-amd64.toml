@@ -43,6 +43,12 @@ ram_size = 0x80000000
 kernel_load_address = 0x200000
 initrd_load_address = 0x8000000
 
+[host.qemu]
+board = "x86_64_generic_vtx"
+machine = "q35"
+memory = "4G"
+restrict_network = false
+
 [host.build]
 adapter = "uefi-artifacts"
 acquire_dir = "_build/guest-images/arch-amd64"

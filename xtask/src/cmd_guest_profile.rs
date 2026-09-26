@@ -255,6 +255,7 @@ struct Qemu {
     board: String,
     machine: String,
     memory: String,
+    restrict_network: Option<bool>,
     #[serde(default)]
     media: Vec<QemuMedia>,
     ssh: Option<QemuSsh>,
@@ -354,6 +355,7 @@ pub(crate) struct QemuPlan {
     pub(crate) board: String,
     pub(crate) machine: String,
     pub(crate) memory: String,
+    pub(crate) restrict_network: Option<bool>,
     pub(crate) media: Vec<QemuMediaPlan>,
     pub(crate) ssh: Option<QemuSshPlan>,
 }
@@ -667,6 +669,7 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
             board: value.board.clone(),
             machine: value.machine.clone(),
             memory: value.memory.clone(),
+            restrict_network: value.restrict_network,
             media: value
                 .media
                 .iter()
