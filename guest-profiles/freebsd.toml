@@ -158,7 +158,7 @@ args = { account = "root", marker = "FreeBSD", prompt = "# " }
 
 [[host.test]]
 action = "ssh-check"
-args = { name = "network", script = "ping -c 3 -W 5000 10.0.2.2; getent hosts pkg.FreeBSD.org" }
+args = { name = "network", script = "ping -c 3 -W 5000 10.0.2.2; for attempt in 1 2 3 4 5; do getent hosts pkg.FreeBSD.org && exit 0; sleep 2; done; exit 1" }
 
 [[host.test]]
 action = "ssh-check"
