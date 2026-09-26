@@ -1649,6 +1649,14 @@ ifeq ($(X86_FIRMWARE_RESET),1)
 SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml
 ifeq ($(X86_CC_PCI),1)
 SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/cc.toml
+ifneq ($(strip $(GUEST_INPUT)$(GUEST_GRAPHICS)),)
+SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-cc-peripherals.toml)
+$(SYSTEM_TOML): $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/cc.toml Makefile
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; \
+	  $(if $(GUEST_INPUT),printf '\n[[pd]]\nname = "input_virt"\npriority = 215\n';) \
+	  $(if $(GUEST_GRAPHICS),printf '\n[[pd]]\nname = "framebuffer_queue"\npriority = 215\n';) } > $@
+endif
 else ifeq ($(X86_MANAGED_START),1)
 SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-managed-$(X86_USERSPACE_PROOF).toml)
 $(SYSTEM_TOML): $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml Makefile
