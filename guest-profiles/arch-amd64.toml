@@ -61,7 +61,7 @@ args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/boot/x86_64/
 
 [[host.acquire]]
 action = "filter-initramfs-modules"
-args = { source = "initramfs-linux-full.img", output = "initramfs-linux.img", modules = "virtio_net,net_failover,failover" }
+args = { source = "initramfs-linux-full.img", output = "initramfs-linux.img", modules = "virtio_mmio,virtio_net,net_failover,failover" }
 
 [[host.acquire]]
 action = "extract-iso-file"
