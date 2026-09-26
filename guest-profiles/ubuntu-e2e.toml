@@ -9,24 +9,24 @@ command_line = "console=hvc0 quiet loglevel=3 rdinit=/init panic=-1 ip=dhcp"
 
 [artifacts.kernel]
 source = "ubuntu:26.04-live-server-arm64.iso:/casper/vmlinuz"
-cache = "build/guest-images/ubuntu-26.04-aarch64-Image"
+cache = "_build/guest-images/ubuntu-26.04-aarch64-Image"
 sha256 = "94e37ccd7694d894e0d21f3f7c2e964046c77ce1c9208e11aa62fc98eb621696"
 
 [artifacts.dtb]
 source = "generated:linux.dts+linux-virtio-overlay.dts.in"
-cache = "build/qemu_virt_aarch64/vm.dtb"
+cache = "_build/qemu_virt_aarch64/vm.dtb"
 sha256 = "f6f6a5c97a4e247fdbdc1fd6ac96edfebe396546441e1103f207739170f69f49"
 
 [artifacts.initrd]
 source = "generated:ubuntu-e2e-initramfs"
-cache = "build/guest-images/ubuntu-26.04-aarch64-initrd"
+cache = "_build/guest-images/ubuntu-26.04-aarch64-initrd"
 sha256 = "b0c67f7fcc9dad67b61997a53ee2a5f9ef16cf73b0b57cb4529524bd36784a17"
 
 [placements.dual-primary]
 dtb_sha256 = "f6f6a5c97a4e247fdbdc1fd6ac96edfebe396546441e1103f207739170f69f49"
 
 [[host.qemu.media]]
-path = "build/guest-images/ubuntu-26.04-aarch64.iso"
+path = "_build/guest-images/ubuntu-26.04-aarch64.iso"
 drive_id = "primary_media"
 bus = 8
 
@@ -43,7 +43,7 @@ probe_marker = "agentos-linux-proof"
 adapter = "linux-merge"
 base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
 template = "kernel/agentos-root-task/linux-virtio-overlay.dts.in"
-acquire_dir = "build/guest-images"
+acquire_dir = "_build/guest-images"
 
 [[host.acquire]]
 action = "stage-url"

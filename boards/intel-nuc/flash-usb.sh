@@ -3,7 +3,7 @@
 #
 # Usage:
 #   make BOARD_NAME=intel-nuc build
-#   sudo ./boards/intel-nuc/flash-usb.sh /dev/sdX build/x86_64_generic/agentos.img
+#   sudo ./boards/intel-nuc/flash-usb.sh /dev/sdX _build/x86_64_generic/agentos.img
 #
 # Requirements:
 #   - grub-efi-amd64-bin (apt) or grub (brew)

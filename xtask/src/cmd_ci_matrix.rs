@@ -165,10 +165,10 @@ fn spawn_qemu_for_board(
     let log_file = std::fs::File::create(log_path)
         .map_err(|e| anyhow::anyhow!("failed to create QEMU log file: {}", e))?;
 
-    let build_image = repo_root.join("build").join(board).join("agentos.img");
+    let build_image = repo_root.join("_build").join(board).join("agentos.img");
     let image_str = build_image
         .to_str()
-        .unwrap_or("build/qemu_virt_aarch64/agentos.img")
+        .unwrap_or("_build/qemu_virt_aarch64/agentos.img")
         .to_string();
 
     let mut cmd = match board {

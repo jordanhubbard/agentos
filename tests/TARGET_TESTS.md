@@ -103,7 +103,7 @@ make test-target TARGET_ARCH=x86_64  GUEST_OS=none
 ## CC-PD VirtIO timeout proof — agentos-45b
 
 CC-PD reaches its host controller over a VirtIO-MMIO serial console
-(`build/cc_pd.sock`). `vio_serial_write()` / `vio_serial_read()` in
+(`_build/cc_pd.sock`). `vio_serial_write()` / `vio_serial_read()` in
 `kernel/agentos-root-task/src/cc_pd.c` spin on the VirtIO *used* ring with a
 bounded wait (`CC_VIRTIO_WAIT_LIMIT`). If the ring never advances they log
 `[cc_pd] TX timeout waiting for used ring` / `[cc_pd] RX timeout ...` and return

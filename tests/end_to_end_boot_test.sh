@@ -14,7 +14,7 @@
 #   AGENTOS_BOOT_TIMEOUT   seconds to wait for boot markers (default: 60)
 #   AGENTOS_BOARD          override board selection (default: auto-detect)
 #   AGENTOS_QEMU           override QEMU binary (default: auto-detect)
-#   AGENTOS_IMAGE          override image path  (default: build/<board>/agentos.img)
+#   AGENTOS_IMAGE          override image path  (default: _build/<board>/agentos.img)
 #   AGENTOS_DEBUG          if set, echo all QEMU serial output to stdout
 
 set -euo pipefail
@@ -72,7 +72,7 @@ fi
 if [ -n "${AGENTOS_IMAGE:-}" ]; then
     IMAGE="${AGENTOS_IMAGE}"
 else
-    IMAGE="${REPO_ROOT}/build/${BOARD}/agentos.img"
+    IMAGE="${REPO_ROOT}/_build/${BOARD}/agentos.img"
 fi
 
 # Temporary serial socket (matches the path used by the main Makefile).

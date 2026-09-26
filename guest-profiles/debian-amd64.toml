@@ -26,13 +26,13 @@ command_line = "console=hvc0 root=UUID=df4df5bb-613a-4382-8cf9-653304605a1f rw r
 
 [artifacts.kernel]
 source = "debian-cloud:13/20260831-2587:/boot/vmlinuz-6.12.107+deb13-amd64"
-cache = "build/guest-images/debian-amd64/vmlinuz"
+cache = "_build/guest-images/debian-amd64/vmlinuz"
 sha256 = "2b2358b37674d2505350528875bb17afae2a36522a9e8a9417eaca65a7da0e08"
 max_bytes = 33554432
 
 [artifacts.initrd]
 source = "generated:debian-cloud-initrd+native-udev-hooks"
-cache = "build/guest-images/debian-amd64/initrd.img"
+cache = "_build/guest-images/debian-amd64/initrd.img"
 sha256 = "abd60fc57af0f02f62c119b149b7aaae0f978023fd7517ab3bc0a2535e839884"
 max_bytes = 134217728
 
@@ -45,7 +45,7 @@ initrd_load_address = 0x8000000
 
 [host.build]
 adapter = "uefi-artifacts"
-acquire_dir = "build/guest-images/debian-amd64"
+acquire_dir = "_build/guest-images/debian-amd64"
 
 [[host.acquire]]
 action = "stage-url"

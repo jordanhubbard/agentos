@@ -236,7 +236,7 @@ fn run_persistent_boots(args: &TestArgs) -> anyhow::Result<()> {
         "persistent proof requires one freshly built live guest profile"
     );
     let root = repo_root()?;
-    let evidence = root.join("build/evidence");
+    let evidence = root.join("_build/evidence");
     std::fs::create_dir_all(&evidence)?;
     let directory = tempfile::Builder::new()
         .prefix("persistent-boot-")
@@ -286,7 +286,7 @@ pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
     crate::cmd_fetch_guest::build_x86_initramfs()?;
     let evidence = tempfile::Builder::new()
         .prefix("x86-storage-")
-        .tempdir_in(root.join("build/tmp"))?
+        .tempdir_in(root.join("_build/tmp"))?
         .keep();
     let disk = evidence.join("disk.img");
     let mut expected = vec![0u8; 32 * 1024 * 1024];
@@ -308,7 +308,7 @@ pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
     expected[8192..12288].fill(0x5a);
     let mut phases = Vec::new();
     for phase in ["write", "verify"] {
-        let initrd = root.join(format!("build/x86-userspace/initrd-{phase}.bin"));
+        let initrd = root.join(format!("_build/x86-userspace/initrd-{phase}.bin"));
         let initrd_sha = format!("{:x}", Sha256::digest(std::fs::read(&initrd)?));
         let mut command = std::process::Command::new(std::env::current_exe()?);
         command
@@ -348,7 +348,7 @@ pub fn run_x86_storage(timeout_secs: u64) -> anyhow::Result<()> {
         std::fs::create_dir(&directory)?;
         let mut artifacts = serde_json::Map::new();
         for name in ["root_task.elf", "agentos.img"] {
-            let source = root.join("build/x86_64_generic_vtx").join(name);
+            let source = root.join("_build/x86_64_generic_vtx").join(name);
             let destination = directory.join(name);
             std::fs::copy(&source, &destination)?;
             artifacts.insert(name.into(), serde_json::json!({
@@ -407,7 +407,7 @@ fn run_seeded_cold_boots(args: &TestArgs) -> anyhow::Result<()> {
         args.seed_profile && args.seeded_directory.is_none(),
         "two seeded cold boots require a fresh automatic seed"
     );
-    let parent = repo_root()?.join("build/evidence");
+    let parent = repo_root()?.join("_build/evidence");
     std::fs::create_dir_all(&parent)?;
     let directory = tempfile::Builder::new()
         .prefix("seeded-cold-boots-")
@@ -885,7 +885,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if args.seed_profile {
         let profile = profile_plan.as_mut().unwrap();
         let seed = profile.seed.as_ref().unwrap();
-        let parent = repo_root.join("build/evidence");
+        let parent = repo_root.join("_build/evidence");
         std::fs::create_dir_all(&parent)?;
         let directory = if let Some(directory) = &args.seeded_directory {
             directory.clone()
@@ -951,7 +951,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             std::fs::create_dir_all(directory)?;
             directory.clone()
         } else {
-            let parent = repo_root.join("build/evidence");
+            let parent = repo_root.join("_build/evidence");
             std::fs::create_dir_all(&parent)?;
             tempfile::Builder::new()
                 .prefix("seeded-boot-")
@@ -990,7 +990,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             &directory,
             &seeded_plan,
             &repo_root
-                .join("build")
+                .join("_build")
                 .join(&args.board)
                 .join("agentos.img"),
             args.seeded_ssh_known_hosts.is_some(),
@@ -1051,7 +1051,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if !args.persistent_second_boot {
             std::fs::copy(
                 repo_root
-                    .join("build")
+                    .join("_build")
                     .join(&args.board)
                     .join("agentos.img"),
                 directory.join("agentos.img"),
@@ -1060,7 +1060,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             crate::persistent_media::require_same_image(
                 &directory.join("agentos.img"),
                 &repo_root
-                    .join("build")
+                    .join("_build")
                     .join(&args.board)
                     .join("agentos.img"),
             )?;
@@ -1077,7 +1077,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         );
         run_make(&["guest-input-probe"], &repo_root)?;
         run_make(&["-C", "tools/agentctl"], &repo_root)?;
-        let path = repo_root.join("build/tmp/guest-input-probe-aarch64");
+        let path = repo_root.join("_build/tmp/guest-input-probe-aarch64");
         let bytes = std::fs::read(&path)?;
         anyhow::ensure!(
             bytes.len() >= 20 && &bytes[..6] == b"\x7fELF\x02\x01" && bytes[18..20] == [183, 0],
@@ -1094,10 +1094,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         .prefix("agentos-qemu-")
         .suffix(".log")
         .tempfile_in(&tmp_dir)
-        .context("failed to create build/tmp QEMU log file")?;
+        .context("failed to create _build/tmp QEMU log file")?;
     let (_, log_path) = log_file
         .keep()
-        .context("failed to persist build/tmp QEMU log file")?;
+        .context("failed to persist _build/tmp QEMU log file")?;
     if let Some(directory) = &args.persistent_directory {
         let name = if args.persistent_second_boot {
             "second-log-path.txt"
@@ -1172,7 +1172,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             Some((
                 sha256_file(
                     &repo_root
-                        .join("build")
+                        .join("_build")
                         .join(&args.board)
                         .join("agentos.img"),
                 )?,
@@ -2195,7 +2195,7 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     std::fs::create_dir_all(&tmp_dir)
         .with_context(|| format!("failed to create {}", tmp_dir.display()))?;
     let log_path = tmp_dir.join("agentos-run.log");
-    let cc_sock = repo_root.join("build/cc_pd.sock");
+    let cc_sock = repo_root.join("_build/cc_pd.sock");
     let ssh_port = args.ssh_port.unwrap_or_else(|| {
         profile_plan
             .as_ref()
@@ -2461,14 +2461,14 @@ fn generate_ssh_test_key(repo_root: &Path, persistent: bool) -> anyhow::Result<S
     })
 }
 
-/// Directory for QEMU logs and control sockets. Defaults to `build/tmp`
+/// Directory for QEMU logs and control sockets. Defaults to `_build/tmp`
 /// under the repo root; `AGENTOS_TMP_DIR` overrides it. The override exists
 /// because QEMU binds Unix sockets here and macOS caps socket paths at 104
 /// bytes, which a repo checked out under `.claude/worktrees/<name>/` exceeds.
 pub fn qemu_tmp_dir(repo_root: &Path) -> PathBuf {
     std::env::var_os("AGENTOS_TMP_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| repo_root.join("build/tmp"))
+        .unwrap_or_else(|| repo_root.join("_build/tmp"))
 }
 
 pub fn run_make(args: &[&str], cwd: &Path) -> anyhow::Result<()> {
@@ -2565,7 +2565,7 @@ fn sha256_file(path: &Path) -> anyhow::Result<String> {
 
 fn guest_bundle_sha256(repo_root: &Path, board: &str) -> anyhow::Result<String> {
     let bundle = repo_root
-        .join("build")
+        .join("_build")
         .join(board)
         .join("guest-bundle-primary");
     let mut digest = Sha256::new();
@@ -2705,11 +2705,11 @@ pub(crate) fn spawn_qemu_with_guest(
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
     let netdev = qemu_netdev_arg(ssh_port, profile, scenario)?;
 
-    let build_image = repo_root.join("build").join(board).join("agentos.img");
+    let build_image = repo_root.join("_build").join(board).join("agentos.img");
 
     let mut cmd = match board {
         "qemu_virt_aarch64" => {
-            let build_dir = repo_root.join("build").join(board);
+            let build_dir = repo_root.join("_build").join(board);
             let loader = build_dir.join("loader.elf");
             let _ = std::fs::remove_file(&cc_sock);
             let qemu_plan = profile.and_then(|value| value.qemu.as_ref());
@@ -2838,7 +2838,7 @@ pub(crate) fn spawn_qemu_with_guest(
                 "-kernel",
                 build_image
                     .to_str()
-                    .unwrap_or("build/qemu_virt_riscv64/agentos.img"),
+                    .unwrap_or("_build/qemu_virt_riscv64/agentos.img"),
                 /* virtio-net (slot 0 → 0x10001000, IRQ 1) with SSH port forward */
                 "-device",
                 "virtio-net-device,netdev=net0",
@@ -2846,7 +2846,7 @@ pub(crate) fn spawn_qemu_with_guest(
                 &netdev,
             ]);
             /* virtio-blk (slot 1 → 0x10002000, IRQ 2) — only if disk image exists */
-            let disk = repo_root.join("build/qemu_virt_riscv64/disk.img");
+            let disk = repo_root.join("_build/qemu_virt_riscv64/disk.img");
             if disk.exists() {
                 c.args([
                     "-device",
@@ -2854,7 +2854,7 @@ pub(crate) fn spawn_qemu_with_guest(
                     "-drive",
                     &format!(
                         "file={},format=raw,id=hd0,if=none",
-                        disk.to_str().unwrap_or("build/qemu_virt_riscv64/disk.img")
+                        disk.to_str().unwrap_or("_build/qemu_virt_riscv64/disk.img")
                     ),
                 ]);
             }
@@ -2862,7 +2862,7 @@ pub(crate) fn spawn_qemu_with_guest(
         }
         "x86_64_generic" => {
             let kernel = sel4_sdk_path()?.join("board/x86_64_generic/release/elf/sel4_32.elf");
-            let root_task = repo_root.join("build/x86_64_generic/root_task.elf");
+            let root_task = repo_root.join("_build/x86_64_generic/root_task.elf");
             let mut c = std::process::Command::new("qemu-system-x86_64");
             c.arg("-machine")
                 .arg("q35")
@@ -2892,7 +2892,7 @@ pub(crate) fn spawn_qemu_with_guest(
                 "x86_64_generic_vtx requires Linux x86_64 with accessible /dev/kvm"
             );
             let kernel = sel4_sdk_path()?.join("board/x86_64_generic_vtx/release/elf/sel4_32.elf");
-            let root_task = repo_root.join("build/x86_64_generic_vtx/root_task.elf");
+            let root_task = repo_root.join("_build/x86_64_generic_vtx/root_task.elf");
             // Default to a fresh read-only fixture. The storage gate passes
             // its own retained disk explicitly for its two cold boots.
             let block_path = x86_block_image
@@ -4429,7 +4429,7 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
             );
         }
     }
-    let out = std::process::Command::new(root.join("tools/agentctl/agentctl"))
+    let out = std::process::Command::new(root.join("_build/tools/agentctl/agentctl"))
         .arg("--socket")
         .arg(socket)
         .arg("inspect")
@@ -4502,7 +4502,7 @@ fn verify_operator_session(
     timeout: Duration,
 ) -> anyhow::Result<String> {
     verify_inspect(socket, root)?;
-    let tool = root.join("tools/agentctl/agentctl");
+    let tool = root.join("_build/tools/agentctl/agentctl");
     let direct = std::process::Command::new(&tool)
         .arg("--socket")
         .arg(socket)
@@ -6686,7 +6686,7 @@ fn prepare_scenario_seed(
             .all(|name| std::env::var_os(name).is_none()),
         "scenario seed rejects writable media overrides"
     );
-    let parent = repo.join("build/evidence");
+    let parent = repo.join("_build/evidence");
     std::fs::create_dir_all(&parent)?;
     let directory = tempfile::Builder::new()
         .prefix("scenario-seed-")
@@ -8557,7 +8557,7 @@ mod tests {
         )
         .unwrap();
         let commands =
-            manual_ssh_commands(Path::new("build/tmp/dual-ssh/id_ed25519"), &scenario).unwrap();
+            manual_ssh_commands(Path::new("_build/tmp/dual-ssh/id_ed25519"), &scenario).unwrap();
         assert!(commands
             .iter()
             .any(|command| command.contains("-p 12222") && command.contains("debian@127.0.0.1")));
@@ -8565,7 +8565,7 @@ mod tests {
             .iter()
             .any(|command| command.contains("-p 12223") && command.contains("root@127.0.0.1")));
         for command in commands {
-            assert!(command.contains("build/tmp/dual-ssh/id_ed25519"));
+            assert!(command.contains("_build/tmp/dual-ssh/id_ed25519"));
             assert!(command.contains("IdentitiesOnly=yes"));
             assert!(command.contains("StrictHostKeyChecking=no"));
             assert!(command.contains("UserKnownHostsFile=/dev/null"));

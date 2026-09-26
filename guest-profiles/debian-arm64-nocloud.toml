@@ -9,17 +9,17 @@ command_line = "console=hvc0 root=UUID=eeb673b7-002d-483a-ba22-a4b6cad94540 rw r
 
 [artifacts.kernel]
 source = "debian-cloud:13/20260831-2587:/boot/vmlinuz-6.12.107+deb13-arm64"
-cache = "build/guest-images/debian-arm64-nocloud/Image"
+cache = "_build/guest-images/debian-arm64-nocloud/Image"
 sha256 = "9c37ace54ef7e1919411fd912e9f34d6982ddd7f4c8ef3c8aee56f4c4d70db67"
 
 [artifacts.initrd]
 source = "generated:debian-cloud-initrd+native-udev-hooks"
-cache = "build/guest-images/debian-arm64-nocloud/initrd.img"
+cache = "_build/guest-images/debian-arm64-nocloud/initrd.img"
 sha256 = "8fda6a84a83982b14da5d7215a69dcd4d36ebc9614c8d5e4af239f459aa79937"
 
 [artifacts.dtb]
 source = "generated:linux.dts+linux-virtio-overlay.dts.in"
-cache = "build/qemu_virt_aarch64/debian-nocloud-vm.dtb"
+cache = "_build/qemu_virt_aarch64/debian-nocloud-vm.dtb"
 sha256 = "6813337fe174ba659170286dcbc345fda396277e2d8f40eaf401d7fee1184584"
 
 [placements.default]
@@ -30,7 +30,7 @@ dtb_load_address = 0x7f000000
 adapter = "linux-merge"
 base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
 template = "kernel/agentos-root-task/linux-virtio-overlay.dts.in"
-acquire_dir = "build/guest-images/debian-arm64-nocloud"
+acquire_dir = "_build/guest-images/debian-arm64-nocloud"
 
 [[host.acquire]]
 action = "stage-url"
@@ -97,12 +97,12 @@ memory = "3G"
 
 [host.seed]
 adapter = "nocloud-debian-v1"
-root_ext4 = "build/guest-images/debian-arm64-nocloud/root.ext4"
-disk_raw = "build/guest-images/debian-arm64-nocloud/disk.raw"
+root_ext4 = "_build/guest-images/debian-arm64-nocloud/root.ext4"
+disk_raw = "_build/guest-images/debian-arm64-nocloud/disk.raw"
 partition_offset = 134217728
 
 [[host.qemu.media]]
-path = "build/guest-images/debian-arm64-nocloud/seeded.raw"
+path = "_build/guest-images/debian-arm64-nocloud/seeded.raw"
 drive_id = "primary_media"
 bus = 8
 writable = true

@@ -14,7 +14,7 @@ kernel-mode code. Native agents are not TCB.
 **Read and report.** Call the inspect snapshot ABI:
 
 On the AArch64 target, `make -C tools/agentctl` builds the public consumer.
-Run `tools/agentctl/agentctl --socket PATH inspect` against the CC socket.
+Run `_build/tools/agentctl/agentctl --socket PATH inspect` against the CC socket.
 CC returns the immutable root boot observation with `MSG_CC_INSPECT`.
 The report labels its observation as `boot`: listed PDs successfully started,
 but current thread states are unknown. Guest RAM is the boot reservation;

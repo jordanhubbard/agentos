@@ -3,7 +3,7 @@
 #
 # Usage:
 #   make BOARD_NAME=rpi5 build
-#   sudo ./boards/rpi5/flash-sd.sh /dev/sdX build/rpi4b_4gb/agentos.img
+#   sudo ./boards/rpi5/flash-sd.sh /dev/sdX _build/rpi4b_4gb/agentos.img
 #
 # NOTE: Until the Microkit SDK adds native RPi5 support, this image uses
 # the rpi4b_4gb board definition and will not boot correctly on RPi5 hardware.

@@ -237,7 +237,7 @@ pub(crate) fn prove(
     let evidence = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("build/evidence");
+        .join("_build/evidence");
     fs::create_dir_all(&evidence)?;
     let directory = tempfile::Builder::new()
         .prefix("guest-session-")

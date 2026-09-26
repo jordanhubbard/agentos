@@ -8,7 +8,7 @@
 # Usage (called from kernel/agentos-root-task/Makefile):
 #   $(MAKE) -C kernel/loader BUILD_DIR=<path> AGENTOS_ARCH=aarch64
 
-BUILD_DIR     ?= /tmp/agentos-loader-build
+BUILD_DIR     ?= $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../../_build/loader)
 AGENTOS_ARCH  ?= aarch64
 
 # This loader is AArch64-only; skip silently on other architectures.

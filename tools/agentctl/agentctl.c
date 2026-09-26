@@ -33,7 +33,7 @@
 #include <platform/input.h>
 
 #define AGENTCTL_VERSION "0.2.0"
-#define DEFAULT_CC_SOCK "build/cc_pd.sock"
+#define DEFAULT_CC_SOCK "_build/cc_pd.sock"
 #define MY_BADGE 0xA6E70001u
 #define CC_WIRE_SHMEM_SIZE 4096u
 #ifndef CC_FRAME_TIMEOUT_MS

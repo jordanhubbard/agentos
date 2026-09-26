@@ -60,6 +60,8 @@ jobs:
         with:
           targets: aarch64-unknown-none
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Install verified SDK artifact
         uses: ./.github/actions/install-sdk
@@ -94,10 +96,10 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: |
-            build/tmp/agentos-qemu-*.log
-            build/tmp/agentos-qemu-*.qemu.stderr
-            build/tmp/agentos-qemu-*.net.pcap
-            build/tmp/agentos-qemu-*.boot-timing.json
-            build/qemu_virt_aarch64/agentos.img
-            build/evidence/persistent-boot-*/
+            _build/tmp/agentos-qemu-*.log
+            _build/tmp/agentos-qemu-*.qemu.stderr
+            _build/tmp/agentos-qemu-*.net.pcap
+            _build/tmp/agentos-qemu-*.boot-timing.json
+            _build/qemu_virt_aarch64/agentos.img
+            _build/evidence/persistent-boot-*/
           if-no-files-found: ignore
