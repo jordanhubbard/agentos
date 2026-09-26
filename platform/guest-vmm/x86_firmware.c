@@ -26,6 +26,15 @@ extern const uint8_t _binary_x86_boot_profile_bin_start[], _binary_x86_boot_prof
 #include <contracts/blk_virt_contract.h>
 #include <contracts/net_virt_contract.h>
 #include <platform/vmm_virtio_net.h>
+#ifdef AGENTOS_GUEST_GRAPHICS
+#include <platform/vmm_virtio_gpu.h>
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+#include <platform/vmm_virtio_input.h>
+#define X86_INPUT_WAKE_MASK AOS_INPUT_VMM_WAKE_BADGE
+#else
+#define X86_INPUT_WAKE_MASK 0u
+#endif
 #include <platform/net_host_layout.h>
 #include <platform/guest_teardown.h>
 #include <platform/x86_control.h>
@@ -227,6 +236,10 @@ static void control_wake(seL4_Word badge, void *context)
         aos_vmm_virtio_blk_resp_ready();
     if ((badge & NET_VIRT_VMM_WAKE_BADGE) && !teardown_state.network_detached)
         aos_vmm_virtio_net_rx_ready();
+#ifdef AGENTOS_GUEST_INPUT
+    if ((badge & AOS_INPUT_VMM_WAKE_BADGE) && !teardown_state.input_detached)
+        aos_vmm_virtio_input_drain();
+#endif
 }
 #ifdef AGENTOS_X86_BOOT_KERNEL
 extern const uint8_t _binary_x86_boot_kernel_bin_start[], _binary_x86_boot_kernel_bin_end[];
@@ -265,6 +278,9 @@ static void block_wait(void)
         stop(block_proof_ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, badge);
     if (badge & SERIAL_VIRT_VMM_WAKE_BADGE) serial_wake_received = true;
     if (badge & NET_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_net_rx_ready();
+#ifdef AGENTOS_GUEST_INPUT
+    if (badge & AOS_INPUT_VMM_WAKE_BADGE) aos_vmm_virtio_input_drain();
+#endif
 }
 
 static seL4_Word read_field(seL4_CPtr ep, seL4_Word field)
@@ -1337,6 +1353,14 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
                                    (void *)AGENTOS_NET_SHARED_VA) ||
         !aos_vmm_virtio_net_host_ready())
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x4e4554u, 0, 1u);
+#ifdef AGENTOS_GUEST_GRAPHICS
+    if (!aos_vmm_virtio_gpu_init())
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x475055u, 0, 1u);
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+    if (!aos_vmm_virtio_input_init())
+        stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x494e50u, 0, 1u);
+#endif
     if (!aos_vmm_virtio_blk_read_boot(0u, 1u, block_boot_data,
                                      sizeof(block_boot_data), block_wait))
         stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x424c4bu, 0, 2u);
@@ -1432,13 +1456,16 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         seL4_Word rip = returned.words[SEL4_VMENTER_CALL_EIP_MR];
         if (returned.result == SEL4_VMENTER_RESULT_NOTIF && returned.badge &&
             !(returned.badge & ~(SERIAL_VIRT_VMM_WAKE_BADGE | BLK_VIRT_VMM_WAKE_BADGE |
-                                 NET_VIRT_VMM_WAKE_BADGE))) {
+                                 NET_VIRT_VMM_WAKE_BADGE | X86_INPUT_WAKE_MASK))) {
             if (returned.badge & SERIAL_VIRT_VMM_WAKE_BADGE) {
                 service_serial(&serial_endpoint);
                 serial_wake_received = true;
             }
             if (returned.badge & BLK_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_blk_resp_ready();
             if (returned.badge & NET_VIRT_VMM_WAKE_BADGE) aos_vmm_virtio_net_rx_ready();
+#ifdef AGENTOS_GUEST_INPUT
+            if (returned.badge & AOS_INPUT_VMM_WAKE_BADGE) aos_vmm_virtio_input_drain();
+#endif
             /* Queue completion leaves its IOAPIC line pending. The next
              * bounded VMX timer exit routes it through the common event path. */
             firmware_cpu()->entry=(aos_x86_vmenter_entry_t){
@@ -1691,7 +1718,11 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
             }
             if (!hz && pm_base && port == (uint32_t)pm_base + 8u)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434c4bu, rip, port);
-            if (!aos_x86_config_io(&config, port, width, write, &value, ticks)) {
+            bool handled = port>=0x514u && port<0x51cu ?
+                aos_x86_fw_dma_io(&memory,(uint8_t *)AOS_X86_FIRMWARE_RAM_VA,
+                                  &config,port,width,write,&value) :
+                aos_x86_config_io(&config, port, width, write, &value, ticks);
+            if (!handled) {
                 if (pm_base && port==(uint32_t)pm_base+2u && write)
                     stop(ep,AOS_X86_VTX_PROOF_FAIL,0x504d45u,rip,
                          ((uint64_t)port << 32) | (value & (width==1u ? 0xffu : 0xffffu)));
@@ -1738,6 +1769,9 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
         service_serial(&serial_endpoint);
         aos_vmm_virtio_blk_after_fault();
         aos_vmm_virtio_net_after_fault();
+#ifdef AGENTOS_GUEST_INPUT
+        aos_vmm_virtio_input_drain();
+#endif
         /* Self INIT discards this exit's old architectural state. */
         if (firmware_startup[selected_cpu].reset_pending ||
             firmware_startup[selected_cpu].state!=AOS_X86_CPU_RUNNING)

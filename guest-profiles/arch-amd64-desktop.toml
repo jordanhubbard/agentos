@@ -1,0 +1,73 @@
+schema = 2
+id = "arch-linux-x86-64-desktop"
+status = "runtime"
+extends = "arch-amd64.toml"
+aliases = ["arch-amd64-desktop"]
+
+[target]
+devices = ["net", "block", "console", "gpu", "input"]
+
+[host.qemu]
+board = "x86_64_generic_vtx"
+machine = "q35"
+memory = "4G"
+
+[host.qemu.ssh]
+account = "agentos"
+host_port = 12225
+guest_address = "10.0.2.15"
+
+[[host.test]]
+action = "assert-ssh-output"
+args = { command = "sudo -n modprobe virtio_gpu virtio_input && test -e /dev/dri/card0 && grep -q 'agentOS keyboard' /sys/class/input/event*/device/name && grep -q 'agentOS pointer' /sys/class/input/event*/device/name && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | sudo -n dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none 2>/dev/null && printf 'agentos-x86-drm-frame-ready\\n'", stdout = "agentos-x86-drm-frame-ready\n" }
+
+[host.desktop]
+adapter = "rfb-over-ssh"
+local_port = 15925
+guest_port = 5900
+provision_timeout_secs = 3600
+frame_timeout_secs = 600
+io_timeout_secs = 180
+provision_script = '''set -eu
+sudo -n sh -c "printf 'Server = https://archive.archlinux.org/repos/2026/09/01/\$repo/os/\$arch\n' > /etc/pacman.d/mirrorlist"
+sudo -n pacman -Syy --noconfirm --needed mesa sway wayvnc foot seatd dbus
+sudo -n usermod -aG seat agentos
+sudo -n systemctl enable --now seatd
+pacman -Q mesa sway wayvnc foot seatd dbus | tee /tmp/agentos-desktop-packages.txt
+test -e /dev/dri/card0
+grep -q 'agentOS keyboard' /sys/class/input/event*/device/name
+grep -q 'agentOS pointer' /sys/class/input/event*/device/name
+install -d -m 0700 "$HOME/.config/sway" /tmp/agentos-runtime
+chmod 0700 /tmp/agentos-runtime
+cat >"$HOME/.config/sway/config" <<'EOF'
+output * bg #112233 solid
+bar mode invisible
+default_border none
+for_window [app_id="agentos-proof"] floating enable, resize set 400 300, move position 100 100
+exec foot --app-id=agentos-proof --override=colors.background=445566
+EOF
+pkill -x wayvnc 2>/dev/null || true
+pkill -x sway 2>/dev/null || true
+setsid -f sg seat -c 'exec env HOME=/home/agentos USER=agentos XDG_RUNTIME_DIR=/tmp/agentos-runtime WAYLAND_DISPLAY=wayland-agentos WLR_RENDERER=pixman WLR_BACKENDS=drm WLR_NO_HARDWARE_CURSORS=1 sway -c /home/agentos/.config/sway/config' </dev/null >/tmp/agentos-sway.log 2>&1
+attempt=0
+while test "$attempt" -lt 120; do
+    test -S /tmp/agentos-runtime/wayland-agentos && break
+    attempt=$((attempt + 1))
+    sleep 1
+done
+test -S /tmp/agentos-runtime/wayland-agentos || { cat /tmp/agentos-sway.log >&2; exit 1; }
+env XDG_RUNTIME_DIR=/tmp/agentos-runtime WAYLAND_DISPLAY=wayland-agentos swaymsg -t get_outputs | grep -q '"active": true'
+setsid -f env HOME=/home/agentos USER=agentos XDG_RUNTIME_DIR=/tmp/agentos-runtime WAYLAND_DISPLAY=wayland-agentos wayvnc 127.0.0.1 5900 </dev/null >/tmp/agentos-wayvnc.log 2>&1
+attempt=0
+while test "$attempt" -lt 120; do
+    ss -ltn | grep -q '127.0.0.1:5900' && break
+    attempt=$((attempt + 1))
+    sleep 1
+done
+ss -ltn | grep -q '127.0.0.1:5900' || { cat /tmp/agentos-wayvnc.log >&2; exit 1; }
+printf 'agentos-x86-wayland-rfb-ready\n'
+'''
+
+[[host.test]]
+action = "assert-frame-pixels"
+args = { x = "0", y = "200", rgb = "332211665544" }

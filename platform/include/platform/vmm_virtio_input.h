@@ -13,10 +13,18 @@ bool aos_vmm_virtio_input_adopt(uint32_t client, uint32_t generation,
 /* Nonblocking terminal detach. False requires another call while the input
  * page remains mapped. Success stops all local adapter callbacks. */
 bool aos_vmm_virtio_input_detach(void);
+#if defined(ARCH_X86_64) || defined(__x86_64__)
+#include <platform/x86_virtio.h>
+#define AOS_VIRTIO_INPUT_KEYBOARD_IPA (AOS_X86_VIRTIO_BASE + 4u * AOS_X86_VIRTIO_STRIDE)
+#define AOS_VIRTIO_INPUT_POINTER_IPA (AOS_X86_VIRTIO_BASE + 5u * AOS_X86_VIRTIO_STRIDE)
+#define AOS_VIRTIO_INPUT_KEYBOARD_VIRQ (AOS_X86_VIRTIO_GSI_BASE + 4u)
+#define AOS_VIRTIO_INPUT_POINTER_VIRQ (AOS_X86_VIRTIO_GSI_BASE + 5u)
+#else
 #define AOS_VIRTIO_INPUT_KEYBOARD_IPA 0x0a050000UL
 #define AOS_VIRTIO_INPUT_POINTER_IPA 0x0a060000UL
-#define AOS_VIRTIO_INPUT_MMIO_SIZE 0x1000UL
 #define AOS_VIRTIO_INPUT_KEYBOARD_VIRQ 55u
 #define AOS_VIRTIO_INPUT_POINTER_VIRQ 56u
+#endif
+#define AOS_VIRTIO_INPUT_MMIO_SIZE 0x1000UL
 bool aos_vmm_virtio_input_init(void);
 void aos_vmm_virtio_input_drain(void);

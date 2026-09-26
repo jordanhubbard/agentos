@@ -11,8 +11,14 @@ bool aos_vmm_virtio_gpu_adopt(uint32_t client,uint32_t generation,aos_fb_region_
 bool aos_vmm_virtio_gpu_quiesce(void);
 /* After quiescence, await terminal framebuffer pointer retirement. */
 bool aos_vmm_virtio_gpu_detach(void);
+#if defined(ARCH_X86_64) || defined(__x86_64__)
+#include <platform/x86_virtio.h>
+#define AOS_VIRTIO_GPU_GUEST_IPA (AOS_X86_VIRTIO_BASE + 3u * AOS_X86_VIRTIO_STRIDE)
+#define AOS_VIRTIO_GPU_VIRQ (AOS_X86_VIRTIO_GSI_BASE + 3u)
+#else
 #define AOS_VIRTIO_GPU_GUEST_IPA 0x0a040000UL
-#define AOS_VIRTIO_GPU_MMIO_SIZE 0x1000UL
 #define AOS_VIRTIO_GPU_VIRQ 54u
+#endif
+#define AOS_VIRTIO_GPU_MMIO_SIZE 0x1000UL
 bool aos_vmm_virtio_gpu_init(void);
 #endif

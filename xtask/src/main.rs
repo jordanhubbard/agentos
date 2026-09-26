@@ -44,6 +44,13 @@ enum Cmd {
         #[arg(long, default_value_t = 300)]
         timeout_secs: u64,
     },
+    /// Install pinned Arch Linux, reboot it, and retain the qualification evidence.
+    X86ArchInstall {
+        #[arg(long, default_value_t = 3600)]
+        timeout_secs: u64,
+        #[arg(long, default_value_t = 12225)]
+        ssh_port: u16,
+    },
     /// Automated release (version bump + git tag)
     Release(ReleaseArgs),
     /// Render the release presentation and its deterministic QA receipt.
@@ -103,6 +110,10 @@ fn main() -> anyhow::Result<()> {
         Cmd::SeedGuest(a) => xtask::cmd_seed_guest::run(&a),
         Cmd::BuildX86Initramfs => cmd_fetch_guest::build_x86_initramfs(),
         Cmd::X86Storage { timeout_secs } => cmd_test::run_x86_storage(timeout_secs),
+        Cmd::X86ArchInstall {
+            timeout_secs,
+            ssh_port,
+        } => cmd_test::run_x86_arch_install(timeout_secs, ssh_port),
         Cmd::Release(a) => cmd_release::run(&a),
         Cmd::RenderDeck(a) => cmd_render_deck::run(&a),
         Cmd::CiMatrix(a) => cmd_ci_matrix::run(&a),

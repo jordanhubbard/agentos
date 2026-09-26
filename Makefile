@@ -266,7 +266,7 @@ ifeq ($(UNAME_S),Darwin)
     # Status: workaround RETAINED. The upstream hvf_vcpu_exec "isv" assertion
     #   has no fix landed in QEMU 11.0.x, so -accel hvf stays disabled for
     #   aarch64 on Darwin. NOTE: an actual end-to-end seL4+HVF boot was NOT
-    #   re-run on this date (full seL4 build/boot was out of scope for the
+    #   re-run on this date (full seL4 _build/boot was out of scope for the
     #   config pass); a fresh boot test under HVF is still PENDING before this
     #   workaround can be removed. Next retest: ~2026-09.
     QEMU_ACCEL_NATIVE :=
@@ -791,6 +791,8 @@ gate-x86_64-linux-login:
 		--timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: gate-x86_64-storage
+.PHONY: gate-x86_64-arch
+.PHONY: gate-x86_64-desktop
 .PHONY: gate-x86_64-debian-ssh
 .PHONY: gate-x86_64-cc-linux
 .PHONY: x86-smp-probe gate-x86_64-smp
@@ -826,6 +828,18 @@ gate-x86_64-debian-ssh:
 
 gate-x86_64-storage:
 	@cargo xtask x86-storage --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+gate-x86_64-arch:
+	@cargo xtask x86-arch-install --timeout-secs $(QEMU_TEST_TIMEOUT) \
+		--ssh-port $(if $(X86_SSH_PORT),$(X86_SSH_PORT),12225)
+
+gate-x86_64-desktop:
+	@test -n "$(X86_ROOT_DISK)" -a -n "$(X86_SSH_KEY)" || { echo 'Set X86_ROOT_DISK and X86_SSH_KEY from a pinned Arch installation'; exit 1; }
+	@cargo xtask qemu-test --board x86_64_generic_vtx --guest-os none \
+		--assert-vmx-exit --assert-firmware-reset --assert-x86-linux-login --assert-x86-cc \
+		--assert-guest-display --assert-desktop --x86-boot-profile arch-amd64-desktop.toml \
+		--x86-ssh-key "$(X86_SSH_KEY)" --ssh-port $(if $(X86_SSH_PORT),$(X86_SSH_PORT),12225) \
+		--x86-block-image "$(X86_ROOT_DISK)" --x86-block-write --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: gate-x86_64-guest-faults
 gate-x86_64-guest-faults:
@@ -1347,6 +1361,8 @@ test-x86-acpi-loader-host:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_x86_acpi_loader.c platform/guest-vmm/x86_acpi.c platform/guest-vmm/x86_config.c platform/guest-vmm/x86_rtc.c -o $(BUILD_TMP_DIR)/test_x86_acpi_loader
 	$(BUILD_TMP_DIR)/test_x86_acpi_loader
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_GUEST_GRAPHICS=1 -DAGENTOS_GUEST_INPUT=1 -I platform/include tests/platform/test_x86_acpi_loader.c platform/guest-vmm/x86_acpi.c platform/guest-vmm/x86_config.c platform/guest-vmm/x86_rtc.c -o $(BUILD_TMP_DIR)/test_x86_acpi_loader_desktop
+	$(BUILD_TMP_DIR)/test_x86_acpi_loader_desktop
 
 .PHONY: test-x86-ioapic-host
 test-x86-ioapic-host:
@@ -1466,6 +1482,11 @@ endif
 guest-input-probe:
 	@mkdir -p $(BUILD_TMP_DIR)
 	$(GUEST_LINUX_CC) -static -O2 -std=c11 -Wall -Wextra -Werror tests/guest/input_probe.c -o $(BUILD_TMP_DIR)/guest-input-probe-aarch64
+
+.PHONY: guest-input-probe-x86_64
+guest-input-probe-x86_64:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -static -O2 -std=c11 -Wall -Wextra -Werror tests/guest/input_probe.c -o $(BUILD_TMP_DIR)/guest-input-probe-x86_64
 
 .PHONY: guest-frame-pattern host-frame-pattern
 guest-frame-pattern:

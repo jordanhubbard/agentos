@@ -8,6 +8,18 @@ static bool equal(const uint8_t *a, const uint8_t *b, size_t length)
     for (size_t i = 0; i < length; i++) difference |= a[i] ^ b[i];
     return difference == 0;
 }
+#ifdef AGENTOS_GUEST_GRAPHICS
+#define AOS_X86_PROFILE_GPU_FLAG | AOS_GUEST_DEVICE_GPU
+#else
+#define AOS_X86_PROFILE_GPU_FLAG
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+#define AOS_X86_PROFILE_INPUT_FLAG | AOS_GUEST_DEVICE_INPUT
+#else
+#define AOS_X86_PROFILE_INPUT_FLAG
+#endif
+#define AOS_X86_PROFILE_DEVICES (AOS_GUEST_DEVICE_NET | AOS_GUEST_DEVICE_BLOCK | \
+    AOS_GUEST_DEVICE_CONSOLE AOS_X86_PROFILE_GPU_FLAG AOS_X86_PROFILE_INPUT_FLAG)
 
 bool aos_x86_profile_bind(const void *manifest, size_t manifest_bytes,
                           const aos_x86_boot_blobs_t *boot, uint32_t owner,
@@ -23,7 +35,7 @@ bool aos_x86_profile_bind(const void *manifest, size_t manifest_bytes,
         p->flags != (AOS_GUEST_PROFILE_AUTOSTART | AOS_GUEST_PROFILE_HAS_INITRD |
                      AOS_GUEST_PROFILE_HASHED_ARTIFACTS) ||
         p->guest_id != owner || p->control_type != owner + 1u || !p->vcpu_count || p->vcpu_count > 2 ||
-        p->device_flags != (AOS_GUEST_DEVICE_NET | AOS_GUEST_DEVICE_BLOCK | AOS_GUEST_DEVICE_CONSOLE) ||
+        p->device_flags != AOS_X86_PROFILE_DEVICES ||
         p->network_client != owner || p->block_media != owner ||
         (p->cpu_features.required & ~AOS_X86_CPU_PROFILE_FEATURES) != 0 ||
         (p->cpu_features.prohibited & AOS_X86_CPU_PROFILE_FEATURES) != 0 ||

@@ -40,13 +40,15 @@ static aos_x86_acpi_topology_t topology(unsigned count)
     }
     return t;
 }
+#define EXTRA_VIRTIO_BYTES (75u * (AOS_X86_ACPI_VIRTIO_DEVICES - 3u))
 static void relocate(uint64_t base, unsigned count)
 {
     aos_x86_acpi_bundle_t source, copy={0};
     aos_x86_config_t c;
     aos_x86_acpi_topology_t t=topology(count);
     assert(aos_x86_acpi_bundle_topology(&source,&t));
-    assert(source.cpu_count==count && source.table_bytes==846u+37u*(count-1u));
+    assert(source.cpu_count==count &&
+        source.table_bytes==846u+EXTRA_VIRTIO_BYTES+37u*(count-1u));
     /* Capacity outside the actual bundle must never escape through fw_cfg. */
     memset(source.tables+source.table_bytes,0xa5,sizeof(source.tables)-source.table_bytes);
     assert(aos_x86_config_init(&c,256u*1024u*1024u));
@@ -116,7 +118,7 @@ static void relocate(uint64_t base, unsigned count)
     assert(!memcmp(copy.rsdp,"RSD PTR ",8) && copy.rsdp[15]==2);
     unsigned rsdt=(unsigned)(read_le(copy.rsdp+16,4)-base);
     unsigned xsdt=(unsigned)(read_le(copy.rsdp+24,8)-base);
-    assert(rsdt==738u+37u*(count-1u) && xsdt==rsdt+48u);
+    assert(rsdt==738u+EXTRA_VIRTIO_BYTES+37u*(count-1u) && xsdt==rsdt+48u);
     assert(!sum(copy.tables+rsdt,48) && !sum(copy.tables+xsdt,60));
     const char *signatures[]={"FACP","APIC","SSDT"};
     unsigned fadt=0;
@@ -158,16 +160,29 @@ static void relocate(uint64_t base, unsigned count)
     assert(read_le(f+40,4)==base+64 && read_le(f+140,8)==base+64);
     assert(!memcmp(copy.tables,"FACS",4) && read_le(copy.tables+4,4)==64);
     const uint8_t *dsdt=copy.tables+64;
-    assert(!memcmp(dsdt,"DSDT",4) && read_le(dsdt+4,4)==261 && !sum(dsdt,261));
-    const char *devices[] = {"VCON", "VBLK", "VNET"};
-    for (unsigned i = 0; i < 3; i++) {
+    const unsigned dsdt_bytes = 36u + 75u * AOS_X86_ACPI_VIRTIO_DEVICES;
+    assert(!memcmp(dsdt,"DSDT",4) && read_le(dsdt+4,4)==dsdt_bytes &&
+        !sum(dsdt,dsdt_bytes));
+    static const struct { const char *name; unsigned slot; } devices[] = {
+        {"VCON", 0u}, {"VBLK", 1u}, {"VNET", 2u},
+#ifdef AGENTOS_GUEST_GRAPHICS
+        {"VGPU", 3u},
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+        {"VKBD", 4u}, {"VPTR", 5u},
+#endif
+    };
+    assert(sizeof(devices)/sizeof(devices[0])==AOS_X86_ACPI_VIRTIO_DEVICES);
+    for (unsigned i = 0; i < AOS_X86_ACPI_VIRTIO_DEVICES; i++) {
         const uint8_t *d = dsdt + 36 + i * 75;
-        assert(!memcmp(d+11,devices[i],4) && d[35]==0x0a && d[36]==i);
+        assert(!memcmp(d+11,devices[i].name,4) && d[35]==0x0a &&
+            d[36]==devices[i].slot);
         assert(!memcmp(d+21,"LNRO0005",9));
         assert(d[52]==0x86 && read_le(d+53,2)==9 && d[55]==1);
-        assert(read_le(d+56,4)==0xf0000000u+i*4096u && read_le(d+60,4)==4096);
+        assert(read_le(d+56,4)==0xf0000000u+devices[i].slot*4096u &&
+            read_le(d+60,4)==4096);
         assert(d[64]==0x89 && read_le(d+65,2)==6);
-        assert(d[67]==1 && d[68]==1 && read_le(d+69,4)==16+i);
+        assert(d[67]==1 && d[68]==1 && read_le(d+69,4)==16+devices[i].slot);
     }
     assert(read_le(f+56,4)==0xb000 && read_le(f+64,4)==0xb004 && read_le(f+76,4)==0xb008);
     assert(f[88]==4 && f[89]==2 && f[91]==4 && read_le(f+112,4)==0x70);

@@ -141,7 +141,9 @@ bool aos_x86_acpi_bundle_topology(aos_x86_acpi_bundle_t *bundle,
     const aos_x86_acpi_topology_t t=*topology;
     if (!topology_valid(&t) || t.lapic_gpa!=AOS_X86_APIC_BASE ||
         t.ioapic_gpa!=AOS_X86_IOAPIC_BASE || t.gsi_base) return false;
-    enum { FACS=0, DSDT=64, DSDT_BYTES=261, FADT=DSDT+DSDT_BYTES,
+    enum { FACS=0, DSDT=64,
+           DSDT_BYTES=36u+75u*AOS_X86_ACPI_VIRTIO_DEVICES,
+           FADT=DSDT+DSDT_BYTES,
            MADT=FADT+276 };
     const unsigned madt_bytes=56u+8u*t.cpu_count;
     const unsigned ssdt_bytes=44u+29u*t.cpu_count;
@@ -167,15 +169,26 @@ bool aos_x86_acpi_bundle_topology(aos_x86_acpi_bundle_t *bundle,
     };
     _Static_assert(sizeof(device_aml)==75, "virtio DSDT device AML size");
     header(b+DSDT,DSDT_BYTES,"DSDT",2,"AOSDSDT ");
-    const char *names[] = {"VCON", "VBLK", "VNET"};
-    for (unsigned i = 0; i < 3; i++) {
+    static const struct { char name[4]; uint8_t slot; } devices[] = {
+        {{'V','C','O','N'}, 0u}, {{'V','B','L','K'}, 1u},
+        {{'V','N','E','T'}, 2u},
+#ifdef AGENTOS_GUEST_GRAPHICS
+        {{'V','G','P','U'}, 3u},
+#endif
+#ifdef AGENTOS_GUEST_INPUT
+        {{'V','K','B','D'}, 4u}, {{'V','P','T','R'}, 5u},
+#endif
+    };
+    _Static_assert(sizeof(devices)/sizeof(devices[0]) == AOS_X86_ACPI_VIRTIO_DEVICES,
+                   "ACPI virtio device count");
+    for (unsigned i = 0; i < AOS_X86_ACPI_VIRTIO_DEVICES; i++) {
         uint8_t *d = b + DSDT + 36u + i * sizeof(device_aml);
         memcpy(d, device_aml, sizeof(device_aml));
-        memcpy(d + 11u, names[i], 4u);
-        d[36] = (uint8_t)i; /* BytePrefix permits UID 2 as an integer. */
-        le32(d + 56u, AOS_X86_VIRTIO_BASE + i * AOS_X86_VIRTIO_STRIDE);
+        memcpy(d + 11u, devices[i].name, 4u);
+        d[36] = devices[i].slot; /* BytePrefix permits every bounded slot. */
+        le32(d + 56u, AOS_X86_VIRTIO_BASE + devices[i].slot * AOS_X86_VIRTIO_STRIDE);
         le32(d + 60u, AOS_X86_VIRTIO_STRIDE);
-        le32(d + 69u, AOS_X86_VIRTIO_GSI_BASE + i);
+        le32(d + 69u, AOS_X86_VIRTIO_GSI_BASE + devices[i].slot);
     }
     checksum(b+DSDT,DSDT_BYTES);
     header(b+FADT,276,"FACP",6,"AOSFADT ");
