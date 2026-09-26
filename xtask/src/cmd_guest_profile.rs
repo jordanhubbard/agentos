@@ -596,7 +596,7 @@ fn prepare_x86_slot_profile(
         output_dir: None,
     })?;
     verify_artifacts(&profile, "default", repo)?;
-    let directory = repo.join("build/tmp/x86-boot-profile").join(slot.name());
+    let directory = repo.join("_build/tmp/x86-boot-profile").join(slot.name());
     fs::create_dir_all(&directory)?;
     let mut command_line = profile
         .boot
@@ -2822,9 +2822,9 @@ mod tests {
         assert_eq!(seed.partition_offset, 134217728);
         assert_eq!(
             seed.root_ext4,
-            "build/guest-images/debian-arm64-nocloud/root.ext4"
+            "_build/guest-images/debian-arm64-nocloud/root.ext4"
         );
-        for bad_path in ["", "/tmp/root.ext4", "../root.ext4", "build/../root.ext4"] {
+        for bad_path in ["", "/tmp/root.ext4", "../root.ext4", "_build/../root.ext4"] {
             let mut invalid = host.clone();
             invalid.seed.as_mut().unwrap().root_ext4 = bad_path.into();
             assert!(validate_host(Some(&invalid)).is_err(), "{bad_path}");

@@ -20,6 +20,6 @@ QEMU_DISPLAY := -display none -monitor none
 QEMU_SERIAL_FLAGS := -serial stdio
 QEMU_BOOT_FLAGS = \
   -kernel $(SEL4_SDK)/board/x86_64_generic_vtx/release/elf/sel4_32.elf \
-  -initrd build/x86_64_generic_vtx/root_task.elf
+  -initrd _build/x86_64_generic_vtx/root_task.elf
 
 DEPLOY_SCRIPT :=

@@ -9,7 +9,7 @@ devices = ["net", "block", "console", "gpu", "input"]
 
 [artifacts.dtb]
 source = "generated:linux.dts+profile-selected-virtio-gpu+virtio-input"
-cache = "build/qemu_virt_aarch64/debian-graphics-input-vm.dtb"
+cache = "_build/qemu_virt_aarch64/debian-graphics-input-vm.dtb"
 sha256 = "bd03c8361711a3f4318ff4a4125acef4ebef91b339ac5b68f33f45e98f863236"
 
 [placements.dual-primary]

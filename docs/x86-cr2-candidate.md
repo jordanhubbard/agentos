@@ -22,14 +22,15 @@ limited to the x86-64 configuration.
 ## Build configuration
 
 Use an isolated clone of Microkit
-`ec86afdcd662b5976d11d4994acf1b11a2979882` and the patched seL4 tree outside
-the agentOS repository. The retained build used GNU GCC 13.3.0, binutils 2.42,
+`ec86afdcd662b5976d11d4994acf1b11a2979882` and the patched seL4 tree under
+`_build/sdk-candidate`. The retained build used GNU GCC 13.3.0, binutils 2.42,
 Python 3.12.3 and `sel4-deps==0.9.0`. The dependency freeze and complete build
 logs are retained with the qualification evidence.
 
 Use the opt-in Make target with local upstream clones and an external Python
 environment containing the pinned dependencies. The example uses absolute
-paths; the output directory must be fresh and outside the agentOS checkout.
+paths; the output directory must be fresh. The default is `_build/sdk-candidate`;
+an explicit external output directory is also supported.
 GNU build tools and the `aarch64-linux-gnu` and `x86_64-linux-gnu` GCC 13.3
 cross toolchains must be on `PATH`.
 `qemu-system-aarch64` and `dtc` must also be available: upstream extracts the
@@ -43,8 +44,7 @@ its `efi-virtio.rom`.
 make sdk-candidate \
   SDK_CANDIDATE_MICROKIT_SOURCE=/path/to/upstream/microkit \
   SDK_CANDIDATE_SEL4_SOURCE=/path/to/upstream/sel4 \
-  SDK_CANDIDATE_PYTHON=/path/to/sel4-venv/bin/python \
-  SDK_CANDIDATE_DIR=/path/to/fresh-external-build
+  SDK_CANDIDATE_PYTHON=/path/to/sel4-venv/bin/python
 ```
 
 The target creates private clones at the pinned revisions, applies only the

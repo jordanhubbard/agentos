@@ -3687,7 +3687,7 @@ void root_task_main(const seL4_BootInfo *bi)
         /* ── 4g.4.7: Set up VirtIO serial transport for cc_pd ───────────────── */
         /*
          * cc_pd uses VirtIO serial (bus.2 = PA 0x0A000400) as its host socket
-         * bridge.  QEMU bridges it to build/cc_pd.sock via virtconsole.
+         * bridge.  QEMU bridges it to _build/cc_pd.sock via virtconsole.
          *
          * We map three resources into cc_pd's VSpace:
          *   1. Device page at PA 0x0A000000 (covers virtio-mmio slots 0-7) at

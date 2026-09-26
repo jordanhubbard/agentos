@@ -3,7 +3,7 @@
 #
 # CC-PD (services/command-console/cc_pd.c) talks to its host-side controller
 # over a VirtIO-MMIO serial console (QEMU virtconsole on a unix-socket chardev,
-# build/cc_pd.sock).  vio_serial_write() and vio_serial_read() each spin on the
+# _build/cc_pd.sock).  vio_serial_write() and vio_serial_read() each spin on the
 # VirtIO *used* ring with a bounded wait (CC_VIRTIO_WAIT_LIMIT).  If the used
 # ring never advances — i.e. the host stops draining the socket — the bounded
 # wait must FIRE as an ERROR PATH:
@@ -17,7 +17,7 @@
 #
 # How it wedges the ring:
 #   1. Boot agentOS in QEMU with the CC-PD virtconsole on a unix socket.
-#   2. Connect to build/cc_pd.sock and send one well-formed CC request frame
+#   2. Connect to _build/cc_pd.sock and send one well-formed CC request frame
 #      (4112 bytes).  CC-PD reads it (RX used ring advances), dispatches, then
 #      tries to write the 4112-byte reply.
 #   3. The test then STOPS reading the socket.  QEMU's virtconsole TX buffer
@@ -47,9 +47,9 @@ TIMEOUT="${CC_TIMEOUT_TEST_SECS:-120}"
 # can take a little while to drain, so give the bounded wait room to fire.
 WEDGE_WAIT="${CC_WEDGE_WAIT_SECS:-45}"
 
-CC_SOCK="${REPO_ROOT}/build/cc_pd.sock"
+CC_SOCK="${REPO_ROOT}/_build/cc_pd.sock"
 SERIAL_LOG="$(mktemp /tmp/agentos-cc-timeout.XXXXXX)"
-BUILD_DIR="${REPO_ROOT}/build/${BOARD}-test"
+BUILD_DIR="${REPO_ROOT}/_build/${BOARD}-test"
 
 QEMU_PID=""
 SOCAT_PID=""

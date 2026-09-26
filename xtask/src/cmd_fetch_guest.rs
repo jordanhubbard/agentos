@@ -26,7 +26,7 @@ fn repo_root() -> anyhow::Result<PathBuf> {
 }
 
 fn build_tmp_dir() -> anyhow::Result<PathBuf> {
-    let dir = repo_root()?.join("build/tmp");
+    let dir = repo_root()?.join("_build/tmp");
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     Ok(dir)
 }
@@ -107,7 +107,7 @@ fn download_tar_member(url: &str, member: &str, dest: &Path) -> anyhow::Result<(
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-guest-archive-")
         .tempdir_in(&tmp_root)
-        .context("failed to create guest archive tempdir under build/tmp")?;
+        .context("failed to create guest archive tempdir under _build/tmp")?;
     let archive = tmp_dir.path().join("download.tar");
     let curl = find_tool(&["curl", "/opt/homebrew/bin/curl", "/usr/bin/curl"])?;
     let status = std::process::Command::new(&curl)
@@ -929,7 +929,7 @@ fn build_linux_probe_initramfs(initrd_dest: &Path) -> anyhow::Result<()> {
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-linux-probe-initrd-")
         .tempdir_in(&tmp_root)
-        .context("failed to create Linux probe initrd tempdir under build/tmp")?;
+        .context("failed to create Linux probe initrd tempdir under _build/tmp")?;
     let init = build_linux_e2e_init(tmp_dir.path())?;
     let out = create_linux_probe_initramfs(&init)?;
     write_output(initrd_dest, &out)?;
@@ -976,10 +976,10 @@ pub fn build_x86_initramfs() -> anyhow::Result<()> {
         append_newc_file(&mut archive, "init", 2, 0o755, &init)?;
         append_newc_trailer(&mut archive, 3)?;
         write_output(
-            &repo_root()?.join(format!("build/x86-userspace/initrd{suffix}.bin")),
+            &repo_root()?.join(format!("_build/x86-userspace/initrd{suffix}.bin")),
             &archive,
         )?;
-        println!("[x86-userspace] Built build/x86-userspace/initrd{suffix}.bin");
+        println!("[x86-userspace] Built _build/x86-userspace/initrd{suffix}.bin");
     }
     Ok(())
 }
@@ -1370,7 +1370,7 @@ fn extract_arm64_elf_image(iso: &Path, member: &str, kernel_dest: &Path) -> anyh
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-arm64-elf-image-")
         .tempdir_in(&tmp_root)
-        .context("failed to create arm64 ELF image tempdir under build/tmp")?;
+        .context("failed to create arm64 ELF image tempdir under _build/tmp")?;
     let elf = tmp_dir.path().join("kernel.elf");
     let payload = tmp_dir.path().join("kernel.payload");
     extract_iso_file(iso, member, &elf)?;
@@ -2017,7 +2017,7 @@ fn extract_arm64_linux_image(iso: &Path, member: &str, kernel_dest: &Path) -> an
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-arm64-linux-image-")
         .tempdir_in(&tmp_root)
-        .context("failed to create arm64 Linux Image tempdir under build/tmp")?;
+        .context("failed to create arm64 Linux Image tempdir under _build/tmp")?;
     let vmlinuz = tmp_dir.path().join("vmlinuz");
     extract_iso_file(iso, member, &vmlinuz)?;
     decode_arm64_kernel(&vmlinuz, kernel_dest, tmp_dir.path())
@@ -2047,7 +2047,7 @@ fn normalize_arm64_linux_image(source: &Path, kernel_dest: &Path) -> anyhow::Res
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-arm64-linux-image-")
         .tempdir_in(&tmp_root)
-        .context("failed to create arm64 Linux Image tempdir under build/tmp")?;
+        .context("failed to create arm64 Linux Image tempdir under _build/tmp")?;
     decode_arm64_kernel(source, kernel_dest, tmp_dir.path())?;
     write_output(&source_stamp, source_id.as_bytes())?;
     Ok(())

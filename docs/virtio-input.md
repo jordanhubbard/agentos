@@ -74,8 +74,8 @@ qualification is described below; it does not establish physical input ownership
 External clients can submit a packet with:
 
 ```text
-CC_PD_SOCK=/path/to/cc.sock tools/agentctl/agentctl --batch input-batch 0 keyboard 1 183 1
-CC_PD_SOCK=/path/to/cc.sock tools/agentctl/agentctl --batch input-batch 0 keyboard 1 183 0
+CC_PD_SOCK=/path/to/cc.sock _build/tools/agentctl/agentctl --batch input-batch 0 keyboard 1 183 1
+CC_PD_SOCK=/path/to/cc.sock _build/tools/agentctl/agentctl --batch input-batch 0 keyboard 1 183 0
 ```
 
 Each command takes a public guest handle, `keyboard` or `pointer`, then one

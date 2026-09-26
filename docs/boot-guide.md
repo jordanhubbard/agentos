@@ -53,7 +53,7 @@ make build
 ```
 
 Generated images, sockets, QEMU logs, guest images, and temporary files belong
-under `build/`; do not place binary artifacts in the repository root.
+under `_build/`; do not place binary artifacts in the repository root.
 
 ## Demonstration path
 
@@ -89,8 +89,8 @@ make run GUEST_OS=freebsd
 ```
 
 It builds the host-native board, stages the selected guest image under
-`build/guest-images`, starts QEMU, and exposes the CC-PD Unix socket at
-`build/cc_pd.sock`.
+`_build/guest-images`, starts QEMU, and exposes the CC-PD Unix socket at
+`_build/cc_pd.sock`.
 
 To build a specific architecture without launching:
 
@@ -159,7 +159,7 @@ the selected target. The important runtime interfaces are:
 | Interface | Default |
 |---|---|
 | Lower-level `make run` serial | QEMU stdio |
-| Lower-level `make run` CC-PD socket | `build/cc_pd.sock` |
+| Lower-level `make run` CC-PD socket | `_build/cc_pd.sock` |
 | Lower-level `make run` host API | `127.0.0.1:8789` |
 | `make demo` Ubuntu SSH | `127.0.0.1:12222` |
 | `make demo` FreeBSD SSH | `127.0.0.1:12223` |
@@ -172,7 +172,7 @@ seL4's AArch64 memory-access patterns. Linux uses KVM when `/dev/kvm` exists.
 ## Connecting External Tools
 
 agentOS does not ship an in-repository dashboard. External tools connect to
-the exported IPC/API contracts. The default QEMU run exposes `build/cc_pd.sock`
+the exported IPC/API contracts. The default QEMU run exposes `_build/cc_pd.sock`
 for the host-side CC-PD protocol and forwards the host API port at
 `127.0.0.1:8789`.
 
@@ -180,7 +180,7 @@ Reference consumers:
 
 ```bash
 make -C tools/agentctl
-./tools/agentctl/agentctl --batch list-guests
+./_build/tools/agentctl/agentctl --batch list-guests
 cd ../agentos_gui && make run
 ```
 
@@ -247,7 +247,7 @@ Important runtime contracts for external users:
   system description file.
 
 - **Guest image selection**: `make fetch-guest` stages Ubuntu 26.04 and
-  FreeBSD 15.0 assets into `build/guest-images`. ISOs are cached in
+  FreeBSD 15.0 assets into `_build/guest-images`. ISOs are cached in
   `AGENTOS_ISO_DIR` (default `${XDG_CACHE_HOME:-~/.cache}/agentos/isos`); on
   cache miss they are downloaded from the vendor's official site
   (`cdimage.ubuntu.com`, `download.freebsd.org`) and persisted there for

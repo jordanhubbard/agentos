@@ -22,9 +22,13 @@
 #   make test-guest-console — prove Ubuntu login through emulated virtio-console
 #   make test-ubuntu-virtio — require Ubuntu on agentOS net + blk + console
 #   make test-ubuntu-live — boot the full Ubuntu Casper live filesystem
-#   make clean        — remove build artifacts for current board
+#   make clean        — remove all generated artifacts under _build
 
 .DEFAULT_GOAL := help
+
+# Cleanup must work without Cargo, a selected guest profile, or an SDK.
+include $(dir $(abspath $(lastword $(MAKEFILE_LIST))))mk/clean.mk
+ifneq ($(strip $(filter-out clean clean-all clean-legacy,$(or $(MAKECMDGOALS),help))),)
 
 .PHONY: all setup sdk demo demo-check demo-smoke demo-test demo-desktop demo-desktop-test demo-clean install deps deps-tools submodules channels format policy-check guest-profile-check lint-source run run-fast run-dual-ssh test test-guest-login test-guest-net test-guest-blk test-guest-console test-ubuntu-virtio test-ubuntu-live test-guest-boot-timing-compare sel4-test-image run-tests test-snapshot-sched test-proc-server test-vibeos-contract test-integration test-host gate gate-aarch64 gate-x86_64 gate-x86_64-vtx e2e e2e-guest e2e-contract e2e-dual-os e2e-ubuntu-amd64 e2e-ubuntu-arm64 e2e-nixos e2e-freebsd15 e2e-all bootstrap-guest clean clean-all clean-images help release release-minor release-major release-prepare release-check release-publish release-verify presentation-render fetch-guest build-tools
 
@@ -118,7 +122,7 @@ QEMU_TEST_GUEST_OS = $(if $(filter x86_64,$(ARCH)),none,$(GUEST_OS))
 # ROOT_DIR must be set before board.mk is included; otherwise
 # $(lastword $(MAKEFILE_LIST)) resolves to the board.mk path, not the
 # repo root.
-ROOT_DIR     := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+ROOT_DIR     := $(dir $(abspath $(firstword $(MAKEFILE_LIST))))
 KERNEL_DIR   := $(ROOT_DIR)kernel/agentos-root-task
 SEL4_SDK_VERSION ?= $(strip $(shell cat "$(ROOT_DIR)tools/sdk/default-version"))
 SEL4_SDK ?= $(HOME)/.cache/agentos/microkit-sdk-$(SEL4_SDK_VERSION)
@@ -180,10 +184,10 @@ endif
 SEL4_PROFILE ?= release
 
 # BUILD_DIR and IMAGE depend on BOARD (resolved after board.mk override above)
-BUILD_DIR    := $(ROOT_DIR)build/$(BOARD)
+BUILD_DIR    := $(ROOT_DIR)_build/$(BOARD)
 IMAGE        := $(BUILD_DIR)/agentos.img
-AGENTOS_IMAGES ?= $(ROOT_DIR)build/guest-images
-BUILD_TMP_DIR := $(ROOT_DIR)build/tmp
+AGENTOS_IMAGES ?= $(ROOT_DIR)_build/guest-images
+BUILD_TMP_DIR := $(ROOT_DIR)_build/tmp
 
 # ─── OS / arch detection ──────────────────────────────────────────────────────
 UNAME_S := $(shell uname -s)
@@ -285,9 +289,9 @@ ifeq ($(NATIVE_ARCH),aarch64)
                         -cpu $(_NATIVE_CPU) -m 2G \
                         -display none -monitor none \
                         -global virtio-mmio.force-legacy=off \
-                        -chardev socket,id=char0,path=$(ROOT_DIR)build/agentos-serial.sock,server=on,wait=off \
+                        -chardev socket,id=char0,path=$(ROOT_DIR)_build/agentos-serial.sock,server=on,wait=off \
                         -serial chardev:char0 \
-                        -chardev socket,id=cc_pd_char,path=$(ROOT_DIR)build/cc_pd.sock,server=on,wait=off \
+                        -chardev socket,id=cc_pd_char,path=$(ROOT_DIR)_build/cc_pd.sock,server=on,wait=off \
                         -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0 \
                         -device virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0,nr=1 \
                         $(QEMU_ACCEL_NATIVE) \
@@ -299,14 +303,14 @@ else
   NATIVE_BOARD      := x86_64_generic
   NATIVE_QEMU       := qemu-system-x86_64
   NATIVE_QEMU_FLAGS  = -machine q35 -cpu host -m 2G \
-                        -display none -monitor none -serial unix:$(ROOT_DIR)build/agentos-serial.sock \
+                        -display none -monitor none -serial unix:$(ROOT_DIR)_build/agentos-serial.sock \
                         $(QEMU_ACCEL_NATIVE) \
                         -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8789-:8789 \
                         -device e1000,netdev=net0 \
                         -kernel $(NATIVE_IMAGE)
 endif
 
-NATIVE_BUILD_DIR := $(ROOT_DIR)build/$(NATIVE_BOARD)
+NATIVE_BUILD_DIR := $(ROOT_DIR)_build/$(NATIVE_BOARD)
 NATIVE_IMAGE     := $(NATIVE_BUILD_DIR)/agentos.img
 
 channels:
@@ -553,10 +557,10 @@ demo-desktop: demo-check
 
 demo-clean:
 	@echo "Cleaning demo sockets, logs, and generated SSH keys..."
-	@rm -f $(ROOT_DIR)build/cc_pd.sock $(ROOT_DIR)build/agentos-serial.sock
-	@rm -rf $(ROOT_DIR)build/tmp/dual-ssh
-	@rm -f $(ROOT_DIR)build/tmp/agentos-qemu-*.log
-	@rm -f $(ROOT_DIR)build/tmp/agentos-qemu-*.cc_pd.sock
+	@rm -f $(ROOT_DIR)_build/cc_pd.sock $(ROOT_DIR)_build/agentos-serial.sock
+	@rm -rf $(ROOT_DIR)_build/tmp/dual-ssh
+	@rm -f $(ROOT_DIR)_build/tmp/agentos-qemu-*.log
+	@rm -f $(ROOT_DIR)_build/tmp/agentos-qemu-*.cc_pd.sock
 	@echo "✓ Demo runtime artifacts removed; guest image caches were preserved."
 
 # =============================================================================
@@ -577,7 +581,7 @@ build-tools:
 	@cargo build --release \
 		-p gen-sdf -p gen-ringbuf -p sign-wasm -p attest-verify \
 		-p make-swap-image -p trace-replay -p xtask
-	@echo "✓ Tools built → target/release/"
+	@echo "✓ Tools built → _build/cargo/release/"
 
 # =============================================================================
 # fetch-guest: execute the bounded acquisition recipe for selected profiles
@@ -1372,7 +1376,13 @@ test-x86-acpi-aml: test-x86-acpi-host test-x86-acpi-loader-host
 	@rg -q '\[Integer\] = 0000000000000010' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '\[Integer\] = 000000000000001F' $(BUILD_TMP_DIR)/x86-cpus-eval.log
 	@rg -q '"ACPI0007"' $(BUILD_TMP_DIR)/x86-cpus-eval.log
-test-host: policy-check guest-profile-check lint-source test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-agentctl-console-host test-ramfb-host test-display-host
+test-host: policy-check guest-profile-check lint-source test-build-layout test-integration test-operator-host test-log-ring-host test-framebuffer-host test-virtio-gpu-host test-input-host test-agentctl-frame-host test-agentctl-console-host test-ramfb-host test-display-host
+
+.PHONY: test-build-layout
+test-build-layout:
+	@mkdir -p $(ROOT_DIR)_build/test-bins
+	rustc --edition=2021 --test tests/build_layout.rs -o $(ROOT_DIR)_build/test-bins/test_build_layout
+	$(ROOT_DIR)_build/test-bins/test_build_layout
 
 .PHONY: test-display-host
 .PHONY: test-display-init
@@ -1431,7 +1441,7 @@ test-host: policy-check guest-profile-check lint-source test-integration test-op
 .PHONY: test-framebuffer-host
 .PHONY: test-input-host
 test-input-host:
-	@mkdir -p $(ROOT_DIR)build/tmp
+	@mkdir -p $(ROOT_DIR)_build/tmp
 	$(CC) -std=gnu11 -Wall -Wextra -Werror \
 		$(if $(filter Darwin,$(UNAME_S)),-DAOS_INPUT_SHMEM_VA=0x600040000000UL) \
 		-I tests/platform/mmio-stubs -I platform/include -I libvmm/include \
@@ -1441,8 +1451,8 @@ test-input-host:
 	$(BUILD_TMP_DIR)/test_input_adopt
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_input_rebind.c platform/input-virt/service.c platform/input-virt/rebind_service.c -o $(BUILD_TMP_DIR)/test_input_rebind
 	$(BUILD_TMP_DIR)/test_input_rebind
-	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_input_queue.c platform/input-virt/service.c -o $(ROOT_DIR)build/tmp/test_input_queue
-	$(ROOT_DIR)build/tmp/test_input_queue
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_input_queue.c platform/input-virt/service.c -o $(ROOT_DIR)_build/tmp/test_input_queue
+	$(ROOT_DIR)_build/tmp/test_input_queue
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
 	$(BUILD_TMP_DIR)/test_virtio_input
 	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c -o $(BUILD_TMP_DIR)/test_agentctl_input
@@ -1474,9 +1484,9 @@ test-agentctl-console-host:
 
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
-	@mkdir -p $(ROOT_DIR)build/tmp
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)build/tmp/test_agentctl_frame_capture
-	$(ROOT_DIR)build/tmp/test_agentctl_frame_capture
+	@mkdir -p $(ROOT_DIR)_build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c -o $(ROOT_DIR)_build/tmp/test_agentctl_frame_capture
+	$(ROOT_DIR)_build/tmp/test_agentctl_frame_capture
 
 test-framebuffer-host:
 	@mkdir -p $(BUILD_TMP_DIR)
@@ -1484,11 +1494,11 @@ test-framebuffer-host:
 	$(BUILD_TMP_DIR)/test_framebuffer_transaction
 	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_rebind.c platform/framebuffer/service.c -o $(BUILD_TMP_DIR)/test_framebuffer_rebind
 	$(BUILD_TMP_DIR)/test_framebuffer_rebind
-	@mkdir -p $(ROOT_DIR)build/tmp
-	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_queue.c platform/framebuffer/service.c -o $(ROOT_DIR)build/tmp/test_framebuffer_queue
-	$(ROOT_DIR)build/tmp/test_framebuffer_queue
-	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_observer.c platform/framebuffer/service.c platform/framebuffer/observer.c -o $(ROOT_DIR)build/tmp/test_framebuffer_observer
-	$(ROOT_DIR)build/tmp/test_framebuffer_observer
+	@mkdir -p $(ROOT_DIR)_build/tmp
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_queue.c platform/framebuffer/service.c -o $(ROOT_DIR)_build/tmp/test_framebuffer_queue
+	$(ROOT_DIR)_build/tmp/test_framebuffer_queue
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_framebuffer_observer.c platform/framebuffer/service.c platform/framebuffer/observer.c -o $(ROOT_DIR)_build/tmp/test_framebuffer_observer
+	$(ROOT_DIR)_build/tmp/test_framebuffer_observer
 
 .PHONY: test-framebuffer
 test-framebuffer: test-framebuffer-host
@@ -1496,11 +1506,11 @@ test-framebuffer: test-framebuffer-host
 
 .PHONY: test-framebuffer-isolation
 test-framebuffer-isolation:
-	@mkdir -p build/evidence/framebuffer-isolation
+	@mkdir -p _build/evidence/framebuffer-isolation
 	@set -e; for mode in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do \
 	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-framebuffer \
 	        --framebuffer-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
-	    cp build/qemu_virt_aarch64/agentos.img build/evidence/framebuffer-isolation/mode-$$mode.img; \
+	    cp _build/qemu_virt_aarch64/agentos.img _build/evidence/framebuffer-isolation/mode-$$mode.img; \
 	done
 
 .PHONY: test-log-ring-host
@@ -1513,10 +1523,10 @@ test-log-ring-host:
 test-log-rings: test-log-ring-host
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-log-rings --timeout-secs $(QEMU_TEST_TIMEOUT)
 test-log-isolation:
-	@mkdir -p build/evidence/log-isolation
+	@mkdir -p _build/evidence/log-isolation
 	@set -e; for mode in 1 2 3; do \
 	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --log-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
-	    cp build/qemu_virt_aarch64/agentos.img build/evidence/log-isolation/mode-$$mode.img; \
+	    cp _build/qemu_virt_aarch64/agentos.img _build/evidence/log-isolation/mode-$$mode.img; \
 	done
 
 .PHONY: test-operator-host test-operator-session
@@ -1529,11 +1539,11 @@ test-operator-session:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-operator-session --timeout-secs $(QEMU_TEST_TIMEOUT)
 .PHONY: test-operator-isolation
 test-operator-isolation:
-	@mkdir -p build/evidence/operator-isolation
+	@mkdir -p _build/evidence/operator-isolation
 	@set -e; for mode in 1 2 3 4 5 6 7; do \
 	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none \
 	        --operator-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
-	    cp build/qemu_virt_aarch64/agentos.img build/evidence/operator-isolation/mode-$$mode.img; \
+	    cp _build/qemu_virt_aarch64/agentos.img _build/evidence/operator-isolation/mode-$$mode.img; \
 	done
 
 # Host behavior plus real SDK compilation; this is not a native-PD boot proof.
@@ -1555,11 +1565,11 @@ test-native-with-guest:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os ubuntu-live --assert-live --assert-native-guest --timeout-secs $(QEMU_TEST_TIMEOUT) --ssh-port $(QEMU_TEST_SSH_PORT)
 
 test-native-network-isolation:
-	@mkdir -p build/evidence/native-network-isolation
+	@mkdir -p _build/evidence/native-network-isolation
 	@set -e; for mode in 1 2 3 4 5 6 7 8 9 10; do \
 	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-native-rust \
 	        --native-network-isolation-probe $$mode --timeout-secs $(QEMU_TEST_TIMEOUT); \
-	    cp build/qemu_virt_aarch64/agentos.img build/evidence/native-network-isolation/mode-$$mode.img; \
+	    cp _build/qemu_virt_aarch64/agentos.img _build/evidence/native-network-isolation/mode-$$mode.img; \
 	done
 
 test-rust-pd-abi:
@@ -1572,10 +1582,10 @@ test-rust-pd-abi:
 	$(BUILD_TMP_DIR)/rust_net_interop
 	$(CC) -std=c11 -Wall -Wextra -Werror -fno-builtin -DAGENTOS_TEST_HOST libs/rust-pd/runtime/memory.c tests/native-rust/memory_test.c -o $(BUILD_TMP_DIR)/rust_memory_test
 	$(BUILD_TMP_DIR)/rust_memory_test
-	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath build/rust-pd-abi-aarch64/rust_pd_ipc.o)
-	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-x86_64) AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic $(abspath build/rust-pd-abi-x86_64/rust_pd_ipc.o)
-	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath build/rust-pd-abi-aarch64/rust_pd_network.o)
-	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath build/rust-pd-abi-x86_64) AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic $(abspath build/rust-pd-abi-x86_64/rust_pd_network.o)
+	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath _build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath _build/rust-pd-abi-aarch64/rust_pd_ipc.o)
+	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath _build/rust-pd-abi-x86_64) AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic $(abspath _build/rust-pd-abi-x86_64/rust_pd_ipc.o)
+	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath _build/rust-pd-abi-aarch64) AGENTOS_ARCH=aarch64 AGENTOS_BOARD=qemu_virt_aarch64 $(abspath _build/rust-pd-abi-aarch64/rust_pd_network.o)
+	$(MAKE) -C kernel/agentos-root-task BUILD_DIR=$(abspath _build/rust-pd-abi-x86_64) AGENTOS_ARCH=x86_64 AGENTOS_BOARD=x86_64_generic $(abspath _build/rust-pd-abi-x86_64/rust_pd_network.o)
 
 # lint-source: architecture-invariant lint over checked-in artifacts (headers,
 # the compiled AArch64 topology, guest FDT templates, guest profiles, QEMU
@@ -1615,10 +1625,10 @@ sel4-test-image:
 		BOARD=$(BOARD) \
 		TARGET_ARCH=$(ARCH) \
 		BOARD_NAME=$(BOARD_NAME) \
-		BUILD_DIR=$(ROOT_DIR)build/$(BOARD)-test \
+		BUILD_DIR=$(ROOT_DIR)_build/$(BOARD)-test \
 		GUEST_OS=none \
 		SEL4_TEST_IMAGE=1
-	@echo "✓ seL4 target TAP image: $(ROOT_DIR)build/$(BOARD)-test/agentos.img"
+	@echo "✓ seL4 target TAP image: $(ROOT_DIR)_build/$(BOARD)-test/agentos.img"
 
 run-tests:
 	@cargo xtask run-tests --board $(BOARD) --timeout-secs $(QEMU_TEST_TIMEOUT)
@@ -1860,7 +1870,7 @@ test-debian-persistence:
 
 UBUNTU_BOOT_TIMING_RECEIPT ?=
 DEBIAN_BOOT_TIMING_RECEIPT ?=
-GUEST_BOOT_TIMING_COMPARISON ?= build/evidence/guest-boot-timing-comparison.json
+GUEST_BOOT_TIMING_COMPARISON ?= _build/evidence/guest-boot-timing-comparison.json
 .PHONY: test-guest-boot-timing-compare
 # Compare existing successful launch-to-SSH receipts. This does not run guests
 # or impose a performance threshold; it rejects incompatible evidence.
@@ -2186,7 +2196,7 @@ e2e: e2e-dual-os
 # Example: make test-guest-session SESSION_PROFILE=ubuntu-live.toml SESSION_PORT=12222
 SESSION_PROFILE ?= ubuntu-live.toml
 SESSION_PORT ?= 12222
-SESSION_KEY ?= build/tmp/dual-ssh/id_ed25519
+SESSION_KEY ?= _build/tmp/dual-ssh/id_ed25519
 SESSION_TIMEOUT ?= 600
 SESSION_KNOWN_HOSTS ?=
 .PHONY: test-guest-session
@@ -2248,26 +2258,7 @@ bootstrap-guest:
 # =============================================================================
 # clean
 # =============================================================================
-clean:
-	@echo "Cleaning build artifacts for $(BOARD)..."
-	@rm -rf $(BUILD_DIR)
-	@rm -rf $(ROOT_DIR)libvmm/arch $(ROOT_DIR)libvmm/util $(ROOT_DIR)libvmm/virtio
-	@rm -f  $(ROOT_DIR)libvmm/guest.d $(ROOT_DIR)libvmm/guest.o
-	@rm -rf $(ROOT_DIR)util
-	@rm -f  $(ROOT_DIR).libvmm_cflags.*
-	@rm -f  $(KERNEL_DIR)/report.txt
-	@rm -f  $(ROOT_DIR)build/cc_pd.sock $(ROOT_DIR)build/agentos-serial.sock
-	@echo "✓ Clean."
-
-clean-all:
-	@echo "Cleaning all build artifacts..."
-	@rm -rf $(ROOT_DIR)build
-	@rm -rf $(ROOT_DIR)libvmm/arch $(ROOT_DIR)libvmm/util $(ROOT_DIR)libvmm/virtio
-	@rm -f  $(ROOT_DIR)libvmm/guest.d $(ROOT_DIR)libvmm/guest.o
-	@rm -rf $(ROOT_DIR)util
-	@rm -f  $(ROOT_DIR).libvmm_cflags.*
-	@rm -f  $(KERNEL_DIR)/report.txt
-	@echo "✓ Clean."
+# clean and its compatibility alias clean-all are defined in mk/clean.mk.
 
 clean-images:
 	@echo "Removing guest OS image cache: $(AGENTOS_IMAGES)"
@@ -2311,19 +2302,19 @@ release-verify:
 	@cargo xtask release verify --version $(RELEASE_VERSION)
 
 PRESENTATION_EDITION ?= dev
-PRESENTATION_PDF ?= build/presentations/agentos-systems-security-v$(PRESENTATION_EDITION).pdf
+PRESENTATION_PDF ?= _build/presentations/agentos-systems-security-v$(PRESENTATION_EDITION).pdf
 
 # Compile the shipping default AArch64 table, without target execution.
 # Optional PD names restrict the report to edges between those domains.
 .PHONY: topology-report
 TOPOLOGY_PDS ?=
 topology-report:
-	@mkdir -p build/tools
+	@mkdir -p _build/tools
 	@$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_GUEST_PRIMARY=1 \
 		-iquote kernel/agentos-root-task/include -Iplatform/include \
 		tools/system-topology.c kernel/agentos-root-task/src/system_desc_aarch64.c \
-		-o build/tools/system-topology
-	@build/tools/system-topology $(TOPOLOGY_PDS)
+		-o _build/tools/system-topology
+	@_build/tools/system-topology $(TOPOLOGY_PDS)
 
 presentation-render:
 	@cargo xtask render-deck --edition $(PRESENTATION_EDITION) --output $(PRESENTATION_PDF) \
@@ -2383,8 +2374,8 @@ help:
 	@echo "  make test-ubuntu-live Boot Ubuntu Casper userspace on agentOS VirtIO only"
 	@echo ""
 	@echo "Guest images:"
-	@echo "  make fetch-guest GUEST_OS=ubuntu     Stage Ubuntu 26.04 assets in build/guest-images"
-	@echo "  make fetch-guest GUEST_OS=freebsd    Stage FreeBSD 15.0 assets in build/guest-images"
+	@echo "  make fetch-guest GUEST_OS=ubuntu     Stage Ubuntu 26.04 assets in _build/guest-images"
+	@echo "  make fetch-guest GUEST_OS=freebsd    Stage FreeBSD 15.0 assets in _build/guest-images"
 	@echo "  make fetch-guest GUEST_OS=both       Stage both Ubuntu and FreeBSD assets"
 	@echo "  make bootstrap-guest OS=<name>       Build guest disks from cached or downloaded ISOs"
 	@echo "                                      names: ubuntu-amd64 ubuntu-arm64 nixos freebsd15"
@@ -2409,8 +2400,9 @@ help:
 	@echo "  make e2e-all          Run E2E suites for every staged guest image"
 	@echo ""
 	@echo "Cleanup/tooling:"
-	@echo "  make clean            Remove build artifacts for the selected board"
-	@echo "  make clean-all        Remove all build artifacts under build/"
+	@echo "  make clean            Remove all generated artifacts under _build/"
+	@echo "  make clean-all        Alias for clean"
+	@echo "  make clean-legacy     Remove artifacts from the old build layout"
 	@echo "  make clean-images     Remove staged guest images"
 	@echo "  make build-tools      Build Rust host tools in release mode"
 	@echo "  make policy-check     Enforce language/UI policy and xtask formatting"
@@ -2442,3 +2434,5 @@ help:
 	@echo "  make test-ubuntu-live QEMU_TEST_TIMEOUT=3600"
 	@echo "  cd ../agentos_gui && make run"
 	@echo ""
+
+endif # goals other than cleanup

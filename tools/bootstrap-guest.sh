@@ -17,8 +17,8 @@
 # Environment:
 #   ISO_DIR         directory containing/caching ISO files
 #                   (default: ${XDG_CACHE_HOME:-$HOME/.cache}/agentos/isos)
-#   GUEST_IMG_DIR   output directory (default: build/guest-images/)
-#   TMP_ROOT        host scratch directory (default: build/tmp/)
+#   GUEST_IMG_DIR   output directory (default: _build/guest-images/)
+#   TMP_ROOT        host scratch directory (default: _build/tmp/)
 #   E2E_SSH_PUBKEY  path to test SSH public key (default: tests/e2e/id_ed25519.pub)
 #   DISK_SIZE_GB    guest disk image size in GB (default: 20)
 #   QEMU_MEM_MB     RAM to give installer VM in MB (default: 2048)
@@ -61,8 +61,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 ISO_DIR="${ISO_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/agentos/isos}"
-GUEST_IMG_DIR="${GUEST_IMG_DIR:-${REPO_ROOT}/build/guest-images}"
-TMP_ROOT="${TMP_ROOT:-${REPO_ROOT}/build/tmp}"
+GUEST_IMG_DIR="${GUEST_IMG_DIR:-${REPO_ROOT}/_build/guest-images}"
+TMP_ROOT="${TMP_ROOT:-${REPO_ROOT}/_build/tmp}"
 E2E_SSH_PUBKEY="${E2E_SSH_PUBKEY:-${REPO_ROOT}/tests/e2e/id_ed25519.pub}"
 DISK_SIZE_GB="${DISK_SIZE_GB:-20}"
 QEMU_MEM_MB="${QEMU_MEM_MB:-2048}"

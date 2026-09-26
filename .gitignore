@@ -1,4 +1,6 @@
 # Build outputs
+_build/
+# Pre-_build outputs, removable with make clean-legacy.
 build/
 deps/
 *.o

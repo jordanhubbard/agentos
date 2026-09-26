@@ -80,5 +80,5 @@ NIC MMIO and driver DMA. Each first proves the owned network path. The root
 task then requires the exact native fault badge, address, data-fault class and
 read/write direction before emitting success. The native PD has no logging
 capability with which to forge that marker. Each tested image is retained in
-`build/evidence/native-network-isolation/`. A production network stack and
+`_build/evidence/native-network-isolation/`. A production network stack and
 native/guest concurrent traffic remain separate qualification work.

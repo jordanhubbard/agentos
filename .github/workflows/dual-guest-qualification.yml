@@ -68,6 +68,8 @@ jobs:
         with:
           targets: aarch64-unknown-none
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Install verified SDK artifact
         uses: ./.github/actions/install-sdk
@@ -88,13 +90,13 @@ jobs:
             debian-freebsd) target=test-debian-peer-recreation ;;
             *) echo "Unsupported guest pair: $GUEST_PAIR" >&2; exit 1 ;;
           esac
-          mkdir -p build/evidence/dual-ssh
-          git rev-parse HEAD > build/evidence/dual-ssh/source-revision.txt
+          mkdir -p _build/evidence/dual-ssh
+          git rev-parse HEAD > _build/evidence/dual-ssh/source-revision.txt
           # bash pipefail propagates the Make failure through tee. The existing
           # harness requires exact FreeBSD/Linux readiness replies, repeats
           # them after Linux recreation, then checks real terminal sessions
           # including file/process, network and package operations in both guests.
-          make "$target" DUAL_OS_TEST_TIMEOUT=14400 2>&1 | tee build/evidence/dual-ssh/qualification.log
+          make "$target" DUAL_OS_TEST_TIMEOUT=14400 2>&1 | tee _build/evidence/dual-ssh/qualification.log
 
       - name: Retain qualification and authenticated SSH transcripts
         if: always()
@@ -102,9 +104,9 @@ jobs:
         with:
           name: dual-ssh-${{ inputs.guests }}-${{ github.sha }}
           path: |
-            build/evidence/dual-ssh/
-            build/evidence/guest-session-*/
-            build/tmp/agentos-qemu-*.log
-            build/tmp/agentos-qemu-*.qemu.stderr
-            build/tmp/agentos-qemu-*.ssh-evidence/
+            _build/evidence/dual-ssh/
+            _build/evidence/guest-session-*/
+            _build/tmp/agentos-qemu-*.log
+            _build/tmp/agentos-qemu-*.qemu.stderr
+            _build/tmp/agentos-qemu-*.ssh-evidence/
           if-no-files-found: error

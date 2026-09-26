@@ -13,7 +13,7 @@ TIMEOUT=30
 SUCCESS_STRINGS=("agentOS v0.1.0" "[event_bus] READY" "[controller] *** agentOS controller boot complete ***")
 FAILURE_STRINGS=("Panic")
 
-BUILD_IMAGE="build/${BOARD}/agentos.img"
+BUILD_IMAGE="_build/${BOARD}/agentos.img"
 TMPLOG=$(mktemp /tmp/agentos-qemu.XXXXXX)
 
 cleanup() {

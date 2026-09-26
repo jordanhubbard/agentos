@@ -116,7 +116,7 @@ pub fn run(args: &HostTestArgs) -> Result<()> {
         .unwrap_or_else(|| "cc".to_string());
 
     // Build a temporary output directory for compiled binaries.
-    let build_dir = repo_root.join("target").join("test-bins");
+    let build_dir = repo_root.join("_build/test-bins");
     std::fs::create_dir_all(&build_dir).context("failed to create test binary output directory")?;
 
     println!("[xtask:test] compiler : {}", cc);
@@ -290,7 +290,7 @@ pub fn run(args: &HostTestArgs) -> Result<()> {
     }
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
-    // Leave binaries in place for debugging; CI can wipe target/ separately.
+    // Leave binaries in place for debugging; make clean removes them.
 
     // ── Summary table ─────────────────────────────────────────────────────────
     let total = selected.len();

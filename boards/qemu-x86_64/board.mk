@@ -1,7 +1,7 @@
 # ── agentOS board: QEMU x86_64 ────────────────────────────────────────────────
 # x86_64 development / CI target.  Uses the QEMU q35 machine model.
 # QEMU boots the seL4 kernel directly and passes root_task.elf as the initial
-# module; build/x86_64_generic/agentos.img remains the agentOS flat container.
+# module; _build/x86_64_generic/agentos.img remains the agentOS flat container.
 BOARD_NAME     := qemu-x86_64
 MICROKIT_BOARD := x86_64_generic
 BOARD_ARCH     := x86_64
@@ -31,6 +31,6 @@ QEMU_NET_FLAGS := \
 
 QEMU_BOOT_FLAGS = \
   -kernel $(SEL4_SDK)/board/x86_64_generic/release/elf/sel4_32.elf \
-  -initrd build/x86_64_generic/root_task.elf
+  -initrd _build/x86_64_generic/root_task.elf
 
 DEPLOY_SCRIPT :=

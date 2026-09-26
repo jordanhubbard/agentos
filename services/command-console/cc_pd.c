@@ -3,11 +3,11 @@
  *
  * Receives binary-framed requests from external callers (agentctl,
  * agentos_gui) via a VirtIO MMIO serial port, which QEMU bridges to
- * build/cc_pd.sock on the host.  Routes each call to the appropriate
+ * _build/cc_pd.sock on the host.  Routes each call to the appropriate
  * service PD via seL4 IPC and returns the binary-framed reply.
  *
  * Transport:  VirtIO MMIO serial, virtio-mmio-bus.2 (PA 0x0A000400).
- *   QEMU args: -chardev socket,id=cc_pd_char,path=build/cc_pd.sock,...
+ *   QEMU args: -chardev socket,id=cc_pd_char,path=_build/cc_pd.sock,...
  *              -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0
  *              -device virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0,nr=1
  *   Wire frame (both directions): 4112 bytes
@@ -57,7 +57,7 @@
 /* ─── VirtIO console driver ──────────────────────────────────────────────── */
 /*
  * Transport: virtio-serial-device on QEMU virtio-mmio-bus.2 (PA 0x0A000400).
- * QEMU bridges the serial port named "cc.0" to build/cc_pd.sock. A validated
+ * QEMU bridges the serial port named "cc.0" to _build/cc_pd.sock. A validated
  * x86 PCI startup record selects the shared modern PCI transport instead.
  *
  * The root task allocates three 4K frames and maps them at fixed CPU virtual
