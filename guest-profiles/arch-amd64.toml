@@ -69,7 +69,7 @@ args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/x86_64/airoo
 
 [[host.acquire]]
 action = "extract-iso-file"
-args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/x86_64/airootfs.sfs.cms.sig", output = "http/arch/x86_64/airootfs.sfs.cms.sig", min_bytes = "256" }
+args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/x86_64/airootfs.sha512", output = "http/arch/x86_64/airootfs.sha512", min_bytes = "128" }
 
 [[host.test]]
 action = "wait-ssh"

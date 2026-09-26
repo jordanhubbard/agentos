@@ -5,7 +5,7 @@ extends = "arch-amd64.toml"
 aliases = ["arch-amd64-installer"]
 
 [boot]
-command_line = "console=hvc0 earlymodules=virtio_mmio,loop,squashfs,overlay archisobasedir=arch archiso_http_srv=http://10.0.2.2:18080/ cms_verify=y ip=:::::eth0:dhcp net.ifnames=0 copytoram=y panic=0"
+command_line = "console=hvc0 earlymodules=virtio_mmio,loop,squashfs,overlay archisobasedir=arch archiso_http_srv=http://10.0.2.2:18080/ checksum=y ip=:::::eth0:dhcp net.ifnames=0 copytoram=y panic=0"
 
 [host.console]
 adapter = "expect"

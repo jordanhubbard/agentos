@@ -2611,6 +2611,12 @@ mod tests {
         assert!(command_line
             .split_ascii_whitespace()
             .any(|arg| arg == "earlymodules=virtio_mmio,loop,squashfs,overlay"));
+        assert!(command_line
+            .split_ascii_whitespace()
+            .any(|arg| arg == "checksum=y"));
+        assert!(!command_line
+            .split_ascii_whitespace()
+            .any(|arg| arg == "cms_verify=y"));
 
         let modules = profile
             .host
@@ -2634,6 +2640,23 @@ mod tests {
         ] {
             assert!(modules.contains(required), "missing {required}");
         }
+
+        let root_hash = profile
+            .host
+            .as_ref()
+            .unwrap()
+            .acquire
+            .iter()
+            .find(|step| {
+                step.action == "extract-iso-file"
+                    && step.args.get("member").map(String::as_str)
+                        == Some("arch/x86_64/airootfs.sha512")
+            })
+            .expect("pinned Arch root hash must be served to the installer");
+        assert_eq!(
+            root_hash.args.get("output").map(String::as_str),
+            Some("http/arch/x86_64/airootfs.sha512")
+        );
     }
 
     #[test]
