@@ -32,6 +32,10 @@ int main(void)
     assert(a==0x1002 && n==0 && !memcmp(ram+0x5ffe,"QEMU",4));
     assert((ram[0x1000]&0x60)==0x20 && (ram[0x2000]&0x60)==0x20);
     assert((ram[0x4000]&0x60)==0x60 && (ram[0x4008]&0x60)==0x60);
+    setup(&c); pte(0x4008,0x7003); a=0xffe; n=4;
+    assert(aos_x86_fw_insb(&memory,ram,0x1000,&c,&a,&n,false));
+    assert(a==0x1002 && !n && !memcmp(ram+0x5ffe,"QE",2) &&
+           !memcmp(ram+0x7000,"MU",2));
     setup(&c); a=0x1001; n=4;
     assert(aos_x86_fw_insb(&memory,ram,0x1000,&c,&a,&n,true));
     assert(a==0xffd && !n && !memcmp(ram+0x5ffe,"UMEQ",4));
