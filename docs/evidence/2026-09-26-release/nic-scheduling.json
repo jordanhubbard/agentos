@@ -1,0 +1,37 @@
+{
+  "schema": "agentos.native-nic-scheduling-qualification.v1",
+  "date_utc": "2026-09-26",
+  "task": "task_8d1acd18f7304c29a46ceb3cf7426bc9",
+  "host": "madmax Intel Linux, accessed as bullwinkle, nested VMX/KVM",
+  "sdk": "2.3.1-agentos-e60776ac-cr2",
+  "source_base": "800e53e4a9623c6c03fcfb82f561ad5c7e57a37b",
+  "source_worktree_clean": false,
+  "source_patch_sha256": "45ff0084c5b2e49c797b9184fa5a2f7fccbeb180768bc765cafd1ecd8e74005a",
+  "integrated_scheduling_commit": "2281c0c92e94cb42c4cb549d5b5873a2c6ed2bad",
+  "source_provenance": "The archive retains the exact candidate patch, including the profile-controlled QEMU egress fix. Target runtime code matches the integrated scheduling change; later desktop-only harness changes are outside this test.",
+  "command": "make gate-x86_64-smp GUEST_OS=none X86_ROOT_DISK=<isolated seeded full Debian disk> X86_SSH_KEY=<generated identity> X86_SSH_KNOWN_HOSTS=<previously console-pinned host key> X86_SSH_PORT=12227 QEMU_TEST_TIMEOUT=3600",
+  "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+  "profile": "debian-amd64-2cpu.toml",
+  "nic_budget_us": 100,
+  "nic_period_us": 1000,
+  "nic_cpu_ceiling_percent": 10,
+  "make_exit": 0,
+  "guest_handles": [1, 2],
+  "proofs": [
+    "Both managed generations passed pinned Ed25519 public-key SSH, interactive terminal, identity, file/process, network/DNS and package install/execute/remove checks",
+    "Both generations exposed CPUs 0 and 1 and passed CPU-affined overlapping x87/SSE workers",
+    "Oversized 2052 MiB admission was rejected before both generations without inventory changes",
+    "Binary CC creation, console input echo, destruction, fresh-handle recreation, second boot and stale-handle rejection passed"
+  ],
+  "root_task_sha256": "716122f11db17244ca767a00ed2677c1b060ff9d3578db495cdbebdb77351f48",
+  "image_sha256": "7bc53c71722ee8960e3a3700881176b7bfdeb10f072c4c802300a2bb4164f854",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-26-arch/nic-smp-qualification.tar.gz",
+  "archive_sha256": "38b1c19575c438ab7251a9a5bf626119db5c62351fcc93e1ea12c973f890170f",
+  "archive_contents": "Source patch, artifact hashes, full Make output, console and packet logs, SSH/SMP results, functional-session transcripts and the public host-key provenance. Private SSH identity and disk are excluded.",
+  "setup_corrections": [
+    "An initial extracted-root-only fixture failed its EFI fstab mount; the passing run used the original full partition layout through make seed-guest-root",
+    "The native launcher previously restricted outbound traffic, causing the DNS assertion to fail; the passing run used explicit profile-controlled egress",
+    "The reused disk required the previously verified host key because cloud-init prints it only on first boot"
+  ],
+  "limits": "This is a Debian two-vCPU managed-guest regression on a shared Intel KVM host. It is not a throughput/fairness benchmark, simultaneous multi-guest qualification, or evidence of completed Arch installation or desktop acceptance. VMM, CC and serial scheduling periods remain unchanged."
+}

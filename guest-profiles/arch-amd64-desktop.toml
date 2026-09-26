@@ -77,7 +77,18 @@ while test "$attempt" -lt 120; do
     sleep 1
 done
 test -n "$display" || { cat /tmp/agentos-sway.log >&2; exit 1; }
-runuser -u agentos -- env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" swaymsg -t get_outputs | grep -q '"active": true'
+attempt=0
+while test "$attempt" -lt 120; do
+    if runuser -u agentos -- env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" swaymsg -t get_outputs >/tmp/agentos-sway-outputs.json &&
+       grep -q '"active": true' /tmp/agentos-sway-outputs.json &&
+       runuser -u agentos -- env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" swaymsg -t get_inputs >/tmp/agentos-sway-inputs.json &&
+       grep -q 'agentOS keyboard' /tmp/agentos-sway-inputs.json &&
+       grep -q 'agentOS pointer' /tmp/agentos-sway-inputs.json; then break; fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
+test "$attempt" -lt 120 || { cat /tmp/agentos-sway.log >&2; exit 1; }
+cat /tmp/agentos-sway-outputs.json /tmp/agentos-sway-inputs.json
 setsid -f runuser -u agentos -- env HOME=/home/agentos USER=agentos XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" wayvnc 127.0.0.1 5900 </dev/null >/tmp/agentos-wayvnc.log 2>&1
 attempt=0
 while test "$attempt" -lt 120; do
@@ -86,6 +97,8 @@ while test "$attempt" -lt 120; do
     sleep 1
 done
 ss -ltn | grep -q '127.0.0.1:5900' || { cat /tmp/agentos-wayvnc.log >&2; exit 1; }
+pgrep -u agentos -x sway >/dev/null
+pgrep -u agentos -x wayvnc >/dev/null
 printf 'agentos-x86-wayland-rfb-ready\n'
 '''
 

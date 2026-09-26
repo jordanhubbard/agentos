@@ -801,6 +801,11 @@ does not meet that condition. Pending network wakes share the VMM notification
 path with block and serial. This attachment proves driver initialization, not
 guest packet I/O or a Linux network interface.
 
+The shorter NIC period passed functional SSH, CPU-affined x87/SSE workloads,
+and teardown/recreation across two native Debian two-vCPU generations. Exact
+source patches and artifact hashes are retained in the
+[NIC scheduling receipt](evidence/2026-09-26-release/nic-scheduling.json).
+
 The generated guest DSDT advertises console, block and network as separate
 LNRO0005 devices with integer UIDs 0/1/2, MMIO pages at 0xf0000000/1000/2000
 and GSIs 16/17/18. Hardware attachments advertise the MAC returned by
