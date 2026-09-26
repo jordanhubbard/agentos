@@ -388,6 +388,7 @@ const HOST_ACTIONS: &[&str] = &[
     "build-initramfs-file",
     "build-static-linux-elf",
     "append-initramfs-file",
+    "filter-initramfs-modules",
     "convert-qcow2-raw",
     "extract-gpt-partition",
     "extract-ext4-file",
@@ -429,6 +430,7 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
                     | "build-initramfs-file"
                     | "build-static-linux-elf"
                     | "append-initramfs-file"
+                    | "filter-initramfs-modules"
                     | "convert-qcow2-raw"
                     | "extract-gpt-partition"
                     | "extract-ext4-file"
@@ -2091,6 +2093,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             &["source", "output", "path", "mode"],
             &["compression", "content", "content_file", "content_sha256"],
         ),
+        "filter-initramfs-modules" => (&["source", "output", "modules"], &[]),
         "convert-qcow2-raw" => (&["source", "output"], &[]),
         "extract-gpt-partition" => (&["source", "output", "index"], &["sector_size"]),
         "extract-ext4-file" => (&["source", "output", "path"], &[]),
@@ -2171,6 +2174,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         step.action.as_str(),
         "build-initramfs-file"
             | "append-initramfs-file"
+            | "filter-initramfs-modules"
             | "convert-qcow2-raw"
             | "extract-gpt-partition"
             | "extract-ext4-file"
@@ -2180,6 +2184,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         let keys: &[&str] = match step.action.as_str() {
             "build-initramfs-file" => &["output", "path"],
             "append-initramfs-file" => &["source", "output", "path"],
+            "filter-initramfs-modules" => &["source", "output"],
             "extract-ext4-file" => &["source", "output"],
             _ => &["source", "output"],
         };
@@ -2230,6 +2235,25 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         if let Some(compression) = step.args.get("compression") {
             enum_value(compression, &["none", "zstd"])?;
         }
+    }
+    if step.action == "filter-initramfs-modules" {
+        let modules: Vec<_> = step.args["modules"].split(',').collect();
+        ensure!(
+            !modules.is_empty()
+                && modules.len() <= 16
+                && modules.iter().all(|name| {
+                    !name.is_empty()
+                        && name.len() <= 64
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                }),
+            "filter-initramfs-modules requires 1..16 bounded module names"
+        );
+        let mut unique = modules.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        ensure!(unique.len() == modules.len(), "duplicate initramfs module");
     }
     if matches!(
         step.action.as_str(),

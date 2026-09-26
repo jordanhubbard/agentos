@@ -2562,6 +2562,7 @@ impl StaticHttpServer {
                     }
                     Err(_) => break,
                 };
+                let _ = stream.set_nonblocking(false);
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let mut request = Vec::with_capacity(4096);
                 while request.len() < 4096
