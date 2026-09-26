@@ -21,7 +21,9 @@ status flags; restoring the normal divider starts a fresh modeled second.
 Linux's SET/reset/write/release sequence is covered by host tests, including
 peer-clock independence and rejection without mutation. Interrupt enables,
 host RTC access and persistent time remain outside this model. Native Arch
-qualification for this change is in progress.
+installation and a fresh boot from its persistent root passed; the
+[installation receipt](evidence/2026-09-26-release/arch-install.json) retains
+the exact source and qualification boundaries.
 
 The optional `GUEST_INPUT` AArch64 variant adds `input_virt`, a bounded input
 queue virtualizer. It owns no hardware frame, IRQ, or guest execution cap.

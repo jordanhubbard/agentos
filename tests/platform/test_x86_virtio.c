@@ -16,6 +16,8 @@ int printf_(const char *format, ...)
     int result=vprintf(format,args); va_end(args); return result;
 }
 static unsigned config_reads, notifications;
+static unsigned config_writes, config_offset;
+static uint32_t config_value;
 static uint8_t ram[4096] __attribute__((aligned(4096)));
 static void reset(virtio_device_t *dev)
 {
@@ -32,7 +34,12 @@ static bool config_read(virtio_device_t *dev, uint32_t offset, uint32_t *value)
     *value=offset ? 0x88776655u : 0x44332211u; return true;
 }
 static bool config_write(virtio_device_t *dev, uint32_t offset, uint32_t value)
-{ (void)dev; (void)offset; (void)value; return false; }
+{
+    (void)dev;
+    if (offset>=8) return false;
+    config_writes++; config_offset=offset; config_value=value;
+    return true;
+}
 static bool notify(virtio_device_t *dev)
 {
     notifications++; dev->regs.InterruptStatus |= 1;
@@ -92,13 +99,26 @@ int main(void)
     reject(AOS_X86_VIRTIO_BASE,1,false);
     reject(AOS_X86_VIRTIO_BASE+1,4,false);
     reject(AOS_X86_VIRTIO_BASE+0x101,2,false);
-    reject(AOS_X86_VIRTIO_BASE+0x100,1,true);
+    reject(AOS_X86_VIRTIO_BASE+REG_VIRTIO_MMIO_STATUS,1,true);
+    reject(AOS_X86_VIRTIO_BASE+0x101,2,true);
+    reject(AOS_X86_VIRTIO_BASE+0x108,1,true);
     reject(AOS_X86_VIRTIO_BASE+0x100,8,false);
     reject(AOS_X86_VIRTIO_BASE+0x200,4,false);
     reject(AOS_X86_VIRTIO_BASE+8192,4,false);
     reject(UINT64_MAX,4,false);
     uint32_t value=123;
     assert(!aos_x86_virtio_access(AOS_X86_VIRTIO_BASE+0x108,4,false,&value) && value==123);
+    unsigned reads_before=config_reads;
+    value=0xabcdef11;
+    assert(aos_x86_virtio_access(AOS_X86_VIRTIO_BASE+0x100,1,true,&value));
+    assert(config_writes==1 && config_offset==0 && config_value==0x11);
+    value=0xffffff02;
+    assert(aos_x86_virtio_access(AOS_X86_VIRTIO_BASE+0x101,1,true,&value));
+    assert(config_writes==2 && config_offset==1 && config_value==2);
+    value=0xabcde123;
+    assert(aos_x86_virtio_access(AOS_X86_VIRTIO_BASE+0x102,2,true,&value));
+    assert(config_writes==3 && config_offset==2 && config_value==0xe123);
+    assert(config_reads==reads_before);
     write_at(REG_VIRTIO_MMIO_QUEUE_NUM,8);
     write_at(REG_VIRTIO_MMIO_QUEUE_DESC_LOW,256);
     write_at(REG_VIRTIO_MMIO_QUEUE_AVAIL_LOW,512);

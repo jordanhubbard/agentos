@@ -53,9 +53,17 @@ The evidence directory contains the disk, SSH identity, phase logs, and
 `receipt.json`. A passing receipt requires both installation and reboot.
 `make clean` removes these generated files along with the rest of `_build`.
 
+The [September 26 native receipt](evidence/2026-09-26-release/arch-install.json)
+records a passing installation and reboot with all five functional SSH checks.
+It includes the source patch digest because that run began from a working
+candidate before the fixes were committed.
+
 ## Desktop qualification
 
-Use the retained disk and identity from a successful installation:
+Copy the retained disk from a successful installation before running desktop
+qualification, because provisioning modifies it. Keep the original disk with
+its installation receipt so its recorded checksum remains valid. Use the
+installation's retained SSH identity:
 
 ```sh
 make gate-x86_64-desktop GUEST_OS=none QEMU_TEST_TIMEOUT=14400 \
@@ -66,6 +74,8 @@ make gate-x86_64-desktop GUEST_OS=none QEMU_TEST_TIMEOUT=14400 \
 
 This profile adds emulated virtio GPU and input, installs Sway and WayVNC,
 and checks display/input through the existing desktop qualification harness.
+Sway and WayVNC run as `agentos`; the recipe requires an active compositor
+output and both agentOS input devices before accepting desktop readiness.
 The provisioning recipe sets the guest clock from the host timestamp before
 HTTPS downloads; the private RTC does not provide persistent wall-clock time.
 WayVNC listens on guest loopback and is reached through authenticated SSH.

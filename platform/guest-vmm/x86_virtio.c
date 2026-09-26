@@ -94,11 +94,14 @@ bool aos_x86_virtio_access(uint64_t gpa, unsigned width, bool write, uint32_t *v
         return false;
     unsigned offset=(unsigned)((gpa-AOS_X86_VIRTIO_BASE) % AOS_X86_VIRTIO_STRIDE);
     if (offset >= REG_VIRTIO_MMIO_CONFIG+0x100u ||
-        (width != 4u && (write || offset < REG_VIRTIO_MMIO_CONFIG)))
+        (width != 4u && offset < REG_VIRTIO_MMIO_CONFIG))
         return false;
     virtio_device_t *dev=devices[slot_at(gpa)];
     if (write) {
-        bool ok=virtio_mmio_reg_write(dev, offset, *value);
+        /* Device configuration includes byte-sized selectors (virtio-input).
+         * Preserve their exact offset; do not read/modify adjacent registers. */
+        uint32_t mask=width == 4u ? UINT32_MAX : (1u << (width*8u))-1u;
+        bool ok=virtio_mmio_reg_write(dev, offset, *value & mask);
         /* Device ACK/reset can lower the line. LAPIC EOI alone cannot. */
         bool irq=virq_inject((int)dev->virq);
         return ok && irq;

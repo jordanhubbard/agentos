@@ -42,6 +42,7 @@ diagnostic and qualification branches. The previously omitted
 is restored as a historical failure; its experimental boot arguments are not
 part of the release candidate.
 
-Arch installation and desktop acceptance remain pending until native receipts
-are retained. This branch reconciliation is not itself a release or runtime
-qualification.
+Arch installation and reboot passed the retained
+[native installation qualification](evidence/2026-09-26-release/arch-install.json).
+Desktop acceptance remains pending. This branch reconciliation is not itself
+a release or broader runtime qualification.
