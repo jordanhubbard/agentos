@@ -787,6 +787,7 @@ gate-x86_64-linux-login:
 		--timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: gate-x86_64-storage
+.PHONY: gate-x86_64-arch
 .PHONY: gate-x86_64-debian-ssh
 .PHONY: gate-x86_64-cc-linux
 .PHONY: x86-smp-probe gate-x86_64-smp
@@ -822,6 +823,10 @@ gate-x86_64-debian-ssh:
 
 gate-x86_64-storage:
 	@cargo xtask x86-storage --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+gate-x86_64-arch:
+	@cargo xtask x86-arch-install --timeout-secs $(QEMU_TEST_TIMEOUT) \
+		--ssh-port $(if $(X86_SSH_PORT),$(X86_SSH_PORT),12225)
 
 .PHONY: gate-x86_64-guest-faults
 gate-x86_64-guest-faults:

@@ -1,0 +1,80 @@
+schema = 2
+id = "arch-linux-x86-64"
+status = "runtime"
+aliases = ["arch-amd64"]
+
+[target]
+architecture = "x86-64"
+boot_protocol = "uefi"
+kernel_format = "uefi"
+control_type = 1
+guest_id = 0
+vcpus = 2
+devices = ["net", "block", "console"]
+network_client = 0
+block_media = 0
+autostart = true
+entry_from_image = false
+
+[target.cpu_features]
+version = 1
+required = ["fp", "simd"]
+prohibited = ["crypto", "rng", "vector", "nested-virt"]
+
+[boot]
+command_line = "console=hvc0 root=/dev/vda2 rw rootwait net.ifnames=0 biosdevname=0 disablehooks=archiso,archiso_loop_mnt,archiso_pxe_common,archiso_pxe_nbd,archiso_pxe_http,archiso_pxe_nfs panic=0"
+
+[artifacts.kernel]
+source = "archlinux:2026.09.01:arch/boot/x86_64/vmlinuz-linux"
+cache = "build/guest-images/arch-amd64/vmlinuz-linux"
+sha256 = "3006fd2b850825f7d3174e9d7dd7d714dbd830ac07dc2643d4541e4953857fac"
+max_bytes = 33554432
+
+[artifacts.initrd]
+source = "archlinux:2026.09.01:arch/boot/x86_64/initramfs-linux.img"
+cache = "build/guest-images/arch-amd64/initramfs-linux.img"
+sha256 = "1cea189292c7ee8c6c86e8e951bff2bbb9d1fe16dae184de28409b836ccb86d9"
+max_bytes = 268435456
+
+[placements.default]
+guest_gpa_base = 0
+vmm_hva_base = 0x80000000
+ram_size = 0x80000000
+kernel_load_address = 0x200000
+initrd_load_address = 0x8000000
+
+[host.build]
+adapter = "uefi-artifacts"
+acquire_dir = "build/guest-images/arch-amd64"
+
+[[host.acquire]]
+action = "stage-url"
+args = { cache_name = "archlinux-2026.09.01-x86_64.iso", output = "archlinux-2026.09.01-x86_64.iso", url = "https://geo.mirror.pkgbuild.com/iso/2026.09.01/archlinux-2026.09.01-x86_64.iso", override_env = "ARCH_AMD64_ISO", sha256 = "be8458032f8105e60ee2a3067f950b6e3c007ee51b38dac50e8b48e765561c91" }
+
+[[host.acquire]]
+action = "extract-iso-file"
+args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/boot/x86_64/vmlinuz-linux", output = "vmlinuz-linux", min_bytes = "8388608" }
+
+[[host.acquire]]
+action = "extract-iso-file"
+args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/boot/x86_64/initramfs-linux.img", output = "initramfs-linux.img", min_bytes = "33554432" }
+
+[[host.acquire]]
+action = "extract-iso-file"
+args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/x86_64/airootfs.sfs", output = "http/arch/x86_64/airootfs.sfs", min_bytes = "268435456" }
+
+[[host.acquire]]
+action = "extract-iso-file"
+args = { source = "archlinux-2026.09.01-x86_64.iso", member = "arch/x86_64/airootfs.sfs.cms.sig", output = "http/arch/x86_64/airootfs.sfs.cms.sig", min_bytes = "256" }
+
+[[host.test]]
+action = "wait-ssh"
+args = { account = "agentos", marker = "Linux", prompt = "$ " }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "network", script = "ping -c 3 -W 5 10.0.2.2; getent ahostsv4 archive.archlinux.org" }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "packages", script = "d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT; cp /usr/bin/true \"$d/agentos-acceptance-probe\"; printf '.PKGINFO\\npkgname = agentos-acceptance-probe\\npkgver = 1.0-1\\npkgdesc = Guest acceptance fixture\\narch = x86_64\\nbuilddate = 0\\npackager = agentOS <test@localhost>\\nsize = 0\\n' >\"$d/.PKGINFO\"; tar --zstd -C \"$d\" -cf \"$d/probe.pkg.tar.zst\" .PKGINFO agentos-acceptance-probe; sudo -n pacman --noconfirm -U \"$d/probe.pkg.tar.zst\"; pacman -Q agentos-acceptance-probe; test -x /agentos-acceptance-probe; sudo -n pacman --noconfirm -R agentos-acceptance-probe; test ! -e /agentos-acceptance-probe" }

@@ -1,0 +1,61 @@
+schema = 2
+id = "arch-linux-x86-64-installer"
+status = "runtime"
+extends = "arch-amd64.toml"
+aliases = ["arch-amd64-installer"]
+
+[boot]
+command_line = "console=hvc0 archisobasedir=arch archiso_http_srv=http://10.0.2.2:18080/ cms_verify=y ip=:::::eth0:dhcp net.ifnames=0 copytoram=y panic=0"
+
+[host.console]
+adapter = "expect"
+success = ["root@archiso"]
+reject = ["Initramfs unpacking failed", "emergency mode", "ERROR: Failed to mount", "Kernel panic"]
+
+[[host.provision]]
+action = "send-console"
+args = { text = "sgdisk --zap-all /dev/vda && sgdisk -n 1:1MiB:+512MiB -t 1:ef00 -c 1:EFI /dev/vda && sgdisk -n 2:0:0 -t 2:8300 -c 2:agentos-root /dev/vda && partprobe /dev/vda" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "mkfs.fat -F 32 -n AGENTOSEFI /dev/vda1 && mkfs.ext4 -F -L agentos-root /dev/vda2 && mount /dev/vda2 /mnt && mkdir -p /mnt/boot && mount /dev/vda1 /mnt/boot" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "printf 'Server = https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch\\n' > /etc/pacman.d/mirrorlist && pacstrap -K /mnt base linux linux-firmware openssh sudo" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "genfstab -U /mnt > /mnt/etc/fstab && printf 'agentos\\n' > /mnt/etc/hostname && ln -sf /usr/share/zoneinfo/UTC /mnt/etc/localtime && printf 'en_US.UTF-8 UTF-8\\n' > /mnt/etc/locale.gen && arch-chroot /mnt locale-gen" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "arch-chroot /mnt useradd -m -G wheel agentos && install -d -m 0700 -o 1000 -g 1000 /mnt/home/agentos/.ssh && printf '%s\\n' '{{ssh_public_key}}' > /mnt/home/agentos/.ssh/authorized_keys && chown 1000:1000 /mnt/home/agentos/.ssh/authorized_keys && chmod 0600 /mnt/home/agentos/.ssh/authorized_keys" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "printf '%%wheel ALL=(ALL:ALL) NOPASSWD: ALL\\n' > /mnt/etc/sudoers.d/agentos && chmod 0440 /mnt/etc/sudoers.d/agentos && mkdir -p /mnt/etc/ssh/sshd_config.d && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\nPermitRootLogin no\\nPubkeyAuthentication yes\\n' > /mnt/etc/ssh/sshd_config.d/10-agentos.conf" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "mkdir -p /mnt/etc/systemd/network && printf '[Match]\\nDriver=virtio_net\\n\\n[Network]\\nAddress=10.0.2.15/24\\nGateway=10.0.2.2\\nDNS=10.0.2.3\\n' > /mnt/etc/systemd/network/20-agentos.network && ln -sf /run/systemd/resolve/stub-resolv.conf /mnt/etc/resolv.conf" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "arch-chroot /mnt systemctl enable systemd-networkd systemd-resolved sshd serial-getty@hvc0.service && arch-chroot /mnt ssh-keygen -A && bootctl --root=/mnt --no-variables install" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "root_uuid=$(blkid -s UUID -o value /dev/vda2) && printf 'default agentos.conf\\ntimeout 0\\n' > /mnt/boot/loader/loader.conf && printf 'title agentOS Arch Linux\\nlinux /vmlinuz-linux\\ninitrd /initramfs-linux.img\\noptions root=UUID=%s rw console=hvc0 net.ifnames=0 biosdevname=0 panic=0\\n' \"$root_uuid\" > /mnt/boot/loader/entries/agentos.conf" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "printf '[Unit]\\nDescription=Report pinned SSH host key on agentOS console\\nBefore=sshd.service\\n\\n[Service]\\nType=oneshot\\nExecStart=/bin/sh -c \"echo -----BEGIN SSH HOST KEY KEYS----- >/dev/hvc0; cat /etc/ssh/ssh_host_ed25519_key.pub >/dev/hvc0; echo -----END SSH HOST KEY KEYS----- >/dev/hvc0\"\\n\\n[Install]\\nWantedBy=multi-user.target\\n' > /mnt/etc/systemd/system/agentos-host-key.service && arch-chroot /mnt systemctl enable agentos-host-key.service" }
+
+[[host.provision]]
+action = "send-console"
+args = { text = "arch-chroot /mnt pacman -Q | tee /mnt/root/agentos-packages.txt > /dev/hvc0 && sync && test -s /mnt/root/agentos-packages.txt" }
+
+[[host.test]]
+action = "wait-console"
+args = { marker = "agentos-x86-profile-provision-complete" }
