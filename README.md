@@ -122,22 +122,36 @@ make gate                      # the OS-claim gate: all of the above plus x86_64
 ```
 
 The Microkit SDK lands in `$HOME/.cache/agentos/microkit-sdk-2.1.0` unless
-`SEL4_SDK` points elsewhere. QEMU logs and control sockets go to `build/tmp/`;
+`SEL4_SDK` points elsewhere. QEMU logs and control sockets go to `_build/tmp/`;
 set `AGENTOS_TMP_DIR` to a short path when the checkout path is long (macOS
 caps Unix socket paths at 104 bytes). `make help` lists every target.
 
+Generated build outputs live under `_build/`: board objects, archives and images
+in `_build/<board>/`, Rust outputs in `_build/cargo/`, host executables in
+`_build/tools/` and test outputs in `_build/tmp/` or `_build/test-bins/`.
+`make clean` removes the entire `_build/` tree, including staged guest images
+and local test evidence; `make clean-all` is an alias. Cleanup needs neither
+Cargo nor the SDK. Installed SDKs and downloaded ISO inputs in the user cache
+are retained. Explicit output-directory overrides remain the caller's
+responsibility. Tracked generated source headers are source artifacts and are
+also retained.
+
+For a checkout built before this layout, run `make clean-legacy` once to remove
+the old `build/`, `target/`, and in-source build artifacts. To preserve a large
+guest-image cache, move `build/guest-images` into `_build/guest-images` first.
+
 For a running AArch64 image, build with `make -C tools/agentctl` and run
-`tools/agentctl/agentctl --socket PATH inspect` using its control socket.
+`_build/tools/agentctl/agentctl --socket PATH inspect` using its control socket.
 The structured report describes boot observations; current thread state is
 unknown and memory usage is an accounted-page lower bound. The CC socket
 remains a privileged control channel; `inspect` is a read-only operation,
 not a separate read-only credential.
-`tools/agentctl/agentctl --socket PATH session-inspect` obtains the same report
+`_build/tools/agentctl/agentctl --socket PATH session-inspect` obtains the same report
 through a separate native serial client. It uses a single serialized stream:
 `inspect.snapshot` returns `ok N` followed by exactly N report bytes. There is
 no interactive shell or mutation command in this protocol.
 
-`tools/agentctl/agentctl --socket PATH log-stream SLOT PD_ID` consumes one
+`_build/tools/agentctl/agentctl --socket PATH log-stream SLOT PD_ID` consumes one
 bounded console chunk and returns reply registers plus `data_hex` in JSON.
 Hex preserves all bytes, including NULs, escape sequences and non-UTF-8 data.
 An empty `data_hex` is a successful read with no available bytes; a failed

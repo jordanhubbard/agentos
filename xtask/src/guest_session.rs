@@ -237,7 +237,7 @@ pub(crate) fn prove(
     let evidence = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("build/evidence");
+        .join("_build/evidence");
     fs::create_dir_all(&evidence)?;
     let directory = tempfile::Builder::new()
         .prefix("guest-session-")
@@ -302,7 +302,9 @@ pub(crate) fn prove(
             session.wait_marker(&format!("agentos-{nonce}-{name}"))?;
             println!("[xtask:test] {} SSH {name}: PASS", profile.id);
         }
-        session.send("exit 0")?;
+        // The caller may stop the VM immediately after acceptance. Persist
+        // package database changes and removed locks before it does so.
+        session.send("sync && exit 0 || exit 91")?;
         session.finish()
     })();
     fs::write(
@@ -433,8 +435,21 @@ mod tests {
             "freebsd.toml",
             "debian.toml",
             "debian-scenario.toml",
+            "debian-amd64.toml",
+            "arch-amd64.toml",
+            "arch-amd64-desktop.toml",
         ] {
             let profile = cmd_guest_profile::host_profile_plan(&root, Path::new(name)).unwrap();
+            if let Some(desktop) = &profile.desktop {
+                assert!(
+                    Command::new("sh")
+                        .args(["-n", "-c", &desktop.provision_script])
+                        .status()
+                        .unwrap()
+                        .success(),
+                    "{name} desktop provisioning syntax"
+                );
+            }
             let checks = steps(&profile).unwrap();
             assert_eq!(checks.len(), 5);
             for (_, script) in checks {

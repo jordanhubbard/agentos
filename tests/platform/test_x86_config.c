@@ -85,6 +85,17 @@ static void boot_tests(void)
     assert(aos_x86_config_boot(&b,&blobs));
     fw(&b,0xb,bytes,8); assert(read_le(bytes,8)==0);
     fw(&b,0x14,bytes,8); assert(read_le(bytes,8)==0);
+    assert(aos_x86_config_init(&b,0x8000000));
+    blobs.initrd=initrd; blobs.initrd_size=sizeof(initrd);
+    blobs.cmdline=cmd; blobs.cmdline_size=sizeof(cmd);
+    assert(aos_x86_config_boot(&b,&blobs));
+    memset(bytes,0xcc,sizeof(bytes));
+    assert(aos_x86_config_dma(&b,(0x11u<<16)|8u|2u,bytes,sizeof(bytes)));
+    assert(!memcmp(bytes,kernel,sizeof(kernel)) && !bytes[sizeof(kernel)] &&
+           b.boot_reads[0]==sizeof(kernel) && b.fw_reads==sizeof(bytes));
+    original=b;
+    assert(!aos_x86_config_dma(&b,2u,bytes,AOS_X86_BOOT_BLOB_LIMIT+1u));
+    assert(!memcmp(&b,&original,sizeof(b)));
 }
 
 static void reset_tests(void)
@@ -287,7 +298,7 @@ int main(void)
     uint8_t data[100];
     fw(&a, 0, data, 6);
     assert(!memcmp(data, "QEMU\0\0", 6));
-    fw(&a, 1, data, 4); assert(read_le(data, 4) == 1);
+    fw(&a, 1, data, 4); assert(read_le(data, 4) == 3);
     fw(&a, 3, data, 8); assert(read_le(data, 8) == 0x2000000);
     fw(&b, 3, data, 8); assert(read_le(data, 8) == 0x80000000);
     fw(&a, 5, data, 2); assert(read_le(data, 2) == 1);

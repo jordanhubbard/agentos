@@ -1,0 +1,43 @@
+{
+  "completed_unix_seconds": 1790441982,
+  "disk": "/tmp/agentos-release-0.4.2/_build/evidence/x86-arch-install-GPCgD4/arch-root.raw",
+  "disk_bytes": 8589934592,
+  "disk_sha256": "8e13ba7407aa9ca57925572749a2e7aafdc2f1abbcee7cca25b9639cc6416657",
+  "installer_iso_sha256": "be8458032f8105e60ee2a3067f950b6e3c007ee51b38dac50e8b48e765561c91",
+  "phases": [
+    {
+      "phase": "install",
+      "profile": "arch-amd64-installer.toml",
+      "status": "pass",
+      "stderr": "/tmp/agentos-release-0.4.2/_build/evidence/x86-arch-install-GPCgD4/install.stderr.log",
+      "stdout": "/tmp/agentos-release-0.4.2/_build/evidence/x86-arch-install-GPCgD4/install.stdout.log"
+    },
+    {
+      "phase": "reboot",
+      "profile": "arch-amd64.toml",
+      "status": "pass",
+      "stderr": "/tmp/agentos-release-0.4.2/_build/evidence/x86-arch-install-GPCgD4/reboot.stderr.log",
+      "stdout": "/tmp/agentos-release-0.4.2/_build/evidence/x86-arch-install-GPCgD4/reboot.stdout.log"
+    }
+  ],
+  "schema": "agentos.x86_arch_install.v1",
+  "source_revision": "800e53e4a9623c6c03fcfb82f561ad5c7e57a37b",
+  "source_worktree_clean": false,
+  "ssh_public_key": "/tmp/agentos-release-0.4.2/_build/evidence/x86-arch-install-GPCgD4/id_ed25519.pub",
+  "status": "pass",
+  "qualification": {
+    "host": "madmax Intel Linux, accessed as bullwinkle, nested VMX/KVM",
+    "command": "make gate-x86_64-arch GUEST_OS=none QEMU_TEST_TIMEOUT=14400 X86_SSH_PORT=12226",
+    "sdk": "2.3.1-agentos-e60776ac-cr2",
+    "firmware_sha256": "101afad5f520753224b60b9555df60add435cf50c7a82b781d7d7d8c60db7eb5",
+    "source_patch_sha256": "5284a8ba456124490409836a90ff011c175ae3fb0bd5c36bbcb00fad2606fac9",
+    "reboot_root_task_sha256": "8eb11e23a1bb9b10691dde63d7783713a7d6f27a52ca77f41d98d6ae75b20cc0",
+    "reboot_image_sha256": "8f8f39ce5056f86fa8dc72248642108b301559564b4ccd05c025dc2defc52716",
+    "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-26-arch/installation-pass.tar.gz",
+    "archive_sha256": "5df8ac65890b7e209eaf09b28857d4ec35d28bd81e37c34f7d60e327cf4db499",
+    "archive_contents": "Original receipt, exact source patch and installation artifact hashes, both phase logs, console logs, packet captures, public SSH key and host-key pin, and functional-session transcripts. Private identity and disk are excluded.",
+    "proofs": ["Pinned live ISO installation to fresh 8 GiB writable virtio disk", "Fresh platform boot using the persistent root partition", "Console-pinned key-only SSH, interactive terminal, identity, file/process, network/DNS, and package install/execute/remove"],
+    "limits": "One vCPU and 2 GiB RAM on a shared Intel KVM host. Reboot uses the externally pinned ISO kernel and filtered initramfs, not the installed bootloader. No kernel-update, concurrent bulk-download, bare-metal, or desktop claim. Desktop qualification uses a separate copy of this disk.",
+    "subsequent_finding": "The initial SSH acceptance harness lacked a final sync after package operations. A later boot of the copied disk recovered its ext4 journal but retained pacman's lock. The original receipt and disk are preserved; a disposable copy was checked offline and the stale lock removed. Final-sync and repeated cold-boot qualification are recorded separately."
+  }
+}

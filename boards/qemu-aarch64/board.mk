@@ -24,7 +24,7 @@ QEMU_DISPLAY := -display none -monitor none
 QEMU_SERIAL_FLAGS := \
   -chardev socket,id=char0,path=/tmp/agentos-serial.sock,server=on,wait=off \
   -serial chardev:char0 \
-  -chardev socket,id=cc_pd_char,path=build/cc_pd.sock,server=on,wait=off \
+  -chardev socket,id=cc_pd_char,path=_build/cc_pd.sock,server=on,wait=off \
   -serial chardev:cc_pd_char
 
 QEMU_NET_FLAGS := \

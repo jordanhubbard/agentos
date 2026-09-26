@@ -83,7 +83,7 @@ fn plan(root: &Path, args: &ReleasePlanArgs) -> Result<()> {
         "remote": remote,
         "version_path": "Cargo.toml",
         "changelog_path": "CHANGELOG.md",
-        "receipt_path": format!("build/release/{next}/receipt.json"),
+        "receipt_path": format!("_build/release/{next}/receipt.json"),
         "claim": args.claim,
         "gates": gates_for(args.claim),
         "artifacts": artifacts,
@@ -450,7 +450,7 @@ fn file_digest(path: &Path) -> Result<(u64, String)> {
 }
 
 fn receipt_path(root: &Path, version: &str) -> PathBuf {
-    root.join("build/release")
+    root.join("_build/release")
         .join(version)
         .join("receipt.json")
 }
@@ -937,16 +937,16 @@ mod tests {
     #[test]
     fn release_artifact_paths_are_unambiguous() {
         assert_eq!(
-            expected_artifact_paths(&[PathBuf::from("build/qemu/agentos.img")]).unwrap(),
-            ["build/qemu/agentos.img"]
+            expected_artifact_paths(&[PathBuf::from("_build/qemu/agentos.img")]).unwrap(),
+            ["_build/qemu/agentos.img"]
         );
         assert!(expected_artifact_paths(&[
-            PathBuf::from("build/a/agentos.img"),
-            PathBuf::from("build/b/agentos.img"),
+            PathBuf::from("_build/a/agentos.img"),
+            PathBuf::from("_build/b/agentos.img"),
         ])
         .is_err());
         assert!(expected_artifact_paths(&[PathBuf::from("../agentos.img")]).is_err());
-        assert!(expected_artifact_paths(&[PathBuf::from("build/receipt.json")]).is_err());
+        assert!(expected_artifact_paths(&[PathBuf::from("_build/receipt.json")]).is_err());
     }
 
     #[test]

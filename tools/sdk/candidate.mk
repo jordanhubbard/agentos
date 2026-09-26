@@ -1,13 +1,13 @@
 # Opt-in, isolated build for the approved CR2 dependency qualification.
 # The source arguments name local upstream clones; only pinned commits are used.
-SDK_CANDIDATE_DIR ?= $(HOME)/.cache/agentos/sdk-cr2-build
+SDK_CANDIDATE_DIR ?= $(SDK_CANDIDATE_REPO)/_build/sdk-candidate
 SDK_CANDIDATE_MICROKIT_SOURCE ?=
 SDK_CANDIDATE_SEL4_SOURCE ?=
 SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
 SDK_CANDIDATE_ARCHIVE_SHA256 := fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b
-SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/build/sdk-candidate-package
+SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/_build/sdk-candidate-package
 
 .PHONY: sdk-candidate sdk-candidate-check
 
@@ -77,8 +77,9 @@ sdk-candidate:
 	@test -d "$(SDK_CANDIDATE_MICROKIT_SOURCE)" -a -d "$(SDK_CANDIDATE_SEL4_SOURCE)" || \
 		{ echo 'Set SDK_CANDIDATE_MICROKIT_SOURCE and SDK_CANDIDATE_SEL4_SOURCE to upstream clones'; exit 1; }
 	@case "$$(realpath -m -- "$(SDK_CANDIDATE_DIR)")" in \
+		"$(SDK_CANDIDATE_REPO)/_build/"*) ;; \
 		"$(SDK_CANDIDATE_REPO)"|"$(SDK_CANDIDATE_REPO)"/*) \
-			echo 'SDK_CANDIDATE_DIR must be outside the agentOS checkout'; exit 1 ;; \
+			echo 'SDK_CANDIDATE_DIR inside the checkout must be under _build'; exit 1 ;; \
 	esac
 	@test ! -e "$(SDK_CANDIDATE_DIR)" || \
 		{ echo 'SDK_CANDIDATE_DIR must be a fresh directory; previous results are preserved'; exit 1; }

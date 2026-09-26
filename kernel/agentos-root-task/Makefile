@@ -443,6 +443,39 @@ $(BUILD_DIR)/x86_vmm_net.o: $(REPO_ROOT_MK)/platform/net-virt/vmm_virtio_net.c M
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
 $(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_net_backend.o $(BUILD_DIR)/x86_vmm_net.o
+ifdef GUEST_GRAPHICS
+$(BUILD_DIR)/x86_gpu_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpu.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_gpu_2d.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpu_2d.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_gpu_ring.o: $(REPO_ROOT_MK)/libvmm/src/virtio/gpu_ring.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_gpu_framebuffer.o: $(REPO_ROOT_MK)/platform/gpu-virt/framebuffer_adapter.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_gpu.o: $(REPO_ROOT_MK)/platform/gpu-virt/vmm_virtio_gpu.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_gpu_queue.o: $(REPO_ROOT_MK)/platform/framebuffer/service.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_gpu_backend.o $(BUILD_DIR)/x86_gpu_2d.o $(BUILD_DIR)/x86_gpu_ring.o $(BUILD_DIR)/x86_gpu_framebuffer.o $(BUILD_DIR)/x86_vmm_gpu.o $(BUILD_DIR)/x86_gpu_queue.o
+endif
+ifdef GUEST_INPUT
+$(BUILD_DIR)/x86_input_backend.o: $(REPO_ROOT_MK)/libvmm/src/virtio/input.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_vmm_input.o: $(REPO_ROOT_MK)/platform/input-virt/vmm_virtio_input.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/x86_input_queue.o: $(REPO_ROOT_MK)/platform/input-virt/service.c Makefile
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only -ffunction-sections -fdata-sections $< -o $@
+$(BUILD_DIR)/guest_vmm_primary.elf: $(BUILD_DIR)/x86_input_backend.o $(BUILD_DIR)/x86_vmm_input.o $(BUILD_DIR)/x86_input_queue.o
+endif
 $(BUILD_DIR)/x86_fsmalloc.o: $(REPO_ROOT_MK)/libvmm/dep/sddf/util/fsmalloc.c Makefile
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(X86_SERIAL_CFLAGS) -mgeneral-regs-only $< -o $@
@@ -725,13 +758,21 @@ ifdef SEL4_TEST_IMAGE
 endif
 
 ifdef GUEST_INPUT
-  ifneq ($(ARCH),aarch64)
-    $(error GUEST_INPUT requires aarch64)
+  ifeq ($(ARCH),x86_64)
+    ifneq ($(X86_FIRMWARE_RESET),1)
+      $(error x86 GUEST_INPUT requires X86_FIRMWARE_RESET=1)
+    endif
+  else ifneq ($(ARCH),aarch64)
+    $(error GUEST_INPUT requires aarch64 or x86_64 firmware mode)
   endif
   ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
     $(error GUEST_INPUT cannot be combined with focused test images)
   endif
-  ifeq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+  ifeq ($(ARCH),x86_64)
+    ifeq ($(strip $(X86_BOOT_PROFILE_BIN)),)
+      $(error x86 GUEST_INPUT requires X86_BOOT_PROFILE_BIN)
+    endif
+  else ifeq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
     $(error GUEST_INPUT requires a guest profile)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_INPUT=1
@@ -740,13 +781,21 @@ ifdef GUEST_INPUT
 endif
 
 ifdef GUEST_GRAPHICS
-  ifneq ($(ARCH),aarch64)
-    $(error GUEST_GRAPHICS requires aarch64)
+  ifeq ($(ARCH),x86_64)
+    ifneq ($(X86_FIRMWARE_RESET),1)
+      $(error x86 GUEST_GRAPHICS requires X86_FIRMWARE_RESET=1)
+    endif
+  else ifneq ($(ARCH),aarch64)
+    $(error GUEST_GRAPHICS requires aarch64 or x86_64 firmware mode)
   endif
   ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
     $(error GUEST_GRAPHICS cannot be combined with focused test images)
   endif
-  ifeq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
+  ifeq ($(ARCH),x86_64)
+    ifeq ($(strip $(X86_BOOT_PROFILE_BIN)),)
+      $(error x86 GUEST_GRAPHICS requires X86_BOOT_PROFILE_BIN)
+    endif
+  else ifeq ($(strip $(GUEST_PRIMARY_PROFILE)$(GUEST_SECONDARY_PROFILE)),)
     $(error GUEST_GRAPHICS requires a guest profile)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_GUEST_GRAPHICS=1
@@ -1173,7 +1222,7 @@ $(BUILD_DIR)/rust_pd_network.o: $(REPO_ROOT)/libs/rust-pd/runtime/network.c $(GU
 
 $(BUILD_DIR)/native_rust_probe.elf: FORCE $(BUILD_DIR)/rust_pd_ipc.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o $(BUILD_DIR)/rust_pd_network.o
 	cd $(REPO_ROOT) && cargo build -p agentos-native-rust-probe --release --target aarch64-unknown-none
-	$(LD) --gc-sections $(LDFLAGS) $(filter-out FORCE,$^) $(REPO_ROOT)/target/aarch64-unknown-none/release/libagentos_native_rust_probe.a $(LIBS) -o $@
+	$(LD) --gc-sections $(LDFLAGS) $(filter-out FORCE,$^) $(REPO_ROOT)/_build/cargo/aarch64-unknown-none/release/libagentos_native_rust_probe.a $(LIBS) -o $@
 
 $(BUILD_DIR)/native_rust_client.o: $(REPO_ROOT)/tests/native-rust/client.c
 	@mkdir -p $(BUILD_DIR)
@@ -1600,6 +1649,14 @@ ifeq ($(X86_FIRMWARE_RESET),1)
 SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml
 ifeq ($(X86_CC_PCI),1)
 SYSTEM_TOML := $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/cc.toml
+ifneq ($(strip $(GUEST_INPUT)$(GUEST_GRAPHICS)),)
+SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-cc-peripherals.toml)
+$(SYSTEM_TOML): $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/cc.toml Makefile
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; \
+	  $(if $(GUEST_INPUT),printf '\n[[pd]]\nname = "input_virt"\npriority = 215\n';) \
+	  $(if $(GUEST_GRAPHICS),printf '\n[[pd]]\nname = "framebuffer_queue"\npriority = 215\n';) } > $@
+endif
 else ifeq ($(X86_MANAGED_START),1)
 SYSTEM_TOML := $(abspath $(BUILD_DIR)/x86-managed-$(X86_USERSPACE_PROOF).toml)
 $(SYSTEM_TOML): $(REPO_ROOT_MK)/boards/qemu-x86_64-vtx/firmware.toml Makefile

@@ -1,0 +1,130 @@
+schema = 2
+id = "arch-linux-x86-64-desktop"
+status = "runtime"
+extends = "arch-amd64.toml"
+aliases = ["arch-amd64-desktop"]
+
+[target]
+devices = ["net", "block", "console", "gpu", "input"]
+
+[host.qemu]
+board = "x86_64_generic_vtx"
+machine = "q35"
+memory = "4G"
+
+[host.qemu.ssh]
+account = "agentos"
+host_port = 12225
+guest_address = "10.0.2.15"
+
+[[host.test]]
+action = "wait-ssh"
+args = { account = "agentos", marker = "Linux", prompt = "$ " }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "network", script = "ping -c 3 -W 5 10.0.2.2; getent ahostsv4 archive.archlinux.org" }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "packages", script = "d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT; cp /usr/bin/printf \"$d/agentos-acceptance-probe\"; printf 'pkgname = agentos-acceptance-probe\\npkgver = 1.0-1\\npkgdesc = Guest acceptance fixture\\narch = x86_64\\nbuilddate = 0\\npackager = agentOS <test@localhost>\\nsize = 0\\n' >\"$d/.PKGINFO\"; tar --zstd -C \"$d\" -cf \"$d/probe.pkg.tar.zst\" .PKGINFO agentos-acceptance-probe; sudo -n pacman --noconfirm -U \"$d/probe.pkg.tar.zst\"; pacman -Q agentos-acceptance-probe; test \"$(/agentos-acceptance-probe '%s' package-executed)\" = package-executed; sudo -n pacman --noconfirm -R agentos-acceptance-probe; test ! -e /agentos-acceptance-probe" }
+
+[[host.test]]
+action = "assert-ssh-output"
+args = { command = "sudo -n modprobe -a virtio_gpu virtio_input && test -e /dev/dri/card0 && grep -q 'agentOS keyboard' /sys/class/input/event*/device/name && grep -q 'agentOS pointer' /sys/class/input/event*/device/name && printf '\\021\\042\\063\\000\\104\\125\\146\\000' | sudo -n dd of=/dev/fb0 bs=1 seek=819200 conv=notrunc status=none 2>/dev/null && printf 'agentos-x86-drm-frame-ready\\n'", stdout = "agentos-x86-drm-frame-ready\n" }
+
+[host.desktop]
+adapter = "rfb-over-ssh"
+local_port = 15925
+guest_port = 5900
+provision_timeout_secs = 3600
+frame_timeout_secs = 600
+io_timeout_secs = 180
+provision_script = '''set -eu
+# Provisioning runs as root; the compositor and RFB server run as agentos.
+# Retain downloaded packages even when verification or compositor setup fails.
+trap 'sync' EXIT
+date -u -s '@{{host_unix_time}}' >/dev/null
+printf 'Server = https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch\n' > /etc/pacman.d/mirrorlist
+sed -i 's/^ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
+pacman-key --init
+pacman-key --populate archlinux
+sync
+# The 2026-09-01 archive database contains the rebuilt aml payload and
+# signature, but its dated package path exposes older bytes under the same
+# filename. Seed the database-matching pair from the official mirror and bind
+# both files to their exact digests before pacman performs signature checking.
+aml_pkg=/var/cache/pacman/pkg/aml-1.0.0-1-x86_64.pkg.tar.zst
+aml_url=https://geo.mirror.pkgbuild.com/extra/os/x86_64/aml-1.0.0-1-x86_64.pkg.tar.zst
+curl -fsSL --retry 3 --retry-all-errors -o "$aml_pkg.part" "$aml_url"
+printf 'd3a87fac8acf0b557f408a6911cabc2385b54275f7b81049fc0227e4af8a13cb  %s\n' "$aml_pkg.part" | sha256sum -c -
+mv "$aml_pkg.part" "$aml_pkg"
+curl -fsSL --retry 3 --retry-all-errors -o "$aml_pkg.sig.part" "$aml_url.sig"
+printf '7281dc807a84ee2fb73f7f420464118486c5c9172e5667c6ee7f9528f0e839c5  %s\n' "$aml_pkg.sig.part" | sha256sum -c -
+mv "$aml_pkg.sig.part" "$aml_pkg.sig"
+pacman -Syy --noconfirm --noprogressbar --disable-download-timeout --needed mesa sway swaybg wayvnc foot seatd dbus ttf-dejavu
+usermod -aG seat agentos
+systemctl enable --now seatd
+pacman -Q mesa sway swaybg wayvnc foot seatd dbus ttf-dejavu | tee /tmp/agentos-desktop-packages.txt
+sync
+test -e /dev/dri/card0
+grep -q 'agentOS keyboard' /sys/class/input/event*/device/name
+grep -q 'agentOS pointer' /sys/class/input/event*/device/name
+install -d -m 0700 -o agentos -g agentos /home/agentos/.config /home/agentos/.config/sway
+runtime=$(runuser -u agentos -- mktemp -d /tmp/agentos-runtime.XXXXXX)
+cat >/home/agentos/.config/sway/config <<'EOF'
+output * bg #112233 solid_color
+xwayland disable
+bar mode invisible
+default_border none
+for_window [app_id="agentos-proof"] floating enable, resize set 400 300, move position 100 100
+exec foot --app-id=agentos-proof --override=colors.background=445566
+EOF
+chown agentos:agentos /home/agentos/.config/sway/config
+pkill -x wayvnc 2>/dev/null || true
+pkill -x sway 2>/dev/null || true
+setsid -f runuser -u agentos -- env HOME=/home/agentos USER=agentos XDG_RUNTIME_DIR="$runtime" LIBSEAT_BACKEND=seatd WLR_RENDERER=pixman WLR_BACKENDS=drm,libinput WLR_NO_HARDWARE_CURSORS=1 sway -c /home/agentos/.config/sway/config </dev/null >/tmp/agentos-sway.log 2>&1
+attempt=0
+display=
+ipc=
+while test "$attempt" -lt 120; do
+    for candidate in "$runtime"/wayland-*; do
+        if test -S "$candidate"; then display=${candidate##*/}; break; fi
+    done
+    for candidate in "$runtime"/sway-ipc.*.sock; do
+        if test -S "$candidate"; then ipc=$candidate; break; fi
+    done
+    test -n "$display" && test -n "$ipc" && break
+    attempt=$((attempt + 1))
+    sleep 1
+done
+test -n "$display" && test -n "$ipc" || { cat /tmp/agentos-sway.log >&2; exit 1; }
+attempt=0
+while test "$attempt" -lt 120; do
+    if runuser -u agentos -- env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" SWAYSOCK="$ipc" swaymsg -t get_outputs >/tmp/agentos-sway-outputs.json &&
+       grep -q '"active": true' /tmp/agentos-sway-outputs.json &&
+       runuser -u agentos -- env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" SWAYSOCK="$ipc" swaymsg -t get_inputs >/tmp/agentos-sway-inputs.json &&
+       grep -q 'agentOS keyboard' /tmp/agentos-sway-inputs.json &&
+       grep -q 'agentOS pointer' /tmp/agentos-sway-inputs.json; then break; fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
+test "$attempt" -lt 120 || { cat /tmp/agentos-sway.log >&2; exit 1; }
+cat /tmp/agentos-sway-outputs.json /tmp/agentos-sway-inputs.json
+setsid -f runuser -u agentos -- env HOME=/home/agentos USER=agentos XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" wayvnc 127.0.0.1 5900 </dev/null >/tmp/agentos-wayvnc.log 2>&1
+attempt=0
+while test "$attempt" -lt 120; do
+    ss -ltn | grep -q '127.0.0.1:5900' && break
+    attempt=$((attempt + 1))
+    sleep 1
+done
+ss -ltn | grep -q '127.0.0.1:5900' || { cat /tmp/agentos-wayvnc.log >&2; exit 1; }
+pgrep -u agentos -x sway >/dev/null
+pgrep -u agentos -x wayvnc >/dev/null
+sync
+printf 'agentos-x86-wayland-rfb-ready\n'
+'''
+
+[[host.test]]
+action = "assert-frame-pixels"
+args = { x = "0", y = "200", rgb = "332211665544" }

@@ -78,7 +78,7 @@ make test  TARGET_ARCH=aarch64 GUEST_OS=none
 `make build` runs the root-task Makefile under
 `kernel/agentos-root-task/`, links the PD ELFs, packs them with
 `cargo xtask gen-pd-bundle` and `cargo xtask gen-image`, and writes
-`build/qemu_virt_aarch64/agentos.img`.
+`_build/qemu_virt_aarch64/agentos.img`.
 
 `make test` runs `cargo xtask qemu-test --board qemu_virt_aarch64
 --guest-os none` and waits for the serial marker
@@ -125,7 +125,7 @@ make test-guest-blk QEMU_TEST_TIMEOUT=480
 ```
 
 Both boot a small Buildroot Linux (kernel and rootfs from the libvmm example
-images, downloaded on first run into `build/qemu_virt_aarch64/`, about 36 MB
+images, downloaded on first run into `_build/qemu_virt_aarch64/`, about 36 MB
 in total; `make clean` removes them) under `guest_vmm_primary`. The guest DTB advertises only agentOS
 emulated devices: virtio-net at guest IPA `0x0A010000`, virtio-blk at
 `0x0A020000`, virtio-console at `0x0A030000`.
@@ -150,7 +150,7 @@ from the official desktop ISO plus a deterministic generated initramfs. On
 first run `make fetch-guest` (invoked by `make build`) downloads
 `ubuntu-26.04-desktop-arm64.iso` (about 4.2 GB) from `cdimage.ubuntu.com`
 into `${AGENTOS_ISO_DIR:-$HOME/.cache/agentos/isos}` and stages extracted
-artifacts under `build/guest-images/`.
+artifacts under `_build/guest-images/`.
 
 `test-guest-console` boots to the login prompt over the emulated
 virtio-console (`console=hvc0`), injects input through `cc_pd`, and requires
@@ -183,7 +183,7 @@ make demo                      # same gate, then keep QEMU running and print SSH
 `make demo` needs an interactive terminal, 8 GB of host RAM, roughly 20 GB of
 disk, and both ISOs (Ubuntu 26.04 desktop arm64 and
 FreeBSD-15.0-RELEASE-arm64-aarch64-dvd1, about 4 GB each). It provisions a
-run-specific Ed25519 key under `build/tmp/dual-ssh/` and forwards SSH to
+run-specific Ed25519 key under `_build/tmp/dual-ssh/` and forwards SSH to
 `127.0.0.1:12222` (Ubuntu) and `127.0.0.1:12223` (FreeBSD). The default
 deadline is `DUAL_OS_TEST_TIMEOUT=7200` seconds. Press Enter in the `make
 demo` terminal to stop QEMU. Details and troubleshooting: `docs/demo.md`.
@@ -194,9 +194,9 @@ claim.
 
 ## 9. Reading the logs
 
-`xtask qemu-test` writes one log per run to `build/tmp/agentos-qemu-*.log`
+`xtask qemu-test` writes one log per run to `_build/tmp/agentos-qemu-*.log`
 and puts the control socket beside it (`agentos-qemu-*.cc_pd.sock`). `make
-run` writes `build/tmp/agentos-run.log` and exposes `build/cc_pd.sock`.
+run` writes `_build/tmp/agentos-run.log` and exposes `_build/cc_pd.sock`.
 
 Set `AGENTOS_TMP_DIR=/path` to move all of these. The path is used for Unix
 sockets, so keep it short.
@@ -216,7 +216,7 @@ Markers worth searching for:
 `make -C tools/agentctl` builds the CLI that talks to `cc_pd` over the socket:
 
 ```bash
-./tools/agentctl/agentctl --batch list-guests
+./_build/tools/agentctl/agentctl --batch list-guests
 ```
 
 ## 10. Troubleshooting
@@ -241,7 +241,7 @@ Makefile does not use Apple's `clang`.
 **First run is slow.** The Buildroot images are small, but the Ubuntu and
 FreeBSD ISOs are about 4 GB each. They are cached in
 `${AGENTOS_ISO_DIR:-$HOME/.cache/agentos/isos}` and survive `make clean`;
-`make clean-images` removes the staged copies under `build/guest-images/`.
+`make clean-images` removes the staged copies under `_build/guest-images/`.
 
 **Timeouts.** `QEMU_TEST_TIMEOUT` (default 300 s) bounds every `xtask
 qemu-test` run. Apple Silicon runs AArch64 QEMU under TCG because HVF trips
@@ -252,8 +252,8 @@ when `/dev/kvm` exists.
 **Ports in use.** `make demo` needs 12222 and 12223 free; `make run` forwards
 8789.
 
-**Stale sockets or keys.** `make demo-clean` removes `build/cc_pd.sock`,
-`build/agentos-serial.sock`, `build/tmp/dual-ssh/`, and the QEMU logs; guest
+**Stale sockets or keys.** `make demo-clean` removes `_build/cc_pd.sock`,
+`_build/agentos-serial.sock`, `_build/tmp/dual-ssh/`, and the QEMU logs; guest
 image caches are kept.
 
 **Which board.** The guest proofs only run on `qemu_virt_aarch64`. On an

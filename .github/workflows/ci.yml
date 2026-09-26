@@ -46,6 +46,8 @@ jobs:
           llvm-objcopy --version
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
       - name: Run tests
         run: cargo test --workspace --exclude health-monitor --exclude log-aggregator --exclude agentos-pd
 
@@ -61,6 +63,8 @@ jobs:
         with:
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
       - name: Build health-monitor
         working-directory: examples/health-monitor
         run: cargo build --release
@@ -82,16 +86,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Validate topology.yaml
         run: cargo run -p gen-sdf -- tools/topology.yaml --validate-only
 
       - name: SDF diff (detect changes vs checked-in agentos.system)
         run: |
-          cargo run -p gen-sdf -- tools/topology.yaml -o /tmp/agentos-generated.system
+          mkdir -p _build/tmp
+          cargo run -p gen-sdf -- tools/topology.yaml -o _build/tmp/agentos-generated.system
           if [ -f kernel/agentos-root-task/agentos.system ]; then
             echo "=== SDF diff (generated vs committed) ==="
-            diff kernel/agentos-root-task/agentos.system /tmp/agentos-generated.system || true
+            diff kernel/agentos-root-task/agentos.system _build/tmp/agentos-generated.system || true
           else
             echo "No committed agentos.system found — skipping diff"
           fi
@@ -120,6 +127,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Install verified SDK artifact
         uses: ./.github/actions/install-sdk
@@ -134,9 +143,9 @@ jobs:
         with:
           name: guest-net-proof-logs
           path: |
-            build/tmp/agentos-qemu-*.log
-            build/tmp/agentos-qemu-*.qemu.stderr
-            build/tmp/agentos-qemu-*.net.pcap
+            _build/tmp/agentos-qemu-*.log
+            _build/tmp/agentos-qemu-*.qemu.stderr
+            _build/tmp/agentos-qemu-*.net.pcap
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
@@ -162,6 +171,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Install verified SDK artifact
         uses: ./.github/actions/install-sdk
@@ -188,9 +199,9 @@ jobs:
         with:
           name: guest-blk-proof-logs
           path: |
-            build/tmp/agentos-qemu-*.log
-            build/tmp/agentos-qemu-*.qemu.stderr
-            build/tmp/agentos-qemu-*.net.pcap
+            _build/tmp/agentos-qemu-*.log
+            _build/tmp/agentos-qemu-*.qemu.stderr
+            _build/tmp/agentos-qemu-*.net.pcap
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
@@ -216,6 +227,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Install verified SDK artifact
         uses: ./.github/actions/install-sdk
@@ -240,9 +253,9 @@ jobs:
         with:
           name: ubuntu-agentos-virtio-proof-logs
           path: |
-            build/tmp/agentos-qemu-*.log
-            build/tmp/agentos-qemu-*.qemu.stderr
-            build/tmp/agentos-qemu-*.net.pcap
+            _build/tmp/agentos-qemu-*.log
+            _build/tmp/agentos-qemu-*.qemu.stderr
+            _build/tmp/agentos-qemu-*.net.pcap
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
@@ -274,95 +287,97 @@ jobs:
         with:
           targets: aarch64-unknown-none
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
       - name: Install verified SDK artifact
         uses: ./.github/actions/install-sdk
       - name: Verify Rust IPC bridge and native target
         run: |
-          mkdir -p build/evidence/native-rust
-          make test-rust-pd-abi 2>&1 | tee build/evidence/native-rust/abi.log
-          make test-native-rust QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/native-rust/target.log
-          cp build/qemu_virt_aarch64/agentos.img build/evidence/native-rust/runtime.img
-          cp build/qemu_virt_aarch64/native_rust_probe.elf build/evidence/native-rust/
-          cp build/qemu_virt_aarch64/native_rust_client.elf build/evidence/native-rust/
-          make test-native-network-isolation QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/native-rust/isolation.log
+          mkdir -p _build/evidence/native-rust
+          make test-rust-pd-abi 2>&1 | tee _build/evidence/native-rust/abi.log
+          make test-native-rust QEMU_TEST_TIMEOUT=120 2>&1 | tee _build/evidence/native-rust/target.log
+          cp _build/qemu_virt_aarch64/agentos.img _build/evidence/native-rust/runtime.img
+          cp _build/qemu_virt_aarch64/native_rust_probe.elf _build/evidence/native-rust/
+          cp _build/qemu_virt_aarch64/native_rust_client.elf _build/evidence/native-rust/
+          make test-native-network-isolation QEMU_TEST_TIMEOUT=120 2>&1 | tee _build/evidence/native-rust/isolation.log
       - name: Retain native Rust proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-rust-proof
           path: |
-            build/evidence/native-rust/
-            build/evidence/native-network-isolation/
-            build/tmp/agentos-qemu-*
-            build/qemu_virt_aarch64/agentos.img
-            build/qemu_virt_aarch64/native_rust_probe.elf
-            build/qemu_virt_aarch64/native_rust_client.elf
+            _build/evidence/native-rust/
+            _build/evidence/native-network-isolation/
+            _build/tmp/agentos-qemu-*
+            _build/qemu_virt_aarch64/agentos.img
+            _build/qemu_virt_aarch64/native_rust_probe.elf
+            _build/qemu_virt_aarch64/native_rust_client.elf
       - name: Verify read-only boot inspection
         run: |
-          mkdir -p build/evidence/inspect
-          make test-inspect QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/inspect/report.log
-          cp build/qemu_virt_aarch64/agentos.img build/evidence/inspect/report.img
-          make test-inspect-readonly QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/inspect/readonly.log
-          cp build/qemu_virt_aarch64/agentos.img build/evidence/inspect/readonly.img
+          mkdir -p _build/evidence/inspect
+          make test-inspect QEMU_TEST_TIMEOUT=120 2>&1 | tee _build/evidence/inspect/report.log
+          cp _build/qemu_virt_aarch64/agentos.img _build/evidence/inspect/report.img
+          make test-inspect-readonly QEMU_TEST_TIMEOUT=120 2>&1 | tee _build/evidence/inspect/readonly.log
+          cp _build/qemu_virt_aarch64/agentos.img _build/evidence/inspect/readonly.img
       - name: Retain inspection proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: inspect-proof
           path: |
-            build/evidence/inspect/
-            build/tmp/agentos-qemu-*
+            _build/evidence/inspect/
+            _build/tmp/agentos-qemu-*
           if-no-files-found: error
 
       - name: Verify operator serial session and isolation
         run: |
-          mkdir -p build/evidence/operator
-          make test-operator-session QEMU_TEST_TIMEOUT=300 2>&1 | tee build/evidence/operator/session.log
-          cp build/qemu_virt_aarch64/agentos.img build/evidence/operator/session.img
-          make test-operator-isolation QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/operator/isolation.log
+          mkdir -p _build/evidence/operator
+          make test-operator-session QEMU_TEST_TIMEOUT=300 2>&1 | tee _build/evidence/operator/session.log
+          cp _build/qemu_virt_aarch64/agentos.img _build/evidence/operator/session.img
+          make test-operator-isolation QEMU_TEST_TIMEOUT=120 2>&1 | tee _build/evidence/operator/isolation.log
       - name: Retain operator proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: operator-proof
           path: |
-            build/evidence/operator/
-            build/evidence/operator-isolation/
-            build/tmp/agentos-qemu-*
+            _build/evidence/operator/
+            _build/evidence/operator-isolation/
+            _build/tmp/agentos-qemu-*
           if-no-files-found: error
 
       - name: Verify generic native logs and isolation
         run: |
-          mkdir -p build/evidence/log-native
-          make test-log-rings QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/log-native/output.log
-          cp build/qemu_virt_aarch64/agentos.img build/evidence/log-native/output.img
-          make test-log-isolation QEMU_TEST_TIMEOUT=120 2>&1 | tee build/evidence/log-native/isolation.log
+          mkdir -p _build/evidence/log-native
+          make test-log-rings QEMU_TEST_TIMEOUT=120 2>&1 | tee _build/evidence/log-native/output.log
+          cp _build/qemu_virt_aarch64/agentos.img _build/evidence/log-native/output.img
+          make test-log-isolation QEMU_TEST_TIMEOUT=120 2>&1 | tee _build/evidence/log-native/isolation.log
       - name: Retain native log proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-log-proof
           path: |
-            build/evidence/log-native/
-            build/evidence/log-isolation/
-            build/tmp/agentos-qemu-*
+            _build/evidence/log-native/
+            _build/evidence/log-isolation/
+            _build/tmp/agentos-qemu-*
           if-no-files-found: error
 
       - name: Verify native framebuffer queues
         run: |
-          mkdir -p build/evidence/framebuffer
-          make test-framebuffer QEMU_TEST_TIMEOUT=180 2>&1 | tee build/evidence/framebuffer/target.log
-          cp build/qemu_virt_aarch64/agentos.img build/evidence/framebuffer/agentos.img
-          make test-framebuffer-isolation QEMU_TEST_TIMEOUT=180 2>&1 | tee build/evidence/framebuffer/isolation.log
+          mkdir -p _build/evidence/framebuffer
+          make test-framebuffer QEMU_TEST_TIMEOUT=180 2>&1 | tee _build/evidence/framebuffer/target.log
+          cp _build/qemu_virt_aarch64/agentos.img _build/evidence/framebuffer/agentos.img
+          make test-framebuffer-isolation QEMU_TEST_TIMEOUT=180 2>&1 | tee _build/evidence/framebuffer/isolation.log
       - name: Retain framebuffer queue proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: framebuffer-queue-proof
           path: |
-            build/evidence/framebuffer/
-            build/evidence/framebuffer-isolation/
-            build/tmp/agentos-qemu-*
+            _build/evidence/framebuffer/
+            _build/evidence/framebuffer-isolation/
+            _build/tmp/agentos-qemu-*
           if-no-files-found: error
 
       - name: Report native compiler cache usage
@@ -391,6 +406,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Build agentOS with IPC harness (CONFIG_IPC_HARNESS=1)
         run: |
@@ -406,7 +423,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: contract-tests-qemu_virt_aarch64
-          path: build/qemu_virt_aarch64/agentos.img
+          path: _build/qemu_virt_aarch64/agentos.img
           if-no-files-found: ignore
 
 
@@ -446,6 +463,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Install verified SDK artifact
         uses: ./.github/actions/install-sdk
@@ -565,20 +584,21 @@ jobs:
 
       - name: Build and run proc_server tests
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/_build/tmp"
           cd kernel/agentos-root-task
           if [ -f tests/test_proc_server.c ]; then
             cc -std=c11 -Wall -DAGENTOS_TEST_HOST=1 -I include \
                tests/test_proc_server.c src/proc_server.c \
-               -o /tmp/test_proc_server
-            /tmp/test_proc_server
+               -o "$GITHUB_WORKSPACE/_build/tmp/test_proc_server"
+            "$GITHUB_WORKSPACE/_build/tmp/test_proc_server"
             echo "proc_server tests PASSED"
           else
             f=tests/test_proc_server.c
             if grep -q 'int main' "$f" 2>/dev/null; then
-              cc -o /tmp/test_proc_server "$f" \
+              cc -o "$GITHUB_WORKSPACE/_build/tmp/test_proc_server" "$f" \
                 -I kernel/agentos-root-task/include \
                 -DAGENTOS_HOST_TEST \
-                && /tmp/test_proc_server \
+                && "$GITHUB_WORKSPACE/_build/tmp/test_proc_server" \
                 && echo "✓ proc_server tests passed" \
                 || echo "WARN: proc_server test compile/run failed (may need target headers)"
             else
@@ -603,6 +623,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Update Rust toolchain
         run: rustup update stable
@@ -613,13 +635,14 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            _build/cargo
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run workspace tests
         run: |
-          cargo test --workspace --features std 2>&1 | tee /tmp/test_output.txt
-          if grep -q "FAILED" /tmp/test_output.txt; then
+          mkdir -p _build/tmp
+          cargo test --workspace --features std 2>&1 | tee _build/tmp/test_output.txt
+          if grep -q "FAILED" _build/tmp/test_output.txt; then
             echo "One or more Rust tests FAILED"
             exit 1
           fi
@@ -762,6 +785,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: Run xtask test
         run: cargo run --manifest-path xtask/Cargo.toml -- test
@@ -779,6 +804,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
 
       - name: cargo check xtask
         run: cargo check --manifest-path xtask/Cargo.toml

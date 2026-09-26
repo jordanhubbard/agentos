@@ -6,6 +6,15 @@
 #include "contracts/blk_virt_contract.h"
 #include "contracts/net_virt_contract.h"
 #include "contracts/x86_vtx_proof.h"
+#ifdef AGENTOS_GUEST_INPUT
+#include <platform/input.h>
+#define X86_INPUT_WAKE_MASK AOS_INPUT_VMM_WAKE_BADGE
+#else
+#define X86_INPUT_WAKE_MASK 0u
+#endif
+
+static const seL4_Word control_wakes = SERIAL_VIRT_VMM_WAKE_BADGE |
+    BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE | X86_INPUT_WAKE_MASK;
 #ifdef AGENTOS_X86_LIFECYCLE_WITNESS
 volatile aos_x86_lifecycle_witness_t aos_x86_control_witness = {
     .magic = UINT64_C(0x414f534c4354524c), .version = UINT64_C(0x4c49464557495431),
@@ -28,8 +37,7 @@ static bool initializing_receive(seL4_Word *wake_badge, bool wait)
     if (wait) (void)seL4_Recv(PD_CNODE_SLOT_SELF_EP, &badge);
     else (void)seL4_NBRecv(PD_CNODE_SLOT_SELF_EP, &badge);
 #endif
-    const seL4_Word wakes = SERIAL_VIRT_VMM_WAKE_BADGE |
-                           BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE;
+    const seL4_Word wakes = control_wakes;
     if (badge & wakes) {
         if (badge & ~wakes) return false;
         *wake_badge = badge;
@@ -77,8 +85,7 @@ enum aos_x86_control_result aos_x86_control_step(
     aos_x86_control_witness.count++;
     aos_x86_control_witness.state = *runtime->state;
 #endif
-    const seL4_Word wakes = SERIAL_VIRT_VMM_WAKE_BADGE |
-                           BLK_VIRT_VMM_WAKE_BADGE | NET_VIRT_VMM_WAKE_BADGE;
+    const seL4_Word wakes = control_wakes;
     if (badge & wakes) {
         if ((badge & ~wakes) || !wake) return AOS_X86_CONTROL_ERROR;
         wake(badge, context);

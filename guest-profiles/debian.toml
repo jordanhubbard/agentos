@@ -9,17 +9,17 @@ command_line = "console=hvc0 quiet loglevel=3 root=UUID=eeb673b7-002d-483a-ba22-
 
 [artifacts.kernel]
 source = "debian-cloud:13/20260831-2587:/boot/vmlinuz-6.12.107+deb13-arm64"
-cache = "build/guest-images/debian-13-arm64-Image"
+cache = "_build/guest-images/debian-13-arm64-Image"
 sha256 = "9c37ace54ef7e1919411fd912e9f34d6982ddd7f4c8ef3c8aee56f4c4d70db67"
 
 [artifacts.initrd]
 source = "generated:debian-cloud-initrd+profile-overlay"
-cache = "build/guest-images/debian-13-arm64-initrd"
+cache = "_build/guest-images/debian-13-arm64-initrd"
 sha256 = "909ad68f6ff313839860b225f41204c6456207081c7e5d5fcadde7f696a775a4"
 
 [artifacts.dtb]
 source = "generated:linux.dts+linux-virtio-overlay.dts.in"
-cache = "build/qemu_virt_aarch64/debian-vm.dtb"
+cache = "_build/qemu_virt_aarch64/debian-vm.dtb"
 sha256 = "db7edd81cfef50acfc3a4d441f2a91b50e254dbc6ccaacbfce74b8e6050447fc"
 
 [placements.default]
@@ -35,7 +35,7 @@ dtb_sha256 = "db7edd81cfef50acfc3a4d441f2a91b50e254dbc6ccaacbfce74b8e6050447fc"
 adapter = "linux-merge"
 base = "libvmm/examples/simple/board/qemu_virt_aarch64/linux.dts"
 template = "kernel/agentos-root-task/linux-virtio-overlay.dts.in"
-acquire_dir = "build/guest-images"
+acquire_dir = "_build/guest-images"
 
 [[host.acquire]]
 action = "stage-url"
@@ -105,7 +105,7 @@ args = { source = "debian-13-arm64-initrd.with-init-bottom-order", output = "deb
 memory = "3G"
 
 [[host.qemu.media]]
-path = "build/guest-images/debian-13-generic-arm64-20260831-2587.networked.raw"
+path = "_build/guest-images/debian-13-generic-arm64-20260831-2587.networked.raw"
 drive_id = "primary_media"
 bus = 8
 writable = true

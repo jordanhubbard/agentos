@@ -21,13 +21,13 @@ command_line = "FreeBSD:vfs.root.mountfrom=cd9660:/dev/iso9660/15_0_RELEASE_AARC
 
 [artifacts.kernel]
 source = "freebsd:15.0-RELEASE-arm64-aarch64-disc1.iso:/boot/kernel/kernel"
-cache = "build/guest-images/freebsd-15.0-aarch64-kernel"
+cache = "_build/guest-images/freebsd-15.0-aarch64-kernel"
 sha256 = "d9878f095ce43d2bd0b0c75ae3085f67ecc74ec9f6e58a0d8c3e4fa29630f597"
 max_bytes = 134217728
 
 [artifacts.dtb]
 source = "generated:freebsd-direct.dts"
-cache = "build/qemu_virt_aarch64/freebsd-direct.dtb"
+cache = "_build/qemu_virt_aarch64/freebsd-direct.dtb"
 sha256 = "87f3626cf198e457da0d51b3b8bc356fe902704437cb1b33f2bd043d5cbb781e"
 max_bytes = 1048576
 
@@ -54,7 +54,7 @@ machine = "virt,virtualization=on,highmem=off,secure=off,acpi=off"
 memory = "2G"
 
 [[host.qemu.media]]
-path = "build/guest-images/freebsd-15.0-aarch64.iso"
+path = "_build/guest-images/freebsd-15.0-aarch64.iso"
 drive_id = "secondary_media"
 bus = 31
 override_env = ["AGENTOS_FREEBSD_IMAGE", "FREEBSD_IMAGE"]
@@ -104,7 +104,7 @@ max_fires = 4
 [host.build]
 adapter = "fdt-template"
 template = "kernel/agentos-root-task/freebsd-direct.dts"
-acquire_dir = "build/guest-images"
+acquire_dir = "_build/guest-images"
 
 [[host.acquire]]
 action = "stage-url"

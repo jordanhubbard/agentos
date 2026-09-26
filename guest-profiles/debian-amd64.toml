@@ -26,13 +26,13 @@ command_line = "console=hvc0 root=UUID=df4df5bb-613a-4382-8cf9-653304605a1f rw r
 
 [artifacts.kernel]
 source = "debian-cloud:13/20260831-2587:/boot/vmlinuz-6.12.107+deb13-amd64"
-cache = "build/guest-images/debian-amd64/vmlinuz"
+cache = "_build/guest-images/debian-amd64/vmlinuz"
 sha256 = "2b2358b37674d2505350528875bb17afae2a36522a9e8a9417eaca65a7da0e08"
 max_bytes = 33554432
 
 [artifacts.initrd]
 source = "generated:debian-cloud-initrd+native-udev-hooks"
-cache = "build/guest-images/debian-amd64/initrd.img"
+cache = "_build/guest-images/debian-amd64/initrd.img"
 sha256 = "abd60fc57af0f02f62c119b149b7aaae0f978023fd7517ab3bc0a2535e839884"
 max_bytes = 134217728
 
@@ -43,9 +43,15 @@ ram_size = 0x40000000
 kernel_load_address = 0x200000
 initrd_load_address = 0x8000000
 
+[host.qemu]
+board = "x86_64_generic_vtx"
+machine = "q35"
+memory = "4G"
+restrict_network = false
+
 [host.build]
 adapter = "uefi-artifacts"
-acquire_dir = "build/guest-images/debian-amd64"
+acquire_dir = "_build/guest-images/debian-amd64"
 
 [[host.acquire]]
 action = "stage-url"
@@ -102,3 +108,15 @@ args = { source = "initrd.top", output = "initrd.bottom-stock", path = "scripts/
 [[host.acquire]]
 action = "append-initramfs-file"
 args = { source = "initrd.bottom-stock", output = "initrd.img", path = "scripts/init-bottom/udev", mode = "0755", content_file = "udev-bottom", content_sha256 = "fb97766d383aab75ecc57e484f56e7f621c5cedb3a2ffc97e8a01a54bc22c8e7" }
+
+[[host.test]]
+action = "wait-ssh"
+args = { account = "debian", marker = "Linux", prompt = "$ " }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "network", script = "ping -c 3 -W 5 10.0.2.2; getent ahostsv4 deb.debian.org" }
+
+[[host.test]]
+action = "ssh-check"
+args = { name = "packages", script = "d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT; mkdir -p \"$d/p/DEBIAN\" \"$d/p/usr/local/bin\"; cp /usr/bin/getconf \"$d/p/usr/local/bin/agentos-acceptance-probe\"; printf 'Package: agentos-acceptance-probe\\nVersion: 1.0\\nArchitecture: %s\\nMaintainer: agentOS <test@localhost>\\nDescription: Guest acceptance fixture\\n' \"$(dpkg --print-architecture)\" >\"$d/p/DEBIAN/control\"; dpkg-deb --root-owner-group --build \"$d/p\" \"$d/probe.deb\"; sudo -n dpkg -i \"$d/probe.deb\"; dpkg-query -W agentos-acceptance-probe; test \"$(/usr/local/bin/agentos-acceptance-probe LONG_BIT)\" = 64; sudo -n dpkg --purge agentos-acceptance-probe; test ! -e /usr/local/bin/agentos-acceptance-probe" }

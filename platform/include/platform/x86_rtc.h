@@ -15,7 +15,9 @@ typedef struct {
 bool aos_x86_rtc_init(aos_x86_rtc_t *r, uint64_t epoch, uint64_t ticks);
 /* Private MC146818 calendar subset. Ticks are monotonic at RTC_HZ. Calendar
  * writes require SET; clearing SET validates and atomically commits the date.
- * IRQ enables, square wave and divider-stop modes are unsupported.
+ * Divider reset freezes the private calendar and polled flags; restoring the
+ * normal divider starts a fresh modeled second. IRQ enables and square wave
+ * are unsupported.
  * False preserves both state and value. Century is CMOS register 0x32. */
 bool aos_x86_rtc_io(aos_x86_rtc_t *r, unsigned reg, bool write,
                     uint32_t *value, uint64_t ticks);

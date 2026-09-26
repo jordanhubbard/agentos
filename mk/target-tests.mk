@@ -28,7 +28,7 @@
         test-cc-virtio-timeout
 
 # Run the on-target contract TAP suite for the current BOARD.
-# `run-tests` builds build/$(BOARD)-test/agentos.img via `sel4-test-image`,
+# `run-tests` builds _build/$(BOARD)-test/agentos.img via `sel4-test-image`,
 # boots it in QEMU, and waits for the TAP_DONE sentinel emitted by the
 # target_contract_runner PD (tests/harness/target_contract_runner.c).
 test-target:

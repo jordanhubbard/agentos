@@ -66,7 +66,7 @@ fn spawn_qemu_test_image(
     log_path: &Path,
 ) -> Result<std::process::Child> {
     let log_file = std::fs::File::create(log_path).context("failed to create QEMU log file")?;
-    let build_dir = repo_root.join("build").join(format!("{board}-test"));
+    let build_dir = repo_root.join("_build").join(format!("{board}-test"));
 
     let mut cmd = match board {
         "qemu_virt_aarch64" => {

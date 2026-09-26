@@ -13,15 +13,20 @@ CFLAGS  = -std=c11 -Wall -Wextra -Wpedantic \
           -Wno-unused-parameter \
           -DAGENTOS_TEST_HOST
 LDFLAGS =
+BUILD_DIR := $(abspath ../../_build/tests/ipc_bench)
+TARGET := $(BUILD_DIR)/ipc_bench_host
 
 # All source is in one translation unit; no need for -lm (no floating point).
-ipc_bench_host: ipc_bench.c ipc_bench.h
+ipc_bench_host: $(TARGET)
+
+$(TARGET): ipc_bench.c ipc_bench.h
+	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ipc_bench.c
 
 test: ipc_bench_host
-	./ipc_bench_host
+	$(TARGET)
 
 clean:
-	rm -f ipc_bench_host
+	rm -rf $(BUILD_DIR)
 
-.PHONY: test clean
+.PHONY: ipc_bench_host test clean

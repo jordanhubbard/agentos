@@ -1,0 +1,16 @@
+{
+  "schema": "agentos.arch-package-sync-qualification.v1",
+  "status": "pass",
+  "source_revision": "af0b71238d528433c8b54230842114e61d328077",
+  "source_worktree_clean": true,
+  "host": "madmax Intel Linux, nested VMX/KVM",
+  "command": "make gate-x86_64-debian-ssh GUEST_OS=none X86_BOOT_PROFILE=arch-amd64.toml QEMU_TEST_TIMEOUT=3600 X86_ROOT_DISK=<same installed Arch copy> X86_SSH_KEY=<installation identity> X86_SSH_PORT=12226",
+  "runs": 2,
+  "proofs": "Two fresh platform boots each passed console-pinned key-only SSH, terminal, identity, file/process, network/DNS and package install/execute/remove checks. Both completed the final guest sync. No disk repair occurred between boots.",
+  "fixture_preparation": "The initial installation harness stopped without a final sync after its package check. Its preserved disk copy retained a pacman lock after journal recovery. With QEMU stopped, e2fsck recovered the disposable copy, the removed probe executable was confirmed absent, and the stale lock was removed. Both recorded runs then used that copy unchanged between runs. The original installation disk and receipt remain preserved.",
+  "disk_sha256_after_both_runs": "54772ba1116103688e549b71960c0a67d7e205c4d8bc59cfad2f0714701caa3e",
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-26-arch/package-sync-cold-boots.tar.gz",
+  "archive_sha256": "3527d64c90e243194821eeecb9457724fe89f2c173511249f0ca26a4a83dc395",
+  "archive_contents": "Both Make logs, functional SSH command/result/terminal evidence, console logs and public host-key pins, and the final base disk digest. No private key or disk.",
+  "limits": "This qualifies functional-session persistence across immediate platform stops using the pinned external kernel/initramfs. It does not qualify the installed bootloader, kernel updates, or sudden power loss before sync. Desktop uses another copy of the corrected base disk."
+}

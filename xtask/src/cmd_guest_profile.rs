@@ -255,6 +255,7 @@ struct Qemu {
     board: String,
     machine: String,
     memory: String,
+    restrict_network: Option<bool>,
     #[serde(default)]
     media: Vec<QemuMedia>,
     ssh: Option<QemuSsh>,
@@ -354,6 +355,7 @@ pub(crate) struct QemuPlan {
     pub(crate) board: String,
     pub(crate) machine: String,
     pub(crate) memory: String,
+    pub(crate) restrict_network: Option<bool>,
     pub(crate) media: Vec<QemuMediaPlan>,
     pub(crate) ssh: Option<QemuSshPlan>,
 }
@@ -388,6 +390,7 @@ const HOST_ACTIONS: &[&str] = &[
     "build-initramfs-file",
     "build-static-linux-elf",
     "append-initramfs-file",
+    "filter-initramfs-modules",
     "convert-qcow2-raw",
     "extract-gpt-partition",
     "extract-ext4-file",
@@ -429,6 +432,7 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
                     | "build-initramfs-file"
                     | "build-static-linux-elf"
                     | "append-initramfs-file"
+                    | "filter-initramfs-modules"
                     | "convert-qcow2-raw"
                     | "extract-gpt-partition"
                     | "extract-ext4-file"
@@ -516,13 +520,16 @@ fn validate_x86_slot_profile(profile: &Profile, slot: X86BuildSlot) -> Result<()
     }
     let devices = target.devices.as_ref().unwrap();
     ensure!(
-        devices.len() == 3
+        (3..=5).contains(&devices.len())
+            && devices
+                .iter()
+                .all(|device| ["net", "block", "console", "gpu", "input"].contains(&device.as_str()))
             && ["net", "block", "console"]
                 .iter()
                 .all(|d| devices.iter().any(|v| v == d))
             && target.network_client == Some(slot.owner() as u16)
             && target.block_media == Some(slot.owner() as u16),
-        "x86 boot requires canonical net, block and console devices owned by the selected slot"
+        "x86 boot requires canonical net, block and console devices, with optional gpu/input, owned by the selected slot"
     );
     ensure!(
         !profile.artifacts.contains_key("dtb")
@@ -596,7 +603,7 @@ fn prepare_x86_slot_profile(
         output_dir: None,
     })?;
     verify_artifacts(&profile, "default", repo)?;
-    let directory = repo.join("build/tmp/x86-boot-profile").join(slot.name());
+    let directory = repo.join("_build/tmp/x86-boot-profile").join(slot.name());
     fs::create_dir_all(&directory)?;
     let mut command_line = profile
         .boot
@@ -662,6 +669,7 @@ pub(crate) fn host_profile_plan(root: &Path, path: &Path) -> Result<HostProfileP
             board: value.board.clone(),
             machine: value.machine.clone(),
             memory: value.memory.clone(),
+            restrict_network: value.restrict_network,
             media: value
                 .media
                 .iter()
@@ -1963,7 +1971,12 @@ fn validate_repo_relative(value: &str, field: &str) -> Result<()> {
 fn validate_qemu(qemu: &Qemu) -> Result<()> {
     enum_value(
         &qemu.board,
-        &["qemu_virt_aarch64", "qemu_virt_riscv64", "x86_64_generic"],
+        &[
+            "qemu_virt_aarch64",
+            "qemu_virt_riscv64",
+            "x86_64_generic",
+            "x86_64_generic_vtx",
+        ],
     )?;
     ensure!(
         !qemu.machine.is_empty()
@@ -2075,7 +2088,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
     let (required_args, optional_args): (&[&str], &[&str]) = match step.action.as_str() {
         "stage-url" => (
             &["cache_name", "output", "url"],
-            &["override_env", "sha512"],
+            &["override_env", "sha256", "sha512"],
         ),
         "download-tar-member" => (&["url", "member", "output"], &[]),
         "build-static-linux-elf" => (&["source", "output", "architecture"], &[]),
@@ -2091,6 +2104,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             &["source", "output", "path", "mode"],
             &["compression", "content", "content_file", "content_sha256"],
         ),
+        "filter-initramfs-modules" => (&["source", "output", "modules"], &[]),
         "convert-qcow2-raw" => (&["source", "output"], &[]),
         "extract-gpt-partition" => (&["source", "output", "index"], &["sector_size"]),
         "extract-ext4-file" => (&["source", "output", "path"], &[]),
@@ -2153,6 +2167,14 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
             "sha512 must be a nonzero 128-digit hexadecimal digest"
         );
     }
+    if let Some(value) = step.args.get("sha256") {
+        ensure!(
+            value.len() == 64
+                && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && value.bytes().any(|byte| byte != b'0'),
+            "sha256 must be a nonzero 64-digit hexadecimal digest"
+        );
+    }
     if let Some(value) = step.args.get("min_bytes") {
         ensure!(
             value.parse::<u64>().is_ok_and(|number| number > 0),
@@ -2163,6 +2185,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         step.action.as_str(),
         "build-initramfs-file"
             | "append-initramfs-file"
+            | "filter-initramfs-modules"
             | "convert-qcow2-raw"
             | "extract-gpt-partition"
             | "extract-ext4-file"
@@ -2172,6 +2195,7 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         let keys: &[&str] = match step.action.as_str() {
             "build-initramfs-file" => &["output", "path"],
             "append-initramfs-file" => &["source", "output", "path"],
+            "filter-initramfs-modules" => &["source", "output"],
             "extract-ext4-file" => &["source", "output"],
             _ => &["source", "output"],
         };
@@ -2222,6 +2246,25 @@ fn validate_host_action(step: &RecipeStep) -> Result<()> {
         if let Some(compression) = step.args.get("compression") {
             enum_value(compression, &["none", "zstd"])?;
         }
+    }
+    if step.action == "filter-initramfs-modules" {
+        let modules: Vec<_> = step.args["modules"].split(',').collect();
+        ensure!(
+            !modules.is_empty()
+                && modules.len() <= 16
+                && modules.iter().all(|name| {
+                    !name.is_empty()
+                        && name.len() <= 64
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                }),
+            "filter-initramfs-modules requires 1..16 bounded module names"
+        );
+        let mut unique = modules.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        ensure!(unique.len() == modules.len(), "duplicate initramfs module");
     }
     if matches!(
         step.action.as_str(),
@@ -2553,6 +2596,52 @@ mod tests {
     }
 
     #[test]
+    fn arch_installer_retains_and_preloads_live_root_module_closure() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (profile, _) = resolve(
+            &root,
+            Path::new("arch-amd64-installer.toml"),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        validate_x86_boot_profile(&profile).unwrap();
+
+        let command_line = profile
+            .boot
+            .as_ref()
+            .and_then(|boot| boot.command_line.as_deref())
+            .unwrap();
+        assert!(command_line
+            .split_ascii_whitespace()
+            .any(|arg| arg == "earlymodules=virtio_mmio,loop,squashfs,overlay,isofs"));
+
+        let modules = profile
+            .host
+            .as_ref()
+            .unwrap()
+            .acquire
+            .iter()
+            .find(|step| step.action == "filter-initramfs-modules")
+            .and_then(|step| step.args.get("modules"))
+            .unwrap()
+            .split(',')
+            .collect::<std::collections::BTreeSet<_>>();
+        for required in [
+            "virtio_mmio",
+            "virtio_net",
+            "net_failover",
+            "failover",
+            "loop",
+            "squashfs",
+            "overlay",
+            "isofs",
+            "cdrom",
+        ] {
+            assert!(modules.contains(required), "missing {required}");
+        }
+    }
+
+    #[test]
     fn x86_cpu_requests_match_fixed_target_exposure() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
         let (mut profile, _) =
@@ -2822,9 +2911,9 @@ mod tests {
         assert_eq!(seed.partition_offset, 134217728);
         assert_eq!(
             seed.root_ext4,
-            "build/guest-images/debian-arm64-nocloud/root.ext4"
+            "_build/guest-images/debian-arm64-nocloud/root.ext4"
         );
-        for bad_path in ["", "/tmp/root.ext4", "../root.ext4", "build/../root.ext4"] {
+        for bad_path in ["", "/tmp/root.ext4", "../root.ext4", "_build/../root.ext4"] {
             let mut invalid = host.clone();
             invalid.seed.as_mut().unwrap().root_ext4 = bad_path.into();
             assert!(validate_host(Some(&invalid)).is_err(), "{bad_path}");
@@ -2925,6 +3014,12 @@ mod tests {
             ]),
         };
         assert!(validate_host_action(&valid).is_ok());
+
+        let mut sha256 = valid.clone();
+        sha256.args.insert("sha256".to_string(), "a".repeat(64));
+        assert!(validate_host_action(&sha256).is_ok());
+        sha256.args.insert("sha256".to_string(), "0".repeat(64));
+        assert!(validate_host_action(&sha256).is_err());
 
         let mut typo = valid.clone();
         typo.args

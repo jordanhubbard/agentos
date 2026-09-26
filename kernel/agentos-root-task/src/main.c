@@ -264,6 +264,10 @@ _Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
  */
 #define VMM_SC_BUDGET_US          25000u
 #define VMM_SC_PERIOD_US          100000u
+#define X86_NET_SC_BUDGET_US      100u
+#define X86_NET_SC_PERIOD_US      1000u
+_Static_assert(X86_NET_SC_BUDGET_US * 10u == X86_NET_SC_PERIOD_US,
+               "x86 polling NIC must retain a ten percent CPU ceiling");
 /*
  * Guest fault senders share the VMM endpoint with vm_manager control calls.
  * Keep the relay path monotonic above guests: cc_pd 164, vibe_engine 165,
@@ -353,7 +357,8 @@ static seL4_Error allocate_guest_queue_frame(unsigned kind, unsigned client,
 static seL4_Error allocate_guest_graphics_frame(unsigned client, unsigned index,
                                                 seL4_CPtr *frame)
 {
-#if defined(__aarch64__) && defined(AGENTOS_GUEST_GRAPHICS)
+#if (defined(__aarch64__) || (defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET))) && \
+    defined(AGENTOS_GUEST_GRAPHICS)
     _Static_assert(seL4_ARCH_LargePageBits == AOS_GUEST_GRAPHICS_POOL_BITS,
                    "one large graphics frame per private pool");
     if (index >= AOS_GUEST_GRAPHICS_POOL_COUNT) return seL4_InvalidArgument;
@@ -1896,7 +1901,11 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
     }
     dbg_puts("[rt] x86 private RAM and ROM pools delegated to owning VMM\n");
     const unsigned queue_owner = pd_is_secondary_guest_vmm(pd) ? 1u : 0u;
-    for (unsigned kind = 0; kind < AOS_GUEST_QUEUE_INPUT; kind++) {
+    unsigned queue_count = AOS_GUEST_QUEUE_INPUT;
+#ifdef AGENTOS_GUEST_INPUT
+    queue_count = AOS_GUEST_QUEUE_POOL_COUNT;
+#endif
+    for (unsigned kind = 0; kind < queue_count; kind++) {
         seL4_CPtr *pool = &g_guest_queue_pools[queue_owner][kind];
         if (*pool == seL4_CapNull) return seL4_InvalidCapability;
         err = seL4_CNode_Move(pd_cnode, AOS_GUEST_QUEUE_POOL_BASE + kind,
@@ -1905,6 +1914,17 @@ static seL4_Error setup_x86_firmware(const pd_desc_t *pd, uint32_t pd_index,
         *pool = seL4_CapNull;
     }
     dbg_puts("[rt] x86 private device queue pools delegated to owning VMM\n");
+#ifdef AGENTOS_GUEST_GRAPHICS
+    for (unsigned index = 0; index < AOS_GUEST_GRAPHICS_POOL_COUNT; index++) {
+        seL4_CPtr *pool = &g_guest_graphics_pools[queue_owner][index];
+        if (*pool == seL4_CapNull) return seL4_InvalidCapability;
+        err = seL4_CNode_Move(pd_cnode, AOS_GUEST_GRAPHICS_POOL_BASE + index,
+            pd->cnode_size_bits, seL4_CapInitThreadCNode, *pool, 64u);
+        if (err != seL4_NoError) return err;
+        *pool = seL4_CapNull;
+    }
+    dbg_puts("[rt] x86 private graphics pools delegated to owning VMM\n");
+#endif
     err = seL4_CNode_Move(pd_cnode, AOS_X86_GUEST_ASID_POOL_CAP,
         (uint8_t)pd->cnode_size_bits, seL4_CapInitThreadCNode, guest_asid_pool, 64u);
     if (err != seL4_NoError) return err;
@@ -2864,11 +2884,14 @@ void root_task_main(const seL4_BootInfo *bi)
                 sc_period = CC_SC_PERIOD_US;
             }
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
-            /* Polling device drivers must not wait the default one-second
-             * refill after Yield. Bound each to 1 ms per 10 ms period. */
-            if (pd->self_svc_id == SVC_ID_SERIAL || pd->self_svc_id == SVC_ID_NET_PD) {
+            /* Yield consumes the remaining polling budget. Serial retains
+             * its qualified cadence; per-frame NIC IPC needs shorter gaps. */
+            if (pd->self_svc_id == SVC_ID_SERIAL) {
                 sc_budget = 1000u;
                 sc_period = 10000u;
+            } else if (pd->self_svc_id == SVC_ID_NET_PD) {
+                sc_budget = X86_NET_SC_BUDGET_US;
+                sc_period = X86_NET_SC_PERIOD_US;
             }
 #endif
 
@@ -3687,7 +3710,7 @@ void root_task_main(const seL4_BootInfo *bi)
         /* ── 4g.4.7: Set up VirtIO serial transport for cc_pd ───────────────── */
         /*
          * cc_pd uses VirtIO serial (bus.2 = PA 0x0A000400) as its host socket
-         * bridge.  QEMU bridges it to build/cc_pd.sock via virtconsole.
+         * bridge.  QEMU bridges it to _build/cc_pd.sock via virtconsole.
          *
          * We map three resources into cc_pd's VSpace:
          *   1. Device page at PA 0x0A000000 (covers virtio-mmio slots 0-7) at

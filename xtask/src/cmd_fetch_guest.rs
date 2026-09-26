@@ -26,7 +26,7 @@ fn repo_root() -> anyhow::Result<PathBuf> {
 }
 
 fn build_tmp_dir() -> anyhow::Result<PathBuf> {
-    let dir = repo_root()?.join("build/tmp");
+    let dir = repo_root()?.join("_build/tmp");
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     Ok(dir)
 }
@@ -107,7 +107,7 @@ fn download_tar_member(url: &str, member: &str, dest: &Path) -> anyhow::Result<(
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-guest-archive-")
         .tempdir_in(&tmp_root)
-        .context("failed to create guest archive tempdir under build/tmp")?;
+        .context("failed to create guest archive tempdir under _build/tmp")?;
     let archive = tmp_dir.path().join("download.tar");
     let curl = find_tool(&["curl", "/opt/homebrew/bin/curl", "/usr/bin/curl"])?;
     let status = std::process::Command::new(&curl)
@@ -208,6 +208,9 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             if let Some(expected) = step.args.get("sha512") {
                 verify_sha512(&dest, expected)?;
             }
+            if let Some(expected) = step.args.get("sha256") {
+                verify_sha256(&dest, expected)?;
+            }
         }
         "download-tar-member" => download_tar_member(
             recipe_arg(step, "url")?,
@@ -254,6 +257,11 @@ fn execute_acquire_step(step: &RecipeStep, output_dir: &Path) -> anyhow::Result<
             recipe_arg(step, "mode")?,
             &initramfs_payload(step, output_dir)?,
             step.args.get("compression").map(String::as_str),
+        )?,
+        "filter-initramfs-modules" => filter_initramfs_modules(
+            &recipe_path(output_dir, recipe_arg(step, "source")?)?,
+            &recipe_path(output_dir, recipe_arg(step, "output")?)?,
+            recipe_arg(step, "modules")?,
         )?,
         "convert-qcow2-raw" => convert_qcow2_to_raw(
             &recipe_path(output_dir, recipe_arg(step, "source")?)?,
@@ -691,6 +699,32 @@ fn verify_sha512(path: &Path, expected: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
+    let mut input = fs::File::open(path)
+        .with_context(|| format!("failed to open {} for SHA-256", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let bytes = input
+            .read(&mut buffer)
+            .with_context(|| format!("failed to hash {}", path.display()))?;
+        if bytes == 0 {
+            break;
+        }
+        digest.update(&buffer[..bytes]);
+    }
+    let actual = format!("{:x}", digest.finalize());
+    anyhow::ensure!(
+        actual.eq_ignore_ascii_case(expected),
+        "SHA-256 mismatch for {}: expected {}, got {}",
+        path.display(),
+        expected,
+        actual
+    );
+    println!("[fetch-guest] SHA-256 verified: {}", path.display());
+    Ok(())
+}
+
 fn build_static_linux_elf(step: &RecipeStep, root: &Path, output_dir: &Path) -> anyhow::Result<()> {
     let target = match recipe_arg(step, "architecture")? {
         "x86_64" => "x86_64-unknown-linux-gnu",
@@ -855,6 +889,157 @@ fn append_initramfs_file(
     Ok(())
 }
 
+fn parse_newc_hex(bytes: &[u8], field: &str) -> anyhow::Result<usize> {
+    let text = std::str::from_utf8(bytes).with_context(|| format!("newc {field} is not ASCII"))?;
+    usize::from_str_radix(text, 16).with_context(|| format!("newc {field} is not hexadecimal"))
+}
+
+fn filter_initramfs_modules(source: &Path, dest: &Path, modules: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(source != dest, "initramfs source and output must differ");
+    let requested: Vec<&str> = modules.split(',').collect();
+    anyhow::ensure!(
+        !requested.is_empty()
+            && requested.len() <= 16
+            && requested.iter().all(|name| {
+                !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            }),
+        "initramfs module selection must contain 1..16 bounded module names"
+    );
+    let mut unique = requested.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    anyhow::ensure!(
+        unique.len() == requested.len(),
+        "duplicate initramfs module"
+    );
+
+    let source_identity = source_file_identity(source)?;
+    let recipe_identity = format!("{source_identity}\nmodules={modules}\n");
+    let source_stamp = PathBuf::from(format!("{}.source", dest.display()));
+    if dest.is_file()
+        && fs::metadata(dest)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+            > 0
+        && fs::read_to_string(&source_stamp).unwrap_or_default() == recipe_identity
+    {
+        println!(
+            "[fetch-guest] Filtered initramfs already staged: {}",
+            dest.display()
+        );
+        return Ok(());
+    }
+
+    let input = fs::read(source).with_context(|| format!("read {}", source.display()))?;
+    anyhow::ensure!(
+        input.len() <= 512 * 1024 * 1024,
+        "source initramfs exceeds 512 MiB"
+    );
+    let mut offset = 0usize;
+    let mut selected: Vec<(String, u32, Vec<u8>)> = Vec::new();
+    let mut found = std::collections::BTreeSet::new();
+    loop {
+        anyhow::ensure!(
+            offset
+                .checked_add(110)
+                .is_some_and(|end| end <= input.len())
+                && &input[offset..offset + 6] == b"070701",
+            "source initramfs does not start with one bounded newc archive"
+        );
+        let header = &input[offset..offset + 110];
+        let mode = parse_newc_hex(&header[14..22], "mode")? as u32;
+        let file_size = parse_newc_hex(&header[54..62], "file size")?;
+        let name_size = parse_newc_hex(&header[94..102], "name size")?;
+        anyhow::ensure!(name_size > 0 && name_size <= 4096, "invalid newc name size");
+        let name_start = offset + 110;
+        let name_end = name_start
+            .checked_add(name_size)
+            .context("newc name offset overflow")?;
+        anyhow::ensure!(name_end <= input.len(), "truncated newc name");
+        anyhow::ensure!(input[name_end - 1] == 0, "newc name is not terminated");
+        let name = std::str::from_utf8(&input[name_start..name_end - 1])
+            .context("newc name is not UTF-8")?;
+        let data_start = (name_end + 3) & !3;
+        let data_end = data_start
+            .checked_add(file_size)
+            .context("newc data offset overflow")?;
+        anyhow::ensure!(data_end <= input.len(), "truncated newc data");
+        offset = (data_end + 3) & !3;
+        if name == "TRAILER!!!" {
+            break;
+        }
+        if name.starts_with("usr/lib/modules/") {
+            let filename = Path::new(name)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if let Some(module) = requested.iter().find(|module| {
+                filename == format!("{module}.ko") || filename == format!("{module}.ko.zst")
+            }) {
+                anyhow::ensure!(
+                    found.insert((*module).to_owned()),
+                    "initramfs module {module:?} is ambiguous"
+                );
+                selected.push((
+                    name.to_owned(),
+                    mode & 0o777,
+                    input[data_start..data_end].to_vec(),
+                ));
+            }
+        }
+    }
+    for module in &requested {
+        anyhow::ensure!(
+            found.contains(*module),
+            "initramfs module {module:?} is missing"
+        );
+    }
+    let xz_magic = [0xfdu8, b'7', b'z', b'X', b'Z', 0];
+    let xz_offset = input[offset..]
+        .windows(xz_magic.len())
+        .position(|window| window == xz_magic)
+        .map(|position| offset + position)
+        .context("source initramfs has no trailing XZ archive")?;
+
+    selected.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut out = Vec::new();
+    let mut ino = 1u32;
+    let mut directories = std::collections::BTreeSet::new();
+    for (name, _, _) in &selected {
+        let mut parent = Path::new(name).parent();
+        while let Some(path) = parent.filter(|path| !path.as_os_str().is_empty()) {
+            directories.insert(path.to_string_lossy().into_owned());
+            parent = path.parent();
+        }
+    }
+    for directory in directories {
+        append_newc_dir(&mut out, &directory, ino)?;
+        ino += 1;
+    }
+    for (name, mode, data) in selected {
+        append_newc_file(&mut out, &name, ino, mode, &data)?;
+        ino += 1;
+    }
+    append_newc_trailer(&mut out, ino)?;
+    out.extend_from_slice(&input[xz_offset..]);
+    anyhow::ensure!(
+        out.len() <= 64 * 1024 * 1024,
+        "filtered initramfs exceeds the 64 MiB x86 embedded boot bound"
+    );
+    write_output(dest, &out)?;
+    write_output(&source_stamp, recipe_identity.as_bytes())?;
+    println!(
+        "[fetch-guest] Retained modules {modules} in {} ({} bytes)",
+        dest.display(),
+        out.len()
+    );
+    Ok(())
+}
+
 fn encode_initramfs_file(
     archive_path: &str,
     mode: &str,
@@ -929,7 +1114,7 @@ fn build_linux_probe_initramfs(initrd_dest: &Path) -> anyhow::Result<()> {
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-linux-probe-initrd-")
         .tempdir_in(&tmp_root)
-        .context("failed to create Linux probe initrd tempdir under build/tmp")?;
+        .context("failed to create Linux probe initrd tempdir under _build/tmp")?;
     let init = build_linux_e2e_init(tmp_dir.path())?;
     let out = create_linux_probe_initramfs(&init)?;
     write_output(initrd_dest, &out)?;
@@ -976,10 +1161,10 @@ pub fn build_x86_initramfs() -> anyhow::Result<()> {
         append_newc_file(&mut archive, "init", 2, 0o755, &init)?;
         append_newc_trailer(&mut archive, 3)?;
         write_output(
-            &repo_root()?.join(format!("build/x86-userspace/initrd{suffix}.bin")),
+            &repo_root()?.join(format!("_build/x86-userspace/initrd{suffix}.bin")),
             &archive,
         )?;
-        println!("[x86-userspace] Built build/x86-userspace/initrd{suffix}.bin");
+        println!("[x86-userspace] Built _build/x86-userspace/initrd{suffix}.bin");
     }
     Ok(())
 }
@@ -1370,7 +1555,7 @@ fn extract_arm64_elf_image(iso: &Path, member: &str, kernel_dest: &Path) -> anyh
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-arm64-elf-image-")
         .tempdir_in(&tmp_root)
-        .context("failed to create arm64 ELF image tempdir under build/tmp")?;
+        .context("failed to create arm64 ELF image tempdir under _build/tmp")?;
     let elf = tmp_dir.path().join("kernel.elf");
     let payload = tmp_dir.path().join("kernel.payload");
     extract_iso_file(iso, member, &elf)?;
@@ -1761,6 +1946,43 @@ mod tests {
     }
 
     #[test]
+    fn initramfs_module_filter_retains_exact_selection_and_trailing_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("full.initrd");
+        let dest = dir.path().join("filtered.initrd");
+        let mut archive = Vec::new();
+        append_newc_file(
+            &mut archive,
+            "usr/lib/modules/1/kernel/net/virtio_net.ko.zst",
+            1,
+            0o644,
+            b"net-module",
+        )
+        .unwrap();
+        append_newc_file(
+            &mut archive,
+            "usr/lib/modules/1/kernel/gpu/unrelated.ko.zst",
+            2,
+            0o644,
+            b"unrelated-module",
+        )
+        .unwrap();
+        append_newc_trailer(&mut archive, 3).unwrap();
+        let trailing = b"\xfd7zXZ\0trailing-archive";
+        archive.extend_from_slice(trailing);
+        fs::write(&source, archive).unwrap();
+
+        filter_initramfs_modules(&source, &dest, "virtio_net").unwrap();
+        let filtered = fs::read(&dest).unwrap();
+        let text = String::from_utf8_lossy(&filtered);
+        assert!(text.contains("virtio_net.ko.zst"));
+        assert!(!text.contains("unrelated.ko.zst"));
+        assert!(filtered.ends_with(trailing));
+        assert!(filter_initramfs_modules(&source, &dest, "missing").is_err());
+        assert!(filter_initramfs_modules(&source, &dest, "virtio_net,virtio_net").is_err());
+    }
+
+    #[test]
     fn zstd_initramfs_overlay_is_a_separate_reproducible_frame() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("base.initrd");
@@ -1786,6 +2008,16 @@ mod tests {
         let expected = format!("{:x}", Sha512::digest(b"agentOS\n"));
         verify_sha512(&artifact, &expected).unwrap();
         assert!(verify_sha512(&artifact, &"0".repeat(128)).is_err());
+    }
+
+    #[test]
+    fn sha256_verification_accepts_exact_content_and_rejects_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("artifact");
+        fs::write(&artifact, b"agentOS\n").unwrap();
+        let expected = format!("{:x}", Sha256::digest(b"agentOS\n"));
+        verify_sha256(&artifact, &expected).unwrap();
+        assert!(verify_sha256(&artifact, &"0".repeat(64)).is_err());
     }
 
     #[test]
@@ -2017,7 +2249,7 @@ fn extract_arm64_linux_image(iso: &Path, member: &str, kernel_dest: &Path) -> an
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-arm64-linux-image-")
         .tempdir_in(&tmp_root)
-        .context("failed to create arm64 Linux Image tempdir under build/tmp")?;
+        .context("failed to create arm64 Linux Image tempdir under _build/tmp")?;
     let vmlinuz = tmp_dir.path().join("vmlinuz");
     extract_iso_file(iso, member, &vmlinuz)?;
     decode_arm64_kernel(&vmlinuz, kernel_dest, tmp_dir.path())
@@ -2047,7 +2279,7 @@ fn normalize_arm64_linux_image(source: &Path, kernel_dest: &Path) -> anyhow::Res
     let tmp_dir = tempfile::Builder::new()
         .prefix("agentos-arm64-linux-image-")
         .tempdir_in(&tmp_root)
-        .context("failed to create arm64 Linux Image tempdir under build/tmp")?;
+        .context("failed to create arm64 Linux Image tempdir under _build/tmp")?;
     decode_arm64_kernel(source, kernel_dest, tmp_dir.path())?;
     write_output(&source_stamp, source_id.as_bytes())?;
     Ok(())

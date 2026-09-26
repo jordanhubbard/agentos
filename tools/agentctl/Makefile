@@ -15,7 +15,8 @@ CFLAGS  := -O2 -Wall -Wextra -std=c11 -DAGENTOS_TEST_HOST \
            -iquote ../../kernel/agentos-root-task/include -I../../platform/include
 LDFLAGS :=
 
-TARGET  := agentctl
+BUILD_DIR := $(abspath ../../_build/tools/agentctl)
+TARGET  := $(BUILD_DIR)/agentctl
 SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c
 
 .PHONY: all test install clean
@@ -23,26 +24,27 @@ SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c
 all: $(TARGET)
 
 $(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../platform/include/platform/operator_session.h ../../platform/include/platform/framebuffer_observer.h ../../platform/include/platform/framebuffer.h ../../platform/include/platform/input.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h ../../kernel/agentos-root-task/include/contracts/cc_transport.h ../../kernel/agentos-root-task/include/contracts/vibeos_contract.h
+	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 	@echo "Built: $(TARGET)"
 
 # Unit test: verify binary compiles and --help exits 0
 test: $(TARGET)
 	@echo "[test] --help exits 0"
-	./$(TARGET) --help >/dev/null 2>&1; \
+	$(TARGET) --help >/dev/null 2>&1; \
 	  if [ $$? -eq 0 ]; then echo "[PASS] --help"; else echo "[FAIL] --help"; exit 1; fi
 	@echo "[test] unknown flag exits non-zero"
-	./$(TARGET) --not-a-flag >/dev/null 2>&1; \
+	$(TARGET) --not-a-flag >/dev/null 2>&1; \
 	  if [ $$? -ne 0 ]; then echo "[PASS] unknown flag"; else echo "[FAIL] unknown flag"; exit 1; fi
 	@echo "[test] --batch requires socket (exits non-zero without agentOS)"
-	CC_PD_SOCK=/tmp/agentctl_no_such_socket ./$(TARGET) --batch list-guests >/dev/null 2>&1; \
+	CC_PD_SOCK=/tmp/agentctl_no_such_socket $(TARGET) --batch list-guests >/dev/null 2>&1; \
 	  if [ $$? -ne 0 ]; then echo "[PASS] no-socket exits 1"; else echo "[FAIL] no-socket should exit 1"; exit 1; fi
 	@echo "[test] all passed"
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/bin
-	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
-	@echo "Installed: $(DESTDIR)$(PREFIX)/bin/$(TARGET)"
+	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/agentctl
+	@echo "Installed: $(DESTDIR)$(PREFIX)/bin/agentctl"
 
 clean:
-	rm -f $(TARGET)
+	rm -rf $(BUILD_DIR)

@@ -20,7 +20,7 @@ set -euo pipefail
 BOARD="${BOARD:-qemu_virt_riscv64}"
 MAX_RECOVERY_TICKS="${MAX_RECOVERY_TICKS:-100}"
 QEMU_TIMEOUT="${QEMU_TIMEOUT:-120}"
-IMG="build/${BOARD}/agentos.img"
+IMG="_build/${BOARD}/agentos.img"
 
 if [ ! -f "$IMG" ]; then
     echo "ERROR: image not found: $IMG" >&2

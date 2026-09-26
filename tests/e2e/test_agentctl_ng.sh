@@ -9,8 +9,8 @@
 #   2 — SKIP (binary not built, QEMU not running, or socket not found)
 #
 # Environment variables (all optional):
-#   CC_PD_SOCK        Path to cc_pd bridge socket (default: build/cc_pd.sock)
-#   AGENTCTL          Path to agentctl binary (default: tools/agentctl/agentctl)
+#   CC_PD_SOCK        Path to cc_pd bridge socket (default: _build/cc_pd.sock)
+#   AGENTCTL          Path to agentctl binary (default: _build/tools/agentctl/agentctl)
 #   AGENTOS_SKIP_E2E  Skip this test unconditionally (set to any non-empty value)
 
 set -euo pipefail
@@ -34,8 +34,8 @@ info() { printf "${BOLD}[INFO]${RESET} %s\n" "$*"; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-BINARY="${AGENTCTL:-${REPO_ROOT}/tools/agentctl/agentctl}"
-SOCK="${CC_PD_SOCK:-${REPO_ROOT}/build/cc_pd.sock}"
+BINARY="${AGENTCTL:-${REPO_ROOT}/_build/tools/agentctl/agentctl}"
+SOCK="${CC_PD_SOCK:-${REPO_ROOT}/_build/cc_pd.sock}"
 
 # ── Skip conditions ────────────────────────────────────────────────────────────
 

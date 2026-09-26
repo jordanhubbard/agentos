@@ -59,6 +59,13 @@ distribution-specific artifact or DTB branches. The VMM validates the fixed
 wire representation and checks embedded artifact sizes before the
 guest-neutral boot executor copies anything into guest RAM.
 
+For single-guest launchers, `host.qemu.restrict_network` optionally controls
+QEMU user-network isolation.
+The x86 firmware launcher defaults to restricted networking when it is omitted;
+Arch and Debian explicitly set it to `false` for DNS, package acquisition and
+functional network checks. SSH forwarding remains bound to host loopback.
+This host-emulator setting does not grant device capabilities to a guest.
+
 For `build-initramfs-file` and `append-initramfs-file`, specify exactly one of
 inline UTF-8 `content` or `content_file`. A file payload is relative to the
 profile's acquisition output directory and requires `content_sha256` (64 hex

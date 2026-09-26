@@ -26,7 +26,14 @@ restarting elapsed-time accumulation. An invalid date leaves the transaction
 in SET state so the guest can correct it. Rejected operations preserve state
 and the caller's value.
 
-Register A admits the normal divider with selectable periodic rate. UIP warns
+Register A admits the normal divider with selectable periodic rate and the
+two divider-reset encodings. Reset freezes the calendar, UIP, and new polled
+flags; restoring the normal divider starts a fresh modeled second. This
+supports [Linux's SET/divider-reset calendar update sequence](https://github.com/torvalds/linux/blob/master/drivers/rtc/rtc-mc146818-lib.c)
+without host clock access. It does not model the hardware's subsecond divider
+restart timing.
+
+UIP warns
 during the final 244 microseconds before an atomic calendar update, and is
 clear during SET. Register C latches elapsed update/periodic/alarm events and clears
 on read. Register D reports valid virtual time. Writes to C/D are ignored,
@@ -42,8 +49,8 @@ does not lose an alarm event. SET inhibits calendar/alarm updates while
 periodic flags continue.
 
 This is a calendar subset, not full RTC hardware qualification.
-IRQ enables, square-wave output, automatic daylight savings and
-divider-stop modes are rejected. No RTC IRQ is advertised or injected.
+IRQ enables, square-wave output, automatic daylight savings and unsupported
+oscillator selections are rejected. No RTC IRQ is advertised or injected.
 Backwards clock input and dates beyond the supported range are rejected.
 
 `make test-x86-rtc-host` asserts elapsed-time rollover, leap years, SET

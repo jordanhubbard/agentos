@@ -15,6 +15,16 @@ This page describes two things and keeps them apart: what **boots today**
 shape**. A claim that belongs to the target column is not an OS claim until the
 manifest and the gate agree with it.
 
+The private x86 RTC now accepts both divider-reset encodings used while
+setting its calendar. Reset freezes calendar progression, UIP and new polled
+status flags; restoring the normal divider starts a fresh modeled second.
+Linux's SET/reset/write/release sequence is covered by host tests, including
+peer-clock independence and rejection without mutation. Interrupt enables,
+host RTC access and persistent time remain outside this model. Native Arch
+installation and a fresh boot from its persistent root passed; the
+[installation receipt](evidence/2026-09-26-release/arch-install.json) retains
+the exact source and qualification boundaries.
+
 The optional `GUEST_INPUT` AArch64 variant adds `input_virt`, a bounded input
 queue virtualizer. It owns no hardware frame, IRQ, or guest execution cap.
 Root maps one event page per VMM and a separate CC frontend page; only the
@@ -782,7 +792,9 @@ status, configuration and independent RX/TX queue handles. Root DMA metadata
 version 1 selects ARM MMIO; version 2 supplies bounded modern PCI spans.
 MMIO interrupt status and acknowledgment also go through that transport.
 PCI bindings have no ISR mapping: the driver polls RX and nonblocking IPC,
-with root limiting it to 1 ms of CPU per 10 ms period. The driver
+with root limiting it to 100 us of CPU per 1 ms period. This preserves its
+10% CPU ceiling while reducing the per-request delay after a polling yield;
+the CC, serial and VMM scheduling periods remain unchanged. The driver
 requires offered MAC and VERSION_1 features and waits for reset completion
 before configuring queues. The Intel composition includes `net_pd` and
 `net_virt`; the VMM attaches through the same contract and refuses to continue
@@ -790,6 +802,11 @@ unless the virtualizer reports an initialized host NIC. A loopback attachment
 does not meet that condition. Pending network wakes share the VMM notification
 path with block and serial. This attachment proves driver initialization, not
 guest packet I/O or a Linux network interface.
+
+The shorter NIC period passed functional SSH, CPU-affined x87/SSE workloads,
+and teardown/recreation across two native Debian two-vCPU generations. Exact
+source patches and artifact hashes are retained in the
+[NIC scheduling receipt](evidence/2026-09-26-release/nic-scheduling.json).
 
 The generated guest DSDT advertises console, block and network as separate
 LNRO0005 devices with integer UIDs 0/1/2, MMIO pages at 0xf0000000/1000/2000
