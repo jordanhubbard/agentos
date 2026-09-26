@@ -15,6 +15,14 @@ This page describes two things and keeps them apart: what **boots today**
 shape**. A claim that belongs to the target column is not an OS claim until the
 manifest and the gate agree with it.
 
+The private x86 RTC now accepts both divider-reset encodings used while
+setting its calendar. Reset freezes calendar progression, UIP and new polled
+status flags; restoring the normal divider starts a fresh modeled second.
+Linux's SET/reset/write/release sequence is covered by host tests, including
+peer-clock independence and rejection without mutation. Interrupt enables,
+host RTC access and persistent time remain outside this model. Native Arch
+qualification for this change is in progress.
+
 The optional `GUEST_INPUT` AArch64 variant adds `input_virt`, a bounded input
 queue virtualizer. It owns no hardware frame, IRQ, or guest execution cap.
 Root maps one event page per VMM and a separate CC frontend page; only the

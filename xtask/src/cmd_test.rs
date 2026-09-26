@@ -3832,15 +3832,24 @@ fn x86_has_login_prompt(text: &str) -> bool {
 }
 
 fn x86_console_ready(text: &str, profile: Option<&HostProfilePlan>) -> bool {
+    if let Some(profile) = profile {
+        if !profile
+            .console
+            .require
+            .iter()
+            .all(|marker| text.contains(marker))
+        {
+            return false;
+        }
+        if !profile.console.success.is_empty() {
+            return profile
+                .console
+                .success
+                .iter()
+                .all(|marker| text.contains(marker));
+        }
+    }
     x86_has_login_prompt(text)
-        || profile.is_some_and(|profile| {
-            !profile.console.success.is_empty()
-                && profile
-                    .console
-                    .success
-                    .iter()
-                    .all(|marker| text.contains(marker))
-        })
 }
 
 fn x86_linux_login_probe(
@@ -3941,7 +3950,22 @@ fn x86_linux_login_reader_with_artifacts(
     let mut provision_commands: Option<Vec<Vec<u8>>> = None;
     let mut provision_echo_boundary = None;
     let mut provision_waiting: Option<usize> = None;
+    let started = Instant::now();
+    let mut interaction_fires = profile
+        .map(|profile| vec![0u8; profile.console.interaction.len()])
+        .unwrap_or_default();
     while Instant::now() < deadline {
+        run_console_interactions_with(
+            profile.map(|profile| &profile.console),
+            &String::from_utf8_lossy(&transcript),
+            started.elapsed(),
+            &mut interaction_fires,
+            &mut |bytes| {
+                send.as_mut()
+                    .context("Intel console interaction has no input path")?(bytes)?;
+                Ok(())
+            },
+        )?;
         let target_log = std::fs::read_to_string(target_log_path)?;
         anyhow::ensure!(
             !target_log.contains("x86 VMX EPT proof FAILED"),
@@ -5722,6 +5746,18 @@ fn run_console_interactions(
     cc: &mut CcClient,
     guest_handle: u32,
 ) -> anyhow::Result<()> {
+    run_console_interactions_with(console, transcript, elapsed, fires, &mut |bytes| {
+        cc_send_raw_bytes(cc, guest_handle, bytes)
+    })
+}
+
+fn run_console_interactions_with(
+    console: Option<&crate::cmd_guest_profile::ConsolePlan>,
+    transcript: &str,
+    elapsed: Duration,
+    fires: &mut [u8],
+    send: &mut dyn FnMut(&[u8]) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let Some(console) = console else {
         return Ok(());
     };
@@ -5733,7 +5769,7 @@ fn run_console_interactions(
         if available <= usize::from(fires[index]) {
             continue;
         }
-        cc_send_raw_bytes(cc, guest_handle, interaction.send.as_bytes())?;
+        send(interaction.send.as_bytes())?;
         fires[index] += 1;
         println!(
             "[xtask:test] console rule {} fired ({}/{})",
@@ -8277,6 +8313,32 @@ mod tests {
                 bytes
             );
         }
+    }
+
+    #[test]
+    fn intel_console_logs_in_before_accepting_the_profile_shell() {
+        let mut profile = test_profile("arch-amd64-installer");
+        profile.provision.clear();
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("console.sock");
+        let log = temporary.path().join("qemu.log");
+        std::fs::write(&log, "").unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let guest = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream.write_all(b"Arch Linux\r\narchiso login: ").unwrap();
+            let mut username = [0; 5];
+            stream.read_exact(&mut username).unwrap();
+            assert_eq!(&username, b"root\r");
+            stream.write_all(b"root@archiso ~ # ").unwrap();
+        });
+        x86_linux_login_probe(&socket, &log, Duration::from_secs(2), None, Some(&profile)).unwrap();
+        guest.join().unwrap();
+        let transcript = std::fs::read_to_string(log.with_extension("console.log")).unwrap();
+        assert!(transcript.ends_with("root@archiso ~ # "));
     }
 
     #[test]

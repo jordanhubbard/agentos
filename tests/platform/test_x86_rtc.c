@@ -44,7 +44,7 @@ int main(void)
     reject(&r,0,false,0,0); /* reversed clock */
     reject(&r,0,true,1,86400*h); /* calendar writes need SET */
     assert(io(&r,1,false,0,86400*h)==0);
-    reject(&r,0xa,true,0x66,86400*h); /* divider-stop mode */
+    reject(&r,0xa,true,0x46,86400*h); /* unsupported oscillator mode */
     reject(&r,0xb,true,0x42,86400*h); /* PIE */
     reject(&r,0xb,true,0x22,86400*h); /* AIE */
     reject(&r,0xb,true,0x12,86400*h); /* UIE */
@@ -53,6 +53,32 @@ int main(void)
     assert(io(&r,0xc,false,0,86400*h)==0x70); /* midnight default alarm */
     io(&r,0xd,true,0,86400*h);
     assert(io(&r,0xd,false,0,86400*h)==0x80);
+
+    /* Linux mc146818_set_time: SET, divider reset, calendar, release SET,
+     * restore divider. Calendar and flags stay frozen even between releases. */
+    init(&r);
+    io(&r,0xb,true,0x82,0);
+    io(&r,0xa,true,0x76,0);
+    io(&r,9,true,0x26,0); io(&r,8,true,9,0); io(&r,7,true,0x26,0);
+    io(&r,4,true,0x15,0); io(&r,2,true,0x30,0); io(&r,0,true,0x20,0);
+    io(&r,0x32,true,0x20,0);
+    assert(io(&r,0xa,false,0,2*h-1)==0x76);
+    assert(io(&r,0,false,0,2*h)==0x20);
+    io(&r,0xb,true,2,3*h);
+    assert(io(&r,0,false,0,5*h)==0x20);
+    assert(io(&r,0xc,false,0,5*h)==0);
+    io(&r,0xa,true,0x26,5*h);
+    assert(io(&r,9,false,0,5*h)==0x26 && io(&r,8,false,0,5*h)==9);
+    assert(io(&r,7,false,0,5*h)==0x26 && io(&r,4,false,0,5*h)==0x15);
+    assert(io(&r,2,false,0,5*h)==0x30 && io(&r,0,false,0,6*h)==0x21);
+    assert(io(&r,0xc,false,0,6*h)==0x50);
+    assert(io(&other,0,false,0,0)==0); /* peer clock unaffected */
+    io(&r,0xa,true,0x66,6*h); /* alternate divider-reset encoding */
+    assert(io(&r,0,false,0,9*h)==0x21);
+    assert(io(&r,0xc,false,0,9*h)==0);
+    reject(&r,0xa,true,0x16,9*h);
+    io(&r,0xa,true,0x26,9*h);
+    assert(io(&r,0,false,0,10*h)==0x22);
 
     init(&r);
     io(&r,0xb,true,0x82,0); /* SET, BCD */

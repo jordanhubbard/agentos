@@ -2632,6 +2632,7 @@ mod tests {
             "squashfs",
             "overlay",
             "isofs",
+            "cdrom",
         ] {
             assert!(modules.contains(required), "missing {required}");
         }

@@ -41,17 +41,19 @@ static unsigned rate(uint8_t a)
 static uint64_t periods(uint64_t ticks, unsigned hz)
 { return (ticks/AOS_X86_RTC_HZ)*hz+(ticks%AOS_X86_RTC_HZ)*hz/AOS_X86_RTC_HZ; }
 static bool alarm_value(const aos_x86_rtc_t *r, unsigned n, unsigned raw, int *v);
+static bool divider_reset(uint8_t a)
+{ return (a&0x60)==0x60; }
 static bool current(aos_x86_rtc_t *r, uint64_t ticks, uint8_t f[8])
 {
     if (ticks<r->last) return false;
     unsigned hz=rate(r->a);
-    if (hz && periods(ticks,hz)>periods(r->last,hz)) r->flags|=0x40;
+    if (!divider_reset(r->a) && hz && periods(ticks,hz)>periods(r->last,hz)) r->flags|=0x40;
     if (r->b&0x80) {
         for (unsigned i=0; i<8; i++) f[i]=r->staged[i];
     } else {
-        uint64_t elapsed=(ticks-r->base)/AOS_X86_RTC_HZ;
+        uint64_t elapsed=divider_reset(r->a) ? 0 : (ticks-r->base)/AOS_X86_RTC_HZ;
         if (elapsed>=LIMIT-r->epoch) return false;
-        uint64_t previous=(r->last-r->base)/AOS_X86_RTC_HZ;
+        uint64_t previous=divider_reset(r->a) ? 0 : (r->last-r->base)/AOS_X86_RTC_HZ;
         if (elapsed>previous) {
             r->flags|=0x10;
             int a[3];
@@ -153,10 +155,19 @@ bool aos_x86_rtc_io(aos_x86_rtc_t *r, unsigned reg, bool write,
         } else result=next.alarm[index];
     } else if (reg==0xa) {
         if (write) {
-            if ((v&0x70)!=0x20) return false;
+            if ((v&0x70)!=0x20 && !divider_reset(v)) return false;
+            if (!divider_reset(next.a) && divider_reset(v)) {
+                /* Linux stops the divider while setting the calendar. Keep
+                 * the stopped date private, with no host RTC or IRQ access. */
+                if (!(next.b&0x80) && !encode(f,&next.epoch)) return false;
+                next.base=ticks;
+            } else if (divider_reset(next.a) && !divider_reset(v)) {
+                next.base=ticks;
+            }
             next.a=v&0x7f; /* UIP is read-only */
         } else {
-            bool uip=!(next.b&0x80) && (ticks-next.base)%AOS_X86_RTC_HZ >= AOS_X86_RTC_HZ-874;
+            bool uip=!divider_reset(next.a) && !(next.b&0x80) &&
+                (ticks-next.base)%AOS_X86_RTC_HZ >= AOS_X86_RTC_HZ-874;
             result=next.a|(uip ? 0x80 : 0);
         }
     } else if (reg==0xb) {
