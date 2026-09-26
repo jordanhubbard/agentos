@@ -1691,7 +1691,11 @@ _Noreturn void aos_x86_firmware_run(seL4_CPtr ep, aos_x86_vmenter_entry_t entry)
             }
             if (!hz && pm_base && port == (uint32_t)pm_base + 8u)
                 stop(ep, AOS_X86_VTX_PROOF_FAIL, 0x434c4bu, rip, port);
-            if (!aos_x86_config_io(&config, port, width, write, &value, ticks)) {
+            bool handled = port>=0x514u && port<0x51cu ?
+                aos_x86_fw_dma_io(&memory,(uint8_t *)AOS_X86_FIRMWARE_RAM_VA,
+                                  &config,port,width,write,&value) :
+                aos_x86_config_io(&config, port, width, write, &value, ticks);
+            if (!handled) {
                 if (pm_base && port==(uint32_t)pm_base+2u && write)
                     stop(ep,AOS_X86_VTX_PROOF_FAIL,0x504d45u,rip,
                          ((uint64_t)port << 32) | (value & (width==1u ? 0xffu : 0xffffu)));

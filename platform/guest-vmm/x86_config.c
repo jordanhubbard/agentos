@@ -1,4 +1,5 @@
 #include "platform/x86_config.h"
+#include <string.h>
 
 static uint32_t load(const uint8_t *p, unsigned n)
 {
@@ -74,7 +75,7 @@ static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
         static const uint8_t sig[] = {'Q','E','M','U'};
         return off < sizeof(sig) ? sig[off] : 0;
     }
-    if (s->fw_selector == 1u) return off == 0u ? 1u : 0u; /* traditional PIO, no DMA */
+    if (s->fw_selector == 1u) return off == 0u ? 3u : 0u; /* PIO and DMA */
     if (s->fw_selector == 3u)
         return off < 4u ? (uint8_t)(s->ram_bytes >> (8u*off)) : 0;
     if (s->fw_selector == 5u || s->fw_selector == 0xfu)
@@ -103,6 +104,51 @@ static uint8_t fw_byte(const aos_x86_config_t *s, uint32_t off)
         return col == 16u ? (row == 0u || row == 2u ? 1u : 2u) : 0u;
     }
     return 0;
+}
+
+bool aos_x86_config_dma(aos_x86_config_t *s, uint32_t control,
+                        uint8_t *destination, uint32_t length)
+{
+    enum { DMA_READ=2u, DMA_SKIP=4u, DMA_SELECT=8u, DMA_WRITE=16u };
+    if (!s || !length || length>AOS_X86_BOOT_BLOB_LIMIT ||
+        control & ~(UINT32_C(0xffff0000)|DMA_READ|DMA_SKIP|DMA_SELECT|DMA_WRITE) ||
+        (!!(control&DMA_READ)+!!(control&DMA_SKIP)+!!(control&DMA_WRITE))!=1u ||
+        ((control&DMA_READ) && !destination) ||
+        (!(control&DMA_READ) && destination)) return false;
+    aos_x86_config_t next=*s;
+    if (control&DMA_SELECT) {
+        next.fw_selector=(uint16_t)(control>>16);
+        next.fw_offset=0;
+    }
+    if (length>UINT32_MAX-next.fw_offset || (control&DMA_WRITE)) return false;
+    if (control&DMA_READ) {
+        unsigned blob=3;
+        uint32_t size=0;
+        const uint8_t *source=0;
+        if (next.fw_selector==0x11u) { blob=0; source=next.boot.kernel; size=next.boot.kernel_size; }
+        if (next.fw_selector==0x12u) { blob=1; source=next.boot.initrd; size=next.boot.initrd_size; }
+        if (next.fw_selector==0x15u) { blob=2; source=next.boot.cmdline; size=next.boot.cmdline_size; }
+        if (source) {
+            uint32_t available=next.fw_offset<size ? size-next.fw_offset : 0u;
+            if (available>length) available=length;
+            if (available) memcpy(destination,source+next.fw_offset,available);
+            if (available<length) memset(destination+available,0,length-available);
+        } else {
+            for (uint32_t i=0;i<length;i++)
+                destination[i]=fw_byte(&next,next.fw_offset+i);
+        }
+        if (blob<3 && next.fw_offset<size) {
+            uint32_t consumed=size-next.fw_offset;
+            if (consumed>length) consumed=length;
+            uint32_t room=UINT32_MAX-next.boot_reads[blob];
+            next.boot_reads[blob]+=consumed>room ? room : consumed;
+        }
+        uint32_t room=UINT32_MAX-next.fw_reads;
+        next.fw_reads+=length>room ? room : length;
+    }
+    next.fw_offset+=length;
+    *s=next;
+    return true;
 }
 
 static bool pm_io(aos_x86_config_t *s, unsigned off, unsigned width,

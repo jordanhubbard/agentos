@@ -1,5 +1,59 @@
 #include "platform/x86_string.h"
 
+static uint32_t swap32(uint32_t n)
+{
+    return ((n&0xffu)<<24)|((n&0xff00u)<<8)|((n>>8)&0xff00u)|(n>>24);
+}
+static uint32_t be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3];
+}
+static uint64_t be64(const uint8_t *p)
+{
+    return ((uint64_t)be32(p)<<32)|be32(p+4);
+}
+static void put_be32(uint8_t *p,uint32_t n)
+{
+    p[0]=(uint8_t)(n>>24); p[1]=(uint8_t)(n>>16);
+    p[2]=(uint8_t)(n>>8); p[3]=(uint8_t)n;
+}
+
+bool aos_x86_fw_dma_io(const aos_x86_memory_t *memory, uint8_t *writable_ram,
+                       aos_x86_config_t *config, uint16_t port, unsigned width,
+                       bool write, uint32_t *value)
+{
+    if (!memory || !writable_ram || memory->ram!=writable_ram || !config ||
+        !value || width!=4u || (port!=0x514u && port!=0x518u)) return false;
+    if (!write) {
+        /* Raw x86 IN values preserve the bytes of the big-endian register. */
+        *value=swap32(port==0x514u ? UINT32_C(0x51454d55) : UINT32_C(0x20434647));
+        return true;
+    }
+    uint32_t half=swap32(*value);
+    if (port==0x514u) {
+        config->fw_dma_address=(uint64_t)half<<32;
+        return true;
+    }
+    uint64_t descriptor=config->fw_dma_address|half;
+    config->fw_dma_address=0;
+    if (descriptor>memory->ram_size || memory->ram_size-descriptor<16u)
+        return true; /* no writable status word, matching absent DMA memory */
+    uint8_t *access=writable_ram+descriptor;
+    uint32_t control=be32(access), length=be32(access+4);
+    uint64_t destination=be64(access+8);
+    bool read=(control&2u)!=0;
+    bool valid=length && length<=AOS_X86_BOOT_BLOB_LIMIT &&
+        (!read || (destination<=memory->ram_size &&
+                   length<=memory->ram_size-destination));
+    aos_x86_config_t next=*config;
+    if (valid)
+        valid=aos_x86_config_dma(&next,control,
+            read ? writable_ram+destination : NULL,length);
+    if (valid) *config=next;
+    put_be32(access,valid ? 0u : 1u);
+    return true;
+}
+
 bool aos_x86_fw_insb(const aos_x86_memory_t *memory, uint8_t *writable_ram,
                       uint64_t cr3, aos_x86_config_t *config,
                       uint64_t *address, uint64_t *count, bool backwards)
