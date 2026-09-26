@@ -1608,10 +1608,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                     0,
                 )
             }
-        } else if args.assert_emulated_console
-            || profile_plan
-                .as_ref()
-                .is_some_and(|profile| !profile_console_markers(profile).is_empty())
+        } else if !args.assert_vmx_exit
+            && (args.assert_emulated_console
+                || profile_plan
+                    .as_ref()
+                    .is_some_and(|profile| !profile_console_markers(profile).is_empty()))
         {
             let profile = profile_plan.as_ref().unwrap();
             println!(
