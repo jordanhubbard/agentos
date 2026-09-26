@@ -264,6 +264,10 @@ _Static_assert(CC_SC_BUDGET_US * 10u == CC_SC_PERIOD_US,
  */
 #define VMM_SC_BUDGET_US          25000u
 #define VMM_SC_PERIOD_US          100000u
+#define X86_NET_SC_BUDGET_US      100u
+#define X86_NET_SC_PERIOD_US      1000u
+_Static_assert(X86_NET_SC_BUDGET_US * 10u == X86_NET_SC_PERIOD_US,
+               "x86 polling NIC must retain a ten percent CPU ceiling");
 /*
  * Guest fault senders share the VMM endpoint with vm_manager control calls.
  * Keep the relay path monotonic above guests: cc_pd 164, vibe_engine 165,
@@ -2880,11 +2884,14 @@ void root_task_main(const seL4_BootInfo *bi)
                 sc_period = CC_SC_PERIOD_US;
             }
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
-            /* Polling device drivers must not wait the default one-second
-             * refill after Yield. Bound each to 1 ms per 10 ms period. */
-            if (pd->self_svc_id == SVC_ID_SERIAL || pd->self_svc_id == SVC_ID_NET_PD) {
+            /* Yield consumes the remaining polling budget. Serial retains
+             * its qualified cadence; per-frame NIC IPC needs shorter gaps. */
+            if (pd->self_svc_id == SVC_ID_SERIAL) {
                 sc_budget = 1000u;
                 sc_period = 10000u;
+            } else if (pd->self_svc_id == SVC_ID_NET_PD) {
+                sc_budget = X86_NET_SC_BUDGET_US;
+                sc_period = X86_NET_SC_PERIOD_US;
             }
 #endif
 

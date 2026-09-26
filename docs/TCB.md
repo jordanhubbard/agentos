@@ -790,7 +790,9 @@ status, configuration and independent RX/TX queue handles. Root DMA metadata
 version 1 selects ARM MMIO; version 2 supplies bounded modern PCI spans.
 MMIO interrupt status and acknowledgment also go through that transport.
 PCI bindings have no ISR mapping: the driver polls RX and nonblocking IPC,
-with root limiting it to 1 ms of CPU per 10 ms period. The driver
+with root limiting it to 100 us of CPU per 1 ms period. This preserves its
+10% CPU ceiling while reducing the per-request delay after a polling yield;
+the CC, serial and VMM scheduling periods remain unchanged. The driver
 requires offered MAC and VERSION_1 features and waits for reset completion
 before configuring queues. The Intel composition includes `net_pd` and
 `net_virt`; the VMM attaches through the same contract and refuses to continue
