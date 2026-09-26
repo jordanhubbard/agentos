@@ -9251,7 +9251,9 @@ mod tests {
                 && aml_package < aml_signature
                 && aml_signature < install
         );
-        assert!(script.contains("https://geo.mirror.pkgbuild.com/extra/os/x86_64/aml-1.0.0-1-x86_64.pkg.tar.zst"));
+        assert!(script.contains(
+            "https://geo.mirror.pkgbuild.com/extra/os/x86_64/aml-1.0.0-1-x86_64.pkg.tar.zst"
+        ));
         assert_eq!(script.matches("sha256sum -c").count(), 2);
         assert!(script.contains("sway-ipc.*.sock"));
         assert_eq!(script.matches("SWAYSOCK=\"$ipc\"").count(), 2);
