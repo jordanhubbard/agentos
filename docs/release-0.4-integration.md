@@ -51,5 +51,8 @@ HTTP acquisition steps and assertions are not reintroduced.
 
 Arch installation and reboot passed the retained
 [native installation qualification](evidence/2026-09-26-release/arch-install.json).
-Desktop acceptance remains pending. This branch reconciliation is not itself
-a release or broader runtime qualification.
+Desktop acceptance subsequently passed at `28da7ff6`, and PR #284 was
+merged for v0.5.0 rather than the originally planned v0.4.2. The
+[native evidence index](evidence/2026-09-26-release/README.md) links the
+graphics/input regression history, final desktop receipt and published
+release receipt, with their distinct revisions and qualification limits.

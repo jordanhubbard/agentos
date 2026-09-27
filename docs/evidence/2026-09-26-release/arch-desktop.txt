@@ -1,0 +1,13 @@
+schema: agentos.desktop.native.v1
+status: pass
+source_commit: 28da7ff6a9860779a84ab5b6e40dfce61f65b806
+board: x86_64_generic_vtx
+guest_profile: arch-linux-x86-64-desktop
+command: make gate-x86_64-desktop GUEST_OS=none QEMU_TEST_TIMEOUT=14400 X86_ROOT_DISK=/tmp/agentos-042-desktop/_build/evidence/arch-desktop/arch-root.raw X86_SSH_KEY=/tmp/agentos-042-desktop/_build/evidence/arch-desktop/id_ed25519 X86_SSH_PORT=12226
+result: PASS
+framebuffer: 1024x768 sequence=26 sha256=524e4ace079e318ec6d936b5d11c50e4dff0ed09c28a226abad8a556956e13d6
+desktop_rfb: 1024x768 bytes=3145728 fnv1a64=980f4696b2642f2a name=WayVNC
+input: exact keyboard pointer release backpressure disconnect paused-disconnect receipts retained
+packages: pinned Arch set verified; aml package sha256=d3a87fac8acf0b557f408a6911cabc2385b54275f7b81049fc0227e4af8a13cb signature sha256=7281dc807a84ee2fb73f7f420464118486c5c9172e5667c6ee7f9528f0e839c5
+fixture: working copy derived from retained base by offline journal recovery; original base and failed images preserved
+limitations: one-vCPU Intel KVM VMX; pinned external kernel and initramfs; no Omarchy claim; no physical display or input passthrough

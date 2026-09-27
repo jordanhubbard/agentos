@@ -1,0 +1,39 @@
+{
+  "schema": "agentos.arch-graphics-input-qualification.v1",
+  "status": "pass",
+  "source_revision": "764c9e214927ce75b8f93f6649c377537fa36603",
+  "source_worktree_clean": true,
+  "host": "madmax Intel Linux, nested VMX/KVM",
+  "profile": "arch-amd64-desktop.toml",
+  "root_task_sha256": "080e50713230eabeec9ed1c4d2ff20b8156282b8369ec16aa973d8321fb795aa",
+  "image_sha256": "ecb63067f62c13a8a7ee65057326ee8523f34c2b38e1f2724bfadc69fd2a6397",
+  "frame": {
+    "width": 1024,
+    "height": 768,
+    "ppm_sha256": "524e4ace079e318ec6d936b5d11c50e4dff0ed09c28a226abad8a556956e13d6",
+    "proof": "Exact profile test pixels written through the Linux DRM framebuffer and captured through the CC framebuffer observer"
+  },
+  "input": {
+    "guest_handle": 1,
+    "modes": ["normal delivery", "explicit release", "connection close", "paused backpressure", "paused connection close"],
+    "proof": "All five modes passed exact Linux evdev keyboard, pointer, button and SYN packet assertions through public binary CC and emulated virtio-input",
+    "paused_accepted_batches": [5, 5]
+  },
+  "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-26-arch/arch-graphics-input.tar.gz",
+  "archive_sha256": "d189bed6f6377a55fd57f5c3db92ed856cc1d55d0830b5d3d67039a3bc905c46",
+  "corrected_failures": [
+    {
+      "problem": "x86 transport rejected Linux byte writes to virtio-input configuration selectors",
+      "fix_commit": "77332f02",
+      "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-26-arch/desktop-input-write-failure.tar.gz",
+      "archive_sha256": "6b4d87b7975090d1641eb9a134a0026842e682ec08df6b53f80d3431e6534627"
+    },
+    {
+      "problem": "x86 lifecycle polling omitted input wakes from its accepted notification mask",
+      "fix_commit": "764c9e21",
+      "archive": "/home/jkh/.local/share/agentos-evidence/2026-09-26-arch/desktop-input-wake-failure.tar.gz",
+      "archive_sha256": "dabdfc809d32fff47e09b796d66db467a5d8521352a429d7dc1a8956f3f479eb"
+    }
+  ],
+  "limits": "This records the completed device stages of the desktop gate. It does not itself prove Sway/WayVNC, physical devices, GUI process termination, peer guest isolation, or guest recreation."
+}

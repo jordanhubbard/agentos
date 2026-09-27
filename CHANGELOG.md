@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- Complete the v0.5.0 native evidence index with the retained Arch
+  graphics/input regression history and final Sway/WayVNC desktop receipt.
+  Correct the earlier integration note's pending desktop status. These are
+  historical qualification records, not new runtime fixes or 0.5.1 test results.
+
 ## [0.5.0] - 2026-09-26
 
 ### Added
