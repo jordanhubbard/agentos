@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-27
+
 ### Documentation
 
 - Complete the v0.5.0 native evidence index with the retained Arch
