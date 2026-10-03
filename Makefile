@@ -860,7 +860,7 @@ gate-guest-io:
 	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
-gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io
+gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
@@ -917,6 +917,36 @@ test-host: test-x86-cpu-host
 test-host: test-x86-composition-host
 test-host: test-vm-manager-identity-host
 test-host: test-remoteos-client-host
+test-host: test-cc-envelope-host
+test-host: test-cc-envelope-dispatch-host
+test-host: test-cc-session-reap-host
+
+.PHONY: test-cc-envelope-host
+test-cc-envelope-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_cc_envelope.c \
+		-o $(BUILD_TMP_DIR)/test_cc_envelope
+	$(BUILD_TMP_DIR)/test_cc_envelope
+
+.PHONY: test-cc-envelope-dispatch-host
+test-cc-envelope-dispatch-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_cc_envelope_dispatch.c \
+		-o $(BUILD_TMP_DIR)/test_cc_envelope_dispatch
+	$(BUILD_TMP_DIR)/test_cc_envelope_dispatch
+
+.PHONY: test-cc-session-reap-host
+test-cc-session-reap-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_cc_session_reap.c \
+		-o $(BUILD_TMP_DIR)/test_cc_session_reap
+	$(BUILD_TMP_DIR)/test_cc_session_reap
 
 .PHONY: test-remoteos-client-host
 test-remoteos-client-host:
@@ -1564,6 +1594,11 @@ test-operator-host:
 test-operator-session:
 	$(MAKE) -C tools/agentctl
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-operator-session --timeout-secs $(QEMU_TEST_TIMEOUT)
+.PHONY: test-cc-envelope
+test-cc-envelope:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --cc-envelope-probe 1
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --cc-envelope-probe 2
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --cc-envelope-probe 3
 .PHONY: test-operator-isolation
 test-operator-isolation:
 	@mkdir -p _build/evidence/operator-isolation

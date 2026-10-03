@@ -751,6 +751,10 @@ ifdef FAULT_INJECT
   IMAGES += fault_inject.elf
 endif
 
+ifneq ($(AGENTOS_CC_OPERATOR_TOKEN),)
+  CFLAGS += -DAGENTOS_CC_OPERATOR_TOKEN='$(AGENTOS_CC_OPERATOR_TOKEN)'
+endif
+
 ifdef SEL4_TEST_IMAGE
   CFLAGS_ROOT_TASK += -DAGENTOS_SEL4_TEST_IMAGE=1
   # agentos-8f5: on-target contract TAP runner PD (test image only).

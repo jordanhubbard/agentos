@@ -66,3 +66,6 @@ tests/e2e/id_ed25519
 # MAC local task-ledger mirror (hub is canonical; never product content)
 .tickets/
 mac-evidence.json
+
+# Superpowers SDD scratch (ledger, briefs, review packages)
+.superpowers/

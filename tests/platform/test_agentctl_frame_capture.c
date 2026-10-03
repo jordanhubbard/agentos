@@ -12,8 +12,12 @@ static void serve(int listener, unsigned mode)
     assert(write_full(fd, &hello, sizeof(hello)));
     cc_req_wire_t sync;
     assert(read_full(fd, &sync, sizeof(sync)));
-    hello.mr[0] = MSG_CC_CONNECTION_SYNC;
-    assert(memcmp(&sync, &hello, sizeof(sync)) == 0);
+    cc_reply_wire_t expected = hello;
+    expected.mr[0] = MSG_CC_CONNECTION_SYNC;
+    /* The operator credential rides this frame's shmem now
+     * (cc_operator_credential.h, via agentctl.c's connection_sync()). */
+    memcpy(expected.shmem, cc_operator_token, CC_OPERATOR_TOKEN_BYTES);
+    assert(memcmp(&sync, &expected, sizeof(sync)) == 0);
     hello.mr[0] = CC_OK;
     assert(write_full(fd, &hello, sizeof(hello)));
     assert(fd >= 0);
