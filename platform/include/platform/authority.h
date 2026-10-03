@@ -78,6 +78,18 @@ typedef struct __attribute__((packed)) aos_authority_snapshot {
 } aos_authority_snapshot_t;
 
 void aos_authority_init(aos_authority_snapshot_t *snap);
+/*
+ * aos_authority_add — record one capability grant of `kind` against
+ * `pd_index`, creating that domain's row on first sight.
+ *
+ * `name` is honoured only the first time a given pd_index is seen (it names
+ * the row then); on every later call for the same pd_index, `name` is
+ * ignored and only the kind's count is incremented. Callers that record
+ * several kinds for one domain should still pass the domain's name every
+ * time -- consistently, not just on what the caller believes is the first
+ * call -- since callers cannot generally know which recorded capability a
+ * walk over an external table will visit first for a given domain.
+ */
 int  aos_authority_add(aos_authority_snapshot_t *snap, uint32_t pd_index,
                        const char *name, uint32_t kind);
 int  aos_authority_validate(const aos_authority_snapshot_t *snap);

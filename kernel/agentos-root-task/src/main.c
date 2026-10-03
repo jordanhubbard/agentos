@@ -799,12 +799,16 @@ static void boot_setup_irqs(const pd_desc_t *pd,
         }
 
         /*
-         * Log failures but do not abort boot: a missing IRQ handler cap means
-         * the PD will receive seL4_InvalidCapability when it calls
-         * seL4_IRQHandler_Ack(), which is recoverable.
+         * All failure paths above `continue`; reaching here means the
+         * handler cap is live in the PD's CNode. (Earlier failures in this
+         * loop are logged but do not abort boot: a missing IRQ handler cap
+         * means the PD will receive seL4_InvalidCapability when it calls
+         * seL4_IRQHandler_Ack(), which is recoverable.) `err` from the Move
+         * above was already checked; this silences the now-unused value.
          */
         (void)err;
 
+        /* ── Record the grant in the capability accounting table ───────── */
         /*
          * Record the IRQ handler cap against the PD it was just moved into
          * (dest_slot in pd_cnode), not against root -- root retains no alias.

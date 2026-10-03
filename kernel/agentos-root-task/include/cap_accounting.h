@@ -24,12 +24,26 @@
 #define CAP_ACCT_MAX_ENTRIES  1024u
 
 /*
+ * CAP_ACCT_ROOT_PD_INDEX — reserved pd_index for the root task's own
+ * capabilities; never a descriptor index.
+ *
+ * Descriptor index 0 is a real protection domain (pd[0], e.g. nameserver) --
+ * it is not the root task. Recording root's own caps with pd_index 0 would
+ * silently merge root's authority into pd[0]'s row in anything that groups
+ * by pd_index (e.g. the authority page, aos_authority_add), making pd[0]'s
+ * own authority invisible. Root's caps use this sentinel instead so they
+ * never collide with a real descriptor index.
+ */
+#define CAP_ACCT_ROOT_PD_INDEX 0xFFFFFFFFu
+
+/*
  * cap_acct_entry_t — one capability record in the accounting table.
  *
  * Fields:
  *   cap       seL4 capability pointer
  *   obj_type  seL4 object type constant (e.g. seL4_TCBObject)
- *   pd_index  index of the owning PD in the system descriptor (0 = root task)
+ *   pd_index  index of the owning PD in the system descriptor, or
+ *             CAP_ACCT_ROOT_PD_INDEX for the root task's own capabilities
  *   name      short human-readable name (truncated to 15 chars + NUL)
  */
 typedef struct {
@@ -58,7 +72,8 @@ void cap_acct_init(const seL4_BootInfo *bi);
  *   parent    parent capability (seL4_CapNull if directly from untyped)
  *   cap       the capability to record
  *   obj_type  seL4 object type of the capability
- *   pd_index  owning PD index (matches system_desc_t.pds[] index)
+ *   pd_index  owning PD index (matches system_desc_t.pds[] index), or
+ *             CAP_ACCT_ROOT_PD_INDEX for the root task's own capabilities
  *   name      short name (NUL-terminated; truncated after 15 chars)
  *
  * Returns 0 on success, -1 if the table is full.

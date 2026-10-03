@@ -64,6 +64,12 @@
 #define SEL4_ERR_FORBIDDEN   UINT32_C(9)
 #endif
 
+/* Mirrors cap_accounting.h's reserved pd_index for root's own capabilities
+ * (not included here -- see the type/constant list above this block). */
+#ifndef CAP_ACCT_ROOT_PD_INDEX
+#define CAP_ACCT_ROOT_PD_INDEX 0xFFFFFFFFu
+#endif
+
 /* sel4_badge_t is uint64_t in sel4_ipc.h */
 #ifndef SEL4_BADGE_DEFINED
 typedef uint64_t sel4_badge_t;
@@ -208,10 +214,15 @@ uint32_t handle_cap_audit(sel4_badge_t       badge,
 
         /*
          * Revocable determination:
-         *   pd_index == 0  →  root-task initial caps (not revocable)
-         *   pd_index > 0   →  derived caps (revocable)
+         *   pd_index == CAP_ACCT_ROOT_PD_INDEX  →  root-task initial caps
+         *                                          (not revocable)
+         *   otherwise                           →  derived caps (revocable)
+         *
+         * CAP_ACCT_ROOT_PD_INDEX (not 0u) marks root's own caps: descriptor
+         * index 0 is a real protection domain (pd[0]), so pd_index == 0u
+         * here means that domain's own (revocable) caps, not root's.
          */
-        uint8_t revocable = (e->pd_index > 0u) ? 1u : 0u;
+        uint8_t revocable = (e->pd_index != CAP_ACCT_ROOT_PD_INDEX) ? 1u : 0u;
 
         mr_cur = write_audit_entry(mr_cur, e, revocable);
         count++;
