@@ -37,6 +37,24 @@
 #define CAP_ACCT_ROOT_PD_INDEX 0xFFFFFFFFu
 
 /*
+ * CAP_AUDIT_PD_ALL — reserved pd_id value for the OP_CAP_AUDIT request-side
+ * filter meaning "every domain"; distinct from CAP_ACCT_ROOT_PD_INDEX and
+ * from any descriptor index.
+ *
+ * This is a *request-side* filter value, not a recorded pd_index: it is
+ * compared against the caller-supplied pd_id argument in handle_cap_audit
+ * (cap_audit.c), never stored in cap_acct_entry_t.pd_index. Before this
+ * constant existed, pd_id==0 doubled as both "descriptor index 0" and "all
+ * PDs", so a caller asking OP_CAP_AUDIT for pd_index 0 (nameserver, pd[0])
+ * silently got every domain's capabilities instead of just nameserver's --
+ * the same class of 0-as-sentinel bug CAP_ACCT_ROOT_PD_INDEX fixes on the
+ * recording side. Pick a value distinct from both 0 (a real descriptor
+ * index) and CAP_ACCT_ROOT_PD_INDEX (root's sentinel) so it can never be
+ * confused with either.
+ */
+#define CAP_AUDIT_PD_ALL 0xFFFFFFFEu
+
+/*
  * cap_acct_entry_t — one capability record in the accounting table.
  *
  * Fields:

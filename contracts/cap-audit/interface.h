@@ -39,7 +39,14 @@
  * OP_CAP_AUDIT (0xCA01) — enumerate capabilities across all (or one) PD(s).
  *
  * Request layout (sel4_msg_t.data[]):
- *   data[0..3]  uint32_t pd_id   — PD index to filter; 0 = all PDs
+ *   data[0..3]  uint32_t pd_id   — PD index to filter; CAP_AUDIT_PD_ALL
+ *                                  (0xFFFFFFFEu, see cap_accounting.h)
+ *                                  selects all PDs. pd_id == 0 selects
+ *                                  descriptor index 0 (pd[0]/nameserver)
+ *                                  exactly -- it is a real PD, not a
+ *                                  wildcard. Omitting the argument
+ *                                  (data length < 4) is equivalent to
+ *                                  CAP_AUDIT_PD_ALL.
  *
  * Reply layout (sel4_msg_t.data[]):
  *   data[0..3]  uint32_t count   — number of cap_audit_entry_t entries written
