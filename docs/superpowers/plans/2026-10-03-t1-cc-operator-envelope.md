@@ -18,6 +18,7 @@
 - Source-grep assertions are not tests (ROADMAP corrective action 7). Every assertion here is behavioral.
 - Contracts before callers. IPC contract changes land in `kernel/agentos-root-task/include/contracts/` before the code that uses them.
 - Any component that lands updates `docs/TCB.md` in the same change with its qualification boundary stated.
+- **Target verification in this environment requires `SEL4_SDK_VERSION=2.1.0`.** The default pin (`2.3.1-agentos-e60776ac-cr2`, in `tools/sdk/default-version`) is built locally from upstream clones that are not present here, so `make build` and `make test` fail their SDK check without the override. Results obtained under 2.1.0 are genuine boot evidence but are **not** the release-qualified configuration: any claim written into `docs/TCB.md` must name the SDK that produced it, and release qualification must re-run on the pinned SDK.
 - Threat model: the vendor is trusted, the local operator is not. The credential is **not** secret from the operator — it selects an envelope, it does not authenticate a principal. No step may describe it as a secret or claim it defends against the operator.
 
 ## Review Focus
@@ -471,7 +472,7 @@ endif
 
 - [ ] **Step 9: Build and run the host suite**
 
-Run: `make test-host && make build TARGET_ARCH=aarch64 GUEST_OS=none`
+Run: `make test-host && make build TARGET_ARCH=aarch64 GUEST_OS=none SEL4_SDK_VERSION=2.1.0`
 Expected: both succeed. The build must compile `cc_pd.elf` without warnings.
 
 - [ ] **Step 10: Commit**
@@ -602,12 +603,12 @@ In `cc_dispatch` (`cc_pd.c:1901`), immediately after the `cc_age_sessions();` ca
 
 - [ ] **Step 6: Build and run the full host suite**
 
-Run: `make test-host && make build TARGET_ARCH=aarch64 GUEST_OS=none`
+Run: `make test-host && make build TARGET_ARCH=aarch64 GUEST_OS=none SEL4_SDK_VERSION=2.1.0`
 Expected: PASS, including both new tests.
 
 - [ ] **Step 7: Boot test**
 
-Run: `make test TARGET_ARCH=aarch64 GUEST_OS=none`
+Run: `make test TARGET_ARCH=aarch64 GUEST_OS=none SEL4_SDK_VERSION=2.1.0`
 Expected: boots and prints `agentOS boot complete`. If it hangs, the pre-auth set is wrong — the harness's own CC handshake is being refused. Check which opcode the harness sends first and whether it is in `cc_envelope_is_preauth`.
 
 - [ ] **Step 8: Commit**
@@ -774,7 +775,7 @@ This is a liveness requirement, not a security one: a stale session must eventua
 
 - [ ] **Step 6: Run host suite and boot test**
 
-Run: `make test-host && make test TARGET_ARCH=aarch64 GUEST_OS=none`
+Run: `make test-host && make test TARGET_ARCH=aarch64 GUEST_OS=none SEL4_SDK_VERSION=2.1.0`
 Expected: both PASS.
 
 - [ ] **Step 7: Commit**
