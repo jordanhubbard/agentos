@@ -5404,7 +5404,7 @@ fn cc_assert_connection_refused(stream: &mut UnixStream) -> anyhow::Result<()> {
     }
 
     // Confirm no later frame on this connection is ever served either, by
-    // attempting an opcode that would be admitted on an authenticated
+    // attempting an opcode that would be admitted on a credentialed
     // connection.
     let mut req = [0u8; CC_REQ_SIZE];
     wr32(&mut req, 0, MSG_CC_LIST_GUESTS);

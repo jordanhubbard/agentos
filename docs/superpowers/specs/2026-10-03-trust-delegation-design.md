@@ -34,8 +34,8 @@ Success for this track means: a domain can be created at run time holding
 strictly less authority than its creator; authority can be lent for the
 duration of an operation and verifiably withdrawn afterward; the resulting
 graph can be inspected without granting the inspector any power to change it;
-and the control plane through which all of this is driven authenticates the
-caller.
+and the control plane through which all of this is driven is bound to an
+authority envelope.
 
 ## Threat model
 
@@ -158,7 +158,7 @@ bound on a delegation's lifetime, and visibility into the resulting graph.
 
 ## Components
 
-### T1 — Control-plane authentication
+### T1 — Control-plane authority envelope
 
 `handle_connect` in `services/command-console/cc_pd.c` assigns
 `g_sessions[s].client_badge = req->mr[0]` from the request and performs no
