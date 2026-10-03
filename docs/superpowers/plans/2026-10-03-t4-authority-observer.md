@@ -73,7 +73,7 @@ int main(void)
     aos_authority_init(&s);
     assert(s.version == AOS_AUTHORITY_VERSION);
     assert(s.pd_count == 0u);
-    assert(s.truncated_pds == 0u);
+    assert(s.truncated_adds == 0u);
     assert(aos_authority_validate(&s) == AOS_AUTHORITY_OK);
 
     /* First add creates the domain row. */
@@ -120,7 +120,7 @@ int main(void)
             (void)aos_authority_add(&o, i, nm, AOS_AUTHORITY_KIND_TCB);
         }
         assert(o.pd_count == AOS_AUTHORITY_MAX_PDS);
-        assert(o.truncated_pds == 4u);
+        assert(o.truncated_adds == 4u);
         assert(aos_authority_validate(&o) == AOS_AUTHORITY_OK);
     }
 
@@ -240,7 +240,7 @@ typedef struct __attribute__((packed)) aos_authority_snapshot {
     uint32_t version;
     uint32_t pd_count;        /* rows in use, <= AOS_AUTHORITY_MAX_PDS */
     uint32_t total_recorded;  /* every add, including saturated increments */
-    uint32_t truncated_pds;   /* domains that did not fit a row */
+    uint32_t truncated_adds;  /* add calls dropped on a full table; may exceed the number of distinct domains dropped */
     uint32_t saturated;       /* nonzero if any count hit UINT16_MAX */
     uint32_t reserved;
     aos_authority_pd_t pds[AOS_AUTHORITY_MAX_PDS];
@@ -261,9 +261,9 @@ int  aos_authority_format(const aos_authority_snapshot_t *snap,
 Create `platform/inspect/authority.c`. Implement the four functions to satisfy the test exactly:
 
 - `aos_authority_init` zeroes the struct and sets `version`.
-- `aos_authority_add` finds the row for `pd_index` or appends one (copying `name` NUL-padded, truncated to `AOS_AUTHORITY_NAME_LEN - 1`); when no row is free it increments `truncated_pds` and returns `AOS_AUTHORITY_OK` — a full table is a reported condition, not a failure. A `kind` outside the enum lands in `AOS_AUTHORITY_KIND_OTHER`. Every call increments `total_recorded`. A count already at `0xFFFF` stays there and sets `saturated`.
+- `aos_authority_add` finds the row for `pd_index` or appends one (copying `name` NUL-padded, truncated to `AOS_AUTHORITY_NAME_LEN - 1`); when no row is free it increments `truncated_adds` and returns `AOS_AUTHORITY_OK` — a full table is a reported condition, not a failure. A `kind` outside the enum lands in `AOS_AUTHORITY_KIND_OTHER`. Every call increments `total_recorded`. A count already at `0xFFFF` stays there and sets `saturated`.
 - `aos_authority_validate` returns `AOS_AUTHORITY_ERR_NULL` for NULL, `..._ERR_VERSION` on version mismatch, `..._ERR_INVALID` when `pd_count > AOS_AUTHORITY_MAX_PDS`, else OK.
-- `aos_authority_format` emits one `pd=<name> index=<n> untyped=<n> tcb=<n> ...` line per domain plus a trailing summary line carrying `total`, `truncated_pds` and `saturated`, returning `AOS_AUTHORITY_ERR_TRUNC` if it would exceed `buflen`. Follow the style of `aos_inspect_format` in `platform/inspect/` — read it first and match it.
+- `aos_authority_format` emits one `pd=<name> index=<n> untyped=<n> tcb=<n> ...` line per domain plus a trailing summary line carrying `total`, `truncated_adds` and `saturated`, returning `AOS_AUTHORITY_ERR_TRUNC` if it would exceed `buflen`. Follow the style of `aos_inspect_format` in `platform/inspect/` — read it first and match it.
 
 Add a static assertion beside the struct definition in the header or at the top of `authority.c`:
 
@@ -415,7 +415,7 @@ The oracle asserts specific, descriptor-derived counts rather than merely that t
 
 That last assertion is the valuable one: it is the published page agreeing with TCB invariant 2.
 
-Also assert `version == AOS_AUTHORITY_VERSION`, `pd_count > 0`, `truncated_pds == 0` and `saturated == 0` for the default image. A truncated or saturated default image means the sizing is wrong and must be reported, not accepted.
+Also assert `version == AOS_AUTHORITY_VERSION`, `pd_count > 0`, `truncated_adds == 0` and `saturated == 0` for the default image. A truncated or saturated default image means the sizing is wrong and must be reported, not accepted.
 
 - [ ] **Step 3: Probe 2 — the page is read-only on target**
 
