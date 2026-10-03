@@ -68,7 +68,10 @@ typedef struct __attribute__((packed)) aos_authority_snapshot {
     uint32_t version;
     uint32_t pd_count;        /* rows in use, <= AOS_AUTHORITY_MAX_PDS */
     uint32_t total_recorded;  /* every add, including saturated increments */
-    uint32_t truncated_pds;   /* domains that did not fit a row */
+    uint32_t truncated_adds;  /* add calls dropped because the domain table
+                                * was full; may exceed the number of distinct
+                                * domains dropped if one domain made several
+                                * calls after the table filled */
     uint32_t saturated;       /* nonzero if any count hit UINT16_MAX */
     uint32_t reserved;
     aos_authority_pd_t pds[AOS_AUTHORITY_MAX_PDS];
