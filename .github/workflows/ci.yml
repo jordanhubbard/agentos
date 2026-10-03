@@ -479,6 +479,13 @@ jobs:
         timeout-minutes: 10
         run: make test TARGET_ARCH=x86_64 GUEST_OS=none
 
+      # Both proofs run here rather than through `make gate`, which no CI job
+      # invokes -- the gate target's prerequisite list is not what runs on push,
+      # so a proof reachable only through it would never execute.
+      - name: GATE — make test-cc-envelope
+        timeout-minutes: 10
+        run: make test-cc-envelope
+
       # Boot authority page: published counts vs. compiled descriptor, plus a
       # target fault probe that a consumer write to the read-only page faults.
       - name: GATE — make test-authority
@@ -490,6 +497,7 @@ jobs:
           echo "✅ Dual-arch boot gate passed:"
           echo "   - aarch64 GUEST_OS=none (target/QEMU)"
           echo "   - x86_64  GUEST_OS=none (target/QEMU)"
+          echo "   - CC operator authority envelope (admit / refuse / exact code)"
           echo "GUEST_OS=none is a stub VMM: this proves PD load and root-task"
           echo "parking only. Guest I/O is proven by the guest proof jobs; the"
           echo "os-claim-summary job combines them."
