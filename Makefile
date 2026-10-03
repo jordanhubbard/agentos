@@ -918,6 +918,7 @@ test-host: test-x86-composition-host
 test-host: test-vm-manager-identity-host
 test-host: test-remoteos-client-host
 test-host: test-authority-host
+test-host: test-authority-kindmap-host
 test-host: test-cc-envelope-host
 test-host: test-cc-envelope-dispatch-host
 test-host: test-cc-session-reap-host
@@ -966,6 +967,41 @@ test-authority-host:
 		tests/test_authority_snapshot.c platform/inspect/authority.c \
 		-o $(BUILD_TMP_DIR)/test_authority_snapshot
 	$(BUILD_TMP_DIR)/test_authority_snapshot
+
+# test-authority-kindmap-host: the seL4 object-type -> AOS_AUTHORITY_KIND_*
+# map is the piece of the authority page most likely to be silently wrong,
+# so it gets its own host test. platform/authority.h must stay seL4-free, so
+# the test cannot import seL4 headers directly (see the task brief). Instead
+# of hand-copying the five seL4_ObjectType values it checks (and risking them
+# drifting from the SDK), this compiles and runs a tiny probe against the
+# real SDK header (sel4/objecttype.h, which is pure enum -- no asm, so it
+# compiles natively) and feeds its output to the test build as -D flags. The
+# probe and kernel/agentos-root-task/src/authority_kindmap.c's production
+# build both read the same header, so the host-test numbers and the real
+# seL4 numbers cannot diverge silently.
+.PHONY: test-authority-kindmap-host
+test-authority-kindmap-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	@test -d "$(HOST_TEST_SEL4_SDK)/board/qemu_virt_aarch64/release/include" || \
+		(echo "ERROR: no Microkit SDK found for test-authority-kindmap-host; run 'make sdk'." && exit 1)
+	@set -eu; \
+	gen=$(BUILD_TMP_DIR)/gen_authority_kindmap_consts; \
+	printf '%s\n' \
+		'#include <stdint.h>' \
+		'typedef uintptr_t seL4_Word;' \
+		'#include <sel4/objecttype.h>' \
+		'#include <stdio.h>' \
+		'int main(void){printf("-DAOSTEST_SEL4_UNTYPED=%d -DAOSTEST_SEL4_TCB=%d -DAOSTEST_SEL4_ENDPOINT=%d -DAOSTEST_SEL4_NOTIFICATION=%d -DAOSTEST_SEL4_CNODE=%d\n",(int)seL4_UntypedObject,(int)seL4_TCBObject,(int)seL4_EndpointObject,(int)seL4_NotificationObject,(int)seL4_CapTableObject);return 0;}' \
+		> "$$gen.c"; \
+	cc -DCONFIG_KERNEL_MCS -I"$(HOST_TEST_SEL4_SDK)/board/qemu_virt_aarch64/release/include" \
+		"$$gen.c" -o "$$gen"; \
+	flags=$$("$$gen"); \
+	echo "authority kindmap constants (from $(HOST_TEST_SEL4_SDK)/board/qemu_virt_aarch64/release/include/sel4/objecttype.h): $$flags"; \
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST $$flags \
+		-I platform/include -I kernel/agentos-root-task/include \
+		tests/test_authority_kindmap.c kernel/agentos-root-task/src/authority_kindmap.c \
+		-o $(BUILD_TMP_DIR)/test_authority_kindmap; \
+	$(BUILD_TMP_DIR)/test_authority_kindmap
 
 .PHONY: test-vm-manager-identity-host
 test-vm-manager-identity-host:

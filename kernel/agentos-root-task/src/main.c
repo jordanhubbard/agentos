@@ -162,6 +162,8 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #include <platform/guest_memory_layout.h> /* guest GPA and VMM HVA windows        */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
 #include <platform/inspect.h>
+#include <platform/authority.h>
+#include "authority_kindmap.h" /* aos_authority_kind_from_sel4                    */
 #include <stdint.h>
 
 /*
@@ -4230,6 +4232,52 @@ void root_task_main(const seL4_BootInfo *bi)
         if (aos_inspect_fill((aos_inspect_snapshot_t *)RT_VQ_SCRATCH_VA,
                              &inspect_view) != AOS_INSPECT_OK) {
             dbg_puts("[rt] inspect observation invalid; refusing partial boot\n");
+            return;
+        }
+        if (seL4_ARCH_Page_Unmap(frame) != seL4_NoError) return;
+    }
+
+    /*
+     * Publish the boot authority snapshot beside the inspect page: a ledger
+     * of what root recorded granting to each protection domain, by
+     * capability kind, built by walking the existing capability accounting
+     * table. Read-only copy mapped into the same readers as inspect. See
+     * platform/include/platform/authority.h for what this is and,
+     * importantly, what it is not -- this is not a reading of kernel state,
+     * seL4 offers no capability-enumeration syscall.
+     */
+    if (inspect_cc_vspace != seL4_CapNull) {
+        seL4_CPtr frame = seL4_CapNull;
+        if (ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame) != seL4_NoError ||
+            pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame,
+                                      RT_VQ_SCRATCH_VA) != seL4_NoError) {
+            dbg_puts("[rt] authority mapping failed; refusing partial boot\n");
+            return;
+        }
+        seL4_CPtr readers[] = {inspect_cc_vspace, inspect_operator_vspace};
+        for (unsigned i = 0; i < 2; i++) {
+            if (!readers[i]) continue;
+            seL4_CPtr reader = ut_alloc_slot();
+            if (!reader || seL4_CNode_Copy(seL4_CapInitThreadCNode, reader, 64u,
+                    seL4_CapInitThreadCNode, frame, 64u,
+                    seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError ||
+                pd_vspace_map_device_frame(readers[i], reader, AOS_AUTHORITY_BOOT_VA) != seL4_NoError) {
+                dbg_puts("[rt] authority reader mapping failed; refusing partial boot\n");
+                return;
+            }
+        }
+        _Static_assert(sizeof(aos_authority_snapshot_t) <= 4096, "authority fits one page");
+        aos_authority_snapshot_t *snap = (aos_authority_snapshot_t *)RT_VQ_SCRATCH_VA;
+        aos_authority_init(snap);
+        uint32_t acct_total = cap_acct_count();
+        for (uint32_t ai = 0; ai < acct_total; ai++) {
+            const cap_acct_entry_t *e = cap_acct_get(ai);
+            if (!e) continue;
+            (void)aos_authority_add(snap, e->pd_index, e->name,
+                                    aos_authority_kind_from_sel4(e->obj_type));
+        }
+        if (aos_authority_validate(snap) != AOS_AUTHORITY_OK) {
+            dbg_puts("[rt] authority snapshot invalid; refusing partial boot\n");
             return;
         }
         if (seL4_ARCH_Page_Unmap(frame) != seL4_NoError) return;
