@@ -30,6 +30,7 @@ Five failure modes the spec implies that no individual task's happy path exercis
 3. **Enforcement bypassed by dispatch order.** `MSG_CC_CONNECT`, `MSG_CC_DISCONNECT`, and `MSG_CC_CONNECTION_SYNC` must remain reachable before a session exists, or a client can never connect. Getting the exemption set wrong either bricks the socket or opens a hole. → Task 3.
 4. **Reaping still evicts a live session.** The fix must be tested by filling the table with *active* sessions and confirming the next connect is refused rather than succeeding by eviction. Testing only that expired sessions are reclaimed would pass with the defect intact. → Task 4.
 5. **Credential compare leaks length or content by timing.** The credential is not secret today, but the same path takes a TPM-backed value later. Compare must be constant-time over a fixed length, and a test must confirm a mismatch in the final byte is refused exactly as a mismatch in the first. → Task 2.
+6. **The gate refuses an opcode the system actually needs.** The `GUEST_OS=none` boot test exercises almost no CC traffic, so it cannot catch this — it was observed in practice when the gate refused `MSG_CC_OPERATOR_WRITE` and `make test-operator-session` regressed, reporting a failure that named a *different*, admitted opcode. Every task that changes the admission table must run a target test that drives CC for real. → Task 3 Step 7b, Task 5.
 
 ---
 
@@ -610,6 +611,30 @@ Expected: PASS, including both new tests.
 
 Run: `make test TARGET_ARCH=aarch64 GUEST_OS=none SEL4_SDK_VERSION=2.1.0`
 Expected: boots and prints `agentOS boot complete`. If it hangs, the pre-auth set is wrong — the harness's own CC handshake is being refused. Check which opcode the harness sends first and whether it is in `cc_envelope_is_preauth`.
+
+- [ ] **Step 7b: Exercise CC for real**
+
+The boot test waits for a marker and exercises almost no CC traffic, so it
+cannot detect an opcode the gate wrongly refuses. This step is the one that can.
+
+Run: `make test-operator-session SEL4_SDK_VERSION=2.1.0`
+Expected: PASS, with the marker naming the operator serial round trip.
+
+This target drives `MSG_CC_OPERATOR_WRITE`, `MSG_CC_OPERATOR_READ` and
+`MSG_CC_INSPECT` heavily (`xtask/src/cmd_test.rs:5007-5047`). A refusal
+surfaces here as a confusing downstream error — the observed symptom when
+`OPERATOR_WRITE` was refused was `inspect invalid version returned data or
+wrong error`, which names a *different*, admitted opcode. Do not chase the
+opcode named in the failure; check the whole sequence the test drives.
+
+If this fails, STOP and report rather than admitting whatever opcode makes it
+pass. Which opcodes belong in the envelope is a design decision that belongs to
+the controller with the threat model in view, not to a red test.
+
+Before concluding the envelope is wrong, cross-check the full set of CC opcodes
+the harness sends against the allowlist:
+`grep -o "0x26[0-9A-Fa-f]*" xtask/src/cmd_test.rs | sort -u`, resolved against
+`kernel/agentos-root-task/include/agentos.h`.
 
 - [ ] **Step 8: Commit**
 
