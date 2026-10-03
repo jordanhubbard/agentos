@@ -74,22 +74,21 @@ fn cc_operator_token() -> [u8; CC_OPERATOR_TOKEN_BYTES] {
         0x00, 0x00,
     ];
     if let Ok(hex) = std::env::var("AGENTOS_CC_OPERATOR_TOKEN_HEX") {
-        if hex.len() == CC_OPERATOR_TOKEN_BYTES * 2 {
-            let mut token = [0u8; CC_OPERATOR_TOKEN_BYTES];
-            let mut ok = true;
-            for (i, byte) in token.iter_mut().enumerate() {
-                match u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16) {
-                    Ok(b) => *byte = b,
-                    Err(_) => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok {
-                return token;
-            }
+        assert_eq!(
+            hex.len(),
+            CC_OPERATOR_TOKEN_BYTES * 2,
+            "AGENTOS_CC_OPERATOR_TOKEN_HEX must be exactly {} hex chars ({} bytes), got {} chars",
+            CC_OPERATOR_TOKEN_BYTES * 2,
+            CC_OPERATOR_TOKEN_BYTES,
+            hex.len()
+        );
+        let mut token = [0u8; CC_OPERATOR_TOKEN_BYTES];
+        for (i, byte) in token.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or_else(|err| {
+                panic!("AGENTOS_CC_OPERATOR_TOKEN_HEX byte {i} is not valid hex: {err}")
+            });
         }
+        return token;
     }
     DEV_TOKEN
 }

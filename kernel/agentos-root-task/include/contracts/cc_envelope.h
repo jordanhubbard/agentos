@@ -38,6 +38,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "../agentos.h"
+#ifdef AGENTOS_NATIVE_RUST_TEST
+#include "native_rust_probe.h"
+#endif
 
 #define CC_ENVELOPE_VERSION 1u
 
@@ -57,6 +60,13 @@ static inline bool cc_envelope_admits(cc_envelope_t envelope, uint32_t opcode)
      * case. */
     case MSG_CC_CONNECT:
     case MSG_CC_DISCONNECT:
+#ifdef AGENTOS_NATIVE_RUST_TEST
+    /* Test-image-only CC relay to the native Rust IPC probe. Guarded
+     * identically to its dispatch arm in cc_dispatch: the default image
+     * does not build with AGENTOS_NATIVE_RUST_TEST, so this opcode does
+     * not exist to admit in that image at all. */
+    case NATIVE_RUST_CC_NETWORK:
+#endif
     /* Console and observation. */
     case MSG_CC_SEND:
     case MSG_CC_RECV:

@@ -2099,7 +2099,7 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
              * A credential mismatch refuses the whole connection via the
              * existing close_pending path rather than merely the operation
              * — deliberately stronger than per-opcode refusal, since an
-             * unauthenticated transport has no business staying open.
+             * uncredentialed transport has no business staying open.
              */
             bool valid = g_req.opcode == MSG_CC_CONNECTION_SYNC &&
                 g_req.mr[0] == CC_CONNECTION_VERSION &&
