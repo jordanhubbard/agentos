@@ -91,3 +91,16 @@ static inline bool cc_envelope_admits(cc_envelope_t envelope, uint32_t opcode)
         return false;
     }
 }
+
+
+/*
+ * Envelope admission. Defense in depth: the operations that matter most are
+ * already excluded structurally (cc_pd holds no fault-injection endpoint in
+ * the default image), and this check must never be the sole control for
+ * anything, because it is exactly the layer an input-parsing defect bypasses.
+ */
+static inline bool cc_envelope_permits(uint32_t opcode, uint32_t envelope)
+{
+    if (cc_envelope_is_preauth(opcode)) return true;
+    return cc_envelope_admits((cc_envelope_t)envelope, opcode);
+}

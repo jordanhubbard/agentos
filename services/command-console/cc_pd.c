@@ -1930,6 +1930,22 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
      * this to identify abandoned sessions when the table is full. */
     cc_age_sessions();
 
+    /* Envelope admission.
+     *
+     * The envelope is connection-scoped, not per-session. MR0 is NOT uniformly
+     * a session id — handle_connect reads it as a badge, handle_snapshot as a
+     * guest handle, handle_fault_inject as a slot id — so indexing g_sessions[]
+     * with it would read an unrelated session's envelope. Every session on this
+     * transport shares one serialized socket stream and receives the same
+     * build-fixed envelope, so one module-level value is both correct and
+     * simpler. */
+    if (!cc_envelope_permits(req->opcode, g_envelope)) {
+        sel4_dbg_puts("[cc_pd] refused: outside operator envelope\n");
+        rep->mr[0] = CC_ERR_NOT_PERMITTED;
+        cc_trace_record(req->opcode);
+        return;
+    }
+
     switch (req->opcode) {
     case MSG_CC_FRAME_CAPTURE: handle_frame_capture(req, rep); break;
     case MSG_CC_INPUT_SUBMIT: handle_input_submit(req, rep); break;
