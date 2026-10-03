@@ -28,6 +28,7 @@
 #include <sys/time.h>
 
 #include "contracts/cc_contract.h"
+#include "cc_operator_credential.h"
 #include "contracts/guest_contract.h"
 #include "contracts/vibeos_contract.h"
 #include <platform/inspect.h>
@@ -394,8 +395,11 @@ done:
 static int cmd_connect(void)
 {
     cc_reply_wire_t r;
+    uint8_t payload[CC_OPERATOR_TOKEN_BYTES];
+    for (unsigned i = 0; i < CC_OPERATOR_TOKEN_BYTES; i++)
+        payload[i] = cc_operator_token[i];
     if (!cc_call(MSG_CC_CONNECT, MY_BADGE, CC_CONNECT_FLAG_BINARY, 0,
-                 NULL, 0, &r)) return 1;
+                 payload, sizeof(payload), &r)) return 1;
     printf("{\"ok\":%" PRIu32 ",\"session_id\":%" PRIu32 "}\n",
            r.mr[0], r.mr[1]);
     return r.mr[0] == CC_OK ? 0 : 1;

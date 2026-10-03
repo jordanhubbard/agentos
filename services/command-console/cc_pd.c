@@ -34,6 +34,8 @@
 #include "contracts/fault_inject_contract.h"
 #include "contracts/log_drain_contract.h"
 #include "contracts/agent_pool_contract.h"
+#include "contracts/cc_envelope.h"
+#include "cc_operator_credential.h"
 #include "cc_vm_client.h"
 #include "contracts/vm_manager_contract.h"
 #include "sel4_ipc.h"
@@ -566,6 +568,12 @@ typedef struct {
 
 static cc_session_t g_sessions[CC_MAX_SESSIONS];
 
+/* Authority envelope for this connection. Set by a successful CONNECT,
+ * cleared when the connection closes. Not per-session: MR0 is a badge, a
+ * guest handle or a slot id depending on opcode, so it cannot index a
+ * session table at dispatch time. */
+static uint32_t g_envelope = (uint32_t)CC_ENVELOPE_NONE;
+
 /* ─── Log-stream slot table (agentos-vsi) ───────────────────────────────────
  *
  * MSG_CC_LOG_STREAM exposes each guest's serial output as an addressable log
@@ -1065,8 +1073,21 @@ static uint32_t cc_wire_rd32(const uint8_t *src, uint32_t off)
 
 /* ─── Session management handlers ───────────────────────────────────────── */
 
+/*
+ * MSG_CC_CONNECT — establish a session and select its authority envelope.
+ *
+ * Wire: the 32-byte operator credential occupies the first
+ * CC_OPERATOR_TOKEN_BYTES of the request shmem. MR1 retains the caller's
+ * requested badge, which is advisory only and confers nothing.
+ */
 static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
+    if (!cc_credential_equal(req->shmem, cc_operator_token)) {
+        rep->mr[0] = CC_ERR_NOT_PERMITTED;
+        rep->mr[1] = 0u;
+        return;
+    }
+
     int s = alloc_session();
     if (s < 0) {
         rep->mr[0] = CC_ERR_NO_SESSIONS;
@@ -1074,11 +1095,13 @@ static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
         return;
     }
     g_sessions[s].active             = true;
-    g_sessions[s].client_badge       = req->mr[0]; /* badge in MR1 */
+    g_sessions[s].client_badge       = req->mr[0]; /* advisory; grants nothing */
     g_sessions[s].state              = CC_SESSION_STATE_CONNECTED;
     g_sessions[s].ticks_since_active = 0u;
     g_sessions[s].resp_pending       = 0u;
     g_sessions[s].resp_len           = 0u;
+
+    g_envelope = (uint32_t)CC_ENVELOPE_OPERATOR;
 
     rep->mr[0] = CC_OK;
     rep->mr[1] = (uint32_t)s;
@@ -1991,6 +2014,9 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
      * other PD has run to its blocking point and the control console is
      * ready to accept requests.  The controller PD used to print this.
      */
+#if CC_OPERATOR_TOKEN_IS_DEVELOPMENT
+    sel4_dbg_puts("[cc_pd] WARNING: development operator credential in use\n");
+#endif
     cc_dbg_puts("agentOS boot complete\n");
 #ifdef AGENTOS_INSPECT_WRITE_PROBE
     if (aos_inspect_validate((const void *)AOS_INSPECT_BOOT_VA) == AOS_INSPECT_OK) {
@@ -2003,6 +2029,10 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     while (1) {
         if (g_control.close_pending) {
             greeting_sent = connection_active = false;
+            /* Every close_pending path lands here before the connection can
+             * be reused. A new client must present the credential again;
+             * the previous client's authority must not survive. */
+            g_envelope = (uint32_t)CC_ENVELOPE_NONE;
             __builtin_memset(&g_req, 0, sizeof(g_req));
             __builtin_memset(&g_rep, 0, sizeof(g_rep));
 #ifdef AGENTOS_GUEST_INPUT
