@@ -1424,9 +1424,12 @@ credential differing in its final byte has its connection refused, and that an
 out-of-envelope operation is refused with exactly `CC_ERR_NOT_PERMITTED` rather
 than failing for an unrelated reason.
 
-Qualification boundary: these results were obtained under Microkit SDK 2.1.0,
-not the qualified pin in `tools/sdk/default-version`, and must be re-run on the
-pinned SDK for release qualification. This bounds what the CC transport conveys;
-it does not make the transport a capability boundary, does not defend against
-the local operator, and vendor-signed authorization for out-of-envelope
-operations is not implemented.
+Qualification boundary: `make test-cc-envelope` runs in the CI `os-claim-gate`
+job, which installs the verified SDK artifact, so these results are qualified
+under the pinned SDK in `tools/sdk/default-version`. Development runs performed
+against Microkit SDK 2.1.0 are not the qualifying evidence. `make gate` as a
+whole is not invoked by CI; this proof is run as its own gate step.
+
+This bounds what the CC transport conveys; it does not make the transport a
+capability boundary, does not defend against the local operator, and
+vendor-signed authorization for out-of-envelope operations is not implemented.
