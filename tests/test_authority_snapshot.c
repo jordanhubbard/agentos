@@ -10,7 +10,7 @@ int main(void)
     aos_authority_init(&s);
     assert(s.version == AOS_AUTHORITY_VERSION);
     assert(s.pd_count == 0u);
-    assert(s.truncated_pds == 0u);
+    assert(s.truncated_adds == 0u);
     assert(aos_authority_validate(&s) == AOS_AUTHORITY_OK);
 
     /* First add creates the domain row. */
@@ -57,7 +57,7 @@ int main(void)
             (void)aos_authority_add(&o, i, nm, AOS_AUTHORITY_KIND_TCB);
         }
         assert(o.pd_count == AOS_AUTHORITY_MAX_PDS);
-        assert(o.truncated_pds == 4u);
+        assert(o.truncated_adds == 4u);
         assert(aos_authority_validate(&o) == AOS_AUTHORITY_OK);
     }
 

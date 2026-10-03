@@ -71,7 +71,7 @@ int aos_authority_add(aos_authority_snapshot_t *snap, uint32_t pd_index,
             copy_name(row->name, name);
             snap->pd_count++;
         } else {
-            snap->truncated_pds++;
+            snap->truncated_adds++;
             snap->total_recorded++;
             return AOS_AUTHORITY_OK;
         }
@@ -240,7 +240,7 @@ int aos_authority_format(const aos_authority_snapshot_t *snap, char *buf, size_t
         *p = '\0';
         return AOS_AUTHORITY_ERR_TRUNC;
     }
-    if (line_u64(&p, end, "truncated_pds", snap->truncated_pds) != 0) {
+    if (line_u64(&p, end, "truncated_adds", snap->truncated_adds) != 0) {
         *p = '\0';
         return AOS_AUTHORITY_ERR_TRUNC;
     }
