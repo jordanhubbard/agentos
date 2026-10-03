@@ -23,13 +23,13 @@ endif
 
 BUILD_DIR := $(abspath ../../_build/tools/agentctl)
 TARGET  := $(BUILD_DIR)/agentctl
-SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c
+SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c ../../platform/inspect/authority.c
 
 .PHONY: all test install clean
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../platform/include/platform/operator_session.h ../../platform/include/platform/framebuffer_observer.h ../../platform/include/platform/framebuffer.h ../../platform/include/platform/input.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h ../../kernel/agentos-root-task/include/contracts/cc_transport.h ../../kernel/agentos-root-task/include/contracts/vibeos_contract.h ../../kernel/agentos-root-task/include/cc_operator_credential.h
+$(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../platform/include/platform/authority.h ../../platform/include/platform/operator_session.h ../../platform/include/platform/framebuffer_observer.h ../../platform/include/platform/framebuffer.h ../../platform/include/platform/input.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h ../../kernel/agentos-root-task/include/contracts/cc_transport.h ../../kernel/agentos-root-task/include/contracts/vibeos_contract.h ../../kernel/agentos-root-task/include/cc_operator_credential.h
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 	@echo "Built: $(TARGET)"

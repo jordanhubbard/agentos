@@ -32,6 +32,7 @@
 #include "contracts/guest_contract.h"
 #include "contracts/vibeos_contract.h"
 #include <platform/inspect.h>
+#include <platform/authority.h>
 #include <platform/operator_session.h>
 #include <platform/framebuffer_observer.h>
 #include <platform/input.h>
@@ -65,6 +66,7 @@ static void usage(FILE *out)
             "Usage: agentctl [--socket PATH] [--batch] COMMAND [ARGS...]\n\n"
             "Commands:\n"
             "  inspect\n"
+            "  authority\n"
             "  session-inspect\n"
             "  list-guests\n"
             "  create primary|secondary aarch64|x86_64 RAM_MB\n"
@@ -347,6 +349,26 @@ static int cmd_inspect(void)
     if (snap.flags != r.mr[2] || !(snap.flags & AOS_INSPECT_FLAG_BOOT) ||
         aos_inspect_format(&snap, report, sizeof(report)) < 0) {
         fprintf(stderr, "agentctl: invalid inspect snapshot\n");
+        return 1;
+    }
+    fputs(report, stdout);
+    return 0;
+}
+
+static int cmd_authority(void)
+{
+    cc_reply_wire_t r;
+    aos_authority_snapshot_t snap;
+    char report[16384];
+    if (!cc_call(MSG_CC_AUTHORITY, AOS_AUTHORITY_VERSION, 0, 0, NULL, 0, &r)) return 1;
+    if (r.mr[0] != CC_OK || r.mr[1] != sizeof(snap) || r.mr[3] != AOS_AUTHORITY_VERSION) {
+        fprintf(stderr, "agentctl: invalid or unavailable authority reply\n");
+        return 1;
+    }
+    memcpy(&snap, r.shmem, sizeof(snap));
+    if (aos_authority_validate(&snap) != AOS_AUTHORITY_OK ||
+        aos_authority_format(&snap, report, sizeof(report)) < 0) {
+        fprintf(stderr, "agentctl: invalid authority snapshot\n");
         return 1;
     }
     fputs(report, stdout);
@@ -663,6 +685,7 @@ int main(int argc, char **argv)
     char **args = &argv[i];
 
     if (strcmp(cmd, "inspect") == 0) return n == 0 ? cmd_inspect() : 2;
+    if (strcmp(cmd, "authority") == 0) return n == 0 ? cmd_authority() : 2;
     if (strcmp(cmd, "frame-capture") == 0)
         return n == 2 ? cmd_frame_capture(parse_u32(args[0], "guest_handle"), args[1]) : 2;
     if (strcmp(cmd,"input-batch")==0) return cmd_input_batch(n,args);

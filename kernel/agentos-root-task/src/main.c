@@ -138,6 +138,14 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #define ROOT_PROBE_ADDRESS AOS_INSPECT_BOOT_VA
 #define ROOT_PROBE_WRITE 1u
 #define ROOT_PROBE_MESSAGE "[rt] inspect: expected read-only page write fault verified\n"
+#elif defined(AGENTOS_AUTHORITY_WRITE_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 2
+#define ROOT_PROBE_CLIENT 0u
+#define ROOT_PROBE_BADGE 0xa0540002u
+#define ROOT_PROBE_ADDRESS AOS_AUTHORITY_BOOT_VA
+#define ROOT_PROBE_WRITE 1u
+#define ROOT_PROBE_MESSAGE "[rt] authority: expected read-only page write fault verified\n"
 #elif defined(AGENTOS_NATIVE_NET_ISOLATION_PROBE)
 #define ROOT_FAULT_PROBE 1
 #define ROOT_PROBE_NATIVE 1
