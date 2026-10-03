@@ -244,6 +244,7 @@ enum cc_error {
     CC_ERR_RELAY_FAULT      = 8,  /* downstream PPC returned error */
     CC_ERR_INVALID_ARG     = 9,  /* unsupported version or reserved arguments */
     CC_ERR_WOULD_BLOCK     = 10, /* bounded queue has no input space */
+    CC_ERR_NOT_PERMITTED   = 11, /* opcode outside the session's authority envelope */
 };
 
 /* ─── Device type constants (mirrors GUEST_DEV_* from guest_contract.h) ─── */

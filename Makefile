@@ -917,6 +917,16 @@ test-host: test-x86-cpu-host
 test-host: test-x86-composition-host
 test-host: test-vm-manager-identity-host
 test-host: test-remoteos-client-host
+test-host: test-cc-envelope-host
+
+.PHONY: test-cc-envelope-host
+test-cc-envelope-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_cc_envelope.c \
+		-o $(BUILD_TMP_DIR)/test_cc_envelope
+	$(BUILD_TMP_DIR)/test_cc_envelope
 
 .PHONY: test-remoteos-client-host
 test-remoteos-client-host:
