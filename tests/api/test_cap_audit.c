@@ -9,7 +9,7 @@
  *   4.  OP_CAP_AUDIT (all PDs) count equals total cap_acct_count()
  *   5.  OP_CAP_AUDIT with pd_id==0 returns all nodes (count > 0)
  *   6.  OP_CAP_AUDIT with pd_id==0xFF99 (unused) returns count==0
- *   7.  OP_CAP_AUDIT entry 0 has valid pd_id field
+ *   7.  OP_CAP_AUDIT entry 0 has valid pd_id field (CAP_ACCT_ROOT_PD_INDEX)
  *   8.  OP_CAP_AUDIT entry 0 has valid cslot field (cap value)
  *   9.  OP_CAP_AUDIT entry 0 has non-empty name
  *   10. OP_CAP_AUDIT rep.data[0..3] encodes count little-endian
@@ -19,7 +19,7 @@
  *   14. OP_CAP_AUDIT_GUEST with valid handle (stub) → SEL4_ERR_OK
  *   15. OP_CAP_AUDIT_GUEST result count matches expected guest cap count
  *   16. audit buffer reset between calls (entries are zeroed)
- *   17. revocable==0 for root-task (pd_index==0) caps
+ *   17. revocable==0 for root-task (pd_index==CAP_ACCT_ROOT_PD_INDEX) caps
  *   18. revocable==1 for non-root PD caps
  *   19. Multiple sequential OP_CAP_AUDIT calls produce same count
  *   20. cap_tree_verify_all_pds completes without crash
@@ -69,19 +69,34 @@ typedef struct {
 } cap_acct_entry_t;
 
 /*
+ * CAP_ACCT_ROOT_PD_INDEX — reserved sentinel pd_index for the root task's
+ * own capabilities (R16; see kernel/agentos-root-task/include/
+ * cap_accounting.h). Defined here, ahead of the stub table below, because
+ * cap_audit.c's own `#ifndef CAP_ACCT_ROOT_PD_INDEX` guard (included later
+ * at the bottom of this file) only takes effect if nothing upstream has
+ * already defined it -- this keeps a single literal value in both places.
+ */
+#define CAP_ACCT_ROOT_PD_INDEX 0xFFFFFFFFu
+
+/*
  * Stub table — 10 entries with known pd_index / cap values.
  *
- *   Indices 0-2: pd_index=0 (root task) — root-level caps
- *   Indices 3-4: pd_index=1 (nameserver)
- *   Indices 5-6: pd_index=2 (controller)
- *   Indices 7-9: pd_index=3 (VMM / guest handle==3)
+ * Root's own capabilities are recorded under the CAP_ACCT_ROOT_PD_INDEX
+ * sentinel, not pd_index==0: descriptor index 0 is a real protection domain
+ * (pd[0], the nameserver per main.c), so pd_index==0 denotes that ordinary,
+ * revocable domain's own caps, not root's.
+ *
+ *   Indices 0-2: pd_index=CAP_ACCT_ROOT_PD_INDEX (root task) — not revocable
+ *   Indices 3-4: pd_index=1 (nameserver-like PD) — ordinary, revocable
+ *   Indices 5-6: pd_index=2 (controller) — ordinary, revocable
+ *   Indices 7-9: pd_index=3 (VMM / guest handle==3) — ordinary, revocable
  */
 #define STUB_TABLE_SIZE 10u
 
 static cap_acct_entry_t g_stub_table[STUB_TABLE_SIZE] = {
-    { 1u,   10u, 0u, "root-cnode"  },
-    { 2u,   11u, 0u, "root-vspace" },
-    { 3u,    1u, 0u, "root-tcb"    },
+    { 1u,   10u, CAP_ACCT_ROOT_PD_INDEX, "root-cnode"  },
+    { 2u,   11u, CAP_ACCT_ROOT_PD_INDEX, "root-vspace" },
+    { 3u,    1u, CAP_ACCT_ROOT_PD_INDEX, "root-tcb"    },
     { 100u,  1u, 1u, "ns-tcb"      },
     { 101u,  2u, 1u, "ns-ep"       },
     { 200u,  1u, 2u, "ctrl-tcb"    },
@@ -249,9 +264,11 @@ static void test_entry0_pd_id(void)
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     const cap_audit_entry_t *e = cap_audit_test_get_entry(0u);
-    /* First entry comes from stub table[0]: pd_index==0 */
-    ASSERT_EQ(e ? e->pd_id : 0xFFFFu, 0u,
-              "OP_CAP_AUDIT: entry[0].pd_id == 0 (root task)");
+    /* First entry comes from stub table[0]: pd_index==CAP_ACCT_ROOT_PD_INDEX
+     * (root task's own caps; pd_index==0 is the nameserver-like PD, not
+     * root -- see the stub table comment above). */
+    ASSERT_EQ(e ? e->pd_id : 0u, CAP_ACCT_ROOT_PD_INDEX,
+              "OP_CAP_AUDIT: entry[0].pd_id == CAP_ACCT_ROOT_PD_INDEX (root task)");
 }
 
 /* Test 8: entry 0 has valid cslot field (CPtr from stub table[0] == 1) */
@@ -361,21 +378,27 @@ static void test_reset_zeroes_buffer(void)
                 "cap_audit_test_reset: entry[0] is fully zeroed");
 }
 
-/* Test 17: revocable==0 for root-task (pd_index==0) caps */
+/* Test 17: revocable==0 for root-task (pd_index==CAP_ACCT_ROOT_PD_INDEX) caps */
 static void test_root_caps_not_revocable(void)
 {
     cap_audit_test_reset();
     sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
-    /* First 3 audit entries correspond to stub entries 0,1,2 (pd_index==0) */
+    /*
+     * First 3 audit entries correspond to stub entries 0,1,2, which carry
+     * pd_index==CAP_ACCT_ROOT_PD_INDEX (root task's own caps). pd_index==0
+     * is an ordinary protection domain (the nameserver-like PD at stub
+     * entries 3,4) and is revocable -- see test_pd_caps_revocable below,
+     * which already covers that case.
+     */
     const cap_audit_entry_t *e0 = cap_audit_test_get_entry(0u);
     const cap_audit_entry_t *e1 = cap_audit_test_get_entry(1u);
     const cap_audit_entry_t *e2 = cap_audit_test_get_entry(2u);
     ASSERT_TRUE(e0 && e0->revocable == 0u &&
                 e1 && e1->revocable == 0u &&
                 e2 && e2->revocable == 0u,
-                "OP_CAP_AUDIT: pd_index==0 entries have revocable==0");
+                "OP_CAP_AUDIT: pd_index==CAP_ACCT_ROOT_PD_INDEX entries have revocable==0");
 }
 
 /* Test 18: revocable==1 for non-root PD caps */
