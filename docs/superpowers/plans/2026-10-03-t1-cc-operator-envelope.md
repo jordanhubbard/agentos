@@ -235,13 +235,14 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Create: `kernel/agentos-root-task/include/cc_operator_credential.h`
-- Modify: `services/command-console/cc_pd.c:555-567` (session struct), `:1068-1085` (`handle_connect`)
-- Modify: `kernel/agentos-root-task/Makefile` (credential define)
+- Modify: `services/command-console/cc_pd.c:567` (add `g_envelope`), `:1068-1085` (`handle_connect`), `:2040-2070` (connection-close paths)
+- Modify: `tools/agentctl/agentctl.c:394-402` (`cmd_connect`)
+- Modify: `kernel/agentos-root-task/Makefile` (credential define), possibly `tools/agentctl/Makefile`
 - Test: `tests/test_cc_envelope.c` (extend)
 
 **Interfaces:**
 - Consumes: `cc_envelope_t`, `CC_ENVELOPE_OPERATOR`, `CC_ENVELOPE_NONE` from Task 1.
-- Produces: `CC_OPERATOR_TOKEN_BYTES` (`32`); `bool cc_credential_equal(const uint8_t *a, const uint8_t *b)`; `cc_session_t.envelope` field.
+- Produces: `CC_OPERATOR_TOKEN_BYTES` (`32`); `const uint8_t cc_operator_token[32]`; `bool cc_credential_equal(const uint8_t *a, const uint8_t *b)`; file-scope `static uint32_t g_envelope` in `cc_pd.c`, which Task 3 reads at dispatch and Task 4 must not touch.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -335,21 +336,22 @@ static inline bool cc_credential_equal(const uint8_t *a, const uint8_t *b)
 Run: `clang -DAGENTOS_TEST_HOST -Itests -Ikernel/agentos-root-task/include -o /tmp/t_env tests/test_cc_envelope.c && /tmp/t_env`
 Expected: PASS
 
-- [ ] **Step 5: Add the envelope field to the session**
+- [ ] **Step 5: Add the connection-scoped envelope**
 
-In `services/command-console/cc_pd.c`, extend `cc_session_t` (around line 557):
+The envelope is connection-scoped, not per-session: MR0 is not uniformly a
+session id, so a per-session lookup at dispatch would read the wrong entry.
+Every session on this transport shares one serialized socket stream and gets
+the same build-fixed envelope.
+
+In `services/command-console/cc_pd.c`, immediately after the `g_sessions`
+declaration (around line 567):
 
 ```c
-typedef struct {
-    bool     active;
-    uint32_t client_badge;
-    uint32_t state;
-    uint32_t envelope;          /* cc_envelope_t admitted for this session */
-    uint32_t ticks_since_active;
-    uint32_t resp_pending;
-    uint32_t resp_len;
-    uint8_t  resp[CC_MAX_RESP_BYTES];
-} cc_session_t;
+/* Authority envelope for this connection. Set by a successful CONNECT,
+ * cleared when the connection closes. Not per-session: MR0 is a badge, a
+ * guest handle or a slot id depending on opcode, so it cannot index a
+ * session table at dispatch time. */
+static uint32_t g_envelope = (uint32_t)CC_ENVELOPE_NONE;
 ```
 
 Add to the includes near the top of the file:
@@ -388,10 +390,11 @@ static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     g_sessions[s].active             = true;
     g_sessions[s].client_badge       = req->mr[0]; /* advisory; grants nothing */
     g_sessions[s].state              = CC_SESSION_STATE_CONNECTED;
-    g_sessions[s].envelope           = (uint32_t)CC_ENVELOPE_OPERATOR;
     g_sessions[s].ticks_since_active = 0u;
     g_sessions[s].resp_pending       = 0u;
     g_sessions[s].resp_len           = 0u;
+
+    g_envelope = (uint32_t)CC_ENVELOPE_OPERATOR;
 
     rep->mr[0] = CC_OK;
     rep->mr[1] = (uint32_t)s;
@@ -399,6 +402,52 @@ static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 ```
 
 Confirm the request shmem field is named `shmem` in `cc_req_wire_t` (`cc_pd.c:543`); if it differs, use the actual name.
+
+- [ ] **Step 6b: Reset the envelope when the connection drops**
+
+In the main loop in `cc_pd_main`, wherever `connection_active` is set back to
+false (the `close_pending` paths around `cc_pd.c:2040-2070`), also clear the
+envelope:
+
+```c
+    g_envelope = (uint32_t)CC_ENVELOPE_NONE;
+```
+
+A new client must present the credential again; the previous client's
+authority must not survive its connection. Read the surrounding loop and place
+the reset on every path that invalidates the connection.
+
+- [ ] **Step 6c: Update agentctl to send the credential**
+
+`tools/agentctl/agentctl.c:397` calls CONNECT with a NULL payload, so it sends
+an all-zero credential and will be refused after Step 6. agentctl drives
+`make test-inspect` and the release harness, so this must land in the same
+change — the repo's rule is contracts before callers, together.
+
+Change `cmd_connect` to send the development credential in the request shmem:
+
+```c
+static int cmd_connect(void)
+{
+    cc_reply_wire_t r;
+    uint8_t payload[CC_OPERATOR_TOKEN_BYTES];
+    for (unsigned i = 0; i < CC_OPERATOR_TOKEN_BYTES; i++)
+        payload[i] = cc_operator_token[i];
+    if (!cc_call(MSG_CC_CONNECT, MY_BADGE, CC_CONNECT_FLAG_BINARY, 0,
+                 payload, sizeof(payload), &r)) return 1;
+    printf("{\"ok\":%" PRIu32 ",\"session_id\":%" PRIu32 "}\n",
+           r.mr[0], r.mr[1]);
+    return r.mr[0] == CC_OK ? 0 : 1;
+}
+```
+
+Add `#include "cc_operator_credential.h"` to agentctl's includes. Confirm
+`cc_call`'s payload parameters are `(const void *payload, size_t len)` in that
+position by reading its definition; adapt the call if the signature differs.
+
+agentctl builds against the same credential header, so a build configured with
+`AGENTOS_CC_OPERATOR_TOKEN` produces a matching agentctl automatically. Check
+whether `tools/agentctl/Makefile` needs the same `-D` plumbing and add it if so.
 
 - [ ] **Step 7: Announce a development credential at boot**
 
@@ -450,7 +499,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Test: `tests/test_cc_envelope_dispatch.c`
 
 **Interfaces:**
-- Consumes: `cc_envelope_admits`, `cc_envelope_is_preauth` (Task 1); `cc_session_t.envelope` (Task 2).
+- Consumes: `cc_envelope_admits`, `cc_envelope_is_preauth` (Task 1); file-scope `static uint32_t g_envelope` in `cc_pd.c` (Task 2).
 - Produces: `static inline bool cc_envelope_permits(uint32_t opcode, uint32_t envelope)` in `cc_envelope.h`. This is the only name for this function; `cc_pd.c` calls it directly and defines no wrapper.
 
 - [ ] **Step 1: Write the failing test**
@@ -534,21 +583,20 @@ Expected: PASS
 In `cc_dispatch` (`cc_pd.c:1901`), immediately after the `cc_age_sessions();` call and before the `switch`:
 
 ```c
-    /* Envelope admission. The session id for opcodes that carry one is in
-     * MR1; pre-auth opcodes do not require a session and are admitted by
-     * cc_envelope_permits before the lookup matters. */
-    {
-        uint32_t envelope = (uint32_t)CC_ENVELOPE_NONE;
-        uint32_t sid = req->mr[0];
-        if (sid < CC_MAX_SESSIONS && g_sessions[sid].active) {
-            envelope = g_sessions[sid].envelope;
-        }
-        if (!cc_envelope_permits(req->opcode, envelope)) {
-            sel4_dbg_puts("[cc_pd] refused: outside operator envelope\n");
-            rep->mr[0] = CC_ERR_NOT_PERMITTED;
-            cc_trace_record(req->opcode);
-            return;
-        }
+    /* Envelope admission.
+     *
+     * The envelope is connection-scoped, not per-session. MR0 is NOT uniformly
+     * a session id — handle_connect reads it as a badge, handle_snapshot as a
+     * guest handle, handle_fault_inject as a slot id — so indexing g_sessions[]
+     * with it would read an unrelated session's envelope. Every session on this
+     * transport shares one serialized socket stream and receives the same
+     * build-fixed envelope, so one module-level value is both correct and
+     * simpler. */
+    if (!cc_envelope_permits(req->opcode, g_envelope)) {
+        sel4_dbg_puts("[cc_pd] refused: outside operator envelope\n");
+        rep->mr[0] = CC_ERR_NOT_PERMITTED;
+        cc_trace_record(req->opcode);
+        return;
     }
 ```
 
@@ -689,12 +737,15 @@ static int reap_oldest_session(void)
 
     g_sessions[victim].active       = false;
     g_sessions[victim].state        = CC_SESSION_STATE_EXPIRED;
-    g_sessions[victim].envelope     = (uint32_t)CC_ENVELOPE_NONE;
     g_sessions[victim].resp_pending = 0u;
     g_sessions[victim].resp_len     = 0u;
     return victim;
 }
 ```
+
+Do not clear `g_envelope` here. It is connection-scoped, not session-scoped —
+reaping one abandoned session must not revoke the authority of the connection
+that is still using the socket. Task 2 resets it on connection close.
 
 - [ ] **Step 4: Update the stale comment above `cc_age_sessions`**
 
