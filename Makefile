@@ -860,7 +860,7 @@ gate-guest-io:
 	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
-gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io
+gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
@@ -1594,6 +1594,11 @@ test-operator-host:
 test-operator-session:
 	$(MAKE) -C tools/agentctl
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-operator-session --timeout-secs $(QEMU_TEST_TIMEOUT)
+.PHONY: test-cc-envelope
+test-cc-envelope:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --cc-envelope-probe 1
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --cc-envelope-probe 2
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --cc-envelope-probe 3
 .PHONY: test-operator-isolation
 test-operator-isolation:
 	@mkdir -p _build/evidence/operator-isolation

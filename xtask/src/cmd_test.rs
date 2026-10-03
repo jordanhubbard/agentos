@@ -104,11 +104,13 @@ const CC_INPUT_RETRY_DEADLINE: Duration = Duration::from_secs(120);
 const CC_OK: u32 = 0;
 const CC_ERR_RELAY_FAULT: u32 = 8;
 const CC_ERR_BAD_HANDLE: u32 = 6;
+const CC_ERR_NOT_PERMITTED: u32 = 11;
 #[cfg(test)]
 const VMM_RELAY_PAYLOAD_BYTES: usize = 48;
 const MSG_CC_LOG_STREAM: u32 = 0x2610;
 const MSG_CC_CREATE_GUEST: u32 = 0x2611;
 const MSG_CC_LIST_GUESTS: u32 = 0x2607;
+const MSG_CC_SNAPSHOT: u32 = 0x260e;
 const MSG_CC_GUEST_STATUS: u32 = 0x260a;
 const MSG_CC_SEND_INPUT: u32 = 0x260d;
 const MSG_CC_SUSPEND_GUEST: u32 = 0x2613;
@@ -714,7 +716,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             || args.assert_operator_session
             || args.operator_isolation_probe.is_some()
             || args.assert_log_rings
-            || args.log_isolation_probe.is_some())
+            || args.log_isolation_probe.is_some()
+            || args.cc_envelope_probe.is_some())
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
         "inspect qualification requires AArch64 with guest-os none"
     );
@@ -2020,6 +2023,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if result.is_ok() && args.assert_operator_session {
         result =
             verify_operator_session(&cc_sock, &repo_root, Duration::from_secs(args.timeout_secs));
+    }
+    if result.is_ok() {
+        if let Some(probe) = args.cc_envelope_probe {
+            result = verify_cc_envelope_probe(&cc_sock, probe, &mut qemu);
+        }
     }
 
     // Every AArch64 image includes log_drain and the serial driver. Require
@@ -5251,6 +5259,163 @@ fn read_cc_frame(stream: &mut UnixStream, frame: &mut [u8]) -> anyhow::Result<()
                 anyhow::bail!("timed out reading CC frame after {} bytes", read)
             }
             Err(err) => return Err(err).context("failed to read CC frame"),
+        }
+    }
+    Ok(())
+}
+
+/*
+ * The three CC operator-envelope probes exercised by `make test-cc-envelope`
+ * (xtask --cc-envelope-probe N). See contracts/cc_envelope.h and
+ * services/command-console/cc_pd.c's cc_dispatch for the enforcement this
+ * proves against a booted image:
+ *
+ *   1. An admitted opcode (MSG_CC_LIST_GUESTS) succeeds after a correct
+ *      CONNECTION_SYNC credential.
+ *   2. A credential differing in its final byte never completes a
+ *      connection: cc_pd never acknowledges it and serves no later frame
+ *      with CC_OK, regardless of whether it stays silent or resets the
+ *      handshake.
+ *   3. An out-of-envelope opcode (MSG_CC_SNAPSHOT) is refused with exactly
+ *      CC_ERR_NOT_PERMITTED (11), not the CC_ERR_RELAY_FAULT (8) that
+ *      handle_snapshot would otherwise return because vm_manager has no
+ *      snapshot implementation. Accepting "any error" here would pass even
+ *      with the envelope gate deleted, so the comparison must be exact.
+ */
+fn verify_cc_envelope_probe(socket: &Path, probe: u8, qemu: &mut Child) -> anyhow::Result<String> {
+    match probe {
+        1 => {
+            let mut cc = connect_cc_client(socket, Duration::from_secs(30), qemu)?;
+            let reply = cc.call(MSG_CC_LIST_GUESTS, 0, 0, 0, &[])?;
+            anyhow::ensure!(
+                reply.mr[0] == CC_OK,
+                "in-envelope MSG_CC_LIST_GUESTS was refused: mr0={}",
+                reply.mr[0]
+            );
+            Ok("cc envelope probe 1: in-envelope MSG_CC_LIST_GUESTS admitted (CC_OK)".into())
+        }
+        2 => {
+            let mut stream =
+                connect_cc_stream_with_corrupted_credential(socket, Duration::from_secs(30), qemu)?;
+            cc_assert_connection_refused(&mut stream)?;
+            Ok("cc envelope probe 2: credential differing in its final byte refused the connection".into())
+        }
+        3 => {
+            let mut cc = connect_cc_client(socket, Duration::from_secs(30), qemu)?;
+            let reply = cc.call(MSG_CC_SNAPSHOT, 0, 0, 0, &[])?;
+            anyhow::ensure!(
+                reply.mr[0] == CC_ERR_NOT_PERMITTED,
+                "out-of-envelope MSG_CC_SNAPSHOT returned mr0={} (expected CC_ERR_NOT_PERMITTED={})",
+                reply.mr[0],
+                CC_ERR_NOT_PERMITTED
+            );
+            Ok("cc envelope probe 3: out-of-envelope MSG_CC_SNAPSHOT refused with CC_ERR_NOT_PERMITTED".into())
+        }
+        _ => unreachable!("--cc-envelope-probe is range-checked to 1..=3"),
+    }
+}
+
+/*
+ * Connects and performs the CONNECTION_SYNC handshake with the operator
+ * credential's final byte flipped. Mirrors CcClient::connect_stream exactly
+ * except for the corrupted byte and that it does not validate the
+ * acknowledgment, since a corrupted credential must not earn one.
+ */
+fn connect_cc_stream_with_corrupted_credential(
+    cc_sock: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<UnixStream> {
+    let start = Instant::now();
+    let mut last_err = None;
+    loop {
+        if start.elapsed() >= timeout {
+            if let Some(err) = last_err {
+                anyhow::bail!(
+                    "failed to connect to {} within {}s: {}",
+                    cc_sock.display(),
+                    timeout.as_secs(),
+                    err
+                );
+            }
+            anyhow::bail!(
+                "CC-PD socket {} did not appear within {}s",
+                cc_sock.display(),
+                timeout.as_secs()
+            );
+        }
+        ensure_qemu_running(qemu, "connecting to CC-PD socket")?;
+        if cc_sock.exists() {
+            match (|| -> anyhow::Result<UnixStream> {
+                let mut stream = UnixStream::connect(cc_sock)
+                    .with_context(|| format!("failed to connect to {}", cc_sock.display()))?;
+                stream
+                    .set_read_timeout(Some(CC_IO_TIMEOUT))
+                    .context("failed to set CC socket read timeout")?;
+                stream
+                    .set_write_timeout(Some(CC_IO_TIMEOUT))
+                    .context("failed to set CC socket write timeout")?;
+                let mut greeting = [0u8; CC_REPLY_SIZE];
+                read_cc_frame(&mut stream, &mut greeting).context("CC ready greeting")?;
+                anyhow::ensure!(
+                    rd32(&greeting, 0) == 0x43435244
+                        && rd32(&greeting, 4) == 1
+                        && (rd32(&greeting, 8) | rd32(&greeting, 12)) != 0
+                        && greeting[16..].iter().all(|b| *b == 0),
+                    "invalid CC ready greeting"
+                );
+                let mut sync = greeting;
+                wr32(&mut sync, 0, 0x261f);
+                /* Corrupt only the final byte of an otherwise-correct
+                 * credential. The brief for this probe: using the final
+                 * byte rather than the first also exercises the
+                 * constant-time compare over its full length. */
+                let mut credential = cc_operator_token();
+                let last = credential.len() - 1;
+                credential[last] ^= 0xff;
+                sync[16..16 + CC_OPERATOR_TOKEN_BYTES].copy_from_slice(&credential);
+                write_cc_frame(&mut stream, &sync).context("CC connection sync")?;
+                Ok(stream)
+            })() {
+                Ok(stream) => return Ok(stream),
+                Err(err) => last_err = Some(format!("{err:#}")),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/*
+ * After a corrupted CONNECTION_SYNC credential, cc_pd must never admit the
+ * connection: no subsequent frame may carry CC_OK, whether cc_pd stays
+ * silent, resets the handshake (a fresh greeting carries a nonzero magic at
+ * byte 0, never CC_OK's zero), or answers an opcode directly. This checks
+ * the externally observable consequence of close_pending / connection_active
+ * never being set, since those flags are not visible off-target.
+ */
+fn cc_assert_connection_refused(stream: &mut UnixStream) -> anyhow::Result<()> {
+    let mut frame = [0u8; CC_REPLY_SIZE];
+    match read_cc_frame(stream, &mut frame) {
+        Ok(()) => anyhow::ensure!(
+            rd32(&frame, 0) != CC_OK,
+            "cc_pd acknowledged a connection sync with a corrupted operator credential"
+        ),
+        Err(_) => { /* No frame at all is exactly the expected refusal. */ }
+    }
+
+    // Confirm no later frame on this connection is ever served either, by
+    // attempting an opcode that would be admitted on an authenticated
+    // connection.
+    let mut req = [0u8; CC_REQ_SIZE];
+    wr32(&mut req, 0, MSG_CC_LIST_GUESTS);
+    if write_cc_frame(stream, &req).is_ok() {
+        let mut reply = [0u8; CC_REPLY_SIZE];
+        match read_cc_frame(stream, &mut reply) {
+            Ok(()) => anyhow::ensure!(
+                rd32(&reply, 0) != CC_OK,
+                "cc_pd served MSG_CC_LIST_GUESTS after a corrupted operator credential"
+            ),
+            Err(_) => { /* No frame at all is exactly the expected refusal. */ }
         }
     }
     Ok(())
