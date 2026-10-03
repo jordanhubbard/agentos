@@ -107,7 +107,8 @@ ROOT_TASK_SRCS := src/main.c src/ep_alloc.c src/cap_accounting.c \
                   src/pd_tcb.c src/m3_bare_metal.c \
                   src/sel4_crt.c src/log.c \
                   src/ut_alloc.c src/pd_vspace.c src/cap_audit.c \
-                  src/vos_create.c src/pd_bundle_stub.c
+                  src/vos_create.c src/pd_bundle_stub.c \
+                  src/authority_kindmap.c
 
 ifeq ($(ARCH),aarch64)
 CFLAGS += -DAGENTOS_LOG_RINGS=1
@@ -126,6 +127,7 @@ endif
 
 ROOT_TASK_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/rt_%.o, $(ROOT_TASK_SRCS))
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
+ROOT_TASK_OBJS += $(BUILD_DIR)/rt_authority.o
 ifeq ($(ARCH),x86_64)
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
 endif
@@ -517,6 +519,10 @@ $(BUILD_DIR)/x86_firmware.o: verify-x86-firmware
 endif
 
 $(BUILD_DIR)/rt_inspect_snapshot.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/rt_authority.o: $(REPO_ROOT_MK)/platform/inspect/authority.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
