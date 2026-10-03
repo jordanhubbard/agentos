@@ -695,12 +695,18 @@ static void dbg_hex(seL4_Word v);
  *   pd_cnode         capability to the PD's own CNode (in root task's CSpace)
  *   irq_control_cap  seL4_CapIRQControl - the kernel's IRQ control capability
  *   pd_cnode_depth   radix of pd_cnode (pd->cnode_size_bits)
+ *   pd_index         index of pd in the system descriptor; recorded as the
+ *                     owner of each IRQ handler cap in the capability
+ *                     accounting table (TCB invariant 1: one owner per
+ *                     device frame and IRQ -- the authority page is what
+ *                     makes that checkable).
  */
 static void boot_setup_irqs(const pd_desc_t *pd,
                              seL4_CPtr        pd_cnode,
                              seL4_CPtr        irq_control_cap,
                              seL4_Word        pd_cnode_depth,
-                             seL4_CPtr        notification_cap)
+                             seL4_CPtr        notification_cap,
+                             uint32_t         pd_index)
 {
     for (uint8_t i = 0u; i < pd->irq_count; i++) {
         const irq_desc_t *d = &pd->irqs[i];
@@ -798,6 +804,19 @@ static void boot_setup_irqs(const pd_desc_t *pd,
          * seL4_IRQHandler_Ack(), which is recoverable.
          */
         (void)err;
+
+        /*
+         * Record the IRQ handler cap against the PD it was just moved into
+         * (dest_slot in pd_cnode), not against root -- root retains no alias.
+         * obj_type uses the AOS_AUTHORITY_OBJTYPE_IRQ_HANDLER sentinel since
+         * this cap came from seL4_IRQControl_Get, not Untyped_Retype, so it
+         * has no seL4_ObjectType. name is the PD's name, matching every other
+         * cap_acct_record call site, so the authority page's per-domain row
+         * is always named after the domain regardless of which capability
+         * happens to be recorded first for it.
+         */
+        cap_acct_record(seL4_CapNull, (seL4_CPtr)dest_slot,
+                        AOS_AUTHORITY_OBJTYPE_IRQ_HANDLER, pd_index, pd->name);
     }
 }
 
@@ -3234,9 +3253,21 @@ void root_task_main(const seL4_BootInfo *bi)
                        ep_spec->service_id == SVC_ID_SERIAL_VIRT) {
                 badge = SERIAL_VIRT_OPERATOR_BADGE;
             }
-            ep_mint_badge(service_ep, badge,
+            seL4_Error ep_mint_err = ep_mint_badge(service_ep, badge,
                            pd_cnode, ep_spec->cnode_slot,
                            pd->cnode_size_bits);
+            if (ep_mint_err == seL4_NoError) {
+                /*
+                 * Record the grant against the receiving PD, not root: this
+                 * is "who holds authority to call this service", so one
+                 * endpoint object legitimately appears against several
+                 * domains here -- that is not double counting, it is every
+                 * domain that was minted a (possibly differently badged)
+                 * cap to the same underlying service endpoint.
+                 */
+                cap_acct_record(seL4_CapNull, service_ep, seL4_EndpointObject,
+                                i, pd->name);
+            }
         }
 
         if (pd->self_svc_id == SVC_ID_SERIAL_VIRT ||
@@ -3867,7 +3898,7 @@ void root_task_main(const seL4_BootInfo *bi)
             boot_setup_irqs(pd, pd_cnode,
                             seL4_CapIRQControl,
                             (seL4_Word)pd->cnode_size_bits,
-                            pd_ntfn_cap);
+                            pd_ntfn_cap, i);
         }
 
         /* ── 4g.6: Allocate MCS reply object at slot AGENTOS_IPC_REPLY_CAP ── */
