@@ -17,6 +17,11 @@ int main(void)
     assert(cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_FRAME_CAPTURE));
     assert(cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_INPUT_SUBMIT));
     assert(cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_OPERATOR_WRITE));
+    /* Session management: ordinary admitted opcodes now, since the
+     * envelope is established at CONNECTION_SYNC, before any dispatched
+     * frame, rather than bypassing admission as a preauth special case. */
+    assert(cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_CONNECT));
+    assert(cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_DISCONNECT));
 
     /* Out of envelope: exfiltration and debug primitives. */
     assert(!cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_SNAPSHOT));
@@ -34,12 +39,8 @@ int main(void)
     assert(!cc_envelope_admits(CC_ENVELOPE_NONE, MSG_CC_FRAME_CAPTURE));
     assert(!cc_envelope_admits(CC_ENVELOPE_NONE, MSG_CC_INPUT_SUBMIT));
     assert(!cc_envelope_admits(CC_ENVELOPE_NONE, MSG_CC_OPERATOR_WRITE));
-
-    /* Pre-auth opcodes are reachable without a session. */
-    assert(cc_envelope_is_preauth(MSG_CC_CONNECT));
-    assert(cc_envelope_is_preauth(MSG_CC_DISCONNECT));
-    assert(!cc_envelope_is_preauth(MSG_CC_SEND_INPUT));
-    assert(!cc_envelope_is_preauth(MSG_CC_SNAPSHOT));
+    assert(!cc_envelope_admits(CC_ENVELOPE_NONE, MSG_CC_CONNECT));
+    assert(!cc_envelope_admits(CC_ENVELOPE_NONE, MSG_CC_DISCONNECT));
 
     /* Constant-time credential compare. */
     {

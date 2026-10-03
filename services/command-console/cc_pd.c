@@ -1074,20 +1074,16 @@ static uint32_t cc_wire_rd32(const uint8_t *src, uint32_t off)
 /* ─── Session management handlers ───────────────────────────────────────── */
 
 /*
- * MSG_CC_CONNECT — establish a session and select its authority envelope.
+ * MSG_CC_CONNECT — establish a session.
  *
- * Wire: the 32-byte operator credential occupies the first
- * CC_OPERATOR_TOKEN_BYTES of the request shmem. MR1 retains the caller's
- * requested badge, which is advisory only and confers nothing.
+ * Session-scoped, not connection-scoped: this only creates a slot for the
+ * SEND/RECV relay. The connection's authority envelope is established
+ * earlier, at CONNECTION_SYNC, because that handshake — not CONNECT — is
+ * what every client (including the sessionless INSPECT/OPERATOR_* path)
+ * actually sends once per connection.
  */
 static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
-    if (!cc_credential_equal(req->shmem, cc_operator_token)) {
-        rep->mr[0] = CC_ERR_NOT_PERMITTED;
-        rep->mr[1] = 0u;
-        return;
-    }
-
     int s = alloc_session();
     if (s < 0) {
         rep->mr[0] = CC_ERR_NO_SESSIONS;
@@ -1100,8 +1096,6 @@ static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     g_sessions[s].ticks_since_active = 0u;
     g_sessions[s].resp_pending       = 0u;
     g_sessions[s].resp_len           = 0u;
-
-    g_envelope = (uint32_t)CC_ENVELOPE_OPERATOR;
 
     rep->mr[0] = CC_OK;
     rep->mr[1] = (uint32_t)s;
@@ -2091,13 +2085,31 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
         }
         __builtin_memset(&g_rep, 0, sizeof(g_rep));
         if (!connection_active) {
+            /*
+             * The envelope is connection-scoped, not session-scoped: every
+             * client sends CONNECTION_SYNC exactly once as its first frame
+             * or cc_pd closes the connection, and the whole sessionless
+             * INSPECT/OPERATOR_* transport never sends MSG_CC_CONNECT at
+             * all. Establishing authority here, rather than in
+             * handle_connect, means every connection — session-based or
+             * not — carries the same envelope its credential earned.
+             *
+             * The first CC_OPERATOR_TOKEN_BYTES of shmem carry the
+             * credential; the remainder must still be zero (reserved).
+             * A credential mismatch refuses the whole connection via the
+             * existing close_pending path rather than merely the operation
+             * — deliberately stronger than per-opcode refusal, since an
+             * unauthenticated transport has no business staying open.
+             */
             bool valid = g_req.opcode == MSG_CC_CONNECTION_SYNC &&
                 g_req.mr[0] == CC_CONNECTION_VERSION &&
                 g_req.mr[1] == (uint32_t)connection_generation &&
-                g_req.mr[2] == (uint32_t)(connection_generation >> 32);
-            for (unsigned i = 0; i < sizeof(g_req.shmem); ++i)
+                g_req.mr[2] == (uint32_t)(connection_generation >> 32) &&
+                cc_credential_equal(g_req.shmem, cc_operator_token);
+            for (unsigned i = CC_OPERATOR_TOKEN_BYTES; i < sizeof(g_req.shmem); ++i)
                 valid &= g_req.shmem[i] == 0;
             if (!valid) { g_control.close_pending = true; continue; }
+            g_envelope = (uint32_t)CC_ENVELOPE_OPERATOR;
             g_rep.mr[0] = CC_OK;
             g_rep.mr[1] = CC_CONNECTION_VERSION;
             g_rep.mr[2] = (uint32_t)connection_generation;

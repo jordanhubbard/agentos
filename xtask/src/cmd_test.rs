@@ -56,6 +56,43 @@ const CC_INPUT_TEXT_CHUNK: usize = 16;
 const CC_REQ_SIZE: usize = 4 + 12 + CC_WIRE_SHMEM_SIZE;
 const CC_REPLY_SIZE: usize = 16 + CC_WIRE_SHMEM_SIZE;
 const CC_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const CC_OPERATOR_TOKEN_BYTES: usize = 32;
+
+/*
+ * The operator credential cc_pd expects in the first CC_OPERATOR_TOKEN_BYTES
+ * of the CONNECTION_SYNC request shmem. Source of truth is
+ * kernel/agentos-root-task/include/cc_operator_credential.h; this is a
+ * deliberate, accepted duplication rather than a generated value, since a
+ * generator here would need to parse C to extract a byte array. Reads
+ * AGENTOS_CC_OPERATOR_TOKEN_HEX (64 hex chars) when the build overrode the
+ * default; otherwise falls back to the well-known development token.
+ */
+fn cc_operator_token() -> [u8; CC_OPERATOR_TOKEN_BYTES] {
+    const DEV_TOKEN: [u8; CC_OPERATOR_TOKEN_BYTES] = [
+        0x61, 0x67, 0x65, 0x6e, 0x74, 0x4f, 0x53, 0x2d, 0x64, 0x65, 0x76, 0x2d, 0x6f, 0x70, 0x65,
+        0x72, 0x61, 0x74, 0x6f, 0x72, 0x2d, 0x74, 0x6f, 0x6b, 0x65, 0x6e, 0x2d, 0x76, 0x31, 0x00,
+        0x00, 0x00,
+    ];
+    if let Ok(hex) = std::env::var("AGENTOS_CC_OPERATOR_TOKEN_HEX") {
+        if hex.len() == CC_OPERATOR_TOKEN_BYTES * 2 {
+            let mut token = [0u8; CC_OPERATOR_TOKEN_BYTES];
+            let mut ok = true;
+            for (i, byte) in token.iter_mut().enumerate() {
+                match u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16) {
+                    Ok(b) => *byte = b,
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                return token;
+            }
+        }
+    }
+    DEV_TOKEN
+}
 /*
  * A console drain crosses the host virtconsole, CC-PD,
  * vm_manager, and a running VMM. Those target components now have a strictly
@@ -5081,8 +5118,10 @@ fn mock_cc_sync(stream: &mut UnixStream) {
     stream.write_all(&greeting).unwrap();
     let mut request = [0u8; CC_REQ_SIZE];
     stream.read_exact(&mut request).unwrap();
-    wr32(&mut greeting, 0, 0x261f);
-    assert_eq!(request, greeting);
+    let mut expected = greeting;
+    wr32(&mut expected, 0, 0x261f);
+    expected[16..16 + CC_OPERATOR_TOKEN_BYTES].copy_from_slice(&cc_operator_token());
+    assert_eq!(request, expected);
     wr32(&mut greeting, 0, 0);
     stream.write_all(&greeting).unwrap();
 }
@@ -5115,6 +5154,11 @@ impl CcClient {
         );
         let mut sync = greeting;
         wr32(&mut sync, 0, 0x261f);
+        /* Operator credential occupies the first CC_OPERATOR_TOKEN_BYTES of
+         * the sync frame's shmem (offset 16 in this reply-shaped buffer);
+         * cc_pd establishes the authority envelope from it here, not from
+         * MSG_CC_CONNECT. */
+        sync[16..16 + CC_OPERATOR_TOKEN_BYTES].copy_from_slice(&cc_operator_token());
         write_cc_frame(&mut stream, &sync).context("CC connection sync")?;
         let mut reply = [0u8; CC_REPLY_SIZE];
         read_cc_frame(&mut stream, &mut reply).context("CC connection acknowledgment")?;

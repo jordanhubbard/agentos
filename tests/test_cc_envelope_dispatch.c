@@ -8,10 +8,16 @@
 
 int main(void)
 {
-    /* Pre-auth opcodes bypass the envelope: a client with no session must
-     * still be able to connect. */
-    assert(cc_envelope_permits(MSG_CC_CONNECT,    CC_ENVELOPE_NONE));
-    assert(cc_envelope_permits(MSG_CC_DISCONNECT, CC_ENVELOPE_NONE));
+    /* The authority envelope is established at CONNECTION_SYNC, before any
+     * frame reaches cc_dispatch, so by the time cc_dispatch ever sees a
+     * frame — including CONNECT/DISCONNECT — the envelope is already
+     * CC_ENVELOPE_OPERATOR or the connection was refused at the handshake
+     * and never reached dispatch at all. CONNECT/DISCONNECT are therefore
+     * ordinary admitted opcodes, not a preauth bypass. */
+    assert(!cc_envelope_permits(MSG_CC_CONNECT,    CC_ENVELOPE_NONE));
+    assert(!cc_envelope_permits(MSG_CC_DISCONNECT, CC_ENVELOPE_NONE));
+    assert(cc_envelope_permits(MSG_CC_CONNECT,    CC_ENVELOPE_OPERATOR));
+    assert(cc_envelope_permits(MSG_CC_DISCONNECT, CC_ENVELOPE_OPERATOR));
 
     /* Everything else is refused without an envelope. */
     assert(!cc_envelope_permits(MSG_CC_SEND_INPUT,  CC_ENVELOPE_NONE));
