@@ -917,6 +917,7 @@ test-host: test-x86-cpu-host
 test-host: test-x86-composition-host
 test-host: test-vm-manager-identity-host
 test-host: test-remoteos-client-host
+test-host: test-authority-host
 test-host: test-cc-envelope-host
 test-host: test-cc-envelope-dispatch-host
 test-host: test-cc-session-reap-host
@@ -956,6 +957,15 @@ test-remoteos-client-host:
 		tests/test_remoteos_client.c kernel/agentos-root-task/src/remoteos_client.c \
 		-o $(BUILD_TMP_DIR)/test_remoteos_client
 	$(BUILD_TMP_DIR)/test_remoteos_client
+
+.PHONY: test-authority-host
+test-authority-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I platform/include \
+		tests/test_authority_snapshot.c platform/inspect/authority.c \
+		-o $(BUILD_TMP_DIR)/test_authority_snapshot
+	$(BUILD_TMP_DIR)/test_authority_snapshot
 
 .PHONY: test-vm-manager-identity-host
 test-vm-manager-identity-host:
