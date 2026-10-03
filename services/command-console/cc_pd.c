@@ -1002,17 +1002,25 @@ static bool cc_lifecycle_boot_guest(uint32_t opcode, uint32_t reason,
  * the leaked session lingers.  Aging every other active session on each
  * dispatch (cc_age_sessions) plus reaping the oldest active session when
  * alloc_session has no free slot lets the next new caller reclaim a slot
- * without a full reboot.  No threshold: the session table is small and the
- * oldest-active session is by definition the most stale once the table is
- * full, so unconditionally reap it.  ticks_since_active >= 1 means the
- * session has not been touched on the current dispatch, so the in-flight
- * caller is never reaped from under itself. */
+ * without a full reboot.  Only sessions already marked EXPIRED are
+ * reclaimed; reaping purely on age allowed an unauthenticated peer to evict
+ * a live session by filling the table.  A table full of live sessions now
+ * refuses new connects.  ticks_since_active >= 1 means the session has not
+ * been touched on the current dispatch, so the in-flight caller is never
+ * reaped from under itself. */
+#define CC_SESSION_EXPIRY_TICKS 4096u
+
 static void cc_age_sessions(void)
 {
     for (uint32_t i = 0u; i < CC_MAX_SESSIONS; i++) {
         if (g_sessions[i].active &&
             g_sessions[i].ticks_since_active < UINT32_MAX) {
             g_sessions[i].ticks_since_active++;
+        }
+        if (g_sessions[i].active &&
+            g_sessions[i].ticks_since_active >= CC_SESSION_EXPIRY_TICKS &&
+            g_sessions[i].state != (uint32_t)CC_SESSION_STATE_EXPIRED) {
+            g_sessions[i].state = (uint32_t)CC_SESSION_STATE_EXPIRED;
         }
     }
 }
@@ -1022,19 +1030,22 @@ static int reap_oldest_session(void)
     int victim = -1;
     uint32_t oldest = 0u;
     for (int i = 0; i < (int)CC_MAX_SESSIONS; i++) {
-        if (g_sessions[i].active &&
-            g_sessions[i].ticks_since_active >= 1u &&
-            g_sessions[i].ticks_since_active >= oldest) {
+        if (!g_sessions[i].active) continue;
+        /* Only a session already marked EXPIRED may be reclaimed. Age alone
+         * is not sufficient: reaping on age let an unauthenticated peer evict
+         * a live session by exhausting the table. */
+        if (g_sessions[i].state != (uint32_t)CC_SESSION_STATE_EXPIRED) continue;
+        if (g_sessions[i].ticks_since_active >= oldest) {
             oldest = g_sessions[i].ticks_since_active;
             victim = i;
         }
     }
-    if (victim >= 0) {
-        g_sessions[victim].active       = false;
-        g_sessions[victim].state        = CC_SESSION_STATE_EXPIRED;
-        g_sessions[victim].resp_pending = 0u;
-        g_sessions[victim].resp_len     = 0u;
-    }
+    if (victim < 0) return -1;
+
+    g_sessions[victim].active       = false;
+    g_sessions[victim].state        = CC_SESSION_STATE_EXPIRED;
+    g_sessions[victim].resp_pending = 0u;
+    g_sessions[victim].resp_len     = 0u;
     return victim;
 }
 
