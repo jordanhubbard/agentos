@@ -1444,6 +1444,8 @@ invariant — the kernel enforces that unconditionally, since a domain cannot
 mint from a capability it does not hold. `make test-authority` checks the
 published counts against the compiled descriptor, including that `net_virt` and
 `blk_virt` hold no IRQ handler, and a target fault probe verifies a consumer
-write to the page faults. Qualification boundary: obtained under Microkit SDK
-2.1.0, not the pin in `tools/sdk/default-version`; release qualification must
-re-run it.
+write to the page faults. The page is read over CC as `MSG_CC_AUTHORITY`,
+admitted to `CC_ENVELOPE_OPERATOR` alongside `MSG_CC_INSPECT`; the handler is
+read-only, so admitting it conveys no authority and cannot mutate state.
+Qualification boundary: obtained under Microkit SDK 2.1.0, not the pin in
+`tools/sdk/default-version`; release qualification must re-run it.
