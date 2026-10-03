@@ -837,11 +837,21 @@ Read how `virtualizer_authority_probe` is declared in `xtask/src/lib.rs:107` and
 
 - [ ] **Step 2: Define the three probes**
 
-- Probe 1: connect with the correct credential, then `MSG_CC_LIST_GUESTS`. Expect `CC_OK`.
-- Probe 2: connect with a credential differing in the final byte. Expect `CC_ERR_NOT_PERMITTED` and no session allocated.
-- Probe 3: connect with the correct credential, then `MSG_CC_SNAPSHOT`. Expect **exactly** `CC_ERR_NOT_PERMITTED` (`11`), **not** `CC_ERR_RELAY_FAULT` (`8`).
+Note the credential is presented at `MSG_CC_CONNECTION_SYNC`, not at
+`MSG_CC_CONNECT` (ruling R9) — the envelope is connection-scoped and the
+sessionless clients never call CONNECT. A bad credential therefore closes the
+**connection**, it does not return an error code on an operation.
+
+- Probe 1: sync with the correct credential, then `MSG_CC_LIST_GUESTS`. Expect `CC_OK`. Proves an admitted operation still works end to end.
+- Probe 2: sync with a credential differing in the **final** byte. Expect the connection to be refused — `cc_pd` sets `close_pending` and never sets `connection_active`, so no subsequent frame is served. Assert the closure, not an error code. Using the final byte rather than the first also exercises the constant-time compare over its full length.
+- Probe 3: sync with the correct credential, then `MSG_CC_SNAPSHOT`. Expect **exactly** `CC_ERR_NOT_PERMITTED` (`11`), **not** `CC_ERR_RELAY_FAULT` (`8`).
 
 Probe 3 is the one that matters. `handle_snapshot` already fails with `CC_ERR_RELAY_FAULT` because `vm_manager` returns not-implemented, so an oracle that accepts "any error" would pass with the envelope deleted. The oracle must compare the exact value.
+
+Reuse the existing CC socket plumbing in `xtask/src/cmd_test.rs` rather than
+writing a new client: `connect_stream`, `mock_cc_sync`, `write_cc_frame`,
+`read_cc_frame`, and `cc_operator_token()`. `mock_cc_sync` already carries the
+credential after ruling R9 — probe 2 needs a variant that corrupts it.
 
 - [ ] **Step 3: Add the Makefile target**
 
@@ -871,16 +881,28 @@ Add to the CC section, stating the boundary and its limits honestly:
 
 ```markdown
 `cc_pd` admits only the operations in its build-defined operator envelope
-(`contracts/cc_envelope.h`). The credential presented at CONNECT selects the
-envelope; under the platform threat model the local operator is untrusted and
+(`contracts/cc_envelope.h`). The credential presented at `MSG_CC_CONNECTION_SYNC`
+selects the envelope for the life of that connection; a mismatch closes the
+connection. Under the platform threat model the local operator is untrusted and
 can read the image, so the credential is not secret from them and does not
-authenticate a principal. Snapshot, restore, trace and fault injection are
-outside the default envelope. `make test-cc-envelope` verifies admission,
-credential mismatch, and that an out-of-envelope operation is refused with
-CC_ERR_NOT_PERMITTED rather than failing for an unrelated reason. This bounds
-what the CC transport conveys; it does not make the transport a capability
-boundary, and vendor-signed authorization for out-of-envelope operations is
-not implemented.
+authenticate a principal — it selects an authority envelope, and an operator who
+extracts it obtains exactly the envelope they already held. Snapshot, restore,
+trace and fault injection are outside the default envelope; fault injection is
+additionally excluded structurally, since `cc_pd` holds no fault-handler
+endpoint unless `AGENTOS_FAULT_INJECT` is defined. Admission is an allowlist, so
+an opcode added later is outside the envelope until admitted deliberately.
+
+`make test-cc-envelope` verifies that an admitted operation succeeds, that a
+credential differing in its final byte has its connection refused, and that an
+out-of-envelope operation is refused with exactly `CC_ERR_NOT_PERMITTED` rather
+than failing for an unrelated reason.
+
+Qualification boundary: these results were obtained under Microkit SDK 2.1.0,
+not the qualified pin in `tools/sdk/default-version`, and must be re-run on the
+pinned SDK for release qualification. This bounds what the CC transport conveys;
+it does not make the transport a capability boundary, does not defend against
+the local operator, and vendor-signed authorization for out-of-envelope
+operations is not implemented.
 ```
 
 - [ ] **Step 8: Run the full gate**
