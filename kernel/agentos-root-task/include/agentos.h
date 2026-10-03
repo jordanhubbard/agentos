@@ -988,6 +988,7 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_CC_FRAME_CAPTURE            0x261D  /* immutable framebuffer snapshot, cc_contract.h */
 #define MSG_CC_INPUT_SUBMIT             0x261E  /* bounded keyboard/pointer batch, cc_contract.h */
 #define MSG_CC_CONNECTION_SYNC          0x261F  /* transport generation acknowledgment; cc_contract.h */
+#define MSG_CC_AUTHORITY                0x2620  /* versioned read-only boot authority snapshot; cc_contract.h */
 
 /* ─── Guest OS lifecycle opcodes (0x2A00) ───────────────────────────────── */
 #define MSG_GUEST_CREATE                0x2A01  /* guest_create_req in shmem → MR0=ok MR1=guest_id */

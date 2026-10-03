@@ -486,6 +486,11 @@ jobs:
       - name: GATE — make test-cc-envelope
         timeout-minutes: 10
         run: make test-cc-envelope
+      # Boot authority page: published counts vs. compiled descriptor, plus a
+      # target fault probe that a consumer write to the read-only page faults.
+      - name: GATE — make test-authority
+        timeout-minutes: 10
+        run: make test-authority
 
       - name: Boot gate summary
         run: |

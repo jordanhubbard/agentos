@@ -534,6 +534,10 @@ $(BUILD_DIR)/inspect_snapshot.pd.o: $(REPO_ROOT_MK)/platform/inspect/inspect_sna
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/authority.pd.o: $(REPO_ROOT_MK)/platform/inspect/authority.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # Compile root task objects with rt_ prefix to avoid colliding with PD objects
 $(BUILD_DIR)/rt_%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
@@ -917,6 +921,10 @@ $(BUILD_DIR)/operator_session.o: $(GUEST_CONFIG_STAMP)
 ifeq ($(INSPECT_WRITE_PROBE),1)
   CFLAGS += -DAGENTOS_INSPECT_WRITE_PROBE=1
   CFLAGS_ROOT_TASK += -DAGENTOS_INSPECT_WRITE_PROBE=1
+endif
+ifeq ($(AUTHORITY_WRITE_PROBE),1)
+  CFLAGS += -DAGENTOS_AUTHORITY_WRITE_PROBE=1
+  CFLAGS_ROOT_TASK += -DAGENTOS_AUTHORITY_WRITE_PROBE=1
 endif
 
 # AArch64: include the configured profile-backed VMM slots.
@@ -1420,7 +1428,7 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 $(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)

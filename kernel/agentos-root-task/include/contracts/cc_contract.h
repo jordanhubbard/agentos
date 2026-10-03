@@ -87,6 +87,14 @@
  * It grants no TCB, VSpace, memory-allocation or device authority to the caller.
  * Layout: platform/include/platform/inspect.h. */
 
+/* MSG_CC_AUTHORITY: MR1=AOS_AUTHORITY_VERSION, MR2=MR3=0; no input payload.
+ * Reply MR0=CC_OK, MR1=sizeof(aos_authority_snapshot_t), MR2=0, MR3=version;
+ * the packed snapshot is in shmem. On error, no payload is returned.
+ * This is a ledger of what root recorded granting to each protection domain
+ * at boot, by capability kind -- not a reading of kernel state and not a
+ * verification of the subsetting invariant, which the kernel enforces
+ * unconditionally. Layout: platform/include/platform/authority.h. */
+
 /* Operator serial channel, one externally serialized stream. WRITE/READ:
  * MR1=AOS_OPERATOR_VERSION, MR2=length/max (0..4096), MR3=0.
  * WRITE bytes are in shmem; full queues accept nothing (WOULD_BLOCK).

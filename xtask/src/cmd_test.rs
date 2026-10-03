@@ -717,7 +717,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             || args.operator_isolation_probe.is_some()
             || args.assert_log_rings
             || args.log_isolation_probe.is_some()
-            || args.cc_envelope_probe.is_some())
+            || args.cc_envelope_probe.is_some()
+            || args.authority_probe.is_some())
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
         "inspect qualification requires AArch64 with guest-os none"
     );
@@ -988,6 +989,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         if args.inspect_write_probe {
             make_args.push(String::from("INSPECT_WRITE_PROBE=1"));
+        }
+        if args.authority_probe == Some(2) {
+            make_args.push(String::from("AUTHORITY_WRITE_PROBE=1"));
         }
         if args.assert_operator_session || args.operator_isolation_probe.is_some() {
             make_args.push(String::from("OPERATOR_TEST=1"));
@@ -1487,6 +1491,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             &[
                 "[cc_pd] inspect: valid boot page read before write probe",
                 "[rt] inspect: expected read-only page write fault verified",
+            ],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.authority_probe == Some(2) {
+        wait_for_all_markers(
+            &log_path,
+            &[
+                "[cc_pd] authority: valid boot page read before write probe",
+                "[rt] authority: expected read-only page write fault verified",
             ],
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
@@ -2019,6 +2033,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
     if result.is_ok() && args.assert_inspect {
         result = verify_inspect(&cc_sock, &repo_root);
+    }
+    if result.is_ok() && args.authority_probe == Some(1) {
+        result = verify_authority(&cc_sock, &repo_root);
     }
     if result.is_ok() && args.assert_operator_session {
         result =
@@ -4996,6 +5013,159 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
         "boot snapshot changed after reconnect and intervening requests"
     );
     Ok("root boot observations returned by CC and agentctl; invalid requests rejected; repeat stable".into())
+}
+
+fn rd16(src: &[u8], off: usize) -> u16 {
+    u16::from_le_bytes(src[off..off + 2].try_into().unwrap())
+}
+
+/* aos_authority_snapshot_t wire layout (platform/include/platform/authority.h):
+ *   u32 version; u32 pd_count; u32 total_recorded; u32 truncated_adds;
+ *   u32 saturated; u32 reserved;                          -- 24-byte header
+ *   aos_authority_pd_t pds[32];                            -- 60 bytes/row:
+ *     u32 pd_index; u8 name[32]; u16 counts[11]; u16 reserved;
+ * counts[] is indexed by aos_authority_kind_t; IRQ_HANDLER is kind 7. */
+const AOS_AUTHORITY_VERSION: u32 = 1;
+const AOS_AUTHORITY_ROW_OFFSET: usize = 24;
+const AOS_AUTHORITY_ROW_STRIDE: usize = 60;
+const AOS_AUTHORITY_KIND_IRQ_HANDLER: usize = 7;
+
+fn authority_row(shmem: &[u8], pd_count: u32, pd_index: u32) -> Option<usize> {
+    (0..pd_count as usize).find(|&i| {
+        rd32(
+            shmem,
+            AOS_AUTHORITY_ROW_OFFSET + i * AOS_AUTHORITY_ROW_STRIDE,
+        ) == pd_index
+    })
+}
+
+fn authority_irq_count(shmem: &[u8], row: usize) -> u16 {
+    rd16(
+        shmem,
+        AOS_AUTHORITY_ROW_OFFSET
+            + row * AOS_AUTHORITY_ROW_STRIDE
+            + 36
+            + AOS_AUTHORITY_KIND_IRQ_HANDLER * 2,
+    )
+}
+
+/* Probe 1: the published boot authority page agrees with the compiled
+ * descriptor (kernel/agentos-root-task/src/system_desc_aarch64.c). Matches
+ * rows by pd_index, never by name -- aos_authority_pd_t.name is sourced from
+ * cap_acct_entry_t.name (char[16]), so names beyond 15 characters truncate
+ * ("operator_session" -> "operator_sessio") and are not a reliable key.
+ *
+ * serial_pd and cc_pd each own exactly one IRQ handler; net_virt, blk_virt
+ * and serial_virt each own none -- the published page agreeing with TCB
+ * invariant 2 ("the virtualizer owns no device frame and no IRQ") becoming
+ * checkable from runtime data. net_pd is deliberately not asserted here: its
+ * irq_count is guarded behind AGENTOS_GUEST_PRIMARY/SECONDARY, so zero is
+ * correct only because this is a GUEST_OS=none build, not because net_pd
+ * never owns an IRQ handler. */
+fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
+    let first;
+    {
+        let mut client = CcClient::connect(socket)?;
+        first = client.call(0x2620, AOS_AUTHORITY_VERSION, 0, 0, &[])?;
+        anyhow::ensure!(
+            first.mr[0] == 0 && first.mr[3] == AOS_AUTHORITY_VERSION,
+            "authority header: {:?}",
+            first.mr
+        );
+        let version = rd32(&first.shmem, 0);
+        let pd_count = rd32(&first.shmem, 4);
+        let total_recorded = rd32(&first.shmem, 8);
+        let truncated_adds = rd32(&first.shmem, 12);
+        let saturated = rd32(&first.shmem, 16);
+        anyhow::ensure!(
+            version == AOS_AUTHORITY_VERSION,
+            "authority version mismatch: {version}"
+        );
+        anyhow::ensure!(
+            pd_count == 15,
+            "expected 15 published protection domains for the default aarch64 \
+             GUEST_OS=none image, got {pd_count}"
+        );
+        anyhow::ensure!(
+            truncated_adds == 0,
+            "authority table dropped {truncated_adds} adds; the accounting \
+             table sizing is wrong and must be reported, not accepted"
+        );
+        anyhow::ensure!(saturated == 0, "authority counts saturated at UINT16_MAX");
+        anyhow::ensure!(
+            total_recorded == 97,
+            "expected 97 recorded capability grants for the default image, got {total_recorded}"
+        );
+
+        for (pd_index, name) in [(2u32, "serial_pd"), (12u32, "cc_pd")] {
+            let row = authority_row(&first.shmem, pd_count, pd_index).with_context(|| {
+                format!("authority: no published row for pd_index {pd_index} ({name})")
+            })?;
+            let irq = authority_irq_count(&first.shmem, row);
+            anyhow::ensure!(
+                irq == 1,
+                "{name} (pd_index {pd_index}) reports {irq} IRQ handlers, expected 1"
+            );
+        }
+        for (pd_index, name) in [
+            (7u32, "net_virt"),
+            (5u32, "blk_virt"),
+            (9u32, "serial_virt"),
+        ] {
+            let row = authority_row(&first.shmem, pd_count, pd_index).with_context(|| {
+                format!("authority: no published row for pd_index {pd_index} ({name})")
+            })?;
+            let irq = authority_irq_count(&first.shmem, row);
+            anyhow::ensure!(
+                irq == 0,
+                "{name} (pd_index {pd_index}) reports {irq} IRQ handlers, expected 0 \
+                 (TCB invariant 2: the virtualizer owns no device frame and no IRQ)"
+            );
+        }
+    }
+
+    let out = std::process::Command::new(root.join("_build/tools/agentctl/agentctl"))
+        .arg("--socket")
+        .arg(socket)
+        .arg("authority")
+        .output()
+        .context("run make -C tools/agentctl before authority qualification")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "agentctl authority failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = String::from_utf8(out.stdout)?;
+    for expected in [
+        "pd=serial_pd",
+        "pd=cc_pd",
+        "pd=net_virt",
+        "pd=blk_virt",
+        "pd=serial_virt",
+        "truncated_adds=0\n",
+        "saturated=0\n",
+        "total=97\n",
+    ] {
+        anyhow::ensure!(
+            report.contains(expected),
+            "authority report missing {expected}"
+        );
+    }
+    println!("{report}");
+
+    let mut client = CcClient::connect(socket)?;
+    let second = client.call(0x2620, AOS_AUTHORITY_VERSION, 0, 0, &[])?;
+    anyhow::ensure!(
+        first.mr == second.mr && first.shmem == second.shmem,
+        "authority snapshot changed after reconnect and intervening requests"
+    );
+
+    Ok(
+        "boot authority counts matched the compiled descriptor (serial_pd/cc_pd each \
+        own their one IRQ handler; net_virt/blk_virt/serial_virt own none); CC and \
+        agentctl agree; repeat stable"
+            .into(),
+    )
 }
 
 fn operator_read_exact(
