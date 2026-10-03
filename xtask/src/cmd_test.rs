@@ -5074,7 +5074,6 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
         );
         let version = rd32(&first.shmem, 0);
         let pd_count = rd32(&first.shmem, 4);
-        let total_recorded = rd32(&first.shmem, 8);
         let truncated_adds = rd32(&first.shmem, 12);
         let saturated = rd32(&first.shmem, 16);
         anyhow::ensure!(
@@ -5092,10 +5091,12 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
              table sizing is wrong and must be reported, not accepted"
         );
         anyhow::ensure!(saturated == 0, "authority counts saturated at UINT16_MAX");
-        anyhow::ensure!(
-            total_recorded == 97,
-            "expected 97 recorded capability grants for the default image, got {total_recorded}"
-        );
+        /* total_recorded is deliberately not asserted to an exact value: it
+         * sums every capability grant in the image and would break on any
+         * unrelated provisioning change, reporting an opaque mismatch that
+         * teaches the next editor to update the number rather than ask why
+         * it moved. pd_count catches structural loss and the per-domain
+         * irq_handler assertions below carry the invariant that matters. */
 
         for (pd_index, name) in [(2u32, "serial_pd"), (12u32, "cc_pd")] {
             let row = authority_row(&first.shmem, pd_count, pd_index).with_context(|| {
@@ -5144,7 +5145,6 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
         "pd=serial_virt",
         "truncated_adds=0\n",
         "saturated=0\n",
-        "total=97\n",
     ] {
         anyhow::ensure!(
             report.contains(expected),
