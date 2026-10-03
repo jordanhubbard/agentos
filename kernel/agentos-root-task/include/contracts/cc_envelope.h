@@ -77,6 +77,7 @@ static inline bool cc_envelope_admits(cc_envelope_t envelope, uint32_t opcode)
     case MSG_CC_INPUT_SUBMIT:
     case MSG_CC_LOG_STREAM:
     case MSG_CC_INSPECT:
+    case MSG_CC_AUTHORITY:
     case MSG_CC_OPERATOR_READ:
     case MSG_CC_OPERATOR_WRITE:
     case MSG_CC_LIST_GUESTS:

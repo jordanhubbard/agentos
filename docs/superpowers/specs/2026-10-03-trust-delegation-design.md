@@ -138,9 +138,14 @@ over capabilities it does not own, so no component accumulates general
 minting power.
 
 The global view the broker would have provided is retained, read-only. An
-observer that enumerates authority but mints none is not an ambient authority,
-and it is what makes the subsetting invariant checkable rather than merely
-asserted.
+observer that reports authority but mints none is not an ambient authority.
+
+Note what that observer can and cannot be. seL4 exposes no capability
+enumeration (see T4), so it is a ledger assembled from what the root task
+granted and what delegators report — not a reader of kernel state. The
+subsetting invariant is enforced by the kernel regardless, since a domain
+cannot mint from a capability it does not hold; the observer makes the
+intended relation inspectable, it does not verify it.
 
 ### What seL4 already supplies
 
@@ -151,10 +156,12 @@ asserted.
 | Cascading revocation | `seL4_CNode_Revoke` over the derivation tree | Present, unused after boot |
 | Caller identification | Endpoint badges | Present; used for virtualizer attach authority |
 | Expiry or time bound on a capability | — | **Absent. The platform must supply it.** |
-| Enumerating live derivations | — | **Absent. T4 supplies it.** |
+| Enumerating live derivations | — | **Absent, and unobtainable.** `seL4_DebugCapIdentify` is the only introspection primitive and is `CONFIG_DEBUG_BUILD`-only, disabled in the shipped release kernel. T4 supplies a *ledger* instead, not kernel state. |
 
 The design therefore adds two things to the kernel's model and no more: a
-bound on a delegation's lifetime, and visibility into the resulting graph.
+bound on a delegation's lifetime, and a reported view of the resulting
+relation. It cannot add true introspection, because seL4 does not offer it and
+modifying seL4 is forbidden.
 
 ## Components
 
@@ -286,20 +293,60 @@ existing `cap_audit.c` logs per-domain capability counts at boot and stops
 there, and `agentos_gui` renders a hardcoded diagram annotated with its own
 message traffic, which reflects the GUI's API surface rather than the system.
 
-The observer enumerates live authority — which domain holds which frames,
-endpoints, notifications, and IRQ handlers, and the derivation relationships
-among them — and publishes it through a read-only mapping, following the
-pattern already established for boot inspection and the operator session's
-read-only snapshot.
+**Correction, 2026-10-03.** An earlier draft of this section said the observer
+"enumerates live authority ... and the derivation relationships among them."
+That is not achievable and the claim is withdrawn. **seL4 provides no
+capability-enumeration syscall.** The only introspection primitive in the SDK
+is `seL4_DebugCapIdentify`, guarded by `CONFIG_DEBUG_BUILD`, which
+`kernel/gen_config.h` shows disabled in the release kernel agentOS ships. There
+is no CDT walk, and a domain cannot enumerate even its own CSpace except by
+probing slots it already knows about. Obtaining one would mean modifying seL4,
+which `CLAUDE.md` forbids absolutely.
 
-It is sequenced before T5 and T6 deliberately. The subsetting invariant is the
-whole safety argument for hierarchical delegation, and an invariant that
-cannot be observed cannot be tested. Building the inspector after the
-mechanism would mean validating each against the other.
+The observer is therefore a **ledger, not a kernel-state reader**, with two
+sources:
 
-Proof obligations are two: the observed graph matches the descriptor for the
-default image, and a fault probe confirms the observer's clients cannot write
-the mapping or mint from it.
+1. **Root-recorded grants.** The root task performs every initial grant, so it
+   holds exact ground truth for the static set. `cap_accounting.c` already
+   maintains `cap_acct_entry_t { cap, obj_type, pd_index, name }` for every
+   capability it hands out; `cap_audit.c` currently reduces this to per-domain
+   counts at boot and discards the rest.
+2. **Delegator-reported deltas.** Any runtime delegation (T5, T6) must be
+   reported by the delegating domain, because the kernel will not reveal it.
+
+This splits enforcement from visibility, and the split must be stated wherever
+the observer is described:
+
+- **Enforcement is the kernel's and is unconditional.** A domain physically
+  cannot grant authority it does not hold, because `seL4_CNode_Mint` and
+  `_Copy` require the source capability. The subsetting invariant holds whether
+  or not anyone reports anything.
+- **Visibility is the ledger's and is only as honest as its reporters.** A
+  buggy or lying delegator can misreport what it did. The observer cannot
+  detect this, and must not be described as verifying the invariant.
+
+An earlier sentence here claimed the observer "is what makes the subsetting
+invariant checkable rather than merely asserted." That is wrong and is also
+withdrawn. The invariant is kernel-enforced; the observer makes the *intended*
+authority relation inspectable, which is a weaker and still worthwhile
+property — it is what lets a reviewer see that a domain was given what the
+descriptor says, and lets T7 show the system rather than itself.
+
+**Delivery:** extend the existing root-published read-only inspection path
+(`platform/inspect/`, `aos_inspect_snapshot_t`) rather than adding a new
+protection domain. The data originates in the root task either way, so a
+separate observer PD would have to source it from root regardless; extending
+the existing path adds no new TCB surface and reuses a mapping already proven
+unwritable on target by `make test-inspect-readonly`. This resolves open
+question 4.
+
+It is sequenced before T5 and T6 deliberately: those tasks must report into a
+ledger that already exists, and building it afterward would mean retrofitting
+their reporting.
+
+Proof obligations are two: the published relation matches the descriptor for
+the default image, and a target fault probe confirms a client cannot write the
+mapping.
 
 ### T5 — Capability lending
 
@@ -445,9 +492,11 @@ stated.
    board is assumed to. Because the operator is untrusted, the build-supplied
    value selects an authority envelope rather than authenticating a principal
    — see the threat model.
-4. Whether T4's observer is a new domain or an extension of the existing
-   boot-inspection path. The latter is less new TCB surface; the former is
-   cleaner to grant separately.
+4. ~~Whether T4's observer is a new domain or an extension of the existing
+   boot-inspection path.~~ **Resolved 2026-10-03:** extend the existing
+   root-published inspection path. seL4 has no capability-enumeration syscall,
+   so the data must originate in the root task regardless, and a separate
+   domain would only re-publish what root already knows. See the T4 section.
 5. **Hardware root of trust per board.** Whether the RPi5 units use signed
    boot with an OTP-fused key hash, and whether the Intel units have UEFI
    Secure Boot or a firmware TPM (Intel PTT) available. This does not change

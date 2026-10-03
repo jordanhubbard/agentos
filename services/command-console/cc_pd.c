@@ -47,6 +47,7 @@
 #include <platform/console_input.h>
 #include <platform/input.h>
 #include <platform/inspect.h>
+#include <platform/authority.h>
 #include <platform/operator_session.h>
 #include <platform/framebuffer_observer.h>
 #include <platform/virtio_host_transport.h>
@@ -1733,6 +1734,20 @@ static void handle_inspect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     rep->mr[3] = snap->version;
 }
 
+static void handle_authority(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    rep->mr[0] = CC_ERR_INVALID_ARG;
+    if (req->mr[0] != AOS_AUTHORITY_VERSION || req->mr[1] || req->mr[2]) return;
+    const aos_authority_snapshot_t *snap = (const void *)AOS_AUTHORITY_BOOT_VA;
+    if (aos_authority_validate(snap) != AOS_AUTHORITY_OK) return;
+    for (size_t i = 0; i < sizeof(*snap); i++)
+        rep->shmem[i] = ((const uint8_t *)snap)[i];
+    rep->mr[0] = CC_OK;
+    rep->mr[1] = sizeof(*snap);
+    rep->mr[2] = 0;
+    rep->mr[3] = snap->version;
+}
+
 static void handle_operator(const cc_req_wire_t *req, cc_reply_wire_t *rep, bool write)
 {
     rep->mr[0] = CC_ERR_INVALID_ARG;
@@ -1967,6 +1982,7 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 
     /* Relay API */
     case MSG_CC_INSPECT:            handle_inspect(req, rep);           break;
+    case MSG_CC_AUTHORITY:          handle_authority(req, rep);         break;
     case MSG_CC_OPERATOR_WRITE:     handle_operator(req, rep, true);    break;
     case MSG_CC_OPERATOR_READ:      handle_operator(req, rep, false);   break;
     case MSG_CC_LIST_GUESTS:        handle_list_guests(rep);             break;
@@ -2044,6 +2060,13 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
         cc_dbg_puts("[cc_pd] inspect: valid boot page read before write probe\n");
         *(volatile uint32_t *)AOS_INSPECT_BOOT_VA = 0;
         cc_dbg_puts("[cc_pd] FAIL: inspect page was writable\n");
+    }
+#endif
+#ifdef AGENTOS_AUTHORITY_WRITE_PROBE
+    if (aos_authority_validate((const void *)AOS_AUTHORITY_BOOT_VA) == AOS_AUTHORITY_OK) {
+        cc_dbg_puts("[cc_pd] authority: valid boot page read before write probe\n");
+        *(volatile uint32_t *)AOS_AUTHORITY_BOOT_VA = 0;
+        cc_dbg_puts("[cc_pd] FAIL: authority page was writable\n");
     }
 #endif
 

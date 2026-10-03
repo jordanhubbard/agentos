@@ -105,6 +105,9 @@ pub struct TestArgs {
     /// Test VMM attachment authority: 1 primary, 2 secondary.
     #[arg(long, conflicts_with = "block_isolation_probe", value_parser = clap::value_parser!(u8).range(1..=2))]
     pub virtualizer_authority_probe: Option<u8>,
+    /// Test the boot authority page: 1 content vs. compiled descriptor, 2 read-only write fault.
+    #[arg(long, conflicts_with = "block_isolation_probe", value_parser = clap::value_parser!(u8).range(1..=2))]
+    pub authority_probe: Option<u8>,
     /// Test CC operator authority envelope: 1 admitted op, 2 bad credential, 3 out-of-envelope op.
     #[arg(long, conflicts_with = "block_isolation_probe", value_parser = clap::value_parser!(u8).range(1..=3))]
     pub cc_envelope_probe: Option<u8>,

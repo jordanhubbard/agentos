@@ -138,6 +138,14 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #define ROOT_PROBE_ADDRESS AOS_INSPECT_BOOT_VA
 #define ROOT_PROBE_WRITE 1u
 #define ROOT_PROBE_MESSAGE "[rt] inspect: expected read-only page write fault verified\n"
+#elif defined(AGENTOS_AUTHORITY_WRITE_PROBE)
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 2
+#define ROOT_PROBE_CLIENT 0u
+#define ROOT_PROBE_BADGE 0xa0540002u
+#define ROOT_PROBE_ADDRESS AOS_AUTHORITY_BOOT_VA
+#define ROOT_PROBE_WRITE 1u
+#define ROOT_PROBE_MESSAGE "[rt] authority: expected read-only page write fault verified\n"
 #elif defined(AGENTOS_NATIVE_NET_ISOLATION_PROBE)
 #define ROOT_FAULT_PROBE 1
 #define ROOT_PROBE_NATIVE 1
@@ -162,6 +170,8 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #include <platform/guest_memory_layout.h> /* guest GPA and VMM HVA windows        */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
 #include <platform/inspect.h>
+#include <platform/authority.h>
+#include "authority_kindmap.h" /* aos_authority_kind_from_sel4                    */
 #include <stdint.h>
 
 /*
@@ -693,12 +703,18 @@ static void dbg_hex(seL4_Word v);
  *   pd_cnode         capability to the PD's own CNode (in root task's CSpace)
  *   irq_control_cap  seL4_CapIRQControl - the kernel's IRQ control capability
  *   pd_cnode_depth   radix of pd_cnode (pd->cnode_size_bits)
+ *   pd_index         index of pd in the system descriptor; recorded as the
+ *                     owner of each IRQ handler cap in the capability
+ *                     accounting table (TCB invariant 1: one owner per
+ *                     device frame and IRQ -- the authority page is what
+ *                     makes that checkable).
  */
 static void boot_setup_irqs(const pd_desc_t *pd,
                              seL4_CPtr        pd_cnode,
                              seL4_CPtr        irq_control_cap,
                              seL4_Word        pd_cnode_depth,
-                             seL4_CPtr        notification_cap)
+                             seL4_CPtr        notification_cap,
+                             uint32_t         pd_index)
 {
     for (uint8_t i = 0u; i < pd->irq_count; i++) {
         const irq_desc_t *d = &pd->irqs[i];
@@ -791,11 +807,28 @@ static void boot_setup_irqs(const pd_desc_t *pd,
         }
 
         /*
-         * Log failures but do not abort boot: a missing IRQ handler cap means
-         * the PD will receive seL4_InvalidCapability when it calls
-         * seL4_IRQHandler_Ack(), which is recoverable.
+         * All failure paths above `continue`; reaching here means the
+         * handler cap is live in the PD's CNode. (Earlier failures in this
+         * loop are logged but do not abort boot: a missing IRQ handler cap
+         * means the PD will receive seL4_InvalidCapability when it calls
+         * seL4_IRQHandler_Ack(), which is recoverable.) `err` from the Move
+         * above was already checked; this silences the now-unused value.
          */
         (void)err;
+
+        /* ── Record the grant in the capability accounting table ───────── */
+        /*
+         * Record the IRQ handler cap against the PD it was just moved into
+         * (dest_slot in pd_cnode), not against root -- root retains no alias.
+         * obj_type uses the AOS_AUTHORITY_OBJTYPE_IRQ_HANDLER sentinel since
+         * this cap came from seL4_IRQControl_Get, not Untyped_Retype, so it
+         * has no seL4_ObjectType. name is the PD's name, matching every other
+         * cap_acct_record call site, so the authority page's per-domain row
+         * is always named after the domain regardless of which capability
+         * happens to be recorded first for it.
+         */
+        cap_acct_record(seL4_CapNull, (seL4_CPtr)dest_slot,
+                        AOS_AUTHORITY_OBJTYPE_IRQ_HANDLER, pd_index, pd->name);
     }
 }
 
@@ -3232,9 +3265,21 @@ void root_task_main(const seL4_BootInfo *bi)
                        ep_spec->service_id == SVC_ID_SERIAL_VIRT) {
                 badge = SERIAL_VIRT_OPERATOR_BADGE;
             }
-            ep_mint_badge(service_ep, badge,
+            seL4_Error ep_mint_err = ep_mint_badge(service_ep, badge,
                            pd_cnode, ep_spec->cnode_slot,
                            pd->cnode_size_bits);
+            if (ep_mint_err == seL4_NoError) {
+                /*
+                 * Record the grant against the receiving PD, not root: this
+                 * is "who holds authority to call this service", so one
+                 * endpoint object legitimately appears against several
+                 * domains here -- that is not double counting, it is every
+                 * domain that was minted a (possibly differently badged)
+                 * cap to the same underlying service endpoint.
+                 */
+                cap_acct_record(seL4_CapNull, service_ep, seL4_EndpointObject,
+                                i, pd->name);
+            }
         }
 
         if (pd->self_svc_id == SVC_ID_SERIAL_VIRT ||
@@ -3865,7 +3910,7 @@ void root_task_main(const seL4_BootInfo *bi)
             boot_setup_irqs(pd, pd_cnode,
                             seL4_CapIRQControl,
                             (seL4_Word)pd->cnode_size_bits,
-                            pd_ntfn_cap);
+                            pd_ntfn_cap, i);
         }
 
         /* ── 4g.6: Allocate MCS reply object at slot AGENTOS_IPC_REPLY_CAP ── */
@@ -4230,6 +4275,52 @@ void root_task_main(const seL4_BootInfo *bi)
         if (aos_inspect_fill((aos_inspect_snapshot_t *)RT_VQ_SCRATCH_VA,
                              &inspect_view) != AOS_INSPECT_OK) {
             dbg_puts("[rt] inspect observation invalid; refusing partial boot\n");
+            return;
+        }
+        if (seL4_ARCH_Page_Unmap(frame) != seL4_NoError) return;
+    }
+
+    /*
+     * Publish the boot authority snapshot beside the inspect page: a ledger
+     * of what root recorded granting to each protection domain, by
+     * capability kind, built by walking the existing capability accounting
+     * table. Read-only copy mapped into the same readers as inspect. See
+     * platform/include/platform/authority.h for what this is and,
+     * importantly, what it is not -- this is not a reading of kernel state,
+     * seL4 offers no capability-enumeration syscall.
+     */
+    if (inspect_cc_vspace != seL4_CapNull) {
+        seL4_CPtr frame = seL4_CapNull;
+        if (ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame) != seL4_NoError ||
+            pd_vspace_map_device_frame(seL4_CapInitThreadVSpace, frame,
+                                      RT_VQ_SCRATCH_VA) != seL4_NoError) {
+            dbg_puts("[rt] authority mapping failed; refusing partial boot\n");
+            return;
+        }
+        seL4_CPtr readers[] = {inspect_cc_vspace, inspect_operator_vspace};
+        for (unsigned i = 0; i < 2; i++) {
+            if (!readers[i]) continue;
+            seL4_CPtr reader = ut_alloc_slot();
+            if (!reader || seL4_CNode_Copy(seL4_CapInitThreadCNode, reader, 64u,
+                    seL4_CapInitThreadCNode, frame, 64u,
+                    seL4_CapRights_new(0, 0, 1, 0)) != seL4_NoError ||
+                pd_vspace_map_device_frame(readers[i], reader, AOS_AUTHORITY_BOOT_VA) != seL4_NoError) {
+                dbg_puts("[rt] authority reader mapping failed; refusing partial boot\n");
+                return;
+            }
+        }
+        _Static_assert(sizeof(aos_authority_snapshot_t) <= 4096, "authority fits one page");
+        aos_authority_snapshot_t *snap = (aos_authority_snapshot_t *)RT_VQ_SCRATCH_VA;
+        aos_authority_init(snap);
+        uint32_t acct_total = cap_acct_count();
+        for (uint32_t ai = 0; ai < acct_total; ai++) {
+            const cap_acct_entry_t *e = cap_acct_get(ai);
+            if (!e) continue;
+            (void)aos_authority_add(snap, e->pd_index, e->name,
+                                    aos_authority_kind_from_sel4(e->obj_type));
+        }
+        if (aos_authority_validate(snap) != AOS_AUTHORITY_OK) {
+            dbg_puts("[rt] authority snapshot invalid; refusing partial boot\n");
             return;
         }
         if (seL4_ARCH_Page_Unmap(frame) != seL4_NoError) return;

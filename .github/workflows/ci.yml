@@ -479,13 +479,18 @@ jobs:
         timeout-minutes: 10
         run: make test TARGET_ARCH=x86_64 GUEST_OS=none
 
-      # The CC authority-envelope proof. Added here rather than relying on
-      # `make gate`, which no CI job invokes -- the gate target's prerequisite
-      # list is not what runs on push, so a proof reachable only through it
-      # would never execute.
+      # Both proofs run here rather than through `make gate`, which no CI job
+      # invokes -- the gate target's prerequisite list is not what runs on push,
+      # so a proof reachable only through it would never execute.
       - name: GATE — make test-cc-envelope
         timeout-minutes: 10
         run: make test-cc-envelope
+
+      # Boot authority page: published counts vs. compiled descriptor, plus a
+      # target fault probe that a consumer write to the read-only page faults.
+      - name: GATE — make test-authority
+        timeout-minutes: 10
+        run: make test-authority
 
       - name: Boot gate summary
         run: |

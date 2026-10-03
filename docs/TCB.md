@@ -1433,3 +1433,24 @@ whole is not invoked by CI; this proof is run as its own gate step.
 This bounds what the CC transport conveys; it does not make the transport a
 capability boundary, does not defend against the local operator, and
 vendor-signed authorization for out-of-envelope operations is not implemented.
+
+### Boot authority observation
+
+Root publishes the boot authority relation as a second read-only page
+(`platform/include/platform/authority.h`, `AOS_AUTHORITY_BOOT_VA`): per
+protection domain, counts of each capability kind root granted it. It is built
+from the root's own accounting table. seL4 exposes no capability-enumeration
+syscall, so this is a record of what root granted, not a reading of kernel
+state: it cannot detect divergence between that record and the kernel, it
+covers only the boot-time static set, and it does not verify the subsetting
+invariant — the kernel enforces that unconditionally, since a domain cannot
+mint from a capability it does not hold. `make test-authority` checks the
+published counts against the compiled descriptor, including that `net_virt` and
+`blk_virt` hold no IRQ handler, and a target fault probe verifies a consumer
+write to the page faults. The page is read over CC as `MSG_CC_AUTHORITY`,
+admitted to `CC_ENVELOPE_OPERATOR` alongside `MSG_CC_INSPECT`; the handler is
+read-only, so admitting it conveys no authority and cannot mutate state.
+Qualification boundary: development results were obtained under Microkit SDK
+2.1.0. `make test-authority` is additionally run by the CI `os-claim-gate` job,
+which installs the verified SDK artifact; that job's result on a given revision
+is the qualifying evidence under the pin.
