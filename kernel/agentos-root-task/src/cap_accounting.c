@@ -53,16 +53,20 @@ void cap_acct_init(const seL4_BootInfo *bi)
     /*
      * Record the root task's well-known initial capabilities.
      * These are the caps seL4 places in fixed slots before the root task
-     * begins execution.  We record them as owned by PD 0 (root task itself).
+     * begins execution.  We record them under CAP_ACCT_ROOT_PD_INDEX, not
+     * descriptor index 0 -- descriptor index 0 is a real protection domain
+     * (pd[0]; see system_desc_*.c), and reusing 0 for root would silently
+     * merge root's authority into pd[0]'s row in anything that groups by
+     * pd_index.
      */
     (void)bi;  /* BootInfo consulted in future for dynamic slot layout */
 
     cap_acct_record(seL4_CapNull, seL4_CapInitThreadCNode,
-                    seL4_CapTableObject, 0u, "root-cnode");
+                    seL4_CapTableObject, CAP_ACCT_ROOT_PD_INDEX, "root-cnode");
     cap_acct_record(seL4_CapNull, seL4_CapInitThreadVSpace,
-                    seL4_ARM_VSpaceObject, 0u, "root-vspace");
+                    seL4_ARM_VSpaceObject, CAP_ACCT_ROOT_PD_INDEX, "root-vspace");
     cap_acct_record(seL4_CapNull, seL4_CapInitThreadTCB,
-                    seL4_TCBObject, 0u, "root-tcb");
+                    seL4_TCBObject, CAP_ACCT_ROOT_PD_INDEX, "root-tcb");
 }
 
 /* ── Public interface ─────────────────────────────────────────────────────── */
