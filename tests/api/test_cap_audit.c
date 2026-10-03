@@ -23,6 +23,8 @@
  *   18. revocable==1 for non-root PD caps
  *   19. Multiple sequential OP_CAP_AUDIT calls produce same count
  *   20. cap_tree_verify_all_pds completes without crash
+ *   21. OP_CAP_AUDIT with explicit pd_id==0 selects descriptor index 0
+ *       (pd[0]/nameserver) only, not all PDs
  *
  * Build & run:
  *   cc -DAGENTOS_TEST_HOST \
@@ -79,6 +81,15 @@ typedef struct {
 #define CAP_ACCT_ROOT_PD_INDEX 0xFFFFFFFFu
 
 /*
+ * CAP_AUDIT_PD_ALL — reserved pd_id request-filter value meaning "every
+ * domain" (see kernel/agentos-root-task/include/cap_accounting.h). Defined
+ * here for the same reason as CAP_ACCT_ROOT_PD_INDEX above: cap_audit.c's
+ * own `#ifndef CAP_AUDIT_PD_ALL` guard only takes effect if nothing upstream
+ * has already defined it.
+ */
+#define CAP_AUDIT_PD_ALL 0xFFFFFFFEu
+
+/*
  * Stub table — 10 entries with known pd_index / cap values.
  *
  * Root's own capabilities are recorded under the CAP_ACCT_ROOT_PD_INDEX
@@ -90,8 +101,11 @@ typedef struct {
  *   Indices 3-4: pd_index=1 (nameserver-like PD) — ordinary, revocable
  *   Indices 5-6: pd_index=2 (controller) — ordinary, revocable
  *   Indices 7-9: pd_index=3 (VMM / guest handle==3) — ordinary, revocable
+ *   Index  10:   pd_index=0 (pd[0]/nameserver itself) — ordinary, revocable;
+ *                exists so a pd_id==0 request can be shown to select this
+ *                PD alone, not "all" (see CAP_AUDIT_PD_ALL)
  */
-#define STUB_TABLE_SIZE 10u
+#define STUB_TABLE_SIZE 11u
 
 static cap_acct_entry_t g_stub_table[STUB_TABLE_SIZE] = {
     { 1u,   10u, CAP_ACCT_ROOT_PD_INDEX, "root-cnode"  },
@@ -104,6 +118,10 @@ static cap_acct_entry_t g_stub_table[STUB_TABLE_SIZE] = {
     { 300u,  1u, 3u, "vmm-tcb"     },
     { 301u,  2u, 3u, "vmm-ep"      },
     { 302u,  3u, 3u, "vmm-vcpu"    },
+    { 400u,  4u, 0u, "pd0-ep"      },  /* pd_index==0: descriptor index 0,
+                                        * pd[0]/nameserver -- the entry the
+                                        * Finding-1 fix (pd_id==0 selects
+                                        * this PD only) exercises. */
 };
 
 uint32_t cap_acct_count(void)
@@ -213,7 +231,7 @@ static void test_non_ctrl_badge_denied(void)
 static void test_ctrl_badge_ok(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     uint32_t rc = handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     ASSERT_EQ(rc, (uint64_t)SEL4_ERR_OK,
@@ -224,24 +242,24 @@ static void test_ctrl_badge_ok(void)
 static void test_audit_all_count_equals_total(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     uint32_t count = rep_count(&rep);
     ASSERT_EQ(count, (uint64_t)cap_acct_count(),
-              "OP_CAP_AUDIT pd_id=0: count equals cap_acct_count()");
+              "OP_CAP_AUDIT pd_id=CAP_AUDIT_PD_ALL: count equals cap_acct_count()");
 }
 
 /* Test 5: pd_id==0 returns all nodes (count > 0) */
 static void test_audit_all_nonzero(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     uint32_t count = rep_count(&rep);
     ASSERT_TRUE(count > 0u,
-                "OP_CAP_AUDIT pd_id=0: count > 0");
+                "OP_CAP_AUDIT pd_id=CAP_AUDIT_PD_ALL: count > 0");
 }
 
 /* Test 6: unused pd_id → count==0 */
@@ -260,7 +278,7 @@ static void test_audit_unused_pd_zero_count(void)
 static void test_entry0_pd_id(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     const cap_audit_entry_t *e = cap_audit_test_get_entry(0u);
@@ -275,7 +293,7 @@ static void test_entry0_pd_id(void)
 static void test_entry0_cslot(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     const cap_audit_entry_t *e = cap_audit_test_get_entry(0u);
@@ -287,7 +305,7 @@ static void test_entry0_cslot(void)
 static void test_entry0_name_nonempty(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     const cap_audit_entry_t *e = cap_audit_test_get_entry(0u);
@@ -299,7 +317,7 @@ static void test_entry0_name_nonempty(void)
 static void test_rep_count_little_endian(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     uint32_t from_rep  = rep_count(&rep);
@@ -369,7 +387,7 @@ static void test_guest_count_in_rep(void)
 /* Test 16: reset zeroes audit buffer entries */
 static void test_reset_zeroes_buffer(void)
 {
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     cap_audit_test_reset();
@@ -382,7 +400,7 @@ static void test_reset_zeroes_buffer(void)
 static void test_root_caps_not_revocable(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     /*
@@ -405,7 +423,7 @@ static void test_root_caps_not_revocable(void)
 static void test_pd_caps_revocable(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     /* Entry index 3 in audit buffer corresponds to stub[3] (ns-tcb, pd_index==1) */
@@ -418,7 +436,7 @@ static void test_pd_caps_revocable(void)
 static void test_sequential_calls_same_count(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep1, rep2;
     handle_cap_audit(ctrl_badge(), &req, &rep1, (void *)0);
     cap_audit_test_reset();
@@ -434,11 +452,33 @@ static void test_verify_all_pds_no_crash(void)
     TAP_OK("cap_tree_verify_all_pds: completes without crash");
 }
 
+/*
+ * Test 21: explicit pd_id==0 selects descriptor index 0 (pd[0]/nameserver)
+ * only, not every PD. This is the Finding-1 fix under review: before
+ * CAP_AUDIT_PD_ALL existed, pd_id==0 was overloaded to mean "all PDs",
+ * which silently returned every domain's capabilities instead of just the
+ * one recorded under descriptor index 0 -- see CAP_AUDIT_PD_ALL in
+ * cap_accounting.h and the filter in handle_cap_audit.
+ */
+static void test_audit_explicit_zero_selects_pd0_only(void)
+{
+    cap_audit_test_reset();
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t rep;
+    handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
+    uint32_t count = rep_count(&rep);
+    const cap_audit_entry_t *e0 = cap_audit_test_get_entry(0u);
+    ASSERT_EQ(count, 1u,
+              "OP_CAP_AUDIT pd_id=0: count==1 (pd[0] only, not all PDs)");
+    ASSERT_TRUE(e0 && e0->pd_id == 0u && e0->cslot == 400u,
+                "OP_CAP_AUDIT pd_id=0: entry is stub[10] (pd_index==0)");
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
 {
-    TAP_PLAN(20);
+    TAP_PLAN(22);
 
     test_entry_size();
     test_non_ctrl_badge_denied();
@@ -460,6 +500,7 @@ int main(void)
     test_pd_caps_revocable();
     test_sequential_calls_same_count();
     test_verify_all_pds_no_crash();
+    test_audit_explicit_zero_selects_pd0_only();
 
     return tap_exit();
 }

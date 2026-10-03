@@ -8,8 +8,10 @@
  * OP_CAP_AUDIT:
  *   Walk the capability accounting table (g_table[] in cap_accounting.c,
  *   accessed via cap_acct_get/cap_acct_count) and write a cap_audit_entry_t
- *   for every entry matching the requested pd_id filter (0 = all PDs) into
- *   the shared audit memory region at g_audit_mr_vaddr.
+ *   for every entry matching the requested pd_id filter
+ *   (CAP_AUDIT_PD_ALL = all PDs; otherwise match the descriptor index
+ *   exactly, including 0 for pd[0]/nameserver) into the shared audit memory
+ *   region at g_audit_mr_vaddr.
  *
  * OP_CAP_AUDIT_GUEST:
  *   Look up a vos_instance_t by handle, then walk the capability accounting
@@ -68,6 +70,14 @@
  * (not included here -- see the type/constant list above this block). */
 #ifndef CAP_ACCT_ROOT_PD_INDEX
 #define CAP_ACCT_ROOT_PD_INDEX 0xFFFFFFFFu
+#endif
+
+/* Mirrors cap_accounting.h's reserved pd_id request-filter value meaning
+ * "every domain" (not included here -- see the type/constant list above
+ * this block). Distinct from CAP_ACCT_ROOT_PD_INDEX and from any real
+ * descriptor index, including 0. */
+#ifndef CAP_AUDIT_PD_ALL
+#define CAP_AUDIT_PD_ALL 0xFFFFFFFEu
 #endif
 
 /* sel4_badge_t is uint64_t in sel4_ipc.h */
@@ -171,7 +181,8 @@ static cap_audit_entry_t *write_audit_entry(cap_audit_entry_t      *out,
  *
  * Badge check: BADGE_CLIENT_ID(badge) must equal CONTROLLER_CLIENT_ID.
  *
- * req->data[0..3]: uint32_t pd_id filter (0 = all PDs, else match exactly).
+ * req->data[0..3]: uint32_t pd_id filter (CAP_AUDIT_PD_ALL = all PDs,
+ *                   else match exactly; 0 selects pd[0]/nameserver only).
  * rep->data[0..3]: uint32_t entry count written to audit MR.
  *
  * Returns SEL4_ERR_OK, SEL4_ERR_FORBIDDEN, or SEL4_ERR_NOT_FOUND.
@@ -190,8 +201,15 @@ uint32_t handle_cap_audit(sel4_badge_t       badge,
         return SEL4_ERR_FORBIDDEN;
     }
 
-    /* ── Extract pd_id filter ─────────────────────────────────────────────── */
-    uint32_t pd_id = 0u;
+    /*
+     * ── Extract pd_id filter ────────────────────────────────────────────
+     * No argument supplied (req->length < 4) keeps the longstanding "no
+     * filter given" behaviour of returning every domain; this is distinct
+     * from an *explicit* pd_id==0, which now means descriptor index 0
+     * (pd[0]/nameserver) exactly -- see CAP_AUDIT_PD_ALL in
+     * cap_accounting.h.
+     */
+    uint32_t pd_id = CAP_AUDIT_PD_ALL;
     if (req->length >= 4u) {
         pd_id = (uint32_t)req->data[0]
               | ((uint32_t)req->data[1] << 8u)
@@ -209,8 +227,9 @@ uint32_t handle_cap_audit(sel4_badge_t       badge,
         const cap_acct_entry_t *e = cap_acct_get(i);
         if (!e) continue;
 
-        /* Filter: pd_id == 0 means all PDs; otherwise match exactly */
-        if (pd_id != 0u && e->pd_index != pd_id) continue;
+        /* Filter: pd_id == CAP_AUDIT_PD_ALL means all PDs; otherwise match
+         * the descriptor index exactly (0 is pd[0]/nameserver, a real PD). */
+        if (pd_id != CAP_AUDIT_PD_ALL && e->pd_index != pd_id) continue;
 
         /*
          * Revocable determination:
@@ -331,16 +350,32 @@ void cap_tree_verify_all_pds(void)
     /*
      * Count caps per pd_index from the accounting table.
      * We track up to VERIFY_MAX_PDS distinct PD indices inline.
+     *
+     * pd_seen_valid[] is a parallel validity array, not a sentinel value in
+     * pd_seen[] itself. CAP_ACCT_ROOT_PD_INDEX (0xFFFFFFFFu) is a legitimate
+     * value that can land in pd_seen[] (root's own caps are recorded under
+     * exactly that pd_index), so "unused slot" cannot be represented by any
+     * uint32_t value stored in pd_seen[] -- including (uint32_t)-1 -- without
+     * risking collision with a real entry. The lookup loop below is bounded
+     * by pd_n (slots actually written) rather than VERIFY_MAX_PDS, so this
+     * collision is unreachable today regardless of how "unused" is marked;
+     * the validity array makes it unreachable *structurally*, so that
+     * widening the lookup bound to VERIFY_MAX_PDS in the future (e.g. to
+     * search already-evicted slots) cannot silently merge root's caps into
+     * whatever real PD happens to have pd_index == CAP_ACCT_ROOT_PD_INDEX's
+     * old slot value.
      */
 #define VERIFY_MAX_PDS 64u
 
     uint32_t pd_counts[VERIFY_MAX_PDS];
     uint32_t pd_seen[VERIFY_MAX_PDS];
+    uint8_t  pd_seen_valid[VERIFY_MAX_PDS];
     uint32_t pd_n = 0u;
 
     for (uint32_t j = 0u; j < VERIFY_MAX_PDS; j++) {
-        pd_counts[j] = 0u;
-        pd_seen[j]   = (uint32_t)-1u;
+        pd_counts[j]     = 0u;
+        pd_seen[j]       = 0u;
+        pd_seen_valid[j] = 0u;
     }
 
     uint32_t total = cap_acct_count();
@@ -351,13 +386,14 @@ void cap_tree_verify_all_pds(void)
 
         uint32_t slot = VERIFY_MAX_PDS;
         for (uint32_t j = 0u; j < pd_n; j++) {
-            if (pd_seen[j] == e->pd_index) { slot = j; break; }
+            if (pd_seen_valid[j] && pd_seen[j] == e->pd_index) { slot = j; break; }
         }
         if (slot == VERIFY_MAX_PDS) {
             if (pd_n < VERIFY_MAX_PDS) {
                 slot = pd_n;
-                pd_seen[pd_n]   = e->pd_index;
-                pd_counts[pd_n] = 0u;
+                pd_seen[pd_n]       = e->pd_index;
+                pd_seen_valid[pd_n] = 1u;
+                pd_counts[pd_n]     = 0u;
                 pd_n++;
             } else {
                 slot = VERIFY_MAX_PDS - 1u;
