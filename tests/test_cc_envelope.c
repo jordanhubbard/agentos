@@ -16,6 +16,7 @@ int main(void)
     assert(cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_LOG_STREAM));
     assert(cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_FRAME_CAPTURE));
     assert(cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_INPUT_SUBMIT));
+    assert(cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_OPERATOR_WRITE));
 
     /* Out of envelope: exfiltration and debug primitives. */
     assert(!cc_envelope_admits(CC_ENVELOPE_OPERATOR, MSG_CC_SNAPSHOT));
@@ -32,6 +33,7 @@ int main(void)
     assert(!cc_envelope_admits(CC_ENVELOPE_NONE, MSG_CC_LIST_GUESTS));
     assert(!cc_envelope_admits(CC_ENVELOPE_NONE, MSG_CC_FRAME_CAPTURE));
     assert(!cc_envelope_admits(CC_ENVELOPE_NONE, MSG_CC_INPUT_SUBMIT));
+    assert(!cc_envelope_admits(CC_ENVELOPE_NONE, MSG_CC_OPERATOR_WRITE));
 
     /* Pre-auth opcodes are reachable without a session. */
     assert(cc_envelope_is_preauth(MSG_CC_CONNECT));

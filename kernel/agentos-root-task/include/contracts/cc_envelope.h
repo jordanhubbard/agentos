@@ -65,6 +65,7 @@ static inline bool cc_envelope_admits(cc_envelope_t envelope, uint32_t opcode)
     case MSG_CC_LOG_STREAM:
     case MSG_CC_INSPECT:
     case MSG_CC_OPERATOR_READ:
+    case MSG_CC_OPERATOR_WRITE:
     case MSG_CC_LIST_GUESTS:
     case MSG_CC_LIST_DEVICES:
     case MSG_CC_LIST_POLECATS:
@@ -84,7 +85,6 @@ static inline bool cc_envelope_admits(cc_envelope_t envelope, uint32_t opcode)
      *     and is an exfiltration primitive under this threat model.
      *   MSG_CC_FAULT_INJECT — a deliberate attack tool.
      *   MSG_CC_TRACE_* — debug surface.
-     *   MSG_CC_OPERATOR_WRITE — mutation through the operator transport.
      * These require vendor-signed authorization, which is not yet
      * implemented; until it is, they are simply unavailable. */
     default:
