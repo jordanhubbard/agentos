@@ -26,6 +26,12 @@
  * the default case, same as any object type not listed at all. Nothing is
  * ever silently dropped.
  *
+ * IRQ handler capabilities are not retyped from untyped memory (they come
+ * from seL4_IRQControl_Get), so the accounting table records them against
+ * the receiving PD using the AOS_AUTHORITY_OBJTYPE_IRQ_HANDLER sentinel
+ * (see authority_kindmap.h), which this map treats the same as any real
+ * seL4_ObjectType case.
+ *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -57,6 +63,7 @@ uint32_t aos_authority_kind_from_sel4(uint32_t obj_type)
     case AOSTEST_SEL4_ENDPOINT:     return AOS_AUTHORITY_KIND_ENDPOINT;
     case AOSTEST_SEL4_NOTIFICATION: return AOS_AUTHORITY_KIND_NOTIFICATION;
     case AOSTEST_SEL4_CNODE:        return AOS_AUTHORITY_KIND_CNODE;
+    case AOS_AUTHORITY_OBJTYPE_IRQ_HANDLER: return AOS_AUTHORITY_KIND_IRQ_HANDLER;
     default:                        return AOS_AUTHORITY_KIND_OTHER;
     }
 }
@@ -83,6 +90,7 @@ uint32_t aos_authority_kind_from_sel4(uint32_t obj_type)
     case seL4_ARM_VSpaceObject:    return AOS_AUTHORITY_KIND_VSPACE;
     case seL4_ARM_SmallPageObject: return AOS_AUTHORITY_KIND_FRAME;
     case seL4_ARM_LargePageObject: return AOS_AUTHORITY_KIND_FRAME;
+    case AOS_AUTHORITY_OBJTYPE_IRQ_HANDLER: return AOS_AUTHORITY_KIND_IRQ_HANDLER;
     default:
         /* VCPU objects (seL4_ARM_VCPUObject, seL4_X86_VCPUObject) and x86 EPT
          * paging-structure objects (seL4_X86_EPTPML4Object and friends --
