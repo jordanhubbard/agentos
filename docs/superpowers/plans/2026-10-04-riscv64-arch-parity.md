@@ -117,3 +117,18 @@ Found during the audit and worth its own task: **the CI gate boots `x86_64_gener
 - [ ] **Step 2:** Assert a PD count in the x86_64 boot test, so a zero-PD image can never pass again.
 - [ ] **Step 3:** Add CI coverage for the VTX guest path (`gate-x86_64-vtx` → `-firmware-reset` → `-linux-login`), or state explicitly in `docs/TCB.md` that x86_64 guest support is real but unautomated and name what a runner would need (Linux host, `/dev/kvm`, nested VMX). An honest "unproven in CI" beats a silent gap.
 - [ ] **Step 4:** Full verification. Commit.
+
+---
+
+## MERGE HAZARD: this branch and `trust-t10-anchor-tiers` both change `AGENTOS_HAS_PD_BUNDLE`
+
+They change it in opposite directions. T10 added sites assuming riscv64 is bundle-**less**; this branch makes riscv64 bundled. Analysed concretely against T10 commit `0661ab7b`; read this before merging either.
+
+**Structurally it is safe.** T10's four sites are `boot_init_trust_anchor()`, the trust-anchor banner, the `boot_verify_manifest()` stub, and the empty-pubkey-header recipe. Every mis-resolution that can be constructed is **fail-closed**: if the Makefile filter reverts while `main.c:445` keeps `__riscv`, you get T10's deliberate compile-error tripwire (seven undeclared macros); the inverse routes `bundle_size() > 0` into T10's stub arm and boot refuses loudly. Only the Makefile hunk conflicts textually; the `main.c` sites auto-merge, and they auto-merge **correctly** — riscv64 lands on the real `#else` arms, and this branch already generates a real pubkey header for riscv64.
+
+**Two semantic hazards survive, and neither branch's tests catch them:**
+
+1. **T10 falsifies this branch's `docs/TCB.md` text.** T10 adds `AGENTOS_TRUST_ANCHOR=none`, a non-gating tier where a `PD_DIGEST_MISMATCH` prints "CONTINUING — does not gate boot" and **spawns the PD anyway**. This branch's `docs/TCB.md:1517` says verification is disabled by "no build flag, environment variable or configuration" and `:1520` says "no architecture spawns unverified PDs". Both become false post-merge, **on all three architectures**. The default stays safe — T10's Makefile exports the dev key and selects the gating vendor tier, and a no-key build errors rather than degrading — so this is a documentation overclaim, not a runtime regression. But it lands in the document whose entire job is not overclaiming.
+   **Resolution instruction: take T10's gating wording with this branch's three-architecture list. Neither side wholesale.** That paragraph conflicts in git, so a careless ours/theirs pick is the realistic failure.
+
+2. **`make test-trust-anchor` is five probes, all `--board qemu_virt_aarch64`.** Post-merge, riscv64 compiles in a real tier, key and gating decision with **zero** automated coverage — and no CI job builds riscv64 at all until Task 1 lands. Task 1 and Task 4 Step 3 together are what close this; do not merge both branches and call the tier model proven on three architectures until they have.

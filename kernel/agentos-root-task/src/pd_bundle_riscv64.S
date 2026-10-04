@@ -13,9 +13,17 @@
  * Assembling the blobs with `.incbin` instead produces objects built by the
  * same compiler driver and the same -march/-mabi flags as every other root
  * task object, so the ABI tags match by construction rather than by a
- * post-hoc e_flags patch.  The symbols defined here are exactly the ones
- * objcopy's --redefine-sym produces on the other architectures, so main.c
- * and tools/ld/root_task_riscv64.ld are unchanged.
+ * post-hoc e_flags patch.
+ *
+ * This defines the four symbols main.c actually consumes --
+ * __pd_bundle_start/__pd_bundle_end and __pd_manifest_start/
+ * __pd_manifest_end -- so main.c and tools/ld/root_task_riscv64.ld are
+ * unchanged.  Note this is a SUBSET of what objcopy emits on the other
+ * architectures: objcopy also produces __pd_bundle_size and
+ * __pd_manifest_size, which are NOT defined here.  main.c computes both
+ * lengths by pointer subtraction, so nothing needs them today -- but code
+ * that referenced them would link on aarch64/x86_64 and fail only on
+ * RISC-V.  Add them here before using them anywhere.
  *
  * AGENTOS_PD_BUNDLE_PATH / AGENTOS_PD_MANIFEST_PATH are passed as -D by
  * kernel/agentos-root-task/Makefile.

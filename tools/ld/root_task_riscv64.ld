@@ -16,9 +16,14 @@
  * kernel/agentos-root-task/Makefile): RISC-V's default medlow model can only
  * address the low 2 GiB, and every DRAM address on this board is above it.
  *
- * RISC-V embeds the PD bundle and signed boot manifest the same way
- * AArch64 does: objcopy turns xtask gen-pd-bundle's output into relocatable
- * objects that this script places in .pd_bundle / .pd_manifest.
+ * RISC-V embeds the PD bundle and signed boot manifest in the same SECTIONS
+ * as AArch64, but produces the objects differently.  AArch64 uses
+ * `objcopy --input-target=binary`; that does NOT work here, because the
+ * object objcopy emits carries no RISC-V float-ABI tag and ld.lld refuses to
+ * link it against the soft-float root task.  RISC-V instead assembles
+ * src/pd_bundle_riscv64.S, which .incbin's both blobs through the same
+ * compiler driver and flags as every other root-task object, so the ABI tags
+ * match by construction.
  */
 
 ENTRY(_start)
@@ -72,12 +77,13 @@ SECTIONS {
 
     /* PD bundle: embedded PD ELF data, and the signed boot manifest.
      *
-     * Both are produced by `xtask gen-pd-bundle` and converted to linkable
-     * RISC-V ELF objects by objcopy (see kernel/agentos-root-task/Makefile).
-     * Those objects define __pd_bundle_start/__pd_bundle_end and
-     * __pd_manifest_start/__pd_manifest_end directly, so this script must
-     * NOT assign them: a linker-script assignment would override the
-     * objcopy symbols and make bundle_size() read a bogus length.
+     * Both are produced by `xtask gen-pd-bundle` and embedded by
+     * src/pd_bundle_riscv64.S (NOT by objcopy -- see the header comment and
+     * kernel/agentos-root-task/Makefile).  That object defines
+     * __pd_bundle_start/__pd_bundle_end and __pd_manifest_start/
+     * __pd_manifest_end directly, so this script must NOT assign them: a
+     * linker-script assignment would override the symbols the object defines
+     * and make bundle_size() read a bogus length.
      *
      * The trailing ALIGN(0x1000) in each section keeps the final PT_LOAD
      * memsz page-aligned, so seL4's ipcbuf_vptr = ui_v_reg.end lands on
