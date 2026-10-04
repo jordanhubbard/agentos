@@ -983,36 +983,6 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
          probe builds its own image under a named anchor, so --no-build would boot \
          whatever tier happened to be on disk and assert against the wrong one"
     );
-    if args.trust_anchor_probe == Some(4) {
-        // Probe 4's own control pass.
-        //
-        // Probe 4 proves a NEGATIVE: an image with a gating tier and no key
-        // produces no root-task output. A negative is only attributable to the
-        // thing under test if the identical configuration WITHOUT that thing
-        // produces the positive. Probe 1 is exactly that configuration --
-        // same board, same guest-os, same anchor environment
-        // (AGENTOS_BUNDLE_SIGNING_KEY at the dev seed), differing ONLY by
-        // TRUST_ANCHOR_INCOHERENT_PROBE=1 -- so it is run here, inside probe
-        // 4, rather than left to happen to run first in `make
-        // test-trust-anchor`. A probe whose soundness depends on a sibling's
-        // ordering in one Makefile target is not a probe anyone can run alone.
-        //
-        // Recursion terminates immediately: the control is probe 1, which
-        // takes neither this branch nor any other re-entry.
-        println!(
-            "[xtask:test] trust-anchor probe 4: control pass -- the same build WITHOUT \
-             the incoherent-anchor flag must boot to completion"
-        );
-        let mut control = args.clone();
-        control.trust_anchor_probe = Some(1);
-        run(&control).context(
-            "trust-anchor probe 4 control FAILED: the identical build without \
-             TRUST_ANCHOR_INCOHERENT_PROBE=1 did not boot to completion, so the silence \
-             probe 4 is about to assert could not be attributed to the incoherent anchor \
-             state. Fix the boot first; probe 4 proves nothing until this control passes",
-        )?;
-        println!("[xtask:test] trust-anchor probe 4: control passed; now the real probe");
-    }
     anyhow::ensure!(
         !(args.assert_inspect
             || args.inspect_write_probe
@@ -1257,6 +1227,42 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 .is_some_and(|profile| profile.desktop.is_some()),
             "desktop assertion requires a profile with host.desktop policy"
         );
+    }
+
+    if args.trust_anchor_probe == Some(4) {
+        // Probe 4's own control pass.
+        //
+        // Probe 4 proves a NEGATIVE: an image with a gating tier and no key
+        // produces no root-task output. A negative is only attributable to the
+        // thing under test if the identical configuration WITHOUT that thing
+        // produces the positive. Probe 1 is exactly that configuration --
+        // same board, same guest-os, same anchor environment
+        // (AGENTOS_BUNDLE_SIGNING_KEY at the dev seed), differing ONLY by
+        // TRUST_ANCHOR_INCOHERENT_PROBE=1 -- so it is run here, inside probe
+        // 4, rather than left to happen to run first in `make
+        // test-trust-anchor`. A probe whose soundness depends on a sibling's
+        // ordering in one Makefile target is not a probe anyone can run alone.
+        //
+        // Recursion terminates immediately: the control is probe 1, which
+        // takes neither this branch nor any other re-entry.
+        //
+        // Placed after every argument check and immediately before the build:
+        // the control is a full build and boot, and spending that before the
+        // invocation has finished validating its own arguments would be a
+        // trap for whoever next relaxes one of clap's conflicts.
+        println!(
+            "[xtask:test] trust-anchor probe 4: control pass -- the same build WITHOUT \
+             the incoherent-anchor flag must boot to completion"
+        );
+        let mut control = args.clone();
+        control.trust_anchor_probe = Some(1);
+        run(&control).context(
+            "trust-anchor probe 4 control FAILED: the identical build without \
+             TRUST_ANCHOR_INCOHERENT_PROBE=1 did not boot to completion, so the silence \
+             probe 4 is about to assert could not be attributed to the incoherent anchor \
+             state. Fix the boot first; probe 4 proves nothing until this control passes",
+        )?;
+        println!("[xtask:test] trust-anchor probe 4: control passed; now the real probe");
     }
 
     if !args.no_build {
@@ -5359,9 +5365,25 @@ fn verify_trust_anchor_probe(
     /// against are things that would appear LATE: a root task that continues
     /// past the refusal, or a boot that completes after the marker that was
     /// waited for. A single sample after 500 ms on a loaded CI runner can miss
-    /// either. Polling across a window costs nothing extra on the pass path
-    /// (the probe already waited for its positive marker) and turns "was not
-    /// there at one instant" into "was not there for the whole window".
+    /// either. Polling across a window turns "was not there at one instant"
+    /// into "was not there for the whole window".
+    ///
+    /// **It also requires QEMU to stay alive for the whole window.** This is
+    /// the assertion that matters most here, not the polling. A dead machine
+    /// prints nothing, so a QEMU that died — crashed, was killed, hit the
+    /// harness timeout — satisfies every absence VACUOUSLY. Without this check
+    /// probe 4 would report a successful refusal for a run in which the root
+    /// task never got the chance to speak: a pass for the wrong reason, in the
+    /// weakest of the five probes. Silence is only evidence if the thing that
+    /// would have spoken was still running.
+    ///
+    /// Cost, stated plainly: this burns the full window on the PASSING path —
+    /// it cannot return early, because "nothing yet" is exactly what it is
+    /// trying to distinguish from "nothing ever". At `ABSENCE_WINDOW`, that is
+    /// ~10 s each for probes 2 and 4, so ~20 s added to a
+    /// `make test-trust-anchor` run. That is the price of the absence
+    /// assertions not failing open, and it is worth paying here; do not copy
+    /// the pattern to probes that have a positive marker to wait for.
     ///
     /// Scale: a healthy AArch64 GUEST_OS=none boot reaches `[rt] UART mapped`
     /// in tens of milliseconds and `agentOS boot complete` in a couple of
@@ -5371,10 +5393,29 @@ fn verify_trust_anchor_probe(
         log_path: &Path,
         forbidden: &[&str],
         window: Duration,
+        qemu: &mut Child,
         context: &str,
     ) -> anyhow::Result<()> {
         let deadline = Instant::now() + window;
         loop {
+            if let Some(status) = qemu
+                .try_wait()
+                .context("failed to poll the QEMU process during an absence assertion")?
+            {
+                // Deliberately NOT prefixed with `context`: that string
+                // describes the marker-appeared failure ("the root task
+                // continued past Step 0"), which is the opposite of what
+                // happened here and would read as a contradiction.
+                anyhow::bail!(
+                    "QEMU EXITED ({status}) during the absence window, so this run \
+                     establishes NOTHING -- it is neither a pass nor the failure the \
+                     probe was looking for. A dead machine prints nothing, so the \
+                     silence observed is QEMU's, not the root task's; treating it as a \
+                     successful refusal would be a pass for the wrong reason. Was \
+                     asserting the absence of {forbidden:?}. Investigate why QEMU exited \
+                     and re-run."
+                );
+            }
             let text = std::fs::read_to_string(log_path).unwrap_or_default();
             for marker in forbidden {
                 anyhow::ensure!(
@@ -5420,21 +5461,20 @@ fn verify_trust_anchor_probe(
             let digest_marker = format!(
                 "[rt] pd {pd_name}: ELF digest MISMATCH against signed manifest; refusing boot"
             );
-            wait_for_all_markers(
+            let proof = wait_for_all_markers(
                 log_path,
                 &[VENDOR_GATING, digest_marker.as_str()],
                 timeout,
                 qemu,
-            )
-            .and_then(|proof| {
-                assert_absent_throughout(
-                    log_path,
-                    &["agentOS boot complete"],
-                    ABSENCE_WINDOW,
-                    "the vendor anchor reported a tampered PD and then finished booting anyway",
-                )?;
-                Ok(format!("{proof}; agentOS boot complete absent"))
-            })
+            )?;
+            assert_absent_throughout(
+                log_path,
+                &["agentOS boot complete"],
+                ABSENCE_WINDOW,
+                qemu,
+                "the vendor anchor reported a tampered PD and then finished booting anyway",
+            )?;
+            Ok(format!("{proof}; agentOS boot complete absent"))
         }
 
         // Probe 3 (brief Probe 2): THE probe that distinguishes "reports
@@ -5514,13 +5554,13 @@ fn verify_trust_anchor_probe(
         // Step 0 check to emit through a channel live at Step 0, or to be
         // re-ordered after platform_debug_init(). That is a change to Task 2's
         // deliberate ordering in main.c and is deliberately NOT made here.
-        4 => wait_for_all_markers(
-            log_path,
-            &["MMU enabled, jumping to seL4..."],
-            timeout,
-            qemu,
-        )
-        .and_then(|proof| {
+        4 => {
+            let proof = wait_for_all_markers(
+                log_path,
+                &["MMU enabled, jumping to seL4..."],
+                timeout,
+                qemu,
+            )?;
             assert_absent_throughout(
                 log_path,
                 &[
@@ -5530,16 +5570,17 @@ fn verify_trust_anchor_probe(
                     "agentOS boot complete",
                 ],
                 ABSENCE_WINDOW,
+                qemu,
                 "a gating trust anchor with no key produced root-task output: the root \
                  task continued past Step 0 instead of refusing",
             )?;
             Ok(format!(
-                "{proof} (loader-stage marker); no root-task output for {}s afterwards, \
-                 and the control pass of the same build without the flag booted to \
-                 completion",
+                "{proof} (loader-stage marker); QEMU stayed up and produced no root-task \
+                 output for {}s afterwards, and the control pass of the same build \
+                 without the flag booted to completion",
                 ABSENCE_WINDOW.as_secs()
             ))
-        }),
+        }
 
         // Probe 5 (brief Probe 4): the tier is visible at runtime. Built as a
         // machine-owner image standing alone — deliberately NOT the vendor
