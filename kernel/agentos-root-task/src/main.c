@@ -3619,20 +3619,66 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
         /*
-         * The object being lent: a single 4K frame, retyped directly into
-         * cap_lend_lender's own CNode (full rights -- a fresh Untyped
-         * retype always grants seL4_AllRights) at AOS_CAP_LEND_FRAME_SLOT.
-         * This PD owns it outright; nothing else in the system holds a
-         * capability to it until aos_cap_lend() mints a reduced-rights
-         * derivative from it.
+         * The object being lent: a single 4K frame, retyped into the root
+         * task's own CNode, mapped into cap_lend_lender's VSpace at
+         * AOS_CAP_LEND_FRAME_VA (pd_vspace_map_device_frame installs
+         * whatever intermediate page tables that VA needs -- a PD thread
+         * cannot do this itself, since it holds no Untyped capability to
+         * create page-table objects from), and only THEN moved into
+         * cap_lend_lender's own CNode at AOS_CAP_LEND_FRAME_SLOT (full
+         * rights -- a fresh Untyped retype always grants seL4_AllRights;
+         * seL4_CNode_Move, unlike Copy, preserves the existing mapping, so
+         * the frame arrives already usable). This PD owns it outright;
+         * nothing else in the system holds a capability to it until
+         * aos_cap_lend() mints a reduced-rights derivative from it. Same
+         * map-then-move order serial_pd's UART frame handoff uses above.
          */
         if (name_eq(pd->name, "cap_lend_lender")) {
-            seL4_Error frame_err = ut_alloc(seL4_ARM_SmallPageObject, 0u,
-                pd_cnode, AOS_CAP_LEND_FRAME_SLOT, pd->cnode_size_bits);
+            seL4_CPtr frame_cap = seL4_CapNull;
+            seL4_Error frame_err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame_cap);
+            if (frame_err == seL4_NoError) {
+                frame_err = pd_vspace_map_device_frame(vspace, frame_cap,
+                    AOS_CAP_LEND_FRAME_VA);
+            }
+            if (frame_err == seL4_NoError) {
+                frame_err = seL4_CNode_Move(pd_cnode, AOS_CAP_LEND_FRAME_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, frame_cap, 64u);
+            }
             if (frame_err != seL4_NoError) {
-                dbg_puts("[rt] cap-lend frame retype failed; refusing PD start\n");
+                dbg_puts("[rt] cap-lend frame retype/map/move failed; refusing PD start\n");
                 continue;
             }
+        }
+        /*
+         * cap_lend_borrower does not receive its frame until runtime (over
+         * IPC from the lender, into AOS_CAP_LEND_BORROWER_RECV_SLOT) and so
+         * cannot be pre-mapped the way the lender's frame is above. But the
+         * borrower's own seL4_ARCH_Page_Map of that received derivative
+         * (in borrower_pd.c) would hit exactly the same missing-page-table
+         * problem the lender's frame would have hit -- a PD thread cannot
+         * install page-table objects, only the root task can (it alone
+         * holds Untyped memory). So prime the page-table hierarchy at
+         * AOS_CAP_LEND_FRAME_VA in the borrower's VSpace now, with a
+         * throwaway scratch frame: map it (forcing every missing
+         * intermediate page table into existence), then unmap it --
+         * unmapping removes only the leaf frame mapping, the page-table
+         * objects it forced into being remain mapped into the VSpace. The
+         * borrower's later Page_Map of its actual received derivative then
+         * needs no new page tables and succeeds on the first attempt.
+         */
+        if (name_eq(pd->name, "cap_lend_borrower")) {
+            seL4_CPtr scratch_cap = seL4_CapNull;
+            seL4_Error scratch_err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &scratch_cap);
+            if (scratch_err == seL4_NoError) {
+                scratch_err = pd_vspace_map_device_frame(vspace, scratch_cap,
+                    AOS_CAP_LEND_FRAME_VA);
+            }
+            if (scratch_err != seL4_NoError) {
+                dbg_puts("[rt] cap-lend borrower page-table priming failed; refusing PD start\n");
+                continue;
+            }
+            (void)seL4_ARCH_Page_Unmap(scratch_cap);
+            (void)seL4_CNode_Delete(seL4_CapInitThreadCNode, scratch_cap, 64u);
         }
 #endif
 
@@ -3755,6 +3801,8 @@ void root_task_main(const seL4_BootInfo *bi)
              pd_is_guest_vmm(pd) ||
              name_eq(pd->name, "cc_pd") ||
              name_eq(pd->name, "native_rust_client") ||
+             name_eq(pd->name, "cap_lend_lender") ||
+             name_eq(pd->name, "cap_lend_borrower") ||
              name_eq(pd->name, "framebuffer_client0") ||
              name_eq(pd->name, "framebuffer_client1") ||
              name_eq(pd->name, "display_ramfb") ||

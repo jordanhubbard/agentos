@@ -14,9 +14,30 @@
 #include "cap_lend.h"
 #include "contracts/cap_lend_test.h"
 #include "sel4_ipc.h"
+#include "serial_log.h"
 
+/* Same channel native_rust_client uses: an EP to SVC_ID_SERIAL plus the
+ * serial-contract shared page, both granted by main.c's
+ * AGENTOS_CAP_LEND_TEST provisioning (system_desc_aarch64.c init_eps +
+ * the serial-transfer-page name_eq list). */
+static serial_log_t log_channel = {.ep = PD_CNODE_SLOT_SERIAL_EP};
+
+/*
+ * Park on `ep` forever. Clears the receive path to seL4_CapNull first --
+ * NOT optional once a receive path has ever been set in this PD's
+ * lifetime (see pd_main below): leaving it pointed at
+ * AOS_CAP_LEND_BORROWER_RECV_SLOT, now occupied by whatever this PD last
+ * received, means every later seL4_Recv on that same path would silently
+ * fail to deliver its incoming capability -- the exact occupied-receive-
+ * slot trap the net_virt.c:567-570 Delete-before-SetCapReceivePath
+ * discipline exists to avoid, except here applied to the park loop
+ * itself. Harmless today because nothing else sends a capability to this
+ * endpoint, but Task 3 re-loans over the same endpoint, so this stops
+ * being hypothetical in the very next task.
+ */
 static void park(seL4_CPtr ep)
 {
+    seL4_SetCapReceivePath(seL4_CapNull, 0u, 0u);
     for (;;) {
         seL4_Word badge = 0u;
 #ifdef CONFIG_KERNEL_MCS
@@ -56,6 +77,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
     seL4_MessageInfo_t info = seL4_Recv(xfer_ep, &badge);
 #endif
     if (seL4_MessageInfo_get_extraCaps(info) != 1u) {
+        serial_log_puts(&log_channel, AOS_CAP_LEND_MARKER_BORROWER_FAIL_RECV);
         park(xfer_ep);
     }
 
@@ -66,6 +88,7 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
     if (seL4_ARCH_Page_Map(AOS_CAP_LEND_BORROWER_RECV_SLOT,
             AOS_CAP_LEND_SELF_VSPACE_SLOT, AOS_CAP_LEND_FRAME_VA,
             seL4_CanRead, seL4_ARM_Default_VMAttributes) != seL4_NoError) {
+        serial_log_puts(&log_channel, AOS_CAP_LEND_MARKER_BORROWER_FAIL_MAP);
         park(xfer_ep);
     }
 
@@ -78,8 +101,12 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
             break;
         }
     }
-    (void)sum_ok; /* no reporting channel in this minimal pair; Task 3's
-                   * externally-driven proof asserts the exact bytes. */
+
+    if (sum_ok) {
+        serial_log_puts(&log_channel, AOS_CAP_LEND_MARKER_BORROWER_OK);
+    } else {
+        serial_log_puts(&log_channel, AOS_CAP_LEND_MARKER_BORROWER_FAIL_VERIFY);
+    }
 
     park(xfer_ep);
 }

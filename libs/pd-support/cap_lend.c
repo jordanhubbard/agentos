@@ -4,18 +4,24 @@
  * See cap_lend.h for the full design rationale. Summary of the two things
  * that must never be gotten wrong here:
  *
- *   - aos_cap_lend() mints into the LENDER'S OWN CNode (dest_cnode is the
- *     lender's self-reference cap, used as both Mint destination root and
- *     source root, since `original` lives in that same CSpace already).
+ *   - aos_cap_lend() mints the derivative using the CALLER-SUPPLIED
+ *     `src_root`/`src_depth` to resolve `original` and `dest_cnode` to
+ *     resolve where the derivative lands -- two independent roots. The
+ *     common case (a lender minting from, and into, its own CNode) passes
+ *     the same self-reference capability for both, but this module does
+ *     not assume that; it uses exactly what the caller passed, for both
+ *     the Mint and the later Revoke.
  *   - aos_cap_lend_revoke() calls seL4_CNode_Revoke on the LENDER'S OWN
- *     `original` -- never the derivative -- because revoke removes the
- *     entire derivation subtree, and only the original sits at the root of
- *     that subtree.
+ *     `original`, at the `(src_root, src_depth)` recorded from the
+ *     matching aos_cap_lend() call -- never the derivative -- because
+ *     revoke removes the entire derivation subtree, and only the original
+ *     sits at the root of that subtree.
  *
  * This module links against libs/pd-support/cap_lease.c for bookkeeping
  * (no seL4 calls there) and additionally remembers, per outstanding loan,
- * the (root, depth) pair needed to issue that revoke from a one-argument
- * call -- cap_lease.c itself knows nothing about seL4 types or CNode roots.
+ * the (src_root, src_depth) pair needed to issue that revoke from a
+ * one-argument call -- cap_lease.c itself knows nothing about seL4 types
+ * or CNode roots.
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -30,8 +36,9 @@
 typedef struct {
     int        in_use;
     seL4_CPtr  original;
-    seL4_CPtr  root;   /* CNode root used for the Mint; reused for Revoke */
-    seL4_Word  depth;  /* radix, in bits, of that CNode */
+    seL4_CPtr  src_root;  /* CNode `original` lives in; passed to Mint as
+                           * the source root and replayed to Revoke */
+    seL4_Word  src_depth; /* radix, in bits, of src_root */
     uint32_t   lease_id;
 } cap_lend_record_t;
 
@@ -102,8 +109,9 @@ static cap_lend_record_t *cap_lend_find_free(void)
     return NULL;
 }
 
-int aos_cap_lend(seL4_CPtr original, seL4_CPtr dest_cnode, seL4_Word dest_slot,
-                  seL4_Word dest_depth, seL4_CapRights_t rights, seL4_Word badge)
+int aos_cap_lend(seL4_CPtr src_root, seL4_CPtr original, seL4_Word src_depth,
+                  seL4_CPtr dest_cnode, seL4_Word dest_slot, seL4_Word dest_depth,
+                  seL4_CapRights_t rights, seL4_Word badge)
 {
     cap_lend_ensure_init();
 
@@ -131,20 +139,22 @@ int aos_cap_lend(seL4_CPtr original, seL4_CPtr dest_cnode, seL4_Word dest_slot,
     }
 
     /*
-     * Mint the derivative into the LENDER'S OWN CNode (dest_cnode is the
-     * lender's self-reference capability, so it serves as both the Mint's
-     * destination root and its source root -- `original` lives in this
-     * same CSpace already). The resulting capability at (dest_cnode,
-     * dest_slot) is a CHILD of `original` in the kernel's derivation tree:
-     * badged, and carrying strictly fewer rights, exactly as asserted
-     * above. It is not yet in the borrower's CSpace -- that happens by a
-     * separate IPC capability transfer the caller performs after this
-     * call returns success (see net_virt.c:567-570 for the
+     * Mint the derivative: destination (dest_cnode, dest_slot, dest_depth)
+     * and source (src_root, original, src_depth) are independent roots,
+     * exactly as the caller supplied them -- this module does not assume
+     * they coincide, even though the common case (a lender minting from
+     * its own CNode back into its own CNode) passes the same
+     * self-reference capability for both. The resulting capability at
+     * (dest_cnode, dest_slot) is a CHILD of `original` in the kernel's
+     * derivation tree: badged, and carrying strictly fewer rights, exactly
+     * as asserted above. It is not yet in the borrower's CSpace -- that
+     * happens by a separate IPC capability transfer the caller performs
+     * after this call returns success (see net_virt.c:567-570 for the
      * delete-receive-slot-then-SetCapReceivePath pattern the borrower
      * side must follow).
      */
     seL4_Error err = seL4_CNode_Mint(dest_cnode, dest_slot, (seL4_Uint8)dest_depth,
-                                      dest_cnode, original, (seL4_Uint8)dest_depth,
+                                      src_root, original, (seL4_Uint8)src_depth,
                                       rights, badge);
     if (err != seL4_NoError) {
         (void)aos_lease_close(&g_lend_leases, lease_id);
@@ -153,8 +163,8 @@ int aos_cap_lend(seL4_CPtr original, seL4_CPtr dest_cnode, seL4_Word dest_slot,
 
     rec->in_use    = 1;
     rec->original  = original;
-    rec->root      = dest_cnode;
-    rec->depth     = dest_depth;
+    rec->src_root  = src_root;
+    rec->src_depth = src_depth;
     rec->lease_id  = lease_id;
     return AOS_CAP_LEND_OK;
 }
@@ -170,25 +180,38 @@ int aos_cap_lend_revoke(seL4_CPtr original)
 
     /*
      * Revoke the LENDER'S OWN ORIGINAL capability -- `original`, at
-     * (rec->root, rec->depth), the exact (root, depth) pair this module
-     * used to mint the derivative in aos_cap_lend(). seL4_CNode_Revoke
-     * deletes every capability derived from the one it is given: the
-     * derivative minted above, and anything the borrower further copied,
-     * minted, or transferred from what it received over IPC. Revoking the
-     * DERIVATIVE instead (i.e. the capability at dest_slot, or whatever
-     * the borrower holds) would only remove descendants of THAT
-     * capability and leave `original` -- the thing that still grants the
-     * authority -- completely intact. That is the single easiest mistake
-     * in this whole module, and the one that would let a loan outlive its
-     * revocation while every test that only checks the direct borrower
-     * still passes.
+     * (rec->src_root, rec->src_depth), the exact (src_root, src_depth)
+     * the caller passed to aos_cap_lend() to resolve `original` there.
+     * seL4_CNode_Revoke deletes every capability derived from the one it
+     * is given: the derivative minted above, and anything the borrower
+     * further copied, minted, or transferred from what it received over
+     * IPC. Revoking the DERIVATIVE instead (i.e. the capability at
+     * dest_slot, or whatever the borrower holds) would only remove
+     * descendants of THAT capability and leave `original` -- the thing
+     * that still grants the authority -- completely intact. That is the
+     * single easiest mistake in this whole module, and the one that would
+     * let a loan outlive its revocation while every test that only checks
+     * the direct borrower still passes.
      */
-    seL4_Error err = seL4_CNode_Revoke(rec->root, original, (seL4_Uint8)rec->depth);
+    seL4_Error err = seL4_CNode_Revoke(rec->src_root, original, (seL4_Uint8)rec->src_depth);
     if (err != seL4_NoError) {
         return AOS_CAP_LEND_ERR_REVOKE;
     }
 
-    (void)aos_lease_close(&g_lend_leases, rec->lease_id);
+    /*
+     * Authority has already been withdrawn by the Revoke above regardless
+     * of what happens next -- a lease-close failure here is a bookkeeping
+     * problem, not a security one. Do NOT clear the record on failure: a
+     * cleared record would lose `lease_id` and leak this record/lease-table
+     * slot permanently, with no way for a caller to retry the close. Leave
+     * the record in place so a caller can call aos_cap_lend_revoke(original)
+     * again -- seL4_CNode_Revoke on an already-empty subtree is a no-op, so
+     * the retry just re-attempts the lease close.
+     */
+    if (aos_lease_close(&g_lend_leases, rec->lease_id) != 0) {
+        return AOS_CAP_LEND_ERR_LEASE_CLOSE;
+    }
+
     *rec = (cap_lend_record_t){0};
     return AOS_CAP_LEND_OK;
 }

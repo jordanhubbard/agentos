@@ -19,13 +19,22 @@
  * ── aos_cap_lend: mint the derivative ───────────────────────────────────────
  *
  * aos_cap_lend mints a badged copy of `original` into the lender's OWN CNode
- * at (dest_cnode, dest_slot) -- NOT into the borrower's CSpace. `dest_cnode`
- * is the lender's self-referencing CNode capability (the same pattern used
- * throughout this tree: e.g. AOS_QUEUE_SERVICE_CNODE, AOS_GUEST_RAM_SELF_CNODE
- * -- a capability to a PD's own CNode, copied into that CNode by the root
- * task at boot so the PD can name itself as the root of its own CNode
- * operations). Because `original` lives in that same CSpace, `dest_cnode`
- * serves as both the Mint's destination root and its source root.
+ * at (dest_cnode, dest_slot) -- NOT into the borrower's CSpace. `src_root`
+ * names the CNode that `original` itself lives in (resolved, like every
+ * seL4_CNode_Mint root argument, in the CALLER'S OWN CSpace) and `dest_cnode`
+ * names the CNode the derivative is minted into. seL4_CNode_Mint treats
+ * these as entirely independent roots -- nothing requires them to be equal
+ * capabilities, even though in the common case (a lender minting from, and
+ * into, its own CNode) they name the SAME underlying CNode object via the
+ * same self-referencing capability (the pattern used throughout this tree:
+ * e.g. AOS_QUEUE_SERVICE_CNODE, AOS_GUEST_RAM_SELF_CNODE -- a capability to
+ * a PD's own CNode, copied into that CNode by the root task at boot so the
+ * PD can name itself as the root of its own CNode operations). Callers MUST
+ * pass their own self-reference as `src_root` whenever `original` lives in
+ * their own CSpace (the only case this module is designed for); passing
+ * anything else makes aos_cap_lend_revoke() resolve `original` in the wrong
+ * CSpace later, since revoke replays exactly the `(src_root, src_depth)`
+ * this call recorded.
  *
  * The derivative minted here is "ready for transfer": a separate IPC send
  * (seL4_SetCap + seL4_Send/Call, with the borrower having already prepared
@@ -35,15 +44,20 @@
  * the message-loop shape differs per PD; it only produces the capability
  * that is ready to go out in one.
  *
- * Rights must strictly reduce. The lender is assumed to hold full rights on
- * any original it owns outright (the normal case for an object a PD created
- * or was granted at boot). aos_cap_lend asserts that the requested `rights`
- * drop at least one of {read, write, grant, grantreply} relative to
- * seL4_AllRights -- a mint that preserves full rights would hand the
- * borrower everything the lender has, breaking the subsetting invariant the
- * whole trust-lending track rests on. This is checked at the call site
- * (inside aos_cap_lend, before the seL4_CNode_Mint invocation) rather than
- * trusted from the caller.
+ * Rights must strictly reduce. seL4 gives userspace no syscall to read back
+ * a capability's current rights, and seL4_CNode_Mint itself masks the
+ * requested rights against the source capability's rights (rights ∩
+ * src_rights) -- so a mint can never WIDEN authority no matter what is
+ * requested; widening is simply unrepresentable at this interface. The one
+ * thing a caller COULD do wrong is request no reduction at all, i.e. ask
+ * for exactly seL4_AllRights. aos_cap_lend refuses that one case --
+ * requested `rights` must drop at least one of {read, write, grant,
+ * grantreply} relative to seL4_AllRights -- before any seL4 invocation,
+ * which is what the subsetting invariant actually requires: a loan must
+ * hand over not-everything, even when the lender holds everything (the
+ * normal case for an object it created or was granted outright at boot).
+ * This is checked at the call site (inside aos_cap_lend, before the
+ * seL4_CNode_Mint invocation) rather than trusted from the caller.
  *
  * ── aos_cap_lend_revoke: revoke the ORIGINAL ────────────────────────────────
  *
@@ -58,8 +72,9 @@
  * and the one that makes a lease outlive its revocation.
  *
  * To make this possible from a one-argument revoke call, this module
- * remembers, per outstanding loan, the (root, depth) pair that was used to
- * mint it, keyed by `original`. That association -- and the associated
+ * remembers, per outstanding loan, the exact `(src_root, src_depth)` pair
+ * the caller passed to aos_cap_lend() -- the CNode `original` itself lives
+ * in -- keyed by `original`. That association -- and the associated
  * lease -- is recorded in an internal aos_lease_table_t so a lender can
  * also report what it currently has on loan and to whom (see
  * aos_cap_lend_lookup). Per the "ledger cannot verify a lease" note in the
@@ -95,6 +110,15 @@
  * can retry; authority may or may not have actually been withdrawn,
  * depending on where the kernel call failed. */
 #define AOS_CAP_LEND_ERR_REVOKE   (-5)
+/* seL4_CNode_Revoke SUCCEEDED -- authority has been withdrawn, this is not
+ * a revoke failure -- but closing the associated lease in the bookkeeping
+ * table afterwards failed. The loan record is left in place (not cleared)
+ * so the lease_id and loan metadata are not lost and the table slot is not
+ * silently leaked; a caller may retry aos_cap_lend_revoke(original), which
+ * will attempt the (now idempotent at the seL4 layer -- Revoke on an
+ * already-empty subtree is a no-op) revoke again and retry the lease
+ * close. */
+#define AOS_CAP_LEND_ERR_LEASE_CLOSE (-6)
 
 /*
  * Reset all internal state (the lease table and the original->loan-record
@@ -104,19 +128,29 @@
 void aos_cap_lend_init(void);
 
 /*
- * Mint a badged, rights-reduced derivative of `original` into the lender's
- * own CNode at (dest_cnode, dest_slot), ready to be handed to a borrower by
- * IPC capability transfer. `dest_cnode` must be the lender's own
- * self-referencing CNode capability (see the file header); `original` must
- * live in that same CSpace. `dest_depth` is the radix, in bits, of that
- * CNode (used as both the Mint's dest_depth and src_depth, since source and
- * destination are the same CSpace).
+ * Mint a badged, rights-reduced derivative of `original` into
+ * (dest_cnode, dest_slot), ready to be handed to a borrower by IPC
+ * capability transfer.
+ *
+ * `src_root` is the CNode `original` itself lives in, and `src_depth` its
+ * radix in bits -- both resolved, like every seL4_CNode_Mint root
+ * argument, in the CALLER'S OWN CSpace. `dest_cnode`/`dest_slot`/
+ * `dest_depth` name where the derivative lands. In the normal case (a
+ * lender minting from its own CNode back into its own CNode) `src_root`
+ * and `dest_cnode` are the SAME self-referencing capability (see the file
+ * header) and `src_depth` equals `dest_depth` -- but they are independent
+ * parameters and the kernel does not require them to coincide. Pass your
+ * own self-reference as `src_root` whenever `original` lives in your own
+ * CSpace, which is the only case this module is designed for:
+ * aos_cap_lend_revoke() later resolves `original` using exactly the
+ * `(src_root, src_depth)` recorded here.
  *
  * Returns AOS_CAP_LEND_OK on success. On any failure, no capability is
  * minted and no lease is left open.
  */
-int aos_cap_lend(seL4_CPtr original, seL4_CPtr dest_cnode, seL4_Word dest_slot,
-                  seL4_Word dest_depth, seL4_CapRights_t rights, seL4_Word badge);
+int aos_cap_lend(seL4_CPtr src_root, seL4_CPtr original, seL4_Word src_depth,
+                  seL4_CPtr dest_cnode, seL4_Word dest_slot, seL4_Word dest_depth,
+                  seL4_CapRights_t rights, seL4_Word badge);
 
 /*
  * Revoke the lender's own `original` capability -- not any derivative --
@@ -126,7 +160,9 @@ int aos_cap_lend(seL4_CPtr original, seL4_CPtr dest_cnode, seL4_Word dest_slot,
  *
  * Returns AOS_CAP_LEND_OK on success, AOS_CAP_LEND_ERR_NOT_FOUND if
  * `original` has no outstanding loan recorded, AOS_CAP_LEND_ERR_REVOKE if
- * the seL4_CNode_Revoke invocation itself failed.
+ * the seL4_CNode_Revoke invocation itself failed (authority may or may not
+ * have been withdrawn), or AOS_CAP_LEND_ERR_LEASE_CLOSE if seL4_CNode_Revoke
+ * succeeded (authority WAS withdrawn) but closing the lease record failed.
  */
 int aos_cap_lend_revoke(seL4_CPtr original);
 

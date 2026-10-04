@@ -76,3 +76,33 @@
  * received derivative). Arbitrary but must not collide with the fixed
  * low-memory mappings (IPC buffer, ELF image) every PD already has. */
 #define AOS_CAP_LEND_FRAME_VA            0x30000000UL
+
+/*
+ * Greppable boot-log markers, printed via serial_log (serial_log.h) over
+ * the normal serial-contract shared page both PDs are provisioned with
+ * (same channel native_rust_client uses for boot diagnostics -- see
+ * system_desc_aarch64.c's init_eps and main.c's serial-transfer-page
+ * name_eq list, both of which list "cap_lend_lender"/"cap_lend_borrower").
+ *
+ * A mint/transfer/map/verify failure and success are otherwise
+ * indistinguishable in the boot log (both paths just park()), which makes
+ * "the borrower faults after revoke" vacuous if the loan never actually
+ * worked. These markers exist so Task 3's oracle can assert the loan
+ * demonstrably succeeded BEFORE keying off any revoke/fault behavior.
+ * Each failure marker names the exact step that failed.
+ */
+#define AOS_CAP_LEND_MARKER_LENDER_OK \
+    "[cap-lend-lender] OK: lent and transferred\n"
+#define AOS_CAP_LEND_MARKER_LENDER_FAIL_MAP \
+    "[cap-lend-lender] FAIL: map own frame\n"
+#define AOS_CAP_LEND_MARKER_LENDER_FAIL_LEND \
+    "[cap-lend-lender] FAIL: aos_cap_lend\n"
+
+#define AOS_CAP_LEND_MARKER_BORROWER_OK \
+    "[cap-lend-borrower] OK: received and verified pattern\n"
+#define AOS_CAP_LEND_MARKER_BORROWER_FAIL_RECV \
+    "[cap-lend-borrower] FAIL: recv delivered no capability\n"
+#define AOS_CAP_LEND_MARKER_BORROWER_FAIL_MAP \
+    "[cap-lend-borrower] FAIL: map received derivative\n"
+#define AOS_CAP_LEND_MARKER_BORROWER_FAIL_VERIFY \
+    "[cap-lend-borrower] FAIL: pattern mismatch\n"

@@ -656,8 +656,13 @@ const system_desc_t system_desc_aarch64 = {
          * cap_lend_test.h). No device frames, IRQs, or guest-execution
          * authority in either PD -- the only capability either one holds
          * beyond its own boot-time init EPs is the single frame the root
-         * task retypes directly into cap_lend_lender's CNode below (see
-         * main.c's AGENTOS_CAP_LEND_TEST provisioning block). */
+         * task retypes, maps, and moves into cap_lend_lender's CNode below
+         * (see main.c's AGENTOS_CAP_LEND_TEST provisioning block). Both get a
+         * SVC_ID_SERIAL init EP (same slot/pattern as native_rust_client)
+         * so they can emit the greppable AOS_CAP_LEND_MARKER_* boot-log
+         * markers -- otherwise a mint/map/verify failure is indistinguishable
+         * from success in the boot log, which Task 3's oracle depends on
+         * not being true. */
         {
             .name = "cap_lend_lender",
             .elf_path = "cap_lend_lender.elf",
@@ -665,9 +670,10 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 8u,
             .priority = 200u,
             .self_svc_id = 0u,
-            .init_ep_count = 1u,
+            .init_ep_count = 2u,
             .init_eps = {
                 { SVC_ID_CAP_LEND_XFER, AOS_CAP_LEND_XFER_EP_SLOT },
+                { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
             },
         },
         {
@@ -677,9 +683,10 @@ const system_desc_t system_desc_aarch64 = {
             .cnode_size_bits = 8u,
             .priority = 199u,
             .self_svc_id = 0u,
-            .init_ep_count = 1u,
+            .init_ep_count = 2u,
             .init_eps = {
                 { SVC_ID_CAP_LEND_XFER, AOS_CAP_LEND_XFER_EP_SLOT },
+                { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
             },
         },
 #endif
