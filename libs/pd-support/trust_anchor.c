@@ -39,13 +39,17 @@ int aos_anchor_validate(const aos_anchor_state_t *state)
         return AOS_ANCHOR_OK;
 
     case AOS_ANCHOR_MOK:
-        /* Gating tier: AT LEAST ONE of the vendor key or the MOK must
-         * be present. The vendor key is OPTIONAL for this tier -- a
-         * machine owner may run entirely on their own key, with no
-         * vendor key at all ("stand alone"). What remains incoherent,
-         * and is still rejected, is a MOK tier with NEITHER key
-         * present: a gating tier with no key at all. */
-        if (!state->vendor.present && !state->mok.present) {
+        /* Gating tier: the MOK itself MUST be present -- a MOK tier
+         * with no machine-owner key enrolled is not a MOK machine, it
+         * is a vendor machine wearing the wrong label, and the tier
+         * must be a truthful recorded property of the artifact. The
+         * vendor key is OPTIONAL: present means vendor-signed images
+         * also verify (in addition to owner-signed ones); absent means
+         * only owner-signed images verify ("stand alone"). Either way,
+         * a missing MOK is rejected -- this also covers the
+         * neither-key-present case, since that implies mok.present is
+         * false too. */
+        if (!state->mok.present) {
             return AOS_ANCHOR_ERR_KEY;
         }
         return AOS_ANCHOR_OK;

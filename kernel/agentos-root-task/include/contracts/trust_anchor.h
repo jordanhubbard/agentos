@@ -20,14 +20,14 @@
  *                        root). Requires the vendor key to be present.
  *                        Gates boot: a mismatch refuses to proceed.
  *
- *   AOS_ANCHOR_MOK       A machine-owner key. The vendor key is OPTIONAL
- *                        for this tier -- a machine owner may run
- *                        entirely on their own key, with no vendor key
- *                        at all. Requires AT LEAST ONE of {vendor, mok}
- *                        present; a MOK tier with NEITHER key present
- *                        is still an incoherent build and is rejected
- *                        by aos_anchor_validate(), the same as any
- *                        other gating tier with no key. Gates boot.
+ *   AOS_ANCHOR_MOK       A machine-owner key. Requires mok.present --
+ *                        full stop; a MOK tier with no machine-owner
+ *                        key enrolled is not a MOK machine, it is a
+ *                        vendor machine wearing the wrong label, and
+ *                        is rejected by aos_anchor_validate(). The
+ *                        vendor key is OPTIONAL for this tier -- a
+ *                        machine owner may run entirely on their own
+ *                        key, with no vendor key at all. Gates boot.
  *
  *                        Three sub-states fall out of this:
  *                          - vendor only   -> vendor-signed images verify
@@ -111,11 +111,11 @@ typedef struct {
  *   - the pointer must not be NULL;
  *   - tier must be one of the defined aos_anchor_tier_t values;
  *   - AOS_ANCHOR_VENDOR requires vendor.present;
- *   - AOS_ANCHOR_MOK requires AT LEAST ONE of vendor.present or
- *     mok.present (the vendor key is optional for this tier -- a
- *     machine owner may stand alone on their own key -- but a MOK
- *     tier with NEITHER key present is still an incoherent gating
- *     tier with no key at all and is rejected);
+ *   - AOS_ANCHOR_MOK requires mok.present (full stop); vendor.present
+ *     is optional for this tier -- a machine owner may stand alone on
+ *     their own key with no vendor key enrolled at all -- but the MOK
+ *     itself is never optional, so MOK with vendor.present and
+ *     mok.present absent is still rejected;
  *   - AOS_ANCHOR_NONE and AOS_ANCHOR_HARDWARE require no keys and
  *     validate regardless of what `present` says.
  *

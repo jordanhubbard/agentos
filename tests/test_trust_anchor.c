@@ -73,27 +73,28 @@ int main(void)
     assert(aos_anchor_validate(&s) == AOS_ANCHOR_OK);
     assert(aos_anchor_gates_boot(&s) != 0);
 
-    /* AOS_ANCHOR_MOK with vendor present but mok absent ALSO validates
-     * and gates now -- "at least one of the two" is the rule, not
-     * "mok specifically". Vendor-only under the MOK tier is coherent:
-     * it behaves like AOS_ANCHOR_VENDOR's guarantee, just recorded
-     * under the MOK tier because a MOK store was configured (even if
-     * nothing is enrolled in it yet). */
+    /* AOS_ANCHOR_MOK requires the MOK itself -- full stop. Vendor
+     * present but mok ABSENT is rejected: a MOK tier with no
+     * machine-owner key enrolled is not a MOK machine, it is a vendor
+     * machine wearing the wrong label, and the tier must be a
+     * truthful recorded property of the artifact. */
     s = base_state(AOS_ANCHOR_MOK);
     make_key(&s.vendor, 1);
-    assert(aos_anchor_validate(&s) == AOS_ANCHOR_OK);
-    assert(aos_anchor_gates_boot(&s) != 0);
-
-    /* AOS_ANCHOR_MOK with NEITHER key present is rejected -- a gating
-     * tier with no key at all is still incoherent and must fail
-     * loudly, never silently degrade to non-gating. */
-    s = base_state(AOS_ANCHOR_MOK);
     assert(aos_anchor_validate(&s) != AOS_ANCHOR_OK);
     /* Same guard as the VENDOR-with-no-key case above: validate()
      * rejects this state, but if gates_boot() is asked about it
      * anyway it must not answer "don't gate". Not testing a reachable
      * case -- testing that gates_boot() never branches on key
      * presence at all. */
+    assert(aos_anchor_gates_boot(&s) != 0);
+
+    /* AOS_ANCHOR_MOK with NEITHER key present is rejected too -- it is
+     * subsumed by the mok.present check above (mok absent either way),
+     * but kept as its own case because it is the "gating tier with no
+     * key at all" incoherent state the rest of this contract guards
+     * against everywhere else. */
+    s = base_state(AOS_ANCHOR_MOK);
+    assert(aos_anchor_validate(&s) != AOS_ANCHOR_OK);
     assert(aos_anchor_gates_boot(&s) != 0);
 
     /* AOS_ANCHOR_NONE validates with no keys present and does not gate. */
