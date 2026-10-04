@@ -3419,7 +3419,19 @@ pub(crate) fn spawn_qemu_with_guest(
         }
         "qemu_virt_riscv64" => {
             let bios = find_opensbi_bios();
+            let loader = repo_root.join("_build").join(board).join("loader.elf");
             let mut c = std::process::Command::new("qemu-system-riscv64");
+            /*
+             * agentos.img is the agentOS "AGENTOS\0" container, not an
+             * executable: handing it to -kernel leaves OpenSBI jumping into
+             * a header.  Boot kernel/loader/'s riscv64 arm instead, exactly
+             * as aarch64 does.  QEMU loads loader.elf by its program headers
+             * (link address 0x81000000, see kernel/loader/loader_riscv64.ld)
+             * and OpenSBI's fw_dynamic next_addr is taken from its ELF entry
+             * point, so the loader starts in S-mode with a0 = boot hart id
+             * and a1 = DTB.  The container itself is placed in DRAM as plain
+             * data at the address main_riscv64.c reads it from.
+             */
             c.args([
                 "-machine",
                 "virt",
@@ -3431,9 +3443,16 @@ pub(crate) fn spawn_qemu_with_guest(
                 "-bios",
                 &bios,
                 "-kernel",
-                build_image
+                loader
                     .to_str()
-                    .unwrap_or("_build/qemu_virt_riscv64/agentos.img"),
+                    .unwrap_or("_build/qemu_virt_riscv64/loader.elf"),
+                "-device",
+                &format!(
+                    "loader,file={},addr=0x88000000",
+                    build_image
+                        .to_str()
+                        .unwrap_or("_build/qemu_virt_riscv64/agentos.img")
+                ),
                 /* virtio-net (slot 0 → 0x10001000, IRQ 1) with SSH port forward */
                 "-device",
                 "virtio-net-device,netdev=net0",

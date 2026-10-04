@@ -27,7 +27,12 @@ ARCH := $(AGENTOS_ARCH)
 ifeq ($(ARCH),riscv64)
   CC     := clang -target riscv64-unknown-elf
   LD     := ld.lld
-  CFLAGS_ARCH := -march=rv64imafdc_zicsr_zifencei -mabi=lp64d
+  # -mcmodel=medany: the root task is linked at 0x90000000 (see
+  # tools/ld/root_task_riscv64.ld) because every DRAM address on QEMU virt
+  # riscv64 is above 0x80000000. RISC-V's default medlow model addresses
+  # symbols with lui/addi and can only reach the low 2 GiB, so medlow would
+  # fail to link there. medany is PC-relative and places no such limit.
+  CFLAGS_ARCH := -march=rv64imafdc_zicsr_zifencei -mabi=lp64d -mcmodel=medany
 else ifeq ($(ARCH),x86_64)
   CC     := clang -target x86_64-unknown-elf
   LD     := ld.lld
@@ -72,9 +77,11 @@ SERVICES_DIR := $(REPO_ROOT)/services
 # (e.g. "contracts/vibeos/interface.h" resolved from repo root)
 CFLAGS_SERVICES := $(CFLAGS) -I$(REPO_ROOT)
 
-# AArch64 loader and custom root_task linker script
-LOADER_DIR      := $(REPO_ROOT)/kernel/loader
-ROOT_TASK_LD    := $(REPO_ROOT)/tools/ld/root_task.ld
+# Pre-seL4 loader and the per-arch custom root_task linker scripts.
+# kernel/loader/ has an AArch64 and a RISC-V arm; other arches skip silently.
+LOADER_DIR         := $(REPO_ROOT)/kernel/loader
+ROOT_TASK_LD       := $(REPO_ROOT)/tools/ld/root_task.ld
+ROOT_TASK_RISCV_LD := $(REPO_ROOT)/tools/ld/root_task_riscv64.ld
 # Resolve llvm-objcopy: prefer the same LLVM installation that provides CC/LD.
 # On macOS, llvm-objcopy lives alongside clang in the Homebrew LLVM keg.
 ifeq ($(UNAME_S),Darwin)
@@ -122,7 +129,7 @@ ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_x86_64.o
 else
 ROOT_TASK_SRCS += src/system_desc_riscv64.c
 CFLAGS_ROOT_TASK := $(CFLAGS)
-ROOT_TASK_ASM_OBJS :=
+ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_riscv64.o
 endif
 # main.c includes the generated boot-manifest public-key header
 # (boot_manifest_pubkey.h) straight out of the build directory.
@@ -563,6 +570,12 @@ $(BUILD_DIR)/rt_start_x86_64.o: src/start_x86_64.S
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c -target x86_64-unknown-elf $< -o $@
 
+# Assemble RISC-V startup stub.  CFLAGS_ARCH carries -march/-mabi/-mcmodel so
+# the object's ELF attributes match the C objects it is linked with.
+$(BUILD_DIR)/rt_start_riscv64.o: src/start_riscv64.S
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_ARCH) $< -o $@
+
 # Embedded PD bundle used by root_task on targets whose boot path does not
 # provide agentOS extra BootInfo chunks.
 PD_BUNDLE       := $(BUILD_DIR)/agentos_pd_bundle.bin
@@ -588,13 +601,14 @@ SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
 #   3. Convert bundle to a linkable .o (objcopy --input binary)
 #   4. Link root_task.elf with root_task.ld + bundle .o
 #
-ifeq ($(ARCH),aarch64)
-
-# Step 1: Build the loader
+# Step 1: Build the pre-seL4 loader.  kernel/loader/ builds a real loader for
+# aarch64 and riscv64 and skips silently elsewhere, so this rule is shared.
 $(BUILD_DIR)/loader.elf: FORCE
 	$(MAKE) -C $(LOADER_DIR) \
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH)
+
+ifeq ($(ARCH),aarch64)
 
 # Step 4: Link root_task.elf with the custom AArch64 LD script + bundle object.
 # The PD bundle rules are declared after IMAGES/SYSTEM_TOML are finalized so
@@ -612,10 +626,14 @@ $(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_
 
 else
 
-# RISC-V: simple link with the standard PD linker script.  The current RISC-V
-# path still expects PD ELFs via extra BootInfo.
-$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_OBJS) $(AGENTOS_LD)
-	$(LD) $(LDFLAGS) -T$(AGENTOS_LD) $(filter-out $(AGENTOS_LD),$^) -o $@
+# RISC-V: link with the RISC-V root_task script, which places the image at
+# physical/virtual 0x90000000 (inside the kernel's available memory) and
+# provides __stack_top for start_riscv64.S.  kernel/loader/'s riscv64 arm
+# copies these LOAD segments to their physical addresses before enabling
+# Sv39 paging.  The current RISC-V path still expects PD ELFs via extra
+# BootInfo (Task 3 of the arch-parity plan changes that).
+$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(ROOT_TASK_RISCV_LD)
+	$(LD) $(LDFLAGS) -T$(ROOT_TASK_RISCV_LD) $(filter-out $(ROOT_TASK_RISCV_LD),$^) -o $@
 
 endif
 
@@ -1751,9 +1769,11 @@ endif
 
 KERNEL_ELF  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/elf/sel4.elf
 
-# On AArch64, loader.elf is also a build artifact (needed at QEMU launch time).
-# We add it as a dependency so it is rebuilt whenever the loader sources change.
-ifeq ($(ARCH),aarch64)
+# On AArch64 and RISC-V, loader.elf is also a build artifact (QEMU boots it
+# directly and supplies agentos.img as data).  We add it as a dependency so it
+# is rebuilt whenever the loader sources change.  x86_64 boots via multiboot
+# and has no loader.
+ifneq ($(filter $(ARCH),aarch64 riscv64),)
 _LOADER_DEP := $(BUILD_DIR)/loader.elf
 else
 _LOADER_DEP :=

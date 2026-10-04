@@ -1053,8 +1053,20 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  * Initialised in root_task_main after ut_alloc_init and slot-cursor advance.
  * Before init: dbg_puts falls back to sel4_dbg_puts (no-op on release kernel).
  */
+#if defined(__riscv)
+/*
+ * QEMU virt riscv64 has an NS16550A, not a PL011: byte-wide registers with
+ * the transmit holding register at +0x00 and the line status register at
+ * +0x05 (bit 5 = THR empty).  Only the physical address and the register
+ * access width differ; the VSpace slot and the handover to serial_pd are
+ * identical to AArch64's.
+ */
+#define AGENTOS_UART_PA  0x10000000UL  /* NS16550A UART0 on QEMU virt riscv64 */
+#define AGENTOS_UART_VA  0x10001000UL  /* root bootstrap, then serial_pd driver VA   */
+#else
 #define AGENTOS_UART_PA  0x09000000UL  /* PL011 UART0 physical address on QEMU virt */
 #define AGENTOS_UART_VA  0x10001000UL  /* root bootstrap, then serial_pd driver VA   */
+#endif
 
 /* QEMU virt GICv2 virtual CPU interface.
  *
@@ -1297,6 +1309,11 @@ static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
 
 static volatile uint32_t *g_uart_dr;  /* PL011 UARTDR (offset 0x00) */
 static volatile uint32_t *g_uart_fr;  /* PL011 UARTFR (offset 0x18) */
+#if defined(__riscv)
+static volatile uint8_t *g_uart_thr;  /* NS16550A THR (offset 0x00) */
+static volatile uint8_t *g_uart_lsr;  /* NS16550A LSR (offset 0x05) */
+#define NS16550_LSR_THRE  0x20u       /* transmit holding register empty */
+#endif
 
 #if defined(__x86_64__)
 #define X86_COM1_PORT  0x03F8u
@@ -1376,6 +1393,16 @@ static void dbg_puts(const char *s)
         return;
     }
 #endif
+#if defined(__riscv)
+    if (!g_uart_thr) {
+        return;  /* UART not yet mapped; silent before step 3.5 */
+    }
+    for (; *s; s++) {
+        while (!(*g_uart_lsr & NS16550_LSR_THRE)) {}  /* spin until TX ready */
+        *g_uart_thr = (uint8_t)*s;
+    }
+    return;
+#else
     if (!g_uart_dr) {
         return;  /* UART not yet mapped; silent before step 3.5 */
     }
@@ -1383,6 +1410,7 @@ static void dbg_puts(const char *s)
         while (*g_uart_fr & (1u << 5)) {}  /* spin while TX FIFO full */
         *g_uart_dr = (uint32_t)(uint8_t)*s;
     }
+#endif
 }
 
 /* ── Main boot sequence ───────────────────────────────────────────────────── */
@@ -2494,13 +2522,22 @@ void root_task_main(const seL4_BootInfo *bi)
                                                    g_uart_frame_cap,
                                                    AGENTOS_UART_VA);
             if (uart_err == seL4_NoError) {
+#if defined(__riscv)
+                g_uart_thr = (volatile uint8_t *)(AGENTOS_UART_VA + 0x00u);
+                g_uart_lsr = (volatile uint8_t *)(AGENTOS_UART_VA + 0x05u);
+#else
                 g_uart_dr = (volatile uint32_t *)(AGENTOS_UART_VA + 0x00u);
                 g_uart_fr = (volatile uint32_t *)(AGENTOS_UART_VA + 0x18u);
+#endif
             }
         }
     }
+#if defined(__riscv)
+    dbg_puts("[rt] UART mapped, direct NS16550 output active\n");
+#else
     dbg_puts("[rt] UART mapped, direct PL011 output active\n");
 #endif
+#endif  /* !__x86_64__ */
 
     {
         seL4_Error serial_shmem_err = ut_alloc_cap(seL4_ARM_SmallPageObject,
@@ -5076,21 +5113,23 @@ void root_task_main(const seL4_BootInfo *bi)
  * _rt_start — seL4 root task C entry point.
  *
  * On AArch64, called from start_aarch64.S after SP is initialized.
- * On RISC-V, _start is this function directly (SP set by seL4 convention).
+ * On RISC-V, called from start_riscv64.S after SP is initialized.
  * On x86_64, start_x86_64.S installs a bootstrap stack before calling C.
  *
  * seL4 AArch64 boot protocol: BootInfo pointer is in x0 (capRegister).
  * seL4 RISC-V boot protocol:  BootInfo pointer is in a0.
  * seL4 x86_64 boot protocol:  BootInfo pointer is in rdi.
  */
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(__riscv)
 /*
- * _rt_start — AArch64 C entry from start_aarch64.S.
+ * _rt_start — AArch64 C entry from start_aarch64.S, RISC-V C entry from
+ * start_riscv64.S.
  *
  * seL4 AArch64 boot protocol: capRegister (x0) = bi_frame_vptr (BootInfo
  * virtual address in root task's VSpace).  start_aarch64.S preserves x0
  * (only touches x9 and sp) before branching here, so the C calling
- * convention delivers seL4's x0 as bi.
+ * convention delivers seL4's x0 as bi.  RISC-V is the same arrangement with
+ * a0 in place of x0: start_riscv64.S touches only t0 and sp.
  */
 void __attribute__((noreturn)) _rt_start(seL4_BootInfo *bi)
 {
