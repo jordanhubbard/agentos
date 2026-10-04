@@ -924,7 +924,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             || args.log_isolation_probe.is_some()
             || args.cc_envelope_probe.is_some()
             || args.authority_probe.is_some()
-            || args.assert_entropy_unavailable)
+            || args.assert_entropy_unavailable
+            || args.assert_cap_lending)
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
         "inspect qualification requires AArch64 with guest-os none"
     );
@@ -1213,6 +1214,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         if args.assert_native_rust || args.assert_native_guest {
             make_args.push(String::from("NATIVE_RUST_TEST=1"));
+        }
+        if args.assert_cap_lending {
+            make_args.push(String::from("CAP_LEND_TEST=1"));
         }
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
@@ -1785,6 +1789,27 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             &[
                 "[cc_pd] inspect: valid boot page read before write probe",
                 "[rt] inspect: expected read-only page write fault verified",
+            ],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.assert_cap_lending {
+        // T5 capability lending (tests/cap-lend/{lender,borrower}_pd.c):
+        // Probe 1 (loan works) + Probe 3 (sub-delegate minted and alive
+        // before revoke) must precede Probe 2/3 (revoke withdraws both the
+        // direct loan and the sub-delegated copy). All six markers must be
+        // present; absence of the fault-probe marker is exactly what Step
+        // 4's non-vacuity demonstration (aos_cap_lend_revoke neutered)
+        // exercises as a FAILURE of this same command.
+        wait_for_all_markers(
+            &log_path,
+            &[
+                "[cap-lend-lender] OK: lent and transferred",
+                "[cap-lend-borrower] OK: received and verified pattern",
+                "[cap-lend-borrower] OK: sub-delegated copy minted and alive",
+                "[cap-lend-lender] OK: revoked original",
+                "[cap-lend-borrower] OK: sub-delegated copy dead after revoke",
+                "[cap-lend-probe] OK: borrower access faulted after revoke",
             ],
             Duration::from_secs(args.timeout_secs),
             &mut qemu,

@@ -57,6 +57,16 @@
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
 #include "contracts/queue_rebind_caps.h"
+#ifdef AGENTOS_CAP_LEND_TEST
+#include "contracts/cap_lend_test.h"
+/* Task 3 sync pair (see cap_lend_test.h's AOS_CAP_LEND_DONE_NTFN_SLOT /
+ * AOS_CAP_LEND_REVOKED_NTFN_SLOT doc comment): one Notification object per
+ * direction, allocated once and copied with reduced, direction-specific
+ * rights into each of cap_lend_lender's and cap_lend_borrower's own
+ * CNodes below. */
+static seL4_CPtr g_cap_lend_done_ntfn = seL4_CapNull;
+static seL4_CPtr g_cap_lend_revoked_ntfn = seL4_CapNull;
+#endif
 #include <platform/serial_uart.h>
 #include "boot_manifest.h"   /* aos_boot_manifest_validate/_find (T3 image verification) */
 #include "ed25519_verify.h"  /* ed25519_verify — manifest signature check                */
@@ -166,6 +176,20 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #define ROOT_PROBE_ADDRESS AOS_VMM_PROBE_ADDRESS
 #define ROOT_PROBE_WRITE AOS_VMM_PROBE_WRITE
 #define ROOT_PROBE_MESSAGE AOS_VMM_PROBE_MESSAGE
+#elif defined(AGENTOS_CAP_LEND_TEST)
+/* T5 Task 3 target proof, Probe 2: after the lender's aos_cap_lend_revoke()
+ * tears down the whole derivation subtree, cap_lend_borrower's next access
+ * at the lent VA must fault -- a plain read, so WRITE=0 -- and this is the
+ * ONLY event that may emit AOS_CAP_LEND_MARKER_ROOT_FAULT_VERIFIED: exact
+ * badge, address and direction, observed by the root task independently of
+ * the borrower PD (which never returns control after this fault). */
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 5
+#define ROOT_PROBE_CLIENT 0u
+#define ROOT_PROBE_BADGE AOS_CAP_LEND_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_CAP_LEND_FRAME_VA
+#define ROOT_PROBE_WRITE 0u
+#define ROOT_PROBE_MESSAGE AOS_CAP_LEND_MARKER_ROOT_FAULT_VERIFIED
 #endif
 #if defined(ROOT_FAULT_PROBE) || defined(__aarch64__)
 #include "serial_log.h"
@@ -3250,6 +3274,7 @@ void root_task_main(const seL4_BootInfo *bi)
                 (ROOT_PROBE_NATIVE == 3 && pd->self_svc_id == SVC_ID_OPERATOR_SESSION) ||
                 (ROOT_PROBE_NATIVE == 2 && pd->self_svc_id == SVC_ID_CC_PD) ||
                 (ROOT_PROBE_NATIVE == 1 && pd->self_svc_id == SVC_ID_NATIVE_RUST_PROBE) ||
+                (ROOT_PROBE_NATIVE == 5 && pd->self_svc_id == SVC_ID_CAP_LEND_BORROWER) ||
                 (ROOT_PROBE_NATIVE == 0 && pd_is_guest_vmm(pd) &&
                  (uint32_t)pd_is_secondary_guest_vmm(pd) == ROOT_PROBE_CLIENT)) {
                 pd_fault_ep = ut_alloc_slot();
@@ -3590,6 +3615,132 @@ void root_task_main(const seL4_BootInfo *bi)
             }
         }
 
+#ifdef AGENTOS_CAP_LEND_TEST
+        /*
+         * T5 cap-lend demonstration pair (test image only; see
+         * tests/cap-lend/{lender,borrower}_pd.c and cap_lend_test.h).
+         * Both PDs need a self-reference to their own CNode and VSpace --
+         * the same pattern as the queue-service block just above (and
+         * AOS_GUEST_RAM_SELF_CNODE elsewhere) -- because aos_cap_lend()
+         * and aos_cap_lend_revoke() operate on capabilities in the
+         * caller's own CSpace and need a root argument to name it, and
+         * each PD maps its own frame rather than having a service PD do
+         * it on their behalf.
+         */
+        if (name_eq(pd->name, "cap_lend_lender") ||
+            name_eq(pd->name, "cap_lend_borrower")) {
+            if (pd->cnode_size_bits != AOS_CAP_LEND_CNODE_BITS ||
+                seL4_CNode_Copy(pd_cnode, AOS_CAP_LEND_SELF_CNODE_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, pd_cnode,
+                    64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_CAP_LEND_SELF_VSPACE_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, vspace,
+                    64u, seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] cap-lend self-reference grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+        /*
+         * Task 3 target-proof synchronisation: grant each PD its half of
+         * the two Notification objects described in cap_lend_test.h above
+         * AOS_CAP_LEND_DONE_NTFN_SLOT / AOS_CAP_LEND_REVOKED_NTFN_SLOT.
+         * Allocated once (first PD of the pair to reach this point; the
+         * second finds the caps already non-null and skips straight to
+         * granting). Rights are asymmetric and non-overlapping per PD: the
+         * lender can only Wait on "done" and only Signal "revoked"; the
+         * borrower is the mirror image. Neither side can forge the other
+         * half of the handshake with what it's given here.
+         */
+        if (name_eq(pd->name, "cap_lend_lender") ||
+            name_eq(pd->name, "cap_lend_borrower")) {
+            if (g_cap_lend_done_ntfn == seL4_CapNull &&
+                (ut_alloc_cap(seL4_NotificationObject, seL4_NotificationBits,
+                    &g_cap_lend_done_ntfn) != seL4_NoError ||
+                 ut_alloc_cap(seL4_NotificationObject, seL4_NotificationBits,
+                    &g_cap_lend_revoked_ntfn) != seL4_NoError)) {
+                dbg_puts("[rt] cap-lend sync notification allocation failed; refusing PD start\n");
+                continue;
+            }
+            int cap_lend_is_lender = name_eq(pd->name, "cap_lend_lender");
+            /* Wait rights = AllowRead, Signal rights = AllowWrite (seL4
+             * Notification cap right semantics; same encoding the
+             * framebuffer peer-notify block above uses). */
+            seL4_CapRights_t done_rights =
+                seL4_CapRights_new(0, 0, cap_lend_is_lender ? 1 : 0, cap_lend_is_lender ? 0 : 1);
+            seL4_CapRights_t revoked_rights =
+                seL4_CapRights_new(0, 0, cap_lend_is_lender ? 0 : 1, cap_lend_is_lender ? 1 : 0);
+            if (seL4_CNode_Copy(pd_cnode, AOS_CAP_LEND_DONE_NTFN_SLOT, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_cap_lend_done_ntfn, 64u, done_rights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_CAP_LEND_REVOKED_NTFN_SLOT, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, g_cap_lend_revoked_ntfn, 64u, revoked_rights) != seL4_NoError) {
+                dbg_puts("[rt] cap-lend sync notification grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+        /*
+         * The object being lent: a single 4K frame, retyped into the root
+         * task's own CNode, mapped into cap_lend_lender's VSpace at
+         * AOS_CAP_LEND_FRAME_VA (pd_vspace_map_device_frame installs
+         * whatever intermediate page tables that VA needs -- a PD thread
+         * cannot do this itself, since it holds no Untyped capability to
+         * create page-table objects from), and only THEN moved into
+         * cap_lend_lender's own CNode at AOS_CAP_LEND_FRAME_SLOT (full
+         * rights -- a fresh Untyped retype always grants seL4_AllRights;
+         * seL4_CNode_Move, unlike Copy, preserves the existing mapping, so
+         * the frame arrives already usable). This PD owns it outright;
+         * nothing else in the system holds a capability to it until
+         * aos_cap_lend() mints a reduced-rights derivative from it. Same
+         * map-then-move order serial_pd's UART frame handoff uses above.
+         */
+        if (name_eq(pd->name, "cap_lend_lender")) {
+            seL4_CPtr frame_cap = seL4_CapNull;
+            seL4_Error frame_err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &frame_cap);
+            if (frame_err == seL4_NoError) {
+                frame_err = pd_vspace_map_device_frame(vspace, frame_cap,
+                    AOS_CAP_LEND_FRAME_VA);
+            }
+            if (frame_err == seL4_NoError) {
+                frame_err = seL4_CNode_Move(pd_cnode, AOS_CAP_LEND_FRAME_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, frame_cap, 64u);
+            }
+            if (frame_err != seL4_NoError) {
+                dbg_puts("[rt] cap-lend frame retype/map/move failed; refusing PD start\n");
+                continue;
+            }
+        }
+        /*
+         * cap_lend_borrower does not receive its frame until runtime (over
+         * IPC from the lender, into AOS_CAP_LEND_BORROWER_RECV_SLOT) and so
+         * cannot be pre-mapped the way the lender's frame is above. But the
+         * borrower's own seL4_ARCH_Page_Map of that received derivative
+         * (in borrower_pd.c) would hit exactly the same missing-page-table
+         * problem the lender's frame would have hit -- a PD thread cannot
+         * install page-table objects, only the root task can (it alone
+         * holds Untyped memory). So prime the page-table hierarchy at
+         * AOS_CAP_LEND_FRAME_VA in the borrower's VSpace now, with a
+         * throwaway scratch frame: map it (forcing every missing
+         * intermediate page table into existence), then unmap it --
+         * unmapping removes only the leaf frame mapping, the page-table
+         * objects it forced into being remain mapped into the VSpace. The
+         * borrower's later Page_Map of its actual received derivative then
+         * needs no new page tables and succeeds on the first attempt.
+         */
+        if (name_eq(pd->name, "cap_lend_borrower")) {
+            seL4_CPtr scratch_cap = seL4_CapNull;
+            seL4_Error scratch_err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &scratch_cap);
+            if (scratch_err == seL4_NoError) {
+                scratch_err = pd_vspace_map_device_frame(vspace, scratch_cap,
+                    AOS_CAP_LEND_FRAME_VA);
+            }
+            if (scratch_err != seL4_NoError) {
+                dbg_puts("[rt] cap-lend borrower page-table priming failed; refusing PD start\n");
+                continue;
+            }
+            (void)seL4_ARCH_Page_Unmap(scratch_cap);
+            (void)seL4_CNode_Delete(seL4_CapInitThreadCNode, scratch_cap, 64u);
+        }
+#endif
+
         /* ── 4g.4: Distribute device MMIO frame caps ────────────────────────
          * For each device_frame_desc_t, find the device untyped covering its
          * physical address, retype it as a 4K page frame, and install the cap
@@ -3709,6 +3860,8 @@ void root_task_main(const seL4_BootInfo *bi)
              pd_is_guest_vmm(pd) ||
              name_eq(pd->name, "cc_pd") ||
              name_eq(pd->name, "native_rust_client") ||
+             name_eq(pd->name, "cap_lend_lender") ||
+             name_eq(pd->name, "cap_lend_borrower") ||
              name_eq(pd->name, "framebuffer_client0") ||
              name_eq(pd->name, "framebuffer_client1") ||
              name_eq(pd->name, "display_ramfb") ||

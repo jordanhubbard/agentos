@@ -69,3 +69,6 @@ mac-evidence.json
 
 # Superpowers SDD scratch (ledger, briefs, review packages)
 .superpowers/
+
+# SDD scratch (briefs, reports, review packages)
+.sdd/

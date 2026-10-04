@@ -1485,12 +1485,6 @@ whole is not invoked by CI; this proof is run as its own gate step.
 This bounds what the CC transport conveys; it does not make the transport a
 capability boundary, does not defend against the local operator, and
 vendor-signed authorization for out-of-envelope operations is not implemented.
-Qualification boundary: these results were obtained under Microkit SDK 2.1.0,
-not the qualified pin in `tools/sdk/default-version`, and must be re-run on the
-pinned SDK for release qualification. This bounds what the CC transport conveys;
-it does not make the transport a capability boundary, does not defend against
-the local operator, and vendor-signed authorization for out-of-envelope
-operations is not implemented.
 
 ### Boot authority observation
 
@@ -1540,3 +1534,21 @@ Qualification boundary: development results were obtained under Microkit SDK
 2.1.0. `make test-image-verify` is additionally run by the CI `os-claim-gate`
 job, which installs the verified SDK artifact; that job's result on a given
 revision is the qualifying evidence under the pin.
+Qualification boundary: obtained under Microkit SDK 2.1.0, not the pin in
+`tools/sdk/default-version`; release qualification must re-run it.
+
+### Capability lending (T5)
+
+A protection domain may lend a capability to another for the duration of an
+operation: the holder mints a badged, rights-reduced derivative, transfers it by
+IPC capability transfer, and calls seL4_CNode_Revoke on its own original when
+the operation ends, which removes every descendant. `make test-cap-lending`
+verifies on target that the borrower can use the lent capability, that its next
+access faults after revocation, and that a copy the borrower sub-delegated is
+dead too.
+
+Limits. Revocation withdraws future use; it does not undo what the borrower did
+while holding the capability and does not recover data the borrower copied --
+lending bounds authority in time, it is not confinement. The bound is operation
+completion, not elapsed time: agentOS has no timer service. The lender/borrower
+pair exists only in the test image; no default-image PD lends anything yet.
