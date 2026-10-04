@@ -933,6 +933,16 @@ test-entropy-host:
 		tests/test_entropy_contract.c services/entropy-service/entropy_proto.c \
 		-o $(BUILD_TMP_DIR)/test_entropy_contract
 	$(BUILD_TMP_DIR)/test_entropy_contract
+test-host: test-cap-lease-host
+
+.PHONY: test-cap-lease-host
+test-cap-lease-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_cap_lease.c libs/pd-support/cap_lease.c \
+		-o $(BUILD_TMP_DIR)/test_cap_lease
+	$(BUILD_TMP_DIR)/test_cap_lease
 
 .PHONY: test-cc-envelope-host
 test-cc-envelope-host:
