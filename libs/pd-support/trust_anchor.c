@@ -39,12 +39,13 @@ int aos_anchor_validate(const aos_anchor_state_t *state)
         return AOS_ANCHOR_OK;
 
     case AOS_ANCHOR_MOK:
-        /* Gating tier: BOTH the vendor key and the MOK must be present.
-         * MOK is additive to the vendor root, never a replacement for
-         * it -- a MOK tier with no vendor key would let an
-         * owner-enrolled key displace the vendor root entirely, which
-         * this contract must refuse. */
-        if (!state->vendor.present || !state->mok.present) {
+        /* Gating tier: AT LEAST ONE of the vendor key or the MOK must
+         * be present. The vendor key is OPTIONAL for this tier -- a
+         * machine owner may run entirely on their own key, with no
+         * vendor key at all ("stand alone"). What remains incoherent,
+         * and is still rejected, is a MOK tier with NEITHER key
+         * present: a gating tier with no key at all. */
+        if (!state->vendor.present && !state->mok.present) {
             return AOS_ANCHOR_ERR_KEY;
         }
         return AOS_ANCHOR_OK;

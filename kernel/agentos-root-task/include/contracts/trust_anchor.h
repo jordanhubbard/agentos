@@ -20,16 +20,34 @@
  *                        root). Requires the vendor key to be present.
  *                        Gates boot: a mismatch refuses to proceed.
  *
- *   AOS_ANCHOR_MOK       A machine-owner key, enrolled in addition to
- *                        the vendor key -- never as a replacement for
- *                        it. Requires BOTH keys present. A MOK tier
- *                        with no vendor key is an incoherent build and
- *                        is rejected by aos_anchor_validate(), not
- *                        silently treated as vendor-only or non-gating.
- *                        Gates boot. Does not defend against the
- *                        machine owner, who can sign any image they
- *                        choose -- it constrains remote compromise and
- *                        third-party tampering, not the local operator.
+ *   AOS_ANCHOR_MOK       A machine-owner key. The vendor key is OPTIONAL
+ *                        for this tier -- a machine owner may run
+ *                        entirely on their own key, with no vendor key
+ *                        at all. Requires AT LEAST ONE of {vendor, mok}
+ *                        present; a MOK tier with NEITHER key present
+ *                        is still an incoherent build and is rejected
+ *                        by aos_anchor_validate(), the same as any
+ *                        other gating tier with no key. Gates boot.
+ *
+ *                        Three sub-states fall out of this:
+ *                          - vendor only   -> vendor-signed images verify
+ *                          - mok only      -> owner-signed images verify,
+ *                                             and VENDOR-SIGNED IMAGES DO
+ *                                             NOT -- agentOS's own release
+ *                                             images are refused on a
+ *                                             MOK-only machine unless the
+ *                                             owner signs or counter-signs
+ *                                             them. That is the intended
+ *                                             meaning of "stand alone",
+ *                                             not a defect.
+ *                          - both present  -> either verifies
+ *
+ *                        Does not defend against the machine owner, who
+ *                        can sign any image they choose -- under MOK-only
+ *                        the owner is the SOLE root of trust, so this
+ *                        sharpens rather than weakens that point. MOK
+ *                        constrains remote compromise and third-party
+ *                        tampering, never the local operator.
  *
  *   AOS_ANCHOR_HARDWARE  A stub arm for a future OTP-fused key or
  *                        firmware TPM key source. It validates
@@ -93,7 +111,11 @@ typedef struct {
  *   - the pointer must not be NULL;
  *   - tier must be one of the defined aos_anchor_tier_t values;
  *   - AOS_ANCHOR_VENDOR requires vendor.present;
- *   - AOS_ANCHOR_MOK requires BOTH vendor.present and mok.present;
+ *   - AOS_ANCHOR_MOK requires AT LEAST ONE of vendor.present or
+ *     mok.present (the vendor key is optional for this tier -- a
+ *     machine owner may stand alone on their own key -- but a MOK
+ *     tier with NEITHER key present is still an incoherent gating
+ *     tier with no key at all and is rejected);
  *   - AOS_ANCHOR_NONE and AOS_ANCHOR_HARDWARE require no keys and
  *     validate regardless of what `present` says.
  *

@@ -53,34 +53,47 @@ int main(void)
      * impossible case: it is a regression guard on that one rule. */
     assert(aos_anchor_gates_boot(&s) != 0);
 
-    /* AOS_ANCHOR_MOK requires BOTH vendor and mok present. */
+    /* AOS_ANCHOR_MOK with both vendor and mok present validates and
+     * gates -- either key verifies an image on this machine. */
     s = base_state(AOS_ANCHOR_MOK);
     make_key(&s.vendor, 1);
     make_key(&s.mok, 1);
     assert(aos_anchor_validate(&s) == AOS_ANCHOR_OK);
     assert(aos_anchor_gates_boot(&s) != 0);
 
-    /* AOS_ANCHOR_MOK with no vendor key is rejected -- MOK is additive
-     * to the vendor root, not a replacement for it. An owner-enrolled
-     * key must not be able to displace the vendor root. */
+    /* RULING (supersedes the original "additive-only" design): the
+     * vendor key is OPTIONAL for AOS_ANCHOR_MOK. A machine owner may
+     * stand alone on their own key, with no vendor key enrolled at
+     * all -- MOK with mok present and vendor ABSENT now validates and
+     * gates. On such a machine, agentOS's own vendor-signed release
+     * images are refused unless the owner signs or counter-signs them;
+     * that is the intended meaning of "stand alone", not a defect. */
     s = base_state(AOS_ANCHOR_MOK);
     make_key(&s.mok, 1);
-    assert(aos_anchor_validate(&s) != AOS_ANCHOR_OK);
-    /* Same guard as above, for the MOK-without-vendor-key incoherent
-     * state: validate() rejects it, but if gates_boot() is asked about
-     * it anyway it must not answer "don't gate". Not testing a
-     * reachable case -- testing that gates_boot() never branches on
-     * key presence at all. */
+    assert(aos_anchor_validate(&s) == AOS_ANCHOR_OK);
     assert(aos_anchor_gates_boot(&s) != 0);
 
-    /* AOS_ANCHOR_MOK with vendor present but mok absent is also
-     * rejected -- also an incoherent gating tier with a missing key. */
+    /* AOS_ANCHOR_MOK with vendor present but mok absent ALSO validates
+     * and gates now -- "at least one of the two" is the rule, not
+     * "mok specifically". Vendor-only under the MOK tier is coherent:
+     * it behaves like AOS_ANCHOR_VENDOR's guarantee, just recorded
+     * under the MOK tier because a MOK store was configured (even if
+     * nothing is enrolled in it yet). */
     s = base_state(AOS_ANCHOR_MOK);
     make_key(&s.vendor, 1);
+    assert(aos_anchor_validate(&s) == AOS_ANCHOR_OK);
+    assert(aos_anchor_gates_boot(&s) != 0);
+
+    /* AOS_ANCHOR_MOK with NEITHER key present is rejected -- a gating
+     * tier with no key at all is still incoherent and must fail
+     * loudly, never silently degrade to non-gating. */
+    s = base_state(AOS_ANCHOR_MOK);
     assert(aos_anchor_validate(&s) != AOS_ANCHOR_OK);
-    /* Same guard again, for MOK-without-mok-key: gates_boot() must
-     * still say "gate" even though validate() has already rejected
-     * this state. */
+    /* Same guard as the VENDOR-with-no-key case above: validate()
+     * rejects this state, but if gates_boot() is asked about it
+     * anyway it must not answer "don't gate". Not testing a reachable
+     * case -- testing that gates_boot() never branches on key
+     * presence at all. */
     assert(aos_anchor_gates_boot(&s) != 0);
 
     /* AOS_ANCHOR_NONE validates with no keys present and does not gate. */

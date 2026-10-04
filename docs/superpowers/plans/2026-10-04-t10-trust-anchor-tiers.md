@@ -30,7 +30,7 @@ If any of those three is missing, this is `VIBE_VERIFY_MODE` with better brandin
 | --- | --- | --- | --- |
 | `AOS_ANCHOR_NONE` | none | **no** | Nothing about image integrity. Digests are computed and mismatches reported, so tampering is *visible*, but boot proceeds. Development only. |
 | `AOS_ANCHOR_VENDOR` | compiled-in vendor public key | yes | What T3 establishes today: constrains every adversary who can modify an image but not replace the boot chain. |
-| `AOS_ANCHOR_MOK` | machine-owner key from an enrolled store, **in addition to** the vendor key | yes | Same as vendor, plus images the owner signed. **Does not defend against the machine owner**, who can sign anything — see below. |
+| `AOS_ANCHOR_MOK` | machine-owner key from an enrolled store; the vendor key is **optional** | yes | Images the owner signed, plus vendor-signed images **only if the vendor key is also present**. **Does not defend against the machine owner**, who can sign anything — see below. |
 | `AOS_ANCHOR_HARDWARE` | OTP / firmware TPM | — | **Not implemented.** A real enum arm whose key source returns unavailable, so the shape exists without a false claim. |
 
 **MOK narrows the guarantee, and `docs/TCB.md` must say so.** The platform threat model treats the local operator as untrusted with physical access. A key the owner enrolled does not constrain the owner — they can sign any image they like. MOK therefore protects against remote compromise and third-party tampering, not against the machine owner. That is worth having on legacy hardware; it is not the same claim as vendor-only signing, and conflating them would be an overclaim.
@@ -63,7 +63,7 @@ Host-testable. No seL4 calls, no key material — this defines the tiers, the ke
 
 - [ ] **Step 1:** Write `tests/test_trust_anchor.c` asserting:
   - `AOS_ANCHOR_VENDOR` with a present vendor key validates and **gates**;
-  - `AOS_ANCHOR_MOK` requires **both** a vendor key and a MOK present — a MOK tier with no vendor key is rejected, because MOK is additive to the vendor root, not a replacement;
+  - `AOS_ANCHOR_MOK` requires a **MOK** present; the vendor key is optional, because a machine owner may run entirely on their own key. A MOK tier with **neither** key present is rejected — a gating tier with no key at all is incoherent;
   - `AOS_ANCHOR_NONE` validates with **no** keys present and does **not** gate;
   - `AOS_ANCHOR_VENDOR` or `AOS_ANCHOR_MOK` with the corresponding key **absent** is rejected — a gating tier with no key is incoherent and must fail loudly, never silently degrade to non-gating;
   - `AOS_ANCHOR_HARDWARE` validates structurally but reports **not available**, and does not gate — it is a stub;
