@@ -924,6 +924,7 @@ test-host: test-cc-envelope-dispatch-host
 test-host: test-cc-session-reap-host
 test-host: test-boot-manifest-host
 test-host: test-entropy-host
+test-host: test-trust-anchor-host
 
 .PHONY: test-entropy-host
 test-entropy-host:
@@ -969,6 +970,15 @@ test-remoteos-client-host:
 		tests/test_remoteos_client.c kernel/agentos-root-task/src/remoteos_client.c \
 		-o $(BUILD_TMP_DIR)/test_remoteos_client
 	$(BUILD_TMP_DIR)/test_remoteos_client
+
+.PHONY: test-trust-anchor-host
+test-trust-anchor-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_trust_anchor.c libs/pd-support/trust_anchor.c \
+		-o $(BUILD_TMP_DIR)/test_trust_anchor
+	$(BUILD_TMP_DIR)/test_trust_anchor
 
 .PHONY: test-boot-manifest-host
 test-boot-manifest-host:
