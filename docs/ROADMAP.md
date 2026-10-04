@@ -48,6 +48,7 @@ implementation and evidence; dispatch remains paused.
 | --- | --- | --- |
 | **0.2** | Initial platform evidence and release discipline | Releases become exact-revision, evidence-bound transitions and the systems/security narrative is grounded in retained evidence. The originally planned Ubuntu network desktop proof was deferred to the pinned Debian path. |
 | **0.3** | Trust baseline and virtualizer tier | The OS-claim gate proves guest I/O, the image boots only the PDs the root task spawns, `net_virt` and `blk_virt` are real protection domains so TCB invariant 2 holds for net and block, dead code is gone, and TCB.md describes what boots. |
+| **T** *(release number unassigned; recommended as 0.4)* | Trust and delegation baseline | The control plane is bound to a build-defined authority envelope, protection-domain images are verified before spawn, the live authority graph is observable read-only, and authority can be delegated and lent as a strict subset by the domain that already holds it. See the ranked corrective actions below. |
 | **0.4** | Reproducible Linux, guest graphics, and x86 guest foundation | A pinned Debian guest replaces Ubuntu as the cross-architecture integration baseline, the canonical framebuffer is live on target, generic virtio-gpu plus virtio-input virtualizers drive an AArch64 guest without host-device passthrough, the official Omarchy compatibility ledger is kept current, and a real VMX-backed x86_64 VMM boots Linux reusing canonical net, block, and console services with isolated GPA translation. |
 | **0.5** | Persistent x86 desktop platform | A pinned Arch Linux x86_64 guest installs through UEFI, reboots from writable storage, reaches key-only SSH, and runs a Hyprland-class compositor through canonical graphics and input. |
 | **0.6** | Official Omarchy qualification | A reproducible official Omarchy artifact installs to encrypted persistent storage, reaches its normal Hyprland desktop, and survives evidence-bound update and recovery gates. |
@@ -94,6 +95,103 @@ one data-driven VMM                               |
                          v
                   1.0 qualification
 ```
+
+## Trust and delegation baseline — corrective actions from the 2026-10-03 audit
+
+**Release assignment is an open decision.** The recommendation is that this
+track becomes 0.4 and the current 0.4 guest-graphics and x86 work shifts to
+0.5, because T1 and T3 are prerequisites for any truthful security claim about
+work layered on top of them. The alternative — running this track beside the
+guest-OS line — is viable but risks the two lines diverging on the CC and
+spawn contracts they share. No renumbering has been applied; the release map
+above is unchanged pending that decision.
+
+### Threat model
+
+The vendor is trusted; the local operator is not. The build produces
+cryptographically signed units and the signing key never exists on the board.
+Operators run the hardware, may read anything it holds, and are not assumed to
+act in the platform's interest.
+
+Two consequences shape the track. A secret shipped in the image is not a
+secret from the operator, so authority must derive from the build rather than
+from the confidentiality of a shipped credential. And absent a hardware root
+of trust, an operator with physical access can replace the whole bundle
+including the key that validates it — so image verification and attestation
+have board-dependent scope, recorded per item below rather than assumed.
+
+### Architectural decision: hierarchical delegation, not a central broker
+
+The audit evaluated a proposal for a centralized trust broker that would mint
+and cryptographically sign capabilities on request, maintain a check-in
+registry, and arbitrate discovery. That design is **rejected** for this
+platform, for two reasons recorded here so the decision is not relitigated
+without new argument:
+
+1. A broker able to mint arbitrary authority for any requester is by
+   construction an ambient authority. Its compromise is total, and hardening
+   it does not change that; it only raises the cost of the single event that
+   ends the system's isolation guarantees.
+2. seL4's integrity argument rests on the authority graph being analyzable.
+   Microkit and CAmkES compute that graph offline, which is why
+   `system_desc_aarch64.c` is a compile-time table. A runtime minting
+   authority converts a statically analyzable graph into a runtime-mutable
+   one, discarding the property the platform pays for.
+
+The adopted model is **hierarchical, recursive delegation** (the model Genode
+demonstrates on seL4; the model is adopted, not the codebase). Every
+protection domain is created by a parent, and a parent may delegate only a
+subset of authority it already holds. Authority flows down a tree. There is no
+broker, because every delegation is performed by a domain that already held
+the thing delegated. The graph stays analyzable as an invariant rather than as
+a table: *no domain ever holds authority its parent did not hold.*
+
+Consequences for the original proposal:
+
+| Original requirement | Disposition |
+| --- | --- |
+| Capabilities at every boundary | Native to seL4; the work is closing the boundaries that currently have none (T1) and making the rest observable (T4) |
+| Capability lending for the duration of an operation | Adopted as T5. Implemented as the caretaker pattern: mint a badged, rights-reduced derived capability, revoke on completion. seL4's derivation tree supplies cascading revocation; the platform supplies the bound |
+| Cryptographically signed capabilities | Rejected *inside* a node. seL4 capabilities are unforgeable by kernel construction; a signed bearer token is weaker, because it can be stolen and replayed. Signing is retained only at node edges: image verification (T3), attestation (T8), federation (T9) |
+| Centralized trust broker | Rejected; see above |
+| Check-in registry and discovery with provenance | Replaced by introduction. A domain holding capabilities to two parties introduces them by passing a capability. The capability's existence is the provenance. Within a node this removes the registry rather than securing it |
+| Global view of who holds what | Retained as T4, read-only. An observer that can enumerate authority but mint none is not an ambient authority |
+
+The agentic workload requirement that motivated the proposal is accepted and
+is the reason T6 exists: the static descriptor cannot express agents created
+in response to a task, and that is a genuine limitation of the current design
+rather than a conservative virtue.
+
+### Ranked corrective actions
+
+Ranked by risk retired per unit of work, which is not the same as dependency
+order. T1 through T4 are mutually independent and may proceed in parallel;
+T1 through T3 are ranked first because they retire more risk per unit of work,
+not because T4 waits on them. T5 onward are ordered by dependency.
+
+| Order | MAC task | Corrective action | Proof |
+| --- | --- | --- | --- |
+| T1 | to file | Bound the `cc_pd` control plane to a build-defined operator authority envelope. `handle_connect` currently records a caller-supplied `client_badge` (`cc_pd.c`) with no check, so socket possession is total authority. Because the operator is untrusted and a build-supplied credential is readable by them, the credential selects an envelope rather than authenticating a principal; operations outside it require vendor-signed authorization. Fix `reap_oldest_session`, which lets an unauthenticated peer evict an established session by exhausting the table | A target test in which an in-envelope operation succeeds, an out-of-envelope one is refused even with a valid credential, and a session-exhaustion attempt fails to evict a live session |
+| T2 | to file | Replace the `entropy_svc.c` stub with a real entropy PD. No nonce, key, or challenge can be generated on target today | A target test drawing from the service and asserting the driver's source, not a statistical randomness claim |
+| T3 | to file | Verify protection-domain images before spawn. The root task currently hashes and checks nothing; trust in the PD set is trust in the boot medium. Verification needs only a build-time public key and the existing `libs/pd-support/ed25519_verify.c`, so it does not depend on T2 | A boot that refuses a tampered PD image and names the rejected image, plus an unmodified-image boot through `make gate` |
+| T4 | to file | Read-only authority observer. Enumerate the live capability derivation state and expose it through a mapping that grants no minting authority. Required before T5 and T6 so that delegation can be checked against an observed graph rather than an asserted one | A target test comparing observed authority against the descriptor for the default image, and a fault probe proving the observer cannot mint or write |
+| T5 | to file | Capability lending primitive (caretaker). A library, not a service: the holder mints a badged, rights-reduced derived capability and revokes it on operation completion. Useful within the current static PD set, independent of T6 | A target test in which a borrower exercises lent authority, then faults on the same access after revocation |
+| T6 | to file | Hierarchical delegation and dynamic domain creation. A parent creates a child and endows it from its own authority, with the subsetting invariant enforced and observable via T4. This is the agentic-workload requirement | A target test creating a child that exercises delegated authority and faults on authority the parent withheld, with the observer showing no superset |
+| T7 | to file | `agentos_gui` hardening and a real authority view. Set a restrictive CSP (currently `null`), scope `capabilities/default.json` beyond `core:default`, remove the unused `@tauri-apps/plugin-shell` dependency, and validate the socket path in Rust rather than accepting an arbitrary frontend string. Replace the hardcoded topology graph with the T4 observer feed | GUI tests asserting the command surface is unreachable without the capability grant, and a topology view sourced from observed authority |
+| T8 | to file | Measured boot and remote attestation, built on T2 and T3. Supersedes `boot_integrity.c`, whose Ed25519 key is derived from the data it signs and whose signature is discarded. **Gated on hardware:** without a key store the operator cannot extract, an untrusted operator can attest any state, so this must not ship as a claim until a per-board hardware anchor is confirmed | An attestation a host verifier accepts, and rejects after image substitution — admissible only once the signing key is hardware-anchored |
+| T9 | deferred | Perimeter signing for cross-node authority. Only required if agentOS federates; capabilities do not traverse a network | Deferred — no proof obligation until federation is scoped |
+
+Museum constraint: `docs/TCB.md` forbids extending `cap_broker`, CapStore, and
+the other quarantined components. None of T1 through T9 may be implemented by
+reviving them. `contracts/cap-broker/README.md` additionally describes CNode
+operations its implementation never contained, so it is not a specification
+either.
+
+Explicitly out of scope for this track: the USB, PCI, and timer service stubs,
+and promoting the framebuffer, input, and GPU paths out of their opt-in build
+variants. Those are device-class work on the guest-OS line.
+
+Design: [`trust-delegation-design`](superpowers/specs/2026-10-03-trust-delegation-design.md).
 
 ## Trust baseline — corrective actions from the 2026-09-10 audit
 

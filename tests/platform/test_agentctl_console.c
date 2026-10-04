@@ -64,8 +64,13 @@ static void bootstrap_contract(void)
             if (mode == 0 || mode == 4) {
                 cc_req_wire_t ack;
                 assert(read_full(fds[1], &ack, sizeof(ack)));
-                hello.mr[0] = MSG_CC_CONNECTION_SYNC;
-                assert(memcmp(&ack, &hello, sizeof(ack)) == 0);
+                cc_reply_wire_t expected = hello;
+                expected.mr[0] = MSG_CC_CONNECTION_SYNC;
+                /* The operator credential rides this frame's shmem now
+                 * (cc_operator_credential.h, via agentctl.c's
+                 * connection_sync()). */
+                memcpy(expected.shmem, cc_operator_token, CC_OPERATOR_TOKEN_BYTES);
+                assert(memcmp(&ack, &expected, sizeof(ack)) == 0);
                 hello.mr[0] = CC_OK;
                 if (mode == 4) hello.mr[2]++;
                 assert(write_full(fds[1], &hello, sizeof(hello)));

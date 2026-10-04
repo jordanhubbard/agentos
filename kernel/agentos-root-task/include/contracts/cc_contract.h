@@ -61,11 +61,18 @@
  * it only after transport reset and acceptance of disconnected-input releases.
  * Greeting words: MAGIC, VERSION, generation low, generation high; payload zero.
  * The generation is nonzero and never reused during a CC process lifetime.
- * Host sends CONNECTION_SYNC, VERSION, generation low/high, with zero payload.
+ * Host sends CONNECTION_SYNC, VERSION, generation low/high; payload carries
+ * the operator credential (see cc_operator_credential.h) in the first
+ * CC_OPERATOR_TOKEN_BYTES, zero in the remainder. The credential selects the
+ * connection's authority envelope (cc_envelope.h) for every opcode dispatched
+ * afterward; it does not authenticate a principal, and under this platform's
+ * threat model it is not a secret from the operator. A credential mismatch
+ * closes the connection exactly like any other invalid bootstrap frame — the
+ * connection never goes active and no envelope is granted.
  * CC replies CC_OK, VERSION, generation low/high, with zero payload. Only then
  * may commands be sent. Invalid or partial bootstrap closes/reset the stream;
- * no command is dispatched before synchronization. This is ordering, not
- * authentication. Legacy peers fail closed; there is no legacy fallback.
+ * no command is dispatched before synchronization. Legacy peers fail closed;
+ * there is no legacy fallback.
  * On any ambiguous command/reply failure, close without replaying the command.
  * Each frame direction has a bounded deadline; partial progress cannot renew it.
  * A failed bootstrap may be retried on a fresh socket before any command is sent.
@@ -244,6 +251,7 @@ enum cc_error {
     CC_ERR_RELAY_FAULT      = 8,  /* downstream PPC returned error */
     CC_ERR_INVALID_ARG     = 9,  /* unsupported version or reserved arguments */
     CC_ERR_WOULD_BLOCK     = 10, /* bounded queue has no input space */
+    CC_ERR_NOT_PERMITTED   = 11, /* opcode outside the session's authority envelope */
 };
 
 /* ─── Device type constants (mirrors GUEST_DEV_* from guest_contract.h) ─── */

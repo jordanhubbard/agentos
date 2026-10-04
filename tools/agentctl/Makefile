@@ -15,6 +15,12 @@ CFLAGS  := -O2 -Wall -Wextra -std=c11 -DAGENTOS_TEST_HOST \
            -iquote ../../kernel/agentos-root-task/include -I../../platform/include
 LDFLAGS :=
 
+# Must match the credential the cc_pd image was built with (see
+# kernel/agentos-root-task/Makefile); not a secret, just a shared selector.
+ifneq ($(AGENTOS_CC_OPERATOR_TOKEN),)
+  CFLAGS += -DAGENTOS_CC_OPERATOR_TOKEN='$(AGENTOS_CC_OPERATOR_TOKEN)'
+endif
+
 BUILD_DIR := $(abspath ../../_build/tools/agentctl)
 TARGET  := $(BUILD_DIR)/agentctl
 SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c
@@ -23,7 +29,7 @@ SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../platform/include/platform/operator_session.h ../../platform/include/platform/framebuffer_observer.h ../../platform/include/platform/framebuffer.h ../../platform/include/platform/input.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h ../../kernel/agentos-root-task/include/contracts/cc_transport.h ../../kernel/agentos-root-task/include/contracts/vibeos_contract.h
+$(TARGET): $(SRC) ../../platform/include/platform/inspect.h ../../platform/include/platform/operator_session.h ../../platform/include/platform/framebuffer_observer.h ../../platform/include/platform/framebuffer.h ../../platform/include/platform/input.h ../../kernel/agentos-root-task/include/contracts/cc_contract.h ../../kernel/agentos-root-task/include/contracts/cc_transport.h ../../kernel/agentos-root-task/include/contracts/vibeos_contract.h ../../kernel/agentos-root-task/include/cc_operator_credential.h
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 	@echo "Built: $(TARGET)"

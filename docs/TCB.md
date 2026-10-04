@@ -1406,3 +1406,30 @@ PTYs, file/process operations, gateway/DNS checks and package install/run/remove
 checks; the [session contract](guest-session-acceptance.md) distinguishes this
 from historical `uname -s`-only receipts. The Ubuntu live-media proof is a nightly
 release qualification, not a per-push gate.
+
+`cc_pd` admits only the operations in its build-defined operator envelope
+(`contracts/cc_envelope.h`). The credential presented at `MSG_CC_CONNECTION_SYNC`
+selects the envelope for the life of that connection; a mismatch closes the
+connection. Under the platform threat model the local operator is untrusted and
+can read the image, so the credential is not secret from them and does not
+authenticate a principal — it selects an authority envelope, and an operator who
+extracts it obtains exactly the envelope they already held. Snapshot, restore,
+trace and fault injection are outside the default envelope; fault injection is
+additionally excluded structurally, since `cc_pd` holds no fault-handler
+endpoint unless `AGENTOS_FAULT_INJECT` is defined. Admission is an allowlist, so
+an opcode added later is outside the envelope until admitted deliberately.
+
+`make test-cc-envelope` verifies that an admitted operation succeeds, that a
+credential differing in its final byte has its connection refused, and that an
+out-of-envelope operation is refused with exactly `CC_ERR_NOT_PERMITTED` rather
+than failing for an unrelated reason.
+
+Qualification boundary: `make test-cc-envelope` runs in the CI `os-claim-gate`
+job, which installs the verified SDK artifact, so these results are qualified
+under the pinned SDK in `tools/sdk/default-version`. Development runs performed
+against Microkit SDK 2.1.0 are not the qualifying evidence. `make gate` as a
+whole is not invoked by CI; this proof is run as its own gate step.
+
+This bounds what the CC transport conveys; it does not make the transport a
+capability boundary, does not defend against the local operator, and
+vendor-signed authorization for out-of-envelope operations is not implemented.

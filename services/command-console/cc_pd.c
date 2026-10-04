@@ -34,6 +34,8 @@
 #include "contracts/fault_inject_contract.h"
 #include "contracts/log_drain_contract.h"
 #include "contracts/agent_pool_contract.h"
+#include "contracts/cc_envelope.h"
+#include "cc_operator_credential.h"
 #include "cc_vm_client.h"
 #include "contracts/vm_manager_contract.h"
 #include "sel4_ipc.h"
@@ -566,6 +568,12 @@ typedef struct {
 
 static cc_session_t g_sessions[CC_MAX_SESSIONS];
 
+/* Authority envelope for this connection. Set by a successful CONNECT,
+ * cleared when the connection closes. Not per-session: MR0 is a badge, a
+ * guest handle or a slot id depending on opcode, so it cannot index a
+ * session table at dispatch time. */
+static uint32_t g_envelope = (uint32_t)CC_ENVELOPE_NONE;
+
 /* ─── Log-stream slot table (agentos-vsi) ───────────────────────────────────
  *
  * MSG_CC_LOG_STREAM exposes each guest's serial output as an addressable log
@@ -994,17 +1002,25 @@ static bool cc_lifecycle_boot_guest(uint32_t opcode, uint32_t reason,
  * the leaked session lingers.  Aging every other active session on each
  * dispatch (cc_age_sessions) plus reaping the oldest active session when
  * alloc_session has no free slot lets the next new caller reclaim a slot
- * without a full reboot.  No threshold: the session table is small and the
- * oldest-active session is by definition the most stale once the table is
- * full, so unconditionally reap it.  ticks_since_active >= 1 means the
- * session has not been touched on the current dispatch, so the in-flight
- * caller is never reaped from under itself. */
+ * without a full reboot.  Only sessions already marked EXPIRED are
+ * reclaimed; reaping purely on age allowed an unauthenticated peer to evict
+ * a live session by filling the table.  A table full of live sessions now
+ * refuses new connects.  ticks_since_active >= 1 means the session has not
+ * been touched on the current dispatch, so the in-flight caller is never
+ * reaped from under itself. */
+#define CC_SESSION_EXPIRY_TICKS 4096u
+
 static void cc_age_sessions(void)
 {
     for (uint32_t i = 0u; i < CC_MAX_SESSIONS; i++) {
         if (g_sessions[i].active &&
             g_sessions[i].ticks_since_active < UINT32_MAX) {
             g_sessions[i].ticks_since_active++;
+        }
+        if (g_sessions[i].active &&
+            g_sessions[i].ticks_since_active >= CC_SESSION_EXPIRY_TICKS &&
+            g_sessions[i].state != (uint32_t)CC_SESSION_STATE_EXPIRED) {
+            g_sessions[i].state = (uint32_t)CC_SESSION_STATE_EXPIRED;
         }
     }
 }
@@ -1014,19 +1030,22 @@ static int reap_oldest_session(void)
     int victim = -1;
     uint32_t oldest = 0u;
     for (int i = 0; i < (int)CC_MAX_SESSIONS; i++) {
-        if (g_sessions[i].active &&
-            g_sessions[i].ticks_since_active >= 1u &&
-            g_sessions[i].ticks_since_active >= oldest) {
+        if (!g_sessions[i].active) continue;
+        /* Only a session already marked EXPIRED may be reclaimed. Age alone
+         * is not sufficient: reaping on age let an unauthenticated peer evict
+         * a live session by exhausting the table. */
+        if (g_sessions[i].state != (uint32_t)CC_SESSION_STATE_EXPIRED) continue;
+        if (g_sessions[i].ticks_since_active >= oldest) {
             oldest = g_sessions[i].ticks_since_active;
             victim = i;
         }
     }
-    if (victim >= 0) {
-        g_sessions[victim].active       = false;
-        g_sessions[victim].state        = CC_SESSION_STATE_EXPIRED;
-        g_sessions[victim].resp_pending = 0u;
-        g_sessions[victim].resp_len     = 0u;
-    }
+    if (victim < 0) return -1;
+
+    g_sessions[victim].active       = false;
+    g_sessions[victim].state        = CC_SESSION_STATE_EXPIRED;
+    g_sessions[victim].resp_pending = 0u;
+    g_sessions[victim].resp_len     = 0u;
     return victim;
 }
 
@@ -1065,6 +1084,15 @@ static uint32_t cc_wire_rd32(const uint8_t *src, uint32_t off)
 
 /* ─── Session management handlers ───────────────────────────────────────── */
 
+/*
+ * MSG_CC_CONNECT — establish a session.
+ *
+ * Session-scoped, not connection-scoped: this only creates a slot for the
+ * SEND/RECV relay. The connection's authority envelope is established
+ * earlier, at CONNECTION_SYNC, because that handshake — not CONNECT — is
+ * what every client (including the sessionless INSPECT/OPERATOR_* path)
+ * actually sends once per connection.
+ */
 static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
 {
     int s = alloc_session();
@@ -1074,7 +1102,7 @@ static void handle_connect(const cc_req_wire_t *req, cc_reply_wire_t *rep)
         return;
     }
     g_sessions[s].active             = true;
-    g_sessions[s].client_badge       = req->mr[0]; /* badge in MR1 */
+    g_sessions[s].client_badge       = req->mr[0]; /* advisory; grants nothing */
     g_sessions[s].state              = CC_SESSION_STATE_CONNECTED;
     g_sessions[s].ticks_since_active = 0u;
     g_sessions[s].resp_pending       = 0u;
@@ -1907,6 +1935,22 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
      * this to identify abandoned sessions when the table is full. */
     cc_age_sessions();
 
+    /* Envelope admission.
+     *
+     * The envelope is connection-scoped, not per-session. MR0 is NOT uniformly
+     * a session id — handle_connect reads it as a badge, handle_snapshot as a
+     * guest handle, handle_fault_inject as a slot id — so indexing g_sessions[]
+     * with it would read an unrelated session's envelope. Every session on this
+     * transport shares one serialized socket stream and receives the same
+     * build-fixed envelope, so one module-level value is both correct and
+     * simpler. */
+    if (!cc_envelope_permits(req->opcode, g_envelope)) {
+        sel4_dbg_puts("[cc_pd] refused: outside operator envelope\n");
+        rep->mr[0] = CC_ERR_NOT_PERMITTED;
+        cc_trace_record(req->opcode);
+        return;
+    }
+
     switch (req->opcode) {
     case MSG_CC_FRAME_CAPTURE: handle_frame_capture(req, rep); break;
     case MSG_CC_INPUT_SUBMIT: handle_input_submit(req, rep); break;
@@ -1991,6 +2035,9 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
      * other PD has run to its blocking point and the control console is
      * ready to accept requests.  The controller PD used to print this.
      */
+#if CC_OPERATOR_TOKEN_IS_DEVELOPMENT
+    sel4_dbg_puts("[cc_pd] WARNING: development operator credential in use\n");
+#endif
     cc_dbg_puts("agentOS boot complete\n");
 #ifdef AGENTOS_INSPECT_WRITE_PROBE
     if (aos_inspect_validate((const void *)AOS_INSPECT_BOOT_VA) == AOS_INSPECT_OK) {
@@ -2003,6 +2050,10 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
     while (1) {
         if (g_control.close_pending) {
             greeting_sent = connection_active = false;
+            /* Every close_pending path lands here before the connection can
+             * be reused. A new client must present the credential again;
+             * the previous client's authority must not survive. */
+            g_envelope = (uint32_t)CC_ENVELOPE_NONE;
             __builtin_memset(&g_req, 0, sizeof(g_req));
             __builtin_memset(&g_rep, 0, sizeof(g_rep));
 #ifdef AGENTOS_GUEST_INPUT
@@ -2045,13 +2096,31 @@ void cc_pd_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
         }
         __builtin_memset(&g_rep, 0, sizeof(g_rep));
         if (!connection_active) {
+            /*
+             * The envelope is connection-scoped, not session-scoped: every
+             * client sends CONNECTION_SYNC exactly once as its first frame
+             * or cc_pd closes the connection, and the whole sessionless
+             * INSPECT/OPERATOR_* transport never sends MSG_CC_CONNECT at
+             * all. Establishing authority here, rather than in
+             * handle_connect, means every connection — session-based or
+             * not — carries the same envelope its credential earned.
+             *
+             * The first CC_OPERATOR_TOKEN_BYTES of shmem carry the
+             * credential; the remainder must still be zero (reserved).
+             * A credential mismatch refuses the whole connection via the
+             * existing close_pending path rather than merely the operation
+             * — deliberately stronger than per-opcode refusal, since an
+             * uncredentialed transport has no business staying open.
+             */
             bool valid = g_req.opcode == MSG_CC_CONNECTION_SYNC &&
                 g_req.mr[0] == CC_CONNECTION_VERSION &&
                 g_req.mr[1] == (uint32_t)connection_generation &&
-                g_req.mr[2] == (uint32_t)(connection_generation >> 32);
-            for (unsigned i = 0; i < sizeof(g_req.shmem); ++i)
+                g_req.mr[2] == (uint32_t)(connection_generation >> 32) &&
+                cc_credential_equal(g_req.shmem, cc_operator_token);
+            for (unsigned i = CC_OPERATOR_TOKEN_BYTES; i < sizeof(g_req.shmem); ++i)
                 valid &= g_req.shmem[i] == 0;
             if (!valid) { g_control.close_pending = true; continue; }
+            g_envelope = (uint32_t)CC_ENVELOPE_OPERATOR;
             g_rep.mr[0] = CC_OK;
             g_rep.mr[1] = CC_CONNECTION_VERSION;
             g_rep.mr[2] = (uint32_t)connection_generation;

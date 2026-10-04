@@ -28,6 +28,7 @@
 #include <sys/time.h>
 
 #include "contracts/cc_contract.h"
+#include "cc_operator_credential.h"
 #include "contracts/guest_contract.h"
 #include "contracts/vibeos_contract.h"
 #include <platform/inspect.h>
@@ -207,8 +208,18 @@ static bool connection_sync(int fd)
         !(greeting.mr[2] | greeting.mr[3])) return false;
     for (unsigned i = 0; i < sizeof(greeting.shmem); ++i)
         if (greeting.shmem[i]) return false;
+    /*
+     * The operator credential rides the connection handshake, not CONNECT:
+     * CONNECTION_SYNC is what every client sends exactly once, as its first
+     * frame, including the sessionless INSPECT/OPERATOR_* path that never
+     * sends MSG_CC_CONNECT at all. It occupies the first
+     * CC_OPERATOR_TOKEN_BYTES of this frame's shmem; the remainder stays
+     * zero, matching cc_pd's validation.
+     */
     cc_req_wire_t request = {.opcode = MSG_CC_CONNECTION_SYNC,
         .mr = {CC_CONNECTION_VERSION, greeting.mr[2], greeting.mr[3]}};
+    for (unsigned i = 0; i < CC_OPERATOR_TOKEN_BYTES; ++i)
+        request.shmem[i] = cc_operator_token[i];
     if (!write_full(fd, &request, sizeof(request)) ||
         !read_full(fd, &reply, sizeof(reply))) return false;
     greeting.mr[0] = CC_OK;
@@ -393,6 +404,9 @@ done:
 
 static int cmd_connect(void)
 {
+    /* MSG_CC_CONNECT only allocates a session slot now; the operator
+     * credential rides the CONNECTION_SYNC handshake (connection_sync()),
+     * which every connection already completed before this call. */
     cc_reply_wire_t r;
     if (!cc_call(MSG_CC_CONNECT, MY_BADGE, CC_CONNECT_FLAG_BINARY, 0,
                  NULL, 0, &r)) return 1;
