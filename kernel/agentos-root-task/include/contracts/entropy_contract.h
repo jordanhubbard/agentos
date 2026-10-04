@@ -24,7 +24,7 @@
 #define AOS_ENTROPY_MAX_BYTES  64u
 
 #ifndef MSG_ENTROPY_GET
-#define MSG_ENTROPY_GET        0x2700u
+#define MSG_ENTROPY_GET        0x2C01u
 #endif
 
 #define AOS_ENTROPY_OK             0

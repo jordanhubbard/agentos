@@ -1010,6 +1010,11 @@ static inline void log_drain_write(uint32_t slot, uint32_t pd_id, const char *ms
 #define MSG_VMM_VCPU_GET_REGS           0x2B06  /* MR1=vcpu_cap → MR0=ok; vcpu_regs_t in shmem */
 #define MSG_VMM_INJECT_IRQ              0x2B07  /* MR1=vmm_token MR2=guest_id MR3=irq_num → MR0=ok */
 
+/* ─── Entropy device PD opcodes (0x2C00) ─────────────────────────────────── */
+/* MSG_ENTROPY_GET is defined in contracts/entropy_contract.h (0x2C01), not
+ * here, so the entropy request/reply structs stay host-testable without
+ * pulling in the rest of agentos.h. This header comment reserves the block. */
+
 /* ─── Channel IDs for new Phase 1 PDs ───────────────────────────────────── */
 #define CH_GPU_SHMEM          61u   /* controller -> gpu_shmem (PPC) */
 #define CH_DEBUG_BRIDGE       62u   /* controller -> debug_bridge (PPC) */
