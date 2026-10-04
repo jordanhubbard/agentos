@@ -1485,12 +1485,6 @@ whole is not invoked by CI; this proof is run as its own gate step.
 This bounds what the CC transport conveys; it does not make the transport a
 capability boundary, does not defend against the local operator, and
 vendor-signed authorization for out-of-envelope operations is not implemented.
-Qualification boundary: these results were obtained under Microkit SDK 2.1.0,
-not the qualified pin in `tools/sdk/default-version`, and must be re-run on the
-pinned SDK for release qualification. This bounds what the CC transport conveys;
-it does not make the transport a capability boundary, does not defend against
-the local operator, and vendor-signed authorization for out-of-envelope
-operations is not implemented.
 
 ### Boot authority observation
 

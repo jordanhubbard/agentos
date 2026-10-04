@@ -924,7 +924,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             || args.log_isolation_probe.is_some()
             || args.cc_envelope_probe.is_some()
             || args.authority_probe.is_some()
-            || args.assert_entropy_unavailable)
+            || args.assert_entropy_unavailable
             || args.assert_cap_lending)
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
         "inspect qualification requires AArch64 with guest-os none"
