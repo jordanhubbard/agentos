@@ -120,6 +120,39 @@
  * exactly one thing to check. */
 #define AOS_CHILD_SPAWN_PARENT_NTFN_SLOT       49u
 
+/*
+ * Pin the whole fixed-slot layout at compile time, same style
+ * system_desc.h:305 already uses for its own slot ordering. This is
+ * exactly the class of bug the implementer hit by booting (self-ref and
+ * content-frame slots originally overlapped the scratch range) --
+ * without these asserts, nothing notices if a future edit renumbers one
+ * constant and creates a silent overlap again.
+ */
+_Static_assert(AOS_CHILD_SPAWN_SELF_TCB_SLOT > AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
+               "child-spawn fixed slots must be strictly ordered");
+_Static_assert(AOS_CHILD_SPAWN_POOL_SLOT > AOS_CHILD_SPAWN_SELF_TCB_SLOT,
+               "child-spawn fixed slots must be strictly ordered");
+_Static_assert(AOS_CHILD_SPAWN_ASID_POOL_SLOT > AOS_CHILD_SPAWN_POOL_SLOT,
+               "child-spawn fixed slots must be strictly ordered");
+_Static_assert(AOS_CHILD_SPAWN_SCHEDCONTROL_SLOT > AOS_CHILD_SPAWN_ASID_POOL_SLOT,
+               "child-spawn fixed slots must be strictly ordered");
+_Static_assert(AOS_CHILD_SPAWN_PARENT_NTFN_SLOT > AOS_CHILD_SPAWN_SCHEDCONTROL_SLOT,
+               "child-spawn fixed slots must be strictly ordered");
+_Static_assert(AOS_CHILD_SPAWN_SELF_VSPACE_SLOT > AOS_CHILD_SPAWN_PARENT_NTFN_SLOT,
+               "child-spawn fixed slots must be strictly ordered");
+_Static_assert(AOS_CHILD_SPAWN_CONTENT_FRAME_SLOT > AOS_CHILD_SPAWN_SELF_VSPACE_SLOT,
+               "child-spawn fixed slots must be strictly ordered");
+_Static_assert(AOS_CHILD_SPAWN_SCRATCH_BASE > AOS_CHILD_SPAWN_CONTENT_FRAME_SLOT,
+               "aos_child_spawn()'s own scratch range must start strictly "
+               "above every fixed boot-time grant slot, or its internal "
+               "retypes will clobber a capability child_spawn_parent.c "
+               "still needs");
+_Static_assert(AOS_CHILD_SPAWN_PARENT_SCRATCH_PT_BASE >=
+               AOS_CHILD_SPAWN_SCRATCH_BASE + AOS_CHILD_SPAWN_SCRATCH_COUNT,
+               "child_spawn_parent.c's own page-table scratch range must "
+               "not overlap aos_child_spawn()'s internal scratch range");
+
+
 /* ── Child-side layout (chosen by the parent, not granted by root --
  * the child does not exist until the parent creates it) ───────────────── */
 

@@ -1321,8 +1321,10 @@ $(BUILD_DIR)/cap_lend_borrower.elf: $(BUILD_DIR)/cap_lend_borrower.o $(BUILD_DIR
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # T6: run-time child-domain-creation demonstration pair. child_spawn.o/
-# cap_lend.o/cap_lease.o/endowment.o build through the generic
-# libs/pd-support pattern rule above (line ~1171).
+# endowment.o build through the generic libs/pd-support pattern rule above
+# (line ~1171). Endowment mints directly (seL4_CNode_Mint), not through
+# T5's cap_lend.c, so this pair does not link cap_lend.o/cap_lease.o at
+# all -- see child_spawn.h's "Endowment: a MINT, not a loan".
 #
 # child_spawn_child.elf is built exactly like any other service PD (same
 # pd_entry.o/_start, same tools/ld/agentos.ld link address) but is NOT
@@ -1356,7 +1358,7 @@ $(BUILD_DIR)/child_spawn_payload.o: $(BUILD_DIR)/child_spawn_payload.bin
 $(BUILD_DIR)/child_spawn_parent.o: $(REPO_ROOT)/tests/child-spawn/parent_pd.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
-$(BUILD_DIR)/child_spawn_parent.elf: $(BUILD_DIR)/child_spawn_parent.o $(BUILD_DIR)/child_spawn.o $(BUILD_DIR)/cap_lend.o $(BUILD_DIR)/cap_lease.o $(BUILD_DIR)/endowment.o $(BUILD_DIR)/child_spawn_payload.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+$(BUILD_DIR)/child_spawn_parent.elf: $(BUILD_DIR)/child_spawn_parent.o $(BUILD_DIR)/child_spawn.o $(BUILD_DIR)/endowment.o $(BUILD_DIR)/child_spawn_payload.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # Swap slot sources need wasm3 headers + bare-metal shim

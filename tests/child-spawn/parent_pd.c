@@ -25,6 +25,7 @@
  */
 #include <sel4/sel4.h>
 
+#include "boot_info.h" /* AGENTOS_MEMORY_FENCE() */
 #include "child_spawn.h"
 #include "contracts/child_spawn_contract.h"
 #include "sel4_ipc.h"
@@ -77,36 +78,19 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
      *
      * AOS_CHILD_SPAWN_PARENT_SCRATCH_VA is not part of any region root's
      * normal PD construction mapped (ELF image, stack, IPC buffer), so it
-     * has no page table yet -- retype one on seL4_FailedLookup, same
-     * bounded retry pattern child_spawn.c's map_frame_retrying uses, using
-     * dedicated scratch slots outside aos_child_spawn()'s own range. */
-    {
-        int mapped = 0;
-        for (unsigned attempt = 0; attempt < AOS_CHILD_SPAWN_MAX_PT_LEVELS; attempt++) {
-            seL4_Error err = seL4_ARM_Page_Map(content_frame, AOS_CHILD_SPAWN_SELF_VSPACE_SLOT,
-                AOS_CHILD_SPAWN_PARENT_SCRATCH_VA, seL4_AllRights,
-                seL4_ARM_Default_VMAttributes);
-            if (err == seL4_NoError) {
-                mapped = 1;
-                break;
-            }
-            if (err != seL4_FailedLookup || attempt >= 4u) {
-                break;
-            }
-            seL4_CPtr pt = AOS_CHILD_SPAWN_PARENT_SCRATCH_PT_BASE + attempt;
-            if (seL4_Untyped_Retype(AOS_CHILD_SPAWN_POOL_SLOT, seL4_ARM_PageTableObject, 0u,
-                    AOS_CHILD_SPAWN_SELF_CNODE_SLOT, 0u, 0u, pt, 1u) != seL4_NoError) {
-                break;
-            }
-            if (seL4_ARM_PageTable_Map(pt, AOS_CHILD_SPAWN_SELF_VSPACE_SLOT,
-                    AOS_CHILD_SPAWN_PARENT_SCRATCH_VA, seL4_ARM_Default_VMAttributes) != seL4_NoError) {
-                break;
-            }
-        }
-        if (!mapped) {
-            serial_log_puts(&log_channel, "[child-spawn-parent] FAIL prep3\n");
-            park();
-        }
+     * has no page table yet -- retype on seL4_FailedLookup via the SAME
+     * aos_pt_scratch_t/aos_pt_map_retrying() child_spawn.c itself uses
+     * internally (see child_spawn.h), rather than a second hand-rolled
+     * copy of that retry loop, using dedicated scratch slots outside
+     * aos_child_spawn()'s own range. */
+    aos_pt_scratch_t pt_scratch;
+    aos_pt_scratch_init(&pt_scratch, AOS_CHILD_SPAWN_POOL_SLOT,
+                         AOS_CHILD_SPAWN_SELF_CNODE_SLOT, AOS_CHILD_SPAWN_PARENT_CNODE_BITS,
+                         AOS_CHILD_SPAWN_PARENT_SCRATCH_PT_BASE, 4u);
+    if (aos_pt_map_retrying(&pt_scratch, content_frame, AOS_CHILD_SPAWN_SELF_VSPACE_SLOT,
+            AOS_CHILD_SPAWN_PARENT_SCRATCH_VA) != seL4_NoError) {
+        serial_log_puts(&log_channel, "[child-spawn-parent] FAIL prep3\n");
+        park();
     }
     seL4_Word blob_len = (seL4_Word)(__child_spawn_payload_end - __child_spawn_payload_start);
     if (blob_len > 4096u) {
@@ -123,12 +107,36 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
     }
     /* Bytes at [blob_len, 4096) stay zero from the fresh retype -- exactly
      * what the child's .bss, if any, needs, as long as the child's whole
-     * image (code + rodata + data + bss) fits in one page. */
+     * image (code + rodata + data + bss) fits in one page.
+     *
+     * Publish these writes past THIS PD's own D-cache before unmapping
+     * and handing the frame to aos_child_spawn(), which maps it into the
+     * CHILD's VSpace: AArch64 requires explicit data-cache maintenance
+     * here, exactly as kernel/agentos-root-task/src/pd_vspace.c's
+     * sync_scratch_frame() documents and does for root's own identical
+     * scratch-alias-then-remap pattern ("AArch64 requires explicit
+     * data-cache maintenance ... x86-64 is cache coherent"). Without
+     * this, the child's instruction fetch from this frame can observe
+     * stale or uninitialised memory on real hardware even though the
+     * writes above are complete from this PD's own point of view --
+     * QEMU TCG has no cache model and will not catch a missing clean. */
+    if (seL4_ARM_Page_CleanInvalidate_Data(content_frame, 0u, 4096u) != seL4_NoError) {
+        serial_log_puts(&log_channel, "[child-spawn-parent] FAIL prep5\n");
+        park();
+    }
+    AGENTOS_MEMORY_FENCE();
     seL4_ARM_Page_Unmap(content_frame);
 
-    /* ── Step 3: declare what this PD actually holds, and what it will
+    /* ── Step 3: declare what this PD claims to hold, and what it will
      * endow. Exactly one capability, so Task 1's subsetting check has
-     * exactly one entry to verify on each side. ── */
+     * exactly one entry to verify on each side. `holdings` is this PD's
+     * own assertion, not independently measured (see child_spawn.h's doc
+     * comment on aos_child_spawn_req_t.parent_holdings) -- it happens to
+     * be true here because the notification really was just freshly
+     * retyped with full rights, but the real guarantee that `endow`
+     * cannot exceed it comes from seL4_CNode_Mint's own rights-masking
+     * against the real source capability at mint time, not from this
+     * struct. ── */
     aos_endowment_t holdings = {
         .version = AOS_ENDOWMENT_VERSION,
         .count = 1u,
