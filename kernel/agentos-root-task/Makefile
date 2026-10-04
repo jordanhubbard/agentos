@@ -648,6 +648,7 @@ PD_TIMEPARTITION_SRCS    := $(REPO_ROOT_MK)/services/legacy-pds/time_partition.c
 PD_TRACERECORDER_SRCS    := $(REPO_ROOT_MK)/services/legacy-pds/trace_recorder.c src/m3_bare_metal.c src/log.c
 PD_NAMESERVER_SRCS       := $(REPO_ROOT_MK)/services/nameserver/nameserver.c src/m3_bare_metal.c src/log.c
 PD_VIRTIO_BLK_SRCS       := $(REPO_ROOT_MK)/services/block-driver/virtio_blk.c $(REPO_ROOT_MK)/services/block-driver/virtio_host_transport.c src/m3_bare_metal.c src/log.c
+PD_ENTROPY_PD_SRCS       := $(REPO_ROOT_MK)/services/entropy-service/entropy_svc.c $(REPO_ROOT_MK)/services/entropy-service/entropy_proto.c $(REPO_ROOT_MK)/services/block-driver/virtio_host_transport.c src/m3_bare_metal.c src/log.c
 PD_VFS_SERVER_SRCS       := $(REPO_ROOT_MK)/services/legacy-pds/vfs_server.c src/m3_bare_metal.c src/log.c
 PD_SPAWN_SERVER_SRCS     := $(REPO_ROOT_MK)/services/legacy-pds/spawn_server.c $(REPO_ROOT_MK)/libs/pd-support/sha256_mini.c src/m3_bare_metal.c src/log.c
 PD_APP_SLOT_SRCS         := $(REPO_ROOT_MK)/services/legacy-pds/app_slot.c $(REPO_ROOT_MK)/libs/pd-support/sha256_mini.c src/m3_bare_metal.c src/log.c
@@ -686,7 +687,7 @@ _PD_SRC_VARS := \
     PD_AGENTFS_SRCS PD_VIBEENGINE_SRCS PD_SWAPSLOT_SRCS PD_LOG_DRAIN_SRCS \
     PD_SERIAL_PD_SRCS PD_MEMPROFILER_SRCS PD_NETISOLATOR_SRCS PD_SNAPSHOTSCHED_SRCS \
     PD_PERFCOUNTERS_SRCS PD_TIMEPARTITION_SRCS PD_TRACERECORDER_SRCS PD_NAMESERVER_SRCS \
-    PD_VIRTIO_BLK_SRCS PD_VFS_SERVER_SRCS PD_SPAWN_SERVER_SRCS PD_APP_SLOT_SRCS \
+    PD_VIRTIO_BLK_SRCS PD_ENTROPY_PD_SRCS PD_VFS_SERVER_SRCS PD_SPAWN_SERVER_SRCS PD_APP_SLOT_SRCS \
     PD_NET_SERVER_SRCS PD_NET_PD_SRCS PD_NET_VIRT_SRCS PD_BLK_VIRT_SRCS PD_SERIAL_VIRT_SRCS PD_WG_NET_SRCS PD_APP_MANAGER_SRCS \
     PD_HTTP_SVC_SRCS PD_VM_MANAGER_SRCS PD_AUTH_SERVER_SRCS PD_EXT2FS_SRCS \
     PD_PROC_SERVER_SRCS PD_VM_SNAPSHOT_SRCS PD_PFLOCAL_SERVER_SRCS PD_PFLOCAL_SRCS \
@@ -727,6 +728,7 @@ TIMEPARTITION_OBJS    := $(call pd_objects,$(PD_TIMEPARTITION_SRCS))
 TRACERECORDER_OBJS    := $(call pd_objects,$(PD_TRACERECORDER_SRCS))
 NAMESERVER_OBJS       := $(call pd_objects,$(PD_NAMESERVER_SRCS))
 VIRTIO_BLK_OBJS       := $(call pd_objects,$(PD_VIRTIO_BLK_SRCS))
+ENTROPY_PD_OBJS       := $(call pd_objects,$(PD_ENTROPY_PD_SRCS))
 VFS_SERVER_OBJS       := $(call pd_objects,$(PD_VFS_SERVER_SRCS))
 SPAWN_SERVER_OBJS     := $(call pd_objects,$(PD_SPAWN_SERVER_SRCS))
 APP_SLOT_OBJS         := $(call pd_objects,$(PD_APP_SLOT_SRCS))
@@ -764,7 +766,7 @@ TIMER_PD_OBJS         := $(call pd_objects,$(PD_TIMER_PD_SRCS))
 FAULT_HANDLER_OBJS    := $(call pd_objects,$(PD_FAULT_HANDLER_SRCS))
 FAULT_INJECT_OBJS     := $(call pd_objects,$(PD_FAULT_INJECT_SRCS))
 
-IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf net_virt.elf blk_virt.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf usb_pd.elf cc_pd.elf gpu_sched.elf timer_svc.elf entropy_svc.elf block_svc.elf usb_svc.elf model_svc.elf tool_svc.elf irq_pd.elf timer_pd.elf fault_handler.elf
+IMAGES := controller.elf event_bus.elf init_agent.elf worker.elf agentfs.elf vibe_engine.elf vibeos.elf log_drain.elf serial_pd.elf swap_slot.elf mem_profiler.elf net_isolator.elf perf_counters.elf time_partition.elf trace_recorder.elf nameserver.elf virtio_blk.elf vfs_server.elf spawn_server.elf app_slot.elf net_server.elf net_pd.elf net_virt.elf blk_virt.elf wg_net.elf app_manager.elf http_svc.elf vm_manager.elf auth_server.elf ext2fs.elf proc_server.elf vm_snapshot.elf pflocal_server.elf exec_server.elf term_server.elf block_pd.elf framebuffer_pd.elf usb_pd.elf cc_pd.elf gpu_sched.elf timer_svc.elf entropy_pd.elf block_svc.elf usb_svc.elf model_svc.elf tool_svc.elf irq_pd.elf timer_pd.elf fault_handler.elf
 
 # Optional: periodic WASM slot snapshot scheduler
 ifdef AGENTOS_SNAPSHOT_SCHED
@@ -1106,10 +1108,6 @@ $(BUILD_DIR)/timer_svc.o: $(SERVICES_DIR)/timer-service/timer_svc.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/entropy_svc.o: $(SERVICES_DIR)/entropy-service/entropy_svc.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) -c $(CFLAGS) $< -o $@
-
 $(BUILD_DIR)/block_svc.o: $(SERVICES_DIR)/block-service/block_svc.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
@@ -1163,6 +1161,10 @@ $(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/platform/guest-vmm/%.c
 	$(CC) -c $(CFLAGS) $< -o $@
 
 $(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/block-driver/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: $(REPO_ROOT_MK)/services/entropy-service/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -1310,8 +1312,8 @@ $(BUILD_DIR)/vibeos.elf: $(VIBEOS_OBJS)
 $(BUILD_DIR)/timer_svc.elf: $(BUILD_DIR)/timer_svc.o
 	$(LD) $(LDFLAGS) $^ $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(LIBS) -o $@
 
-$(BUILD_DIR)/entropy_svc.elf: $(BUILD_DIR)/entropy_svc.o
-	$(LD) $(LDFLAGS) $^ $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(LIBS) -o $@
+$(BUILD_DIR)/entropy_pd.elf: $(ENTROPY_PD_OBJS)
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/block_svc.elf: $(BUILD_DIR)/block_svc.o
 	$(LD) $(LDFLAGS) $^ $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(LIBS) -o $@

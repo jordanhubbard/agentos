@@ -78,6 +78,11 @@ static inline bool cc_envelope_admits(cc_envelope_t envelope, uint32_t opcode)
     case MSG_CC_LOG_STREAM:
     case MSG_CC_INSPECT:
     case MSG_CC_AUTHORITY:
+    /* Relay-only: forwards MSG_ENTROPY_GET to entropy_pd so the qemu-test
+     * harness can exercise its reachability and absent-device/range
+     * behavior (make test-entropy-unavailable). entropy_pd performs every
+     * validation itself; this opcode carries no extra authority. */
+    case MSG_CC_ENTROPY_GET:
     case MSG_CC_OPERATOR_READ:
     case MSG_CC_OPERATOR_WRITE:
     case MSG_CC_LIST_GUESTS:

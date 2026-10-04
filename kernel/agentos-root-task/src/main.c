@@ -171,6 +171,7 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #include "serial_log.h"
 #endif
 #include <platform/net_host_layout.h> /* host net MMIO/private DMA/shared bridge */
+#include <platform/entropy_host_layout.h> /* host entropy MMIO/queue layout       */
 #include <platform/guest_memory_layout.h> /* guest GPA and VMM HVA windows        */
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
 #include <platform/inspect.h>
@@ -1241,6 +1242,31 @@ static seL4_Error allocate_network_dma(const aos_net_pci_info_t *pci)
     if (pci) *(aos_net_pci_info_t *)(RT_BLK_SCRATCH_VA + AOS_NET_PCI_INFO_OFF) = *pci;
     AGENTOS_MEMORY_FENCE();
     return seL4_ARCH_Page_Unmap(g_net_dma_frame_cap);
+}
+/* entropy_pd's private virtqueue/data frame. Not shared with any other PD:
+ * entropy_pd is the sole owner, mirroring the net/blk DMA windows.
+ * entropy_pd has no device frame on this machine at all (see
+ * services/entropy-service/entropy_svc.c and docs/TCB.md) -- this is the
+ * only frame the root task provisions for it. */
+static seL4_CPtr g_entropy_queue_frame_cap = seL4_CapNull;
+static seL4_Error allocate_entropy_queue(void)
+{
+    _Static_assert(AGENTOS_ENTROPY_QUEUE_SIZE == (1UL << seL4_PageBits),
+                   "host entropy queue layout must match the SDK small frame");
+    seL4_Error err = ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &g_entropy_queue_frame_cap);
+    if (err != seL4_NoError) return err;
+    seL4_ARCH_Page_GetAddress_t address = seL4_ARCH_Page_GetAddress(g_entropy_queue_frame_cap);
+    if (address.error != seL4_NoError) return address.error;
+    err = pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
+                                     g_entropy_queue_frame_cap, RT_VQ_SCRATCH_VA);
+    if (err != seL4_NoError) return err;
+    agentos_entropy_shared_meta_t *meta = (agentos_entropy_shared_meta_t *)RT_VQ_SCRATCH_VA;
+    *meta = (agentos_entropy_shared_meta_t){
+        .magic = AGENTOS_ENTROPY_SHARED_MAGIC, .version = AGENTOS_ENTROPY_SHARED_VERSION,
+        .paddr = address.paddr, .size = AGENTOS_ENTROPY_QUEUE_SIZE,
+    };
+    AGENTOS_MEMORY_FENCE();
+    return seL4_ARCH_Page_Unmap(g_entropy_queue_frame_cap);
 }
 static seL4_CPtr g_host_secondary_blk_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
@@ -2529,6 +2555,27 @@ void root_task_main(const seL4_BootInfo *bi)
     if (allocate_network_dma(NULL) != seL4_NoError) {
         dbg_puts("[rt] network DMA allocation failed; refusing startup\n");
         return;
+    }
+
+    {
+        /*
+         * No MMIO frame is provisioned for entropy_pd on this machine:
+         * QEMU virt has no virtio-mmio slot left to give it (every one of
+         * the 32 is already owned -- see
+         * services/entropy-service/entropy_svc.c and docs/TCB.md), and a
+         * physical address outside that aperture is not a safe substitute
+         * either -- reading genuinely unbacked physical memory was tried
+         * and reliably wedged the reading thread instead of faulting
+         * cleanly. entropy_mmio_vaddr therefore stays 0 in entropy_pd,
+         * which its own init code treats as "no device frame provisioned"
+         * and reports AOS_ENTROPY_ERR_UNAVAILABLE without touching memory
+         * that isn't there. Only the private queue/data frame below is
+         * allocated.
+         */
+        seL4_Error entropy_q_err = allocate_entropy_queue();
+        dbg_puts("[rt] entropy queue frame allocation err=");
+        dbg_hex((seL4_Word)entropy_q_err);
+        dbg_puts("\n");
     }
 #endif
 
@@ -3997,6 +4044,43 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] x86 host network driver resources mapped\n");
 #endif
         }
+
+        /* ── 4g.4.6d: Give entropy_pd sole access to its private queue frame ──
+         * entropy_pd has no device frame on this machine at all -- every
+         * virtio-mmio slot QEMU virt exposes already belongs to
+         * cc_pd/virtio_blk/net_pd, and genuinely unbacked physical memory
+         * outside that aperture reliably wedges a reading thread rather
+         * than faulting cleanly (see services/entropy-service/entropy_svc.c
+         * and docs/TCB.md for how that was confirmed), so none is mapped
+         * here. The private queue/data frame allocate_entropy_queue()
+         * reserved at boot is the only thing mapped; no other PD maps it.
+         * A mapping failure here does not block PD start: entropy_svc
+         * detects a missing device frame or bad queue metadata at init
+         * and reports AOS_ENTROPY_ERR_UNAVAILABLE rather than spinning
+         * (see services/entropy-service/entropy_svc.c). */
+#if defined(__aarch64__)
+        if (name_eq(pd->name, "entropy_pd")) {
+            seL4_Error entropy_q_err = seL4_NotEnoughMemory;
+            if (g_entropy_queue_frame_cap != seL4_CapNull) {
+                seL4_Word entropy_queue_copy = ut_alloc_slot();
+                if (entropy_queue_copy != seL4_CapNull) {
+                    entropy_q_err = seL4_CNode_Copy(
+                        seL4_CapInitThreadCNode, entropy_queue_copy, 64u,
+                        seL4_CapInitThreadCNode,
+                        g_entropy_queue_frame_cap, 64u,
+                        seL4_AllRights);
+                    if (entropy_q_err == seL4_NoError) {
+                        entropy_q_err = pd_vspace_map_device_frame(
+                            vspace, (seL4_CPtr)entropy_queue_copy,
+                            AGENTOS_ENTROPY_QUEUE_VA);
+                    }
+                }
+            }
+            dbg_puts("[rt] entropy_pd queue frame map err=");
+            dbg_hex((seL4_Word)entropy_q_err);
+            dbg_puts("\n");
+        }
+#endif
 
         /* ── 4g.4.7: Set up VirtIO serial transport for cc_pd ───────────────── */
         /*

@@ -499,6 +499,16 @@ jobs:
       - name: GATE — make test-image-verify
         timeout-minutes: 15
         run: make test-image-verify
+      # entropy_pd reachability and safe degradation. NOT a working-entropy
+      # proof: QEMU virt's virtio-mmio aperture is fully subscribed before
+      # entropy_pd exists (docs/TCB.md), so no device is ever attached here.
+      # This only proves the service answers, reports
+      # AOS_ENTROPY_ERR_UNAVAILABLE rather than hanging/faulting/fabricating
+      # bytes, and validates an over-length request with
+      # AOS_ENTROPY_ERR_RANGE.
+      - name: GATE — make test-entropy-unavailable
+        timeout-minutes: 10
+        run: make test-entropy-unavailable
 
       - name: Boot gate summary
         run: |
@@ -507,6 +517,8 @@ jobs:
           echo "   - x86_64  GUEST_OS=none (target/QEMU)"
           echo "   - CC operator authority envelope (admit / refuse / exact code)"
           echo "   - PD image verification (control / tampered-PD refusal / stripped-manifest refusal)"
+          echo "   - entropy_pd reachable; reports UNAVAILABLE (no device wired"
+          echo "     on QEMU virt) and validates over-length requests"
           echo "GUEST_OS=none is a stub VMM: this proves PD load and root-task"
           echo "parking only. Guest I/O is proven by the guest proof jobs; the"
           echo "os-claim-summary job combines them."

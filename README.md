@@ -59,7 +59,7 @@ project rules are [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md).
 
 ## Booted PD set
 
-The default AArch64 image boots 13 PDs. The list is checked in two places that
+The default AArch64 image boots 15 PDs. The list is checked in two places that
 must agree: `kernel/agentos-root-task/src/system_desc_aarch64.c` (what the
 root task spawns) and `kernel/agentos-root-task/agentos.toml` (what is bundled
 into the image). A bundle entry with no descriptor row is never started; a
@@ -70,12 +70,14 @@ descriptor row with no bundle entry fails at ELF load.
 | `nameserver` | Service name registry; spawned first | `services/nameserver/nameserver.c` |
 | `log_drain` | Log ring drain | `services/log-drain/log_drain.c` |
 | `serial_pd` | Owns the PL011 UART frame + IRQ | `services/serial-mux/serial_pd.c` |
-| `vibe_engine` | Dynamic-guest relay hop (not TCB) | `services/vibe-engine/vibe_engine.c` |
 | `virtio_blk` | Owns QEMU virtio-blk (bus.8) and the bounded DMA window | `services/block-driver/virtio_blk.c` |
 | `block_pd` | Block service | `services/block-driver/block_pd.c` |
 | `net_pd` | Owns QEMU virtio-net (bus.16) | `services/net-service/net_pd.c` |
 | `net_virt` | Network virtualizer; no device, no IRQ | `platform/net-virt/net_virt.c` |
 | `blk_virt` | Block virtualizer; no device, no IRQ | `platform/blk-virt/blk_virt.c` |
+| `serial_virt` | Serial queue virtualizer; no device, no IRQ | `platform/serial-virt/serial_virt.c` |
+| `operator_session` | Read-only native serial client | `platform/operator-session/operator_pd.c` |
+| `entropy_pd` | Has no device frame on this machine at all — every virtio-mmio slot QEMU `virt` exposes is already owned, and unbacked physical memory outside that range reliably wedges a reading thread rather than faulting cleanly (see `docs/TCB.md`) — so it reports `AOS_ENTROPY_ERR_UNAVAILABLE` to every request; its virtio-rng handshake code is real but unexercised here, not a working entropy source | `services/entropy-service/entropy_svc.c` |
 | `guest_vmm_primary` | vCPU, vGIC, emulated virtio for the primary guest | `platform/guest-vmm/guest_vmm.c` |
 | `vm_manager` | Guest lifecycle control (create, bind, status) | `services/vm-manager/vm_manager.c` |
 | `cc_pd` | Owns QEMU virtio-serial (bus.2): the harness/`agentctl` console; prints `agentOS boot complete` | `services/command-console/cc_pd.c` |

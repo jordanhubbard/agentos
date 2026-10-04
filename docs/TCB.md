@@ -1086,10 +1086,11 @@ guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
 **Status:** museum PDs are no longer bundled or booted. The root task
-spawns exactly the PDs in `src/system_desc_aarch64.c` (14 in the default
+spawns exactly the PDs in `src/system_desc_aarch64.c` (15 in the default
 image: `nameserver`, `log_drain`, `serial_pd`, `virtio_blk`,
 `block_pd`, `blk_virt`, `net_pd`, `net_virt`, `serial_virt`, `guest_vmm_primary`,
-`vm_manager`, `cc_pd`, `fault_handler`, `operator_session`; `guest_vmm_secondary`, `fault_inject`,
+`vm_manager`, `cc_pd`, `fault_handler`, `operator_session`, `entropy_pd`;
+`guest_vmm_secondary`, `fault_inject`,
 and `test_runner` + `event_bus` are added only to the image variants that use
 them), and
 `agentos.toml` lists that same set and nothing else (MAC
@@ -1108,6 +1109,57 @@ also uses the separate serial virtualizer and CC frontend queues. The
 printed by `cc_pd`, the lowest-priority PD in the image, right before it enters
 its request loop. `tests/platform/lint_source_invariants.c` fails if any of
 the dropped PDs reappears in the default descriptor.
+
+**`entropy_pd` has no live source, and no device frame at all, on QEMU
+`virt` today.** It is in the booted set and its virtio-rng handshake code
+(reset, ACKNOWLEDGE/DRIVER, feature negotiation, queue setup) is real and
+ready to drive a device -- but the root task provisions it with no MMIO
+frame on this machine, so that code never runs here.
+
+Why no frame: QEMU `virt`'s virtio-mmio aperture is exactly 32 slots (4
+retypeable 4 KiB pages), and all four pages are already exclusively owned
+by `cc_pd` (page 0, alongside the root task's own probe frame),
+`virtio_blk`'s primary and secondary media (pages 1 and 3), and `net_pd`
+(page 2) -- confirmed by a failed retype at the first slot tried and by
+`qemu-system-aarch64 -machine virt,help` / `info mtree`. Giving entropy_pd
+any of the 32 would mean two PDs mapping one physical frame, the TCB
+invariant 1 violation this project exists to prevent, and QEMU will not
+create a 33rd bus.
+
+The obvious next idea -- retype a page from the same device-untyped region
+but past the 32-slot array, and have entropy_pd treat it as if it were a
+device register bank -- was tried during development and rejected on two
+grounds. First, it does not work: a guest read of physical memory QEMU
+does not model at all (confirmed via its monitor: `xp` on that address
+reports "Cannot access memory") does not deliver a prompt, catchable fault
+the way an MMU translation or permission fault does; it reliably wedges
+the reading thread instead, confirmed by instrumenting entropy_device_init()
+and watching it hang on its first register read, every time. Second, even
+a working version of that trick would not be honest: a RAM frame dressed
+up as a device cannot truthfully be said to satisfy "one owner per device
+frame", because it is not a device frame -- the invariant would hold
+vacuously while the documentation quietly leaned on it.
+
+So entropy_pd owns only its private virtqueue/data frame (used if a real
+device is ever reachable) and no MMIO frame. `entropy_mmio_vaddr` stays
+zero; `entropy_device_init()` treats that as "no device frame provisioned"
+and reports `AOS_ENTROPY_ERR_UNAVAILABLE` to every request without
+touching memory that isn't there -- never hanging, never fabricating
+bytes. **No live entropy source is proven on this platform.** Measured
+boot and attestation (T8) remain blocked on one; unblocking it needs
+either shrinking an existing driver's device-frame footprint or a
+virtio-pci transport for entropy, both out of scope for the PD that
+exists today.
+
+Why `entropy_pd` still boots rather than shipping as unbooted source: a
+museum PD with a contract and no boot-time caller is not an API (see "What
+Must Not Be Added" at the top of this repository's `CLAUDE.md`), and this
+round's hang was found *only* because `cc_pd`'s `MSG_CC_ENTROPY_GET` relay
+finally gave the PD a caller -- `make test TARGET_ARCH=aarch64
+GUEST_OS=none` alone cannot exercise it, because nothing in the default
+boot path calls it. The wiring (descriptor row, root provisioning, the
+relay, CNode slots) is the part that breaks; leaving the driver unbooted
+would not have made the handshake code more correct, only untested.
 
 ## QEMU host transports
 

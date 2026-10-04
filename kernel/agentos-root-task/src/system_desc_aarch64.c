@@ -80,20 +80,20 @@
 #endif
 
 /* Default image: nameserver, log_drain, serial_pd, virtio_blk,
- * block_pd, blk_virt, net_pd, net_virt, serial_virt, guest_vmm_primary, vm_manager,
- * cc_pd, fault_handler. */
+ * block_pd, blk_virt, net_pd, net_virt, operator_session, serial_virt,
+ * guest_vmm_primary, vm_manager, cc_pd, fault_handler, entropy_pd. */
 #if defined(AGENTOS_FAULT_INJECT) && defined(AGENTOS_GUEST_DUAL)
+#define AOS_AARCH64_PD_COUNT (17u + AOS_TEST_PD_EXTRA)
+#define AOS_CC_INIT_EP_COUNT 8u
+#elif defined(AGENTOS_FAULT_INJECT)
+#define AOS_AARCH64_PD_COUNT (16u + AOS_TEST_PD_EXTRA)
+#define AOS_CC_INIT_EP_COUNT 8u
+#elif defined(AGENTOS_GUEST_DUAL)
 #define AOS_AARCH64_PD_COUNT (16u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 7u
-#elif defined(AGENTOS_FAULT_INJECT)
+#else
 #define AOS_AARCH64_PD_COUNT (15u + AOS_TEST_PD_EXTRA)
 #define AOS_CC_INIT_EP_COUNT 7u
-#elif defined(AGENTOS_GUEST_DUAL)
-#define AOS_AARCH64_PD_COUNT (15u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 6u
-#else
-#define AOS_AARCH64_PD_COUNT (14u + AOS_TEST_PD_EXTRA)
-#define AOS_CC_INIT_EP_COUNT 6u
 #endif
 
 /* VMM wakeups use send-only notifications granted by root, not their
@@ -478,6 +478,10 @@ const system_desc_t system_desc_aarch64 = {
 #endif
                 { SVC_ID_VM_MANAGER,  PD_CNODE_SLOT_VM_MANAGER_EP  },
                 { SVC_ID_SERIAL_VIRT, PD_CNODE_SLOT_SERIAL_VIRT_EP },
+                /* Relay-only: lets the host-side QEMU test harness reach
+                 * entropy_pd's absent-device/range behavior through the
+                 * existing CC socket bridge (see MSG_CC_ENTROPY_GET). */
+                { SVC_ID_ENTROPY_PD,  PD_CNODE_SLOT_ENTROPY_PD_EP  },
                 /* No controller EP: the controller PD is not in the image and
                  * an EP with no server would block cc_pd forever. */
 #if defined(AGENTOS_FAULT_INJECT)
@@ -487,6 +491,39 @@ const system_desc_t system_desc_aarch64 = {
                 { SVC_ID_NATIVE_RUST_PROBE, NATIVE_RUST_CC_ENDPOINT },
 #endif
             },
+        },
+
+        /* pd[N] — entropy_pd (prio 166; virtio-rng hardware driver)
+         * Owns NO device frame on this machine. QEMU virt has no
+         * virtio-mmio slot left for it (every one of the 32 is already
+         * owned by cc_pd/virtio_blk/net_pd), and a physical address
+         * outside that aperture is not a safe substitute: genuinely
+         * unbacked memory there was tried and reliably wedged the reading
+         * thread instead of faulting cleanly. See
+         * services/entropy-service/entropy_svc.c and docs/TCB.md for the
+         * full account. The driver still owns its private virtqueue/data
+         * frame (platform/include/platform/entropy_host_layout.h) and
+         * correctly reports the device absent -- entropy_mmio_vaddr stays
+         * 0 because the root task provisions no MMIO frame at all --
+         * rather than spinning or touching memory that isn't there.
+         * Polls instead of taking an IRQ:
+         * entropy has no latency requirement, so irq_count stays 0.
+         * Priority sits just above cc_pd (164) so cc_pd keeps printing the
+         * "agentOS boot complete" marker last, and well below the
+         * latency-sensitive device drivers (207-225). */
+        {
+            .name           = "entropy_pd",
+            .elf_path       = "entropy_pd.elf",
+            .stack_size     = 0x4000u,
+            .cnode_size_bits = 10u,
+            .priority       = 166u,
+            .self_svc_id    = SVC_ID_ENTROPY_PD,
+            .init_ep_count  = 2u,
+            .init_eps = {
+                { SVC_ID_NAMESERVER, PD_CNODE_SLOT_NAMESERVER_EP },
+                { SVC_ID_LOG_DRAIN,  PD_CNODE_SLOT_LOG_DRAIN_EP  },
+            },
+            .irq_count = 0u,
         },
 
         /* Optional fault-injection PD used by CI through the CC-PD relay. */
