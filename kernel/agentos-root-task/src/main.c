@@ -3850,13 +3850,20 @@ void root_task_main(const seL4_BootInfo *bi)
              * install as its CHILD's fault handler (Probe 2). Root mints
              * the badge, not the parent: AOS_CHILD_SPAWN_PROBE_BADGE is
              * what the fault oracle above matches on, so the parent cannot
-             * substitute an endpoint of its own and manufacture the
+             * substitute an endpoint of its OWN and manufacture the
              * marker. Minting from seL4_CapInitThreadCNode into a root
              * scratch slot and then moving it is the same two-step pattern
              * the pd_fault_ep block above uses.
              *
-             * This grants the parent no new reach: a send-only badged
-             * endpoint whose only receiver is root's own fault loop. It
+             * What this DOES grant the parent is the ability to send on
+             * this endpoint itself. The oracle is a plain seL4_Wait that
+             * matches on badge, label and message registers, so it asserts
+             * the SHAPE of a fault IPC, not that the kernel produced it --
+             * the parent holds send rights and could put a fault-shaped
+             * message into root's fault loop. The probe is sound because
+             * the parent is trusted test code that does not do so, and
+             * because Step 5's non-vacuity run shows the marker following
+             * the withheld mapping rather than the parent's behaviour. It
              * is also the ONLY capability granted here that the parent
              * passes to aos_child_spawn() without endowing -- it goes into
              * the child's TCB, never into the child's CSpace.
