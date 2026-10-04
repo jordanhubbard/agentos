@@ -1073,6 +1073,114 @@ protection-domain CPU authority.
 5. **No guest host-device passthrough.** A VMM must translate guest GPA and
    relay through the canonical driver/virtualizer path. Held today.
 
+## RISC-V and guest operating systems
+
+**riscv64 boots the platform and runs native protection domains. It does not
+run guest operating systems, and nothing in this repository will change that.**
+
+The three-architecture claim is therefore: *three architectures boot the
+platform; aarch64 and x86_64 run guests.* Anything stronger about riscv64 is
+false.
+
+### Why
+
+Upstream seL4 has no RISC-V hypervisor extension. Not "incomplete" — absent.
+Verified by reading the tree, not release notes
+(`.sdd/riscv-guest-feasibility.md` cites every source):
+
+- `libsel4/arch_include/riscv/sel4/arch/objecttype.h` on master is three
+  entries — `seL4_RISCV_4K_Page`, `seL4_RISCV_Mega_Page`,
+  `seL4_RISCV_PageTableObject`. There is no `seL4_RISCV_VCPUObject`.
+- `src/arch/riscv/object/` contains `interrupt.c`, `objecttype.c`, `tcb.c`.
+  There is no `vcpu.c`; the ARM directory has one.
+- `src/arch/riscv/config.cmake` has no hypervisor option, and a full-tree grep
+  for `hgatp|vsatp|hstatus|hedeleg|hideleg|hvip` and
+  `RISCV_HE|RISCVVCPU|RiscvHypervisor` returns zero hits.
+- Releases 13.0.0, 14.0.0, 15.0.0 and 16.0.0 all 404 on
+  `src/arch/riscv/object/vcpu.c`.
+- The SDK on disk agrees: `board/qemu_virt_riscv64/*/include/kernel/
+  gen_config.h` has no hypervisor symbol in any build configuration, and
+  upstream Microkit's `tool/microkit/src/sel4.rs` hard-codes
+  `hypervisor = false` for RISC-V with the comment *"Hypervisor mode is not
+  available on RISC-V"*.
+
+Working code does exist, in a three-repo fork stack targeting the **ratified
+H v1.0** extension, maintained by the libvmm maintainer:
+
+- `Ivan-Velickovic/seL4` branch `microkit_riscv_he` — adds `vcpu.c` and
+  `KernelRiscVHypervisorSupport`; 29 ahead / 306 behind upstream master.
+- `Ivan-Velickovic/microkit` branch `riscv_he` — adds the RISC-V vCPU API;
+  4 ahead / **398 behind** upstream main.
+- `au-ts/libvmm` branch `riscv` — `src/arch/riscv/{fault,linux,plic,sbi,tcb,
+  vcpu,virq}.c`; 24 ahead / 424 behind main.
+
+None of it is upstream, none of it is verified, and there is **no open PR and
+no RFC** proposing to upstream any of it. The libvmm maintainer's own open
+issue, [au-ts/libvmm#246](https://github.com/au-ts/libvmm/issues/246), names
+seL4 as the blocker — *"Right now, seL4 does not have support for the RISC-V
+hypervisor extension"* — and says the Microkit half *"would need to be re-done
+on the current Microkit, which uses capDL now … rather than rebased"*. QEMU is
+not the obstacle: `-cpu rv64` already reports `rv64imafdch`.
+
+### The trade-off, if it ever did land
+
+Enabling the H-extension **forfeits the RV64 binary-verification result**.
+`RISCV64` (non-hypervisor) is one of the few configurations carrying C
+functional correctness, integrity, availability, confidentiality **and binary
+verification**. `ARM_HYP` (AArch32) is the only hypervisor configuration with
+proofs at all; AArch64 EL2 and x86 VT-x are unverified. So a riscv64
+hypervisor build would be unverified exactly like the aarch64 guest path this
+project already relies on — no worse, but no better — while destroying the one
+property that makes riscv64 distinctive in the lineup.
+
+Do not pull a forked seL4 or Microkit into `tools/sdk/` to chase this. That
+pipeline rebuilds pinned commits and checks kernel hashes; guest-on-riscv64 is
+upstream-gated work tracked outside this repository.
+
+### What `guest_vmm.c`'s `__riscv` arm is not
+
+It is **not** guest support and must never be described as such. It is a
+same-privilege `jalr` into a blob inside the VMM's own protection domain:
+no vCPU object (there is no such object type), no stage-2 / G-stage
+translation, no PLIC virtualisation, no SBI emulation, and
+`_guest_kernel_image` is permanently NULL. Nothing about it isolates anything,
+and it cannot execute an operating system.
+
+### What riscv64 does have
+
+The root task boots under OpenSBI through `kernel/loader/`'s riscv64 arm,
+verifies the signed PD manifest, and starts the full protection-domain set in
+`src/system_desc_riscv64.c`: `nameserver`, `log_drain`, `virtio_blk`,
+`block_pd`, `blk_virt`, `net_pd`, `net_virt`, `entropy_pd`, `fault_handler` —
+nine PDs, with the same driver-owns-the-device / virtualizer-is-the-only-mux
+shape as aarch64. `virtio_blk` owns the host virtio-mmio block transport at
+`0x10003000` and `net_pd` the host NIC at `0x10002000`; `blk_virt` and
+`net_virt` own no device frame and no IRQ. `make test-riscv64` asserts that
+exact count plus manifest verification and `[rt] boot complete`, so a riscv64
+image cannot repeat the x86_64 pattern of reaching a boot marker with zero PDs.
+
+Two absences are deliberate and are the next pieces of riscv64 device work:
+
+- **No serial driver PD.** `services/serial-mux/serial_pd.c` is an ARM PL011
+  driver; QEMU virt RISC-V has an NS16550A at `0x10000000`. The root task owns
+  that console on riscv64 (which is also what makes the boot log, and hence
+  the PD-count proof, possible). `serial_virt` and `operator_session` are
+  absent with it — a mux with no driver and no frontend would be a contract
+  with no caller.
+- **No second host block medium.** QEMU virt RISC-V gives each virtio-mmio
+  transport a full 4 KiB page and decodes only its first `0x200` bytes, so
+  AArch64 virt's shared slot-24..31 page has no counterpart
+  (`AGENTOS_HOST_SECONDARY_BLK_PAGE_PRESENT`).
+
+One known post-boot fault remains on riscv64 and is not riscv64's:
+`services/fault-handler/fault_handler.c` declares `uintptr_t
+fault_ring_vaddr;` and nothing in the tree ever assigns it, so
+`fault_handler_init()` writes its ring header through a null pointer on every
+architecture. It is visible on riscv64 only because the root task still owns
+the console there; on aarch64 `serial_pd` has taken the PL011 before it
+happens. `make test-riscv64` asserts the exact fault count, so a new fault
+fails the gate.
+
 ## What is not TCB (museum)
 
 Do not extend these. Do not add opcodes. Do not "finish" them.
@@ -1097,7 +1205,12 @@ them), and
 `task_56eae59d9aa94d2d9d047f03fc9d22ad` trimmed the manifest from 39 ELFs;
 MAC `task_f95d118416a24fa484c2c43f0d955b56` then dropped `controller`,
 `event_bus`, `init_agent`, `agentfs`, `vfs_server`, `net_server`,
-`framebuffer_pd`, and `usb_pd` from the descriptor). Museum sources are still
+`framebuffer_pd`, and `usb_pd` from the descriptor). The riscv64 descriptor
+had kept its own copy of that era — `event_bus`, `irq_pd`, `timer_pd`,
+`controller`, `init_agent`, `agentfs`, `vibe_engine`, `vfs_server`,
+`net_server`, `framebuffer_pd` — because it never tracked the aarch64
+evolution; the arch-parity work removed them, and with them five post-boot PD
+faults. Museum sources are still
 compiled by the root-task Makefile `IMAGES` list so they keep building, but
 they are not in the image. CC-PD now calls `vm_manager` directly for dynamic
 creation, status, lifecycle and console control. Its bounded handle registry
@@ -1524,15 +1637,20 @@ mechanism at all (the "PDs load via the seL4 extra BootInfo path" claim in
 `main.c` named a consumer with no producer anywhere in the tree, and every PD
 failed to spawn). It now embeds the same signed bundle the other two do;
 `AGENTOS_HAS_PD_BUNDLE` is 1 on all three. Evidence under Microkit SDK 2.1.0:
-a `riscv64` boot reports `[rt] boot manifest OK: signature verified` and
-starts PDs, and the same image with one byte flipped inside the bundle is
-refused with `[rt] pd vibe_engine: ELF digest MISMATCH against signed
-manifest; refusing boot`.
+a `riscv64` boot reports `[rt] boot manifest OK: signature verified` and starts
+all nine PDs, and the same image with eight bytes flipped inside the bundled
+`nameserver.elf` is refused at the first PD with `[rt] pd nameserver: ELF
+digest MISMATCH against signed manifest; refusing boot`, having started none.
 
 `make test-image-verify` boots an unmodified image, a byte-tampered image, and
 an image with its manifest stripped, requiring the latter two to be refused with
-the tampered image named. It runs on AArch64 only; the RISC-V result above is a
-manual run and is not yet a CI gate.
+the tampered image named. It runs on AArch64 only. On RISC-V, `make
+test-riscv64` asserts the positive half — manifest signature verified and the
+exact PD count started — on every run, and treats an `ELF digest MISMATCH` as
+an immediate failure; the tampered-image half above is a manual run. Neither
+riscv64 result is a CI gate yet: the `os-claim-gate` riscv64 step is present
+but cannot build until the SDK carries the `qemu_virt_riscv64` board (see the
+step's own comment and its `::warning::` output).
 
 Scope: this constrains every adversary who can modify an image but not replace
 the boot chain. It does NOT establish resistance to the local operator, who is

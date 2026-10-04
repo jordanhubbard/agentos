@@ -1177,6 +1177,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         } else if args.board == "x86_64_generic_vtx" {
             make_args.push(String::from("TARGET_ARCH=x86_64"));
             make_args.push(String::from("BOARD_NAME=qemu-x86_64-vtx"));
+        } else if args.board == "qemu_virt_riscv64" {
+            /*
+             * BOARD= alone is not enough: the top Makefile derives BOARD_NAME
+             * from TARGET_ARCH (default aarch64, from config.yaml), so a
+             * riscv64 build driven only by BOARD= picked boards/qemu-aarch64/
+             * and therefore the *aarch64* system TOML. The PD bundle then
+             * held the aarch64 PD set while the root task ran the riscv64
+             * descriptor, and every riscv-only PD printed "NOT FOUND".
+             */
+            make_args.push(String::from("TARGET_ARCH=riscv64"));
+            make_args.push(String::from("BOARD_NAME=qemu-riscv64"));
         }
         if scenario_plan.is_some() {
             make_args.push(format!(
@@ -2166,6 +2177,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             }
         } else if args.board == "x86_64_generic" {
             wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
+        } else if args.board == "qemu_virt_riscv64" {
+            wait_for_riscv64_pd_set(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
         } else {
             wait_for_markers(
                 &log_path,
@@ -2737,6 +2750,9 @@ pub fn launch(args: &QemuLaunchArgs) -> anyhow::Result<()> {
     } else if args.board == "x86_64_generic_vtx" {
         make_args.push(String::from("TARGET_ARCH=x86_64"));
         make_args.push(String::from("BOARD_NAME=qemu-x86_64-vtx"));
+    } else if args.board == "qemu_virt_riscv64" {
+        make_args.push(String::from("TARGET_ARCH=riscv64"));
+        make_args.push(String::from("BOARD_NAME=qemu-riscv64"));
     }
     if let Some(profile) = &profile_plan {
         make_args.push(format!("GUEST_PROFILE={}", profile.path.display()));
@@ -3440,6 +3456,12 @@ pub(crate) fn spawn_qemu_with_guest(
                 "-m",
                 "2G",
                 "-nographic",
+                /*
+                 * Modern (v2) virtio-mmio, same as the AArch64 arm: the
+                 * in-tree drivers are not legacy-capable.
+                 */
+                "-global",
+                "virtio-mmio.force-legacy=off",
                 "-bios",
                 &bios,
                 "-kernel",
@@ -3453,18 +3475,31 @@ pub(crate) fn spawn_qemu_with_guest(
                         .to_str()
                         .unwrap_or("_build/qemu_virt_riscv64/agentos.img")
                 ),
-                /* virtio-net (slot 0 → 0x10001000, IRQ 1) with SSH port forward */
+                /*
+                 * Host NIC owned by net_pd.  The bus is named explicitly:
+                 * QEMU virt RISC-V creates virtio-mmio-bus.N at
+                 * 0x10001000 + N*0x1000 (PLIC IRQ 1+N), but an unbound
+                 * -device lands on whichever transport QEMU picks, and the
+                 * root task maps a fixed physical address
+                 * (AGENTOS_HOST_NET_MMIO_PA_RISCV) into net_pd.
+                 * bus.1 → 0x10002000. bus.0 stays unattached on every
+                 * machine in this repository (TCB invariant 5; enforced by
+                 * tests/platform/lint_source_invariants.c).
+                 */
                 "-device",
-                "virtio-net-device,netdev=net0",
+                "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.1,mac=02:00:00:00:00:01,ctrl_vq=off,mq=off",
                 "-netdev",
                 &netdev,
             ]);
-            /* virtio-blk (slot 1 → 0x10002000, IRQ 2) — only if disk image exists */
+            /* Host block medium owned by virtio_blk: bus.2 → 0x10003000,
+             * AGENTOS_HOST_BLK_MMIO_PA_RISCV.  Only if a disk image exists;
+             * as on AArch64 GUEST_OS=none, the driver starts either way and
+             * reports the device absent when no medium is attached. */
             let disk = repo_root.join("_build/qemu_virt_riscv64/disk.img");
             if disk.exists() {
                 c.args([
                     "-device",
-                    "virtio-blk-device,drive=hd0",
+                    "virtio-blk-device,drive=hd0,bus=virtio-mmio-bus.2",
                     "-drive",
                     &format!(
                         "file={},format=raw,id=hd0,if=none",
@@ -5267,6 +5302,134 @@ fn wait_for_emulated_net(
 
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/*
+ * riscv64 PD-set proof.
+ *
+ * The number of protection domains kernel/agentos-root-task/src/
+ * system_desc_riscv64.c declares, written out as a literal exactly as
+ * verify_inspect()'s `count == 15` is for AArch64. Changing the riscv64
+ * descriptor must force someone to come here and change this number: a boot
+ * marker on its own proves nothing, which x86_64_generic demonstrates by
+ * reaching "[rt] boot complete" with an entirely empty descriptor
+ * (system_desc_x86_64.c wraps all of it in #if defined(AGENTOS_X86_VTX)).
+ */
+const RISCV64_EXPECTED_PDS: usize = 9;
+
+/*
+ * Post-boot root-task fault reports this image is known to produce, with the
+ * reason each one is not a riscv64 regression. The assertion is on the exact
+ * count, not "no faults" and not "at most N": a new fault must fail, and so
+ * must the silent disappearance of one of these (which would mean the boot
+ * stopped earlier than it used to).
+ *
+ *   1. fault_handler, VM fault storing to 0x3 at its first instruction after
+ *      entry. services/fault-handler/fault_handler.c declares
+ *      `uintptr_t fault_ring_vaddr;` and nothing in the tree ever assigns it,
+ *      so fault_handler_init() writes its ring header through a null pointer.
+ *      Nothing about this is riscv64-specific and nothing about it is new:
+ *      fault_handler is in the AArch64 default PD set too and takes the same
+ *      fault there. It is invisible on AArch64 only because serial_pd has
+ *      taken the PL011 by then and the root task's own console output stops
+ *      (an AArch64 GUEST_OS=none boot log ends at the second "pd started
+ *      ok"); riscv64 keeps its console in the root task, so the fault report
+ *      is actually printed. It is not fixed here: fault_handler is outside
+ *      this change, and provisioning its ring region would alter the AArch64
+ *      image this branch must leave alone.
+ */
+const RISCV64_EXPECTED_FAULTS: usize = 1;
+
+/*
+ * Lines that mean the boot has already failed. Seeing any of these ends the
+ * run immediately with the offending line, instead of sitting until the
+ * harness timeout: a riscv64 image whose descriptor and PD bundle disagree
+ * used to burn the full --timeout-secs and then report only "timeout".
+ */
+const RISCV64_REFUSAL_MARKERS: &[&str] = &[
+    "NOT FOUND",
+    "refusing boot",
+    "refusing startup",
+    "refusing partial boot",
+    "refusing PD start",
+    "ELF digest MISMATCH",
+    "no host NIC MMIO path on this target",
+    "AOS_ANCHOR_UNVERIFIED",
+];
+
+/// Boot qemu_virt_riscv64 and require the full declared PD set, not a marker.
+fn wait_for_riscv64_pd_set(
+    log_path: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let start = Instant::now();
+    let mut file = std::fs::File::open(log_path).context("failed to open log file")?;
+    let mut offset: u64 = 0;
+    let mut accumulated = String::new();
+    const BOOT_MARKER: &str = "[rt] boot complete";
+
+    loop {
+        ensure_qemu_running(qemu, "waiting for the riscv64 PD set")?;
+
+        file.seek(SeekFrom::Start(offset))?;
+        let mut raw = Vec::new();
+        let bytes_read = file.read_to_end(&mut raw)?;
+        if bytes_read > 0 {
+            offset += bytes_read as u64;
+            accumulated.push_str(&String::from_utf8_lossy(&raw));
+        }
+
+        if let Some(line) = accumulated
+            .lines()
+            .find(|line| RISCV64_REFUSAL_MARKERS.iter().any(|m| line.contains(m)))
+        {
+            anyhow::bail!(
+                "riscv64 boot refused after {} of {RISCV64_EXPECTED_PDS} PDs: {}",
+                accumulated.matches("[rt] pd started ok").count(),
+                line.trim()
+            );
+        }
+        if accumulated.contains(BOOT_MARKER) {
+            break;
+        }
+        if start.elapsed() >= timeout {
+            anyhow::bail!(
+                "riscv64 boot timeout after {}s; {} of {RISCV64_EXPECTED_PDS} PDs started, \
+                 no \"{BOOT_MARKER}\"",
+                timeout.as_secs(),
+                accumulated.matches("[rt] pd started ok").count()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    /* Let the started PDs run far enough to fault, if they are going to. */
+    std::thread::sleep(Duration::from_secs(3));
+    let output = std::fs::read_to_string(log_path).unwrap_or_default();
+
+    let started = output.matches("[rt] pd started ok").count();
+    anyhow::ensure!(
+        started == RISCV64_EXPECTED_PDS,
+        "riscv64 started {started} PDs, expected exactly {RISCV64_EXPECTED_PDS} \
+         (src/system_desc_riscv64.c and boards/qemu-riscv64/agentos.toml are \
+         rewritten in lockstep; update RISCV64_EXPECTED_PDS with them)"
+    );
+    anyhow::ensure!(
+        output.contains("[rt] boot manifest OK: signature verified"),
+        "riscv64 booted without verifying the signed PD manifest"
+    );
+    let faults = output.matches("[rt] FAULT").count();
+    anyhow::ensure!(
+        faults == RISCV64_EXPECTED_FAULTS,
+        "riscv64 produced {faults} root-task fault reports, expected exactly \
+         {RISCV64_EXPECTED_FAULTS} (see RISCV64_EXPECTED_FAULTS for what each \
+         known one is and why it is not a riscv64 regression)"
+    );
+    Ok(format!(
+        "riscv64: signed PD manifest verified, {started} of {RISCV64_EXPECTED_PDS} PDs started, \
+         {BOOT_MARKER}, {faults} known fault report(s)"
+    ))
 }
 
 fn wait_for_x86_reduced_smoke(log_path: &Path, timeout: Duration) -> anyhow::Result<String> {

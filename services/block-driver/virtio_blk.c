@@ -454,11 +454,15 @@ static void virtio_blk_pd_init(void)
     if (secondary_pci) virtio_blk_device_init(
         &dev[AOS_HOST_BLK_MEDIA_SECONDARY],
         AOS_HOST_BLK_MEDIA_SECONDARY, 0u, secondary_pci);
+#if AGENTOS_HOST_SECONDARY_BLK_PAGE_PRESENT
+    /* Machines whose MMIO layout has a second host block transport only;
+     * see AGENTOS_HOST_SECONDARY_BLK_PAGE_PRESENT in blk_host_layout.h. */
     else if (!pci) virtio_blk_device_init(
         &dev[AOS_HOST_BLK_MEDIA_SECONDARY],
         AOS_HOST_BLK_MEDIA_SECONDARY,
         AGENTOS_HOST_SECONDARY_BLK_PAGE_VA +
             AGENTOS_HOST_SECONDARY_BLK_PAGE_OFF, NULL);
+#endif
 
     if (secondary_pci && dev[AOS_HOST_BLK_MEDIA_PRIMARY].initialized &&
         dev[AOS_HOST_BLK_MEDIA_SECONDARY].initialized &&

@@ -458,7 +458,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm \
-            qemu-system-arm qemu-system-x86 \
+            qemu-system-arm qemu-system-x86 qemu-system-misc \
             curl
 
       - uses: dtolnay/rust-toolchain@stable
@@ -517,11 +517,49 @@ jobs:
         timeout-minutes: 10
         run: make test-cap-lending
 
+      # TARGET/QEMU test #3 — riscv64. Boots qemu_virt_riscv64 GUEST_OS=none
+      # and requires the signed PD manifest to verify and EVERY PD in
+      # src/system_desc_riscv64.c to start (exact count, not a marker).
+      #
+      # This step cannot run yet, and says so rather than passing quietly.
+      # Task 1 of the arch-parity plan -- add qemu_virt_riscv64 to
+      # tools/sdk/candidate.mk's --boards and extend tools/sdk/
+      # cr2-kernels.sha256 -- has not landed, so the SDK artifact that
+      # install-sdk puts in place contains no riscv64 board: no sel4.elf and
+      # no libsel4 headers for it, which is a build failure, not a test
+      # failure. Until then this emits a GitHub warning annotation and the
+      # summary below reports riscv64 as NOT RUN. The moment the SDK carries
+      # the board, the proof runs for real and a broken riscv64 fails this
+      # job -- the condition tests the SDK, never the test result.
+      - name: GATE — make test-riscv64 (exact PD count)
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          sdk="${SEL4_SDK:-$HOME/.cache/agentos/microkit-sdk-$(cat tools/sdk/default-version)}"
+          if [ ! -d "$sdk/board/qemu_virt_riscv64" ]; then
+            echo "::warning title=riscv64 gate not run::The installed Microkit SDK" \
+                 "($sdk) has no qemu_virt_riscv64 board, so make test-riscv64 cannot" \
+                 "build. Blocked on arch-parity Task 1 (tools/sdk/candidate.mk" \
+                 "--boards + tools/sdk/cr2-kernels.sha256). riscv64 is NOT proven" \
+                 "by this run."
+            echo "riscv64=not-run" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "riscv64=run" >> "$GITHUB_ENV"
+          make test-riscv64
+
       - name: Boot gate summary
         run: |
           echo "✅ Dual-arch boot gate passed:"
           echo "   - aarch64 GUEST_OS=none (target/QEMU)"
           echo "   - x86_64  GUEST_OS=none (target/QEMU)"
+          if [ "${riscv64:-not-run}" = "run" ]; then
+            echo "   - riscv64 GUEST_OS=none (target/QEMU, exact PD count)"
+          else
+            echo "   - riscv64: NOT RUN (SDK has no qemu_virt_riscv64 board;"
+            echo "     blocked on arch-parity Task 1). Nothing in this job"
+            echo "     proves anything about riscv64."
+          fi
           echo "   - CC operator authority envelope (admit / refuse / exact code)"
           echo "   - PD image verification (control / tampered-PD refusal / stripped-manifest refusal)"
           echo "   - entropy_pd reachable; reports UNAVAILABLE (no device wired"

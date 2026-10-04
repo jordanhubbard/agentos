@@ -1090,6 +1090,25 @@ _Static_assert(GIC_VCPU_IF_VA == AOS_GUEST_GIC_IPA,
  */
 #define VIRTIO_MMIO_PAGE_PA  0x0A000000UL
 
+/*
+ * Physical address of the host block / network virtio-mmio transport the root
+ * task retypes once and hands to virtio_blk and net_pd respectively.
+ *
+ * AArch64 virt packs 32 virtio-mmio transports into a 0x0A000000 aperture at
+ * 0x200 each; QEMU virt RISC-V gives each of its eight a full 4 KiB page from
+ * 0x10001000 with PLIC IRQ 1+N.  Only this choice differs: both drivers read
+ * the architecture-independent AGENTOS_HOST_{BLK,NET}_MMIO_VA and never see a
+ * physical address.  xtask binds the test devices to fixed virtio-mmio buses
+ * on both machines so these addresses are not left to QEMU's attach order.
+ */
+#if defined(__riscv)
+#define AOS_HOST_BLK_MMIO_PA  AGENTOS_HOST_BLK_MMIO_PA_RISCV
+#define AOS_HOST_NET_MMIO_PA  AGENTOS_HOST_NET_MMIO_PA_RISCV
+#else
+#define AOS_HOST_BLK_MMIO_PA  AGENTOS_HOST_BLK_MMIO_PA
+#define AOS_HOST_NET_MMIO_PA  AGENTOS_HOST_NET_MMIO_PA
+#endif
+
 /* VirtIO serial device for cc_pd ↔ host socket bridge.
  * QEMU flags: -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0
  *             -device virtconsole,bus=vser0.0,chardev=cc_pd_char,name=cc.0
@@ -2568,6 +2587,16 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 #endif
 
+    /*
+     * cc_pd's host virtio-serial page, and only cc_pd's: the single consumer
+     * of g_virtio_mmio_frame_cap is the CC transport provisioning below.
+     * VIRTIO_MMIO_PAGE_PA is an AArch64-virt address, and on RISC-V it lands
+     * inside an unrelated device untyped and retypes successfully -- a frame
+     * of nothing, charged against that untyped's watermark. riscv64 has no
+     * cc_pd (no guest to control; see src/system_desc_riscv64.c), so do not
+     * take it there.
+     */
+#if !defined(__riscv)
     {
         seL4_Error virtio_err = ut_alloc_device_cap(VIRTIO_MMIO_PAGE_PA,
                                                     &g_virtio_mmio_frame_cap);
@@ -2577,11 +2606,43 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_hex((seL4_Word)g_virtio_mmio_frame_cap);
         dbg_puts("\n");
     }
+#endif
 
-#if defined(__aarch64__)
+/*
+ * Host device provisioning for the two architectures whose drivers own a
+ * virtio-mmio transport directly (x86_64 discovers the same devices over PCI
+ * below).  RISC-V differs from AArch64 only in the physical addresses, which
+ * AOS_HOST_{BLK,NET}_MMIO_PA already resolve.
+ */
+#if defined(__aarch64__) || defined(__riscv)
+#if defined(__riscv)
+    /*
+     * Allocation order is load-bearing here, and only on RISC-V.
+     *
+     * seL4 hands out device untypeds with a bump watermark, and QEMU virt
+     * RISC-V exposes its whole 0x10000000 device region as ONE untyped, so
+     * every retype in it must go in ascending physical address.  The host
+     * NIC (0x10001000) sits below the host block transport (0x10002000),
+     * so taking block first moved the watermark past the NIC and the NIC
+     * retype then failed with seL4_InvalidArgument -- net_pd got no MMIO
+     * and never started.  AArch64 virt's block page (0x0A001000) is already
+     * below its NIC page (0x0A002000), so its original order is kept below,
+     * unchanged.
+     */
+    {
+        seL4_Error net_err =
+            ut_alloc_device_cap(AOS_HOST_NET_MMIO_PA,
+                                &g_host_net_mmio_frame_cap);
+        dbg_puts("[rt] host net virtio-mmio frame cap err=");
+        dbg_hex((seL4_Word)net_err);
+        dbg_puts(" cap=");
+        dbg_hex((seL4_Word)g_host_net_mmio_frame_cap);
+        dbg_puts("\n");
+    }
+#endif
     {
         seL4_Error blk_err =
-            ut_alloc_device_cap(AGENTOS_HOST_BLK_MMIO_PA,
+            ut_alloc_device_cap(AOS_HOST_BLK_MMIO_PA,
                                 &g_host_blk_mmio_frame_cap);
         dbg_puts("[rt] host blk virtio-mmio frame cap err=");
         dbg_hex((seL4_Word)blk_err);
@@ -2612,16 +2673,18 @@ void root_task_main(const seL4_BootInfo *bi)
         return;
     }
 
+#if !defined(__riscv)
     {
         seL4_Error net_err =
-            ut_alloc_device_cap(AGENTOS_HOST_NET_MMIO_PA,
+            ut_alloc_device_cap(AOS_HOST_NET_MMIO_PA,
                                 &g_host_net_mmio_frame_cap);
-        dbg_puts("[rt] host net virtio-mmio bus16 frame cap err=");
+        dbg_puts("[rt] host net virtio-mmio frame cap err=");
         dbg_hex((seL4_Word)net_err);
         dbg_puts(" cap=");
         dbg_hex((seL4_Word)g_host_net_mmio_frame_cap);
         dbg_puts("\n");
     }
+#endif
 
     if (allocate_network_dma(NULL) != seL4_NoError) {
         dbg_puts("[rt] network DMA allocation failed; refusing startup\n");
@@ -2650,6 +2713,17 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 #endif
 
+    /*
+     * The second host block transport, which only AArch64 virt has in this
+     * tree (AGENTOS_HOST_SECONDARY_BLK_PAGE_PRESENT): QEMU virt RISC-V
+     * decodes only the first 0x200 bytes of each 4 KiB virtio-mmio page, so
+     * AArch64's slot-24..31 shared page has no RISC-V counterpart, and
+     * x86_64 discovers its media over PCI. Leaving this producer arch-blind
+     * made it retype whatever device untyped happened to cover the AArch64
+     * physical address elsewhere — the arch-blind pattern the GIC vCPU frame
+     * cap had — and hand virtio_blk a frame of nothing.
+     */
+#if defined(__aarch64__)
     {
         seL4_Error v31_err =
             ut_alloc_device_cap(AGENTOS_HOST_SECONDARY_BLK_PAGE_PA,
@@ -2660,6 +2734,7 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_hex((seL4_Word)g_host_secondary_blk_mmio_frame_cap);
         dbg_puts("\n");
     }
+#endif
 
     /* Temporary: dump device untypeds to diagnose UART1 frame allocation */
     {
@@ -4048,8 +4123,10 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 #endif
 
-        /* ── 4g.4.6c: Give virtio_blk sole access to host block hardware ─── */
-#if defined(__aarch64__)
+        /* ── 4g.4.6c: Give virtio_blk sole access to host block hardware ───
+         * The secondary medium below stays AArch64-only: QEMU virt RISC-V
+         * has no second host block transport wired in this image. */
+#if defined(__aarch64__) || defined(__riscv)
         if (name_eq(pd->name, "virtio_blk") &&
             g_host_blk_mmio_frame_cap != seL4_CapNull) {
             seL4_Word blk_mmio_copy = ut_alloc_slot();
@@ -4191,7 +4268,7 @@ void root_task_main(const seL4_BootInfo *bi)
 
         if (name_eq(pd->name, "net_pd")) {
             seL4_Error net_err = seL4_NotEnoughMemory;
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(__riscv)
             if (g_host_net_mmio_frame_cap != seL4_CapNull) {
                 seL4_Word net_mmio_copy = ut_alloc_slot();
                 if (net_mmio_copy != seL4_CapNull) {
@@ -4227,10 +4304,11 @@ void root_task_main(const seL4_BootInfo *bi)
             if (net_err != seL4_NoError) continue;
 #else
             /*
-             * No host NIC MMIO path on this target (RISC-V, and x86_64
-             * without AGENTOS_X86_FIRMWARE_RESET).  Skipping silently made
-             * net_pd vanish from the boot log between "SC bound, starting"
-             * and the next PD with no diagnostic at all; say so instead.
+             * No host NIC MMIO path on this target: x86_64 without
+             * AGENTOS_X86_FIRMWARE_RESET, which has no PCI discovery and so
+             * no BARs to map.  Skipping silently made net_pd vanish from the
+             * boot log between "SC bound, starting" and the next PD with no
+             * diagnostic at all; say so instead.
              */
             dbg_puts("[rt] net_pd: no host NIC MMIO path on this target; not started\n");
             continue;

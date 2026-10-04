@@ -862,6 +862,31 @@ gate-guest-io:
 
 gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-image-verify test-entropy-unavailable
 gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-cap-lending
+gate: test-riscv64
+
+# test-riscv64 — the riscv64 PD-set proof.
+#
+# Boots qemu_virt_riscv64 GUEST_OS=none and requires the root task to verify
+# the signed PD manifest and start EVERY protection domain
+# src/system_desc_riscv64.c declares, counted from the boot log, plus the
+# "[rt] boot complete" marker.  It asserts the exact count on purpose: a boot
+# marker alone proves nothing, as x86_64_generic shows by reaching
+# "[rt] boot complete" with a completely empty descriptor.  The expected
+# number lives in xtask (RISCV64_EXPECTED_PDS in xtask/src/cmd_test.rs),
+# mirroring test-inspect's hardcoded 15, so changing the descriptor forces an
+# explicit change to the test.
+#
+# A disagreement between the descriptor and boards/qemu-riscv64/agentos.toml
+# now fails within seconds on the "NOT FOUND" line rather than burning the
+# whole timeout.
+#
+# riscv64 runs no guest operating system (docs/TCB.md), so there is no
+# riscv64 equivalent of gate-guest-io.
+.PHONY: test-riscv64
+test-riscv64:
+	@echo ""
+	@echo "── [GATE] TARGET/QEMU test: riscv64 (GUEST_OS=none, exact PD count) ──"
+	@cargo xtask qemu-test --board qemu_virt_riscv64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
