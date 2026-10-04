@@ -798,7 +798,7 @@ ifdef GUEST_INPUT
   else ifneq ($(ARCH),aarch64)
     $(error GUEST_INPUT requires aarch64 or x86_64 firmware mode)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
     $(error GUEST_INPUT cannot be combined with focused test images)
   endif
   ifeq ($(ARCH),x86_64)
@@ -821,7 +821,7 @@ ifdef GUEST_GRAPHICS
   else ifneq ($(ARCH),aarch64)
     $(error GUEST_GRAPHICS requires aarch64 or x86_64 firmware mode)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
     $(error GUEST_GRAPHICS cannot be combined with focused test images)
   endif
   ifeq ($(ARCH),x86_64)
@@ -840,7 +840,7 @@ ifdef FRAMEBUFFER_TEST
   ifneq ($(ARCH),aarch64)
     $(error FRAMEBUFFER_TEST requires aarch64)
   endif
-  ifneq ($(strip $(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+  ifneq ($(strip $(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
     $(error FRAMEBUFFER_TEST is a separate image variant)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_FRAMEBUFFER_TEST=1
@@ -868,8 +868,8 @@ ifdef NATIVE_RUST_TEST
   ifneq ($(ARCH),aarch64)
     $(error NATIVE_RUST_TEST currently requires aarch64)
   endif
-  ifneq ($(strip $(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
-    $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE/CAP_LEND_TEST are separate image variants)
+  ifneq ($(strip $(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
+    $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE/CAP_LEND_TEST/CHILD_SPAWN_TEST are separate image variants)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_NATIVE_RUST_TEST=1
   CFLAGS += -DAGENTOS_NATIVE_RUST_TEST=1
@@ -894,6 +894,28 @@ ifdef CAP_LEND_TEST
   CFLAGS_ROOT_TASK += -DAGENTOS_CAP_LEND_TEST=1
   CFLAGS += -DAGENTOS_CAP_LEND_TEST=1
   IMAGES += cap_lend_lender.elf cap_lend_borrower.elf
+endif
+
+# T6: run-time child-domain-creation demonstration (test image only). See
+# tests/child-spawn/{parent,child}_pd.c, child_spawn.h/.c, and
+# docs/superpowers/plans/2026-10-04-t6-hierarchical-delegation.md. Absent
+# from the default image and from every other focused test-image variant.
+# Unlike every other pair above, child_spawn_child is NOT a system_desc row
+# and is never loaded by the root task's normal per-PD boot loop -- it is
+# linked as a raw binary blob directly into child_spawn_parent's own ELF
+# (see the objcopy rules below) so its bytes are covered by the SAME T3
+# verification that covers the rest of the parent's binary, with no new
+# PD-loading path. Only child_spawn_parent.elf is added to IMAGES.
+ifdef CHILD_SPAWN_TEST
+  ifneq ($(ARCH),aarch64)
+    $(error CHILD_SPAWN_TEST currently requires aarch64)
+  endif
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+    $(error CHILD_SPAWN_TEST is a separate image variant)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_CHILD_SPAWN_TEST=1
+  CFLAGS += -DAGENTOS_CHILD_SPAWN_TEST=1
+  IMAGES += child_spawn_parent.elf
 endif
 
 ifdef BLK_ISOLATION_PROBE
@@ -1298,6 +1320,45 @@ $(BUILD_DIR)/cap_lend_lender.elf: $(BUILD_DIR)/cap_lend_lender.o $(BUILD_DIR)/ca
 $(BUILD_DIR)/cap_lend_borrower.elf: $(BUILD_DIR)/cap_lend_borrower.o $(BUILD_DIR)/cap_lend.o $(BUILD_DIR)/cap_lease.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+# T6: run-time child-domain-creation demonstration pair. child_spawn.o/
+# cap_lend.o/cap_lease.o/endowment.o build through the generic
+# libs/pd-support pattern rule above (line ~1171).
+#
+# child_spawn_child.elf is built exactly like any other service PD (same
+# pd_entry.o/_start, same tools/ld/agentos.ld link address) but is NOT
+# added to IMAGES and is NOT a system_desc_aarch64.c row -- it is never
+# loaded by the root task's per-PD boot loop. Instead its loadable bytes
+# are extracted (objcopy -O binary) and linked directly into
+# child_spawn_parent.elf as a read-only blob (see child_spawn.h's file
+# header on why: this keeps the child's "ELF" inside the SAME T3-verified
+# bundle entry as the parent, with no new image-loading path). The
+# objcopy-to-.o step mirrors the existing $(PD_BUNDLE_OBJ) /
+# $(PD_MANIFEST_OBJ) rules above exactly (same --input-target=binary,
+# same cd-into-BUILD_DIR-for-predictable-symbol-names trick).
+$(BUILD_DIR)/child_spawn_child.o: $(REPO_ROOT)/tests/child-spawn/child_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/child_spawn_child.elf: $(BUILD_DIR)/child_spawn_child.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+$(BUILD_DIR)/child_spawn_payload.bin: $(BUILD_DIR)/child_spawn_child.elf
+	$(OBJCOPY) -O binary $< $@
+$(BUILD_DIR)/child_spawn_payload.o: $(BUILD_DIR)/child_spawn_payload.bin
+	cd $(BUILD_DIR) && $(OBJCOPY) \
+		--input-target=binary \
+		--output-target=elf64-littleaarch64 \
+		--binary-architecture=aarch64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		--redefine-sym _binary_child_spawn_payload_bin_start=__child_spawn_payload_start \
+		--redefine-sym _binary_child_spawn_payload_bin_end=__child_spawn_payload_end \
+		--redefine-sym _binary_child_spawn_payload_bin_size=__child_spawn_payload_size \
+		child_spawn_payload.bin child_spawn_payload.o
+
+$(BUILD_DIR)/child_spawn_parent.o: $(REPO_ROOT)/tests/child-spawn/parent_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/child_spawn_parent.elf: $(BUILD_DIR)/child_spawn_parent.o $(BUILD_DIR)/child_spawn.o $(BUILD_DIR)/cap_lend.o $(BUILD_DIR)/cap_lease.o $(BUILD_DIR)/endowment.o $(BUILD_DIR)/child_spawn_payload.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 # Swap slot sources need wasm3 headers + bare-metal shim
 $(BUILD_DIR)/swap_slot.o: $(REPO_ROOT_MK)/services/legacy-pds/swap_slot.c
 	@mkdir -p $(BUILD_DIR)
@@ -1672,6 +1733,11 @@ SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-cap-lend-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
 	{ cat $<; printf '\n[[pd]]\nname = "cap_lend_lender"\npriority = 200\n'; printf '\n[[pd]]\nname = "cap_lend_borrower"\npriority = 199\n'; } > $@
+else ifdef CHILD_SPAWN_TEST
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-child-spawn-test.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "child_spawn_parent"\npriority = 150\n'; } > $@
 else ifdef SEL4_TEST_IMAGE
 # agentos-8f5: test images (with no guest profiles) append the contract-runner PD
 # so gen-pd-bundle embeds test_runner.elf and the root task can spawn it, plus

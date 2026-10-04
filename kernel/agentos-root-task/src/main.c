@@ -67,6 +67,9 @@
 static seL4_CPtr g_cap_lend_done_ntfn = seL4_CapNull;
 static seL4_CPtr g_cap_lend_revoked_ntfn = seL4_CapNull;
 #endif
+#ifdef AGENTOS_CHILD_SPAWN_TEST
+#include "contracts/child_spawn_contract.h"
+#endif
 #include <platform/serial_uart.h>
 #include "boot_manifest.h"   /* aos_boot_manifest_validate/_find (T3 image verification) */
 #include "ed25519_verify.h"  /* ed25519_verify — manifest signature check                */
@@ -3741,6 +3744,71 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 #endif
 
+#ifdef AGENTOS_CHILD_SPAWN_TEST
+        /*
+         * T6 run-time child-domain-creation demonstration (test image
+         * only; see tests/child-spawn/parent_pd.c and
+         * child_spawn_contract.h). child_spawn_parent is granted exactly
+         * what the T6 plan's Scope section calls for and nothing else:
+         *
+         *   - self-references to its own CNode/VSpace/TCB (same pattern
+         *     as the cap-lend pair above) so it can retype into and
+         *     operate on its own CSpace and use its own TCB (mcp=255,
+         *     set by root for every PD -- see pd_tcb.c) as the
+         *     SetSchedParams authority for its child;
+         *   - ONE untyped pool, which is the ONLY source
+         *     aos_child_spawn() retypes the child's CNode, VSpace, page
+         *     tables, frames, TCB and (MCS) SchedContext from;
+         *   - an ASID-pool slice and (MCS only) a SchedControl
+         *     capability -- the two things a child domain needs that are
+         *     NOT Untyped-derived, so a retype from the pool alone could
+         *     never produce them (see child_spawn.h's file header).
+         *
+         * No guest, device, or queue-service authority. This PD's only
+         * interesting capability is the single untyped pool below.
+         */
+        if (name_eq(pd->name, "child_spawn_parent")) {
+            if (pd->cnode_size_bits != AOS_CHILD_SPAWN_PARENT_CNODE_BITS ||
+                seL4_CNode_Copy(pd_cnode, AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, pd_cnode,
+                    64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_CHILD_SPAWN_SELF_VSPACE_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, vspace,
+                    64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_CHILD_SPAWN_SELF_TCB_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, tr.tcb_cap,
+                    64u, seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn self-reference grant failed; refusing PD start\n");
+                continue;
+            }
+
+            seL4_CPtr child_spawn_pool = seL4_CapNull;
+            seL4_CPtr child_spawn_asid_pool = seL4_CapNull;
+            if (ut_alloc_cap(seL4_UntypedObject, AOS_CHILD_SPAWN_POOL_BITS,
+                    &child_spawn_pool) != seL4_NoError ||
+                create_guest_asid_pool(&child_spawn_asid_pool) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn pool/ASID allocation failed; refusing PD start\n");
+                continue;
+            }
+            if (seL4_CNode_Move(pd_cnode, AOS_CHILD_SPAWN_POOL_SLOT, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, child_spawn_pool, 64u) != seL4_NoError ||
+                seL4_CNode_Move(pd_cnode, AOS_CHILD_SPAWN_ASID_POOL_SLOT, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, child_spawn_asid_pool, 64u) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn pool/ASID delegation failed; refusing PD start\n");
+                continue;
+            }
+#ifdef CONFIG_KERNEL_MCS
+            if (seL4_CNode_Copy(pd_cnode, AOS_CHILD_SPAWN_SCHEDCONTROL_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    schedcontrol_for_node(bi, sched_node_for_pd(pd)), 64u,
+                    seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn SchedControl grant failed; refusing PD start\n");
+                continue;
+            }
+#endif
+        }
+#endif
+
         /* ── 4g.4: Distribute device MMIO frame caps ────────────────────────
          * For each device_frame_desc_t, find the device untyped covering its
          * physical address, retype it as a 4K page frame, and install the cap
@@ -3862,6 +3930,7 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "native_rust_client") ||
              name_eq(pd->name, "cap_lend_lender") ||
              name_eq(pd->name, "cap_lend_borrower") ||
+             name_eq(pd->name, "child_spawn_parent") ||
              name_eq(pd->name, "framebuffer_client0") ||
              name_eq(pd->name, "framebuffer_client1") ||
              name_eq(pd->name, "display_ramfb") ||
