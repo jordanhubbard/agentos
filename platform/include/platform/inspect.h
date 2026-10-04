@@ -77,11 +77,15 @@ typedef struct __attribute__((packed)) aos_inspect_snapshot {
      * 1=VENDOR, 2=MOK, 3=HARDWARE) THIS image booted under. Was `reserved`
      * (always zero); repurposed by T10 so an operator can ask a LIVE
      * machine which anchor it booted under, not just read a boot log that
-     * has long since scrolled away. See
-     * kernel/agentos-root-task/include/contracts/trust_anchor.h for the
-     * tier semantics -- this field intentionally does not depend on that
-     * header (host-testable, no cross-module coupling); it only carries
-     * the numeric value root already validated against it.
+     * has long since scrolled away. This struct's own layout stays
+     * dependency-free (plain uint32_t, no enum type), but
+     * platform/inspect/inspect_snapshot.c's formatter calls
+     * aos_anchor_tier_name() (kernel/agentos-root-task/include/contracts/
+     * trust_anchor.h) as the single source for the tier's display name --
+     * see that header for the tier semantics. Do not reintroduce a second
+     * copy of that name table; a prior revision did, hand-synced, with no
+     * test catching disagreement between the boot log and this field's
+     * formatted output.
      */
     uint32_t anchor_tier;
     aos_inspect_thread_t threads[AOS_INSPECT_MAX_THREADS];
@@ -105,7 +109,13 @@ typedef struct aos_inspect_view {
     uint64_t gic_dist_pa;
     uint64_t virtio_net_ipa;
     uint32_t thread_count;
-    uint32_t anchor_tier; /* see aos_inspect_snapshot_t.anchor_tier above */
+    /* See aos_inspect_snapshot_t.anchor_tier above. CAUTION for the next
+     * producer: 0 == AOS_ANCHOR_NONE, the PERMISSIVE tier, is also the
+     * zero-initialised default of this field. A producer that forgets to
+     * set it reports "none (development, not gating)" rather than
+     * anything obviously wrong -- fail-safe (understates trust, never
+     * overstates it) but silent. Always set this explicitly. */
+    uint32_t anchor_tier;
     aos_inspect_thread_t threads[AOS_INSPECT_MAX_THREADS];
 } aos_inspect_view_t;
 

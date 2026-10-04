@@ -769,8 +769,14 @@ static void dbg_hex(seL4_Word v);
  * fail-open: refuse to spawn any PD rather than guess a tier.
  *
  * Returns 1 if the compiled-in state is valid (safe to consult
- * aos_anchor_gates_boot() elsewhere), 0 otherwise (diagnostic already
- * attempted; caller must refuse to spawn any PD).
+ * aos_anchor_gates_boot() elsewhere), 0 otherwise. On AArch64 the caller
+ * (root_task_main) returns immediately on a 0 here, and because this runs
+ * before the UART is mapped, that diagnostic is dropped: a build with a
+ * genuinely incoherent compiled-in anchor state manifests on the board as
+ * a SILENT HANG at Step 0, not a printed refusal. That is the documented
+ * trade of calling this as early as possible (see above) rather than
+ * deferring validation until the UART is live, where the refusal would be
+ * printed but a few more boot steps would already have run first.
  */
 static int boot_init_trust_anchor(void)
 {
@@ -812,8 +818,11 @@ static void boot_announce_trust_anchor(void)
     dbg_puts(aos_anchor_tier_name(g_trust_anchor_state.tier));
     dbg_puts(aos_anchor_gates_boot(&g_trust_anchor_state)
                  ? " -- gates boot on a manifest/digest mismatch\n"
-                 : " -- does NOT gate boot; verification still runs and mismatches\n"
-                   "[rt]                are still reported, boot proceeds regardless\n");
+                 : " -- does NOT gate boot on a manifest/digest MISMATCH; verification\n"
+                   "[rt]                still runs and mismatches are still reported, boot\n"
+                   "[rt]                proceeds regardless of a mismatch. A structurally\n"
+                   "[rt]                absent or invalid manifest is still refused on every\n"
+                   "[rt]                tier -- there is nothing to compute or compare without one.\n");
     dbg_puts("[rt] ================================================================\n");
 }
 
@@ -885,9 +894,10 @@ static int boot_verify_manifest(void)
     seL4_Word sig_off = mlen - (seL4_Word)AOS_BOOT_MANIFEST_SIG_LEN;
     const uint8_t *sig = __pd_manifest_start + sig_off;
 
-    /* Either compiled-in key verifying is sufficient -- MOK is additive to
-     * (or, per the ruling in trust_anchor.h, stands in for) the vendor
-     * root, never a narrower requirement than "a key that's present." */
+    /* Either compiled-in key verifying is sufficient: a signature matching
+     * the vendor key OR the MOK passes. A MOK-only machine (vendor.present
+     * == 0) simply has no vendor key to try -- see trust_anchor.h for why
+     * the vendor key is optional under AOS_ANCHOR_MOK. */
     int sig_ok = 0;
     if (g_trust_anchor_state.vendor.present &&
         ed25519_verify(sig, __pd_manifest_start, (uint32_t)sig_off,
@@ -3245,9 +3255,12 @@ void root_task_main(const seL4_BootInfo *bi)
          *     unconditional behavior;
          *   - AOS_ANCHOR_NONE: reports the SAME failure just as loudly,
          *     then falls through to 4e and loads the ELF anyway — the
-         *     tampering is visible in the log, boot proceeds regardless.
-         *     PDs already started earlier in this loop are unaffected
-         *     either way.
+         *     tampering is visible in the log, and THIS PD's boot
+         *     proceeds regardless of the mismatch. PDs already started
+         *     earlier in this loop are unaffected either way. (This is
+         *     scoped to a digest MISMATCH specifically: a structurally
+         *     absent or invalid manifest is refused earlier, at Step 3.5,
+         *     on every tier — this loop never runs without one.)
          */
         if (manifest_trusted) {
             int in_bundle = boot_elf_in_verified_bundle(elf_data, elf_size);

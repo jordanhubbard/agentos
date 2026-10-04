@@ -2,6 +2,15 @@
 # This builds the agentOS personality layer that boots on top of seL4.
 # Image packing uses cargo xtask gen-image (no external Microkit SDK required).
 
+# A failed recipe must not leave a stale target file with a fresh mtime,
+# which `make` would then treat as up to date on the next invocation. This
+# matters most for the PD_BUNDLE/PD_MANIFEST/PD_MANIFEST_PUBKEY_HDR trio
+# (T10 review, task-2-review.md "Disclosed concern (a)"): `xtask
+# gen-pd-bundle` writes the bundle file before it can fail on trust-anchor
+# selection (no key, no opt-in), which would otherwise leave a dangling,
+# unsigned bundle on disk that looked current.
+.DELETE_ON_ERROR:
+
 ifeq ($(strip $(BUILD_DIR)),)
 $(error BUILD_DIR must be specified)
 endif
@@ -141,10 +150,13 @@ ROOT_TASK_OBJS += $(BUILD_DIR)/sha256_mini.o $(BUILD_DIR)/ed25519_verify.o $(BUI
 # Trust anchor tier contract and gating policy (T10) -- host-testable, no
 # seL4/key material of its own; see libs/pd-support/trust_anchor.c and
 # kernel/agentos-root-task/include/contracts/trust_anchor.h.
+#
+# platform/inspect/inspect_snapshot.c calls aos_anchor_tier_name() directly
+# (the single source of tier -> name strings, see its own comment) rather
+# than hand-syncing a second copy, so every binary that links
+# inspect_snapshot.c -- or its inspect_snapshot.pd.o twin, see cc_pd.elf
+# and operator_session.elf below -- must also link trust_anchor.o.
 ROOT_TASK_OBJS += $(BUILD_DIR)/trust_anchor.o
-# Inspect snapshot (platform/inspect/inspect_snapshot.c) now also carries the
-# trust anchor tier (T10); root_task links it via rt_inspect_snapshot.o above
-# already, no new object needed there.
 ifeq ($(ARCH),x86_64)
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
 endif
@@ -941,7 +953,7 @@ $(BUILD_DIR)/operator_session.o: $(REPO_ROOT_MK)/platform/operator-session/opera
 $(BUILD_DIR)/operator_protocol.o: $(REPO_ROOT_MK)/platform/operator-session/session.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
-$(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
+$(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o $(BUILD_DIR)/trust_anchor.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
 # SDK paths and compile definitions are part of this stamp. Invalidate all
@@ -1480,7 +1492,7 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 $(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o $(BUILD_DIR)/trust_anchor.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)

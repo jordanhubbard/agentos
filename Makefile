@@ -1583,7 +1583,7 @@ test-input-host:
 	$(ROOT_DIR)_build/tmp/test_input_queue
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
 	$(BUILD_TMP_DIR)/test_virtio_input
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c -o $(BUILD_TMP_DIR)/test_agentctl_input
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c libs/pd-support/trust_anchor.c -o $(BUILD_TMP_DIR)/test_agentctl_input
 	$(BUILD_TMP_DIR)/test_agentctl_input
 ifeq ($(UNAME_S),Linux)
 	$(CC) -std=c11 -Wall -Wextra -Werror tests/platform/test_guest_input_probe.c -o $(BUILD_TMP_DIR)/test_guest_input_probe
@@ -1612,13 +1612,13 @@ host-frame-pattern:
 .PHONY: test-agentctl-console-host
 test-agentctl-console-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c -o $(BUILD_TMP_DIR)/test_agentctl_console
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c libs/pd-support/trust_anchor.c -o $(BUILD_TMP_DIR)/test_agentctl_console
 	$(BUILD_TMP_DIR)/test_agentctl_console
 
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
 	@mkdir -p $(ROOT_DIR)_build/tmp
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c -o $(ROOT_DIR)_build/tmp/test_agentctl_frame_capture
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c libs/pd-support/trust_anchor.c -o $(ROOT_DIR)_build/tmp/test_agentctl_frame_capture
 	$(ROOT_DIR)_build/tmp/test_agentctl_frame_capture
 
 test-framebuffer-host:
@@ -1665,7 +1665,7 @@ test-log-isolation:
 .PHONY: test-operator-host test-operator-session
 test-operator-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_operator_session.c platform/operator-session/session.c platform/inspect/inspect_snapshot.c platform/serial-virt/pump.c -o $(BUILD_TMP_DIR)/test_operator_session
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_operator_session.c platform/operator-session/session.c platform/inspect/inspect_snapshot.c platform/serial-virt/pump.c libs/pd-support/trust_anchor.c -o $(BUILD_TMP_DIR)/test_operator_session
 	$(BUILD_TMP_DIR)/test_operator_session
 test-operator-session:
 	$(MAKE) -C tools/agentctl
@@ -2195,9 +2195,10 @@ test-integration:
 	    echo "FAIL: tests/platform/test_net_host_fanout.c"; \
 	    status=1; \
 	fi; \
-	if gcc -I platform/include \
+	if gcc -I platform/include -iquote kernel/agentos-root-task/include \
 	        tests/platform/test_inspect_snapshot.c \
 	        platform/inspect/inspect_snapshot.c \
+	        libs/pd-support/trust_anchor.c \
 	        -o $(BUILD_TMP_DIR)/test_inspect_snapshot 2>&1 \
 	    && $(BUILD_TMP_DIR)/test_inspect_snapshot; then \
 	    echo "PASS: tests/platform/test_inspect_snapshot.c"; \

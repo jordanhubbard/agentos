@@ -1528,9 +1528,13 @@ snapshot's `trust.anchor_tier` field — `agentctl inspect`). Under the vendor
 anchor (a public key fixed at build time) and the machine-owner anchor (an
 enrolled key), a manifest or digest mismatch refuses boot. Under the
 development anchor, digests are still computed and mismatches still
-reported, but boot proceeds — it establishes nothing about image integrity
-and exists so the platform can be iterated on before production key storage
-exists. The development anchor requires an explicit build opt-in
+reported, but a digest mismatch does not stop boot — it establishes nothing
+about image integrity and exists so the platform can be iterated on before
+production key storage exists. A structurally absent or invalid manifest is
+refused on **every** tier including development, since there is nothing to
+compute or compare without one; the development anchor only changes what
+happens on a mismatch within an otherwise well-formed, signed manifest. The
+development anchor requires an explicit build opt-in
 (`AGENTOS_TRUST_ANCHOR=none`); a build with no key and no opt-in fails rather
 than producing a non-gating image.
 
@@ -1559,8 +1563,10 @@ to when an owner enrols a key with physical presence; see
 runtime flow.
 
 `make test-image-verify` boots an unmodified image, a byte-tampered image, and
-an image with its manifest stripped, requiring the latter two to be refused with
-the tampered image named under a gating tier.
+an image with its manifest stripped, under the vendor (gating) anchor;
+requiring the latter two to be refused, with the tampered image named. The
+manifest-stripped case refuses boot on every tier, not just gating ones (see
+above).
 
 Scope: this constrains every adversary who can modify an image but not replace
 the boot chain. Under the vendor and machine-owner tiers it does NOT establish

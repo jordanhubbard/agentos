@@ -7,6 +7,21 @@
 #include <stddef.h>
 #include <string.h>
 
+/*
+ * contracts/trust_anchor.h is a dependency-free header (no seL4, no key
+ * material -- see its own comment) and libs/pd-support/trust_anchor.c is
+ * already linked everywhere this file is: the root task
+ * (kernel/agentos-root-task/Makefile's ROOT_TASK_OBJS), agentctl
+ * (tools/agentctl/Makefile's SRC), and every host test that links this
+ * file (Makefile's test-agentctl-*-host / test-operator-host /
+ * test-inspect-snapshot-host targets). aos_anchor_tier_name() is THE
+ * single source for tier -> name strings; see the T10 review that caught
+ * a hand-synced duplicate copy here diverging silently from it, which
+ * would have let the boot log and `agentctl inspect` disagree on exactly
+ * the question this feature exists to answer ("is this box gating").
+ */
+#include "contracts/trust_anchor.h"
+
 static void copy_name(uint8_t dst[AOS_INSPECT_NAME_LEN], const uint8_t src[AOS_INSPECT_NAME_LEN])
 {
     uint32_t i;
@@ -220,33 +235,6 @@ static const char *arch_name(uint32_t arch)
     }
 }
 
-/*
- * anchor_tier_name -- local copy of the tier -> name mapping in
- * libs/pd-support/trust_anchor.c::aos_anchor_tier_name(), kept here
- * because inspect_snapshot.c is deliberately decoupled from
- * contracts/trust_anchor.h (host-testable, no cross-module build
- * coupling -- see the field comment in platform/include/platform/
- * inspect.h). Keep these strings in sync by hand; both must stay
- * distinct and non-empty for every tier, and both must name NONE as
- * "not gating" so an operator reading either surface gets the same
- * answer.
- */
-static const char *anchor_tier_name(uint32_t tier)
-{
-    switch (tier) {
-    case 0u: /* AOS_ANCHOR_NONE */
-        return "none (development, not gating)";
-    case 1u: /* AOS_ANCHOR_VENDOR */
-        return "vendor";
-    case 2u: /* AOS_ANCHOR_MOK */
-        return "machine-owner";
-    case 3u: /* AOS_ANCHOR_HARDWARE */
-        return "hardware (not available)";
-    default:
-        return "unknown";
-    }
-}
-
 static const char *thr_state_name(uint32_t state)
 {
     switch (state) {
@@ -338,7 +326,7 @@ int aos_inspect_format(const aos_inspect_snapshot_t *snap, char *buf, size_t buf
         || line_u64(&p, end, "hardware.virtio_net_virq", snap->hw.virtio_net_virq) != 0
         || line_u64(&p, end, "thread.count", snap->thread_count) != 0
         || line_u64(&p, end, "trust.anchor_tier", snap->anchor_tier) != 0
-        || line_str(&p, end, "trust.anchor_tier_name", anchor_tier_name(snap->anchor_tier)) != 0) {
+        || line_str(&p, end, "trust.anchor_tier_name", aos_anchor_tier_name(snap->anchor_tier)) != 0) {
         *p = '\0';
         return AOS_INSPECT_ERR_TRUNC;
     }

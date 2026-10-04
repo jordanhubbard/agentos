@@ -341,6 +341,50 @@ pub fn select_anchor(repo_root: &Path) -> Result<AnchorSelection> {
     let vendor_loaded = load_env_seed_key(repo_root, VENDOR_SIGNING_KEY_ENV)?;
     let mok_loaded = load_env_seed_key(repo_root, MOK_SIGNING_KEY_ENV)?;
 
+    // Validate AGENTOS_TRUST_ANCHOR up front, regardless of which branch
+    // below actually consults it: only "none" is a meaningful value (it is
+    // only ever an opt-IN, never a tier selector in its own right — a key
+    // always wins strictest-first). An unset var is fine (empty string
+    // compares unequal to "none" below and is simply not an opt-in). Any
+    // OTHER non-empty value is almost certainly a typo for "none" (e.g.
+    // "None", "vendor", "mok") and must fail loudly rather than be
+    // silently treated as "not none" and ignored -- that would be exactly
+    // the kind of input a caller believes does something but doesn't.
+    let trust_anchor_var = std::env::var(TRUST_ANCHOR_ENV).unwrap_or_default();
+    if !trust_anchor_var.is_empty() && trust_anchor_var != TRUST_ANCHOR_OPT_IN_NONE {
+        bail!(
+            "{TRUST_ANCHOR_ENV}={trust_anchor_var:?} is not a recognized value -- the only \
+             meaningful value is {TRUST_ANCHOR_OPT_IN_NONE:?} (an explicit opt-in to the \
+             non-gating development anchor, consulted only when neither {VENDOR_SIGNING_KEY_ENV} \
+             nor {MOK_SIGNING_KEY_ENV} is set). Unset {TRUST_ANCHOR_ENV} entirely if you did not \
+             mean to set it."
+        );
+    }
+    if trust_anchor_var == TRUST_ANCHOR_OPT_IN_NONE
+        && (vendor_loaded.is_some() || mok_loaded.is_some())
+    {
+        eprintln!(
+            "[gen-pd-bundle] NOTE: {TRUST_ANCHOR_ENV}={TRUST_ANCHOR_OPT_IN_NONE} was set but a \
+             signing key is also configured ({}{}); tier selection is strictest-first, so the \
+             configured key wins and this build is GATING, not the AOS_ANCHOR_NONE opt-in you \
+             asked for.",
+            if vendor_loaded.is_some() {
+                VENDOR_SIGNING_KEY_ENV
+            } else {
+                ""
+            },
+            if mok_loaded.is_some() {
+                if vendor_loaded.is_some() {
+                    format!(" and {MOK_SIGNING_KEY_ENV}")
+                } else {
+                    MOK_SIGNING_KEY_ENV.to_string()
+                }
+            } else {
+                String::new()
+            }
+        );
+    }
+
     if mok_loaded.is_some() {
         let (signing_key, signing_is_dev, signing_source) = match &vendor_loaded {
             Some((sk, dev, path)) => (sk.clone(), *dev, path.clone()),
@@ -372,8 +416,7 @@ pub fn select_anchor(repo_root: &Path) -> Result<AnchorSelection> {
 
     // Neither key configured. The ONLY way to reach AOS_ANCHOR_NONE is the
     // explicit opt-in below — there is no silent fallback here.
-    let opt_in = std::env::var(TRUST_ANCHOR_ENV).unwrap_or_default();
-    if opt_in == TRUST_ANCHOR_OPT_IN_NONE {
+    if trust_anchor_var == TRUST_ANCHOR_OPT_IN_NONE {
         eprintln!(
             "[gen-pd-bundle] WARNING: {TRUST_ANCHOR_ENV}={TRUST_ANCHOR_OPT_IN_NONE} — this \
              build selects the AOS_ANCHOR_NONE (development) trust anchor. Verification still \
@@ -648,6 +691,49 @@ mod tests {
             result.is_err(),
             "a build with no signing key and no AGENTOS_TRUST_ANCHOR=none opt-in must fail, \
              not silently produce an image"
+        );
+    }
+
+    /// An unrecognized AGENTOS_TRUST_ANCHOR value (a typo for "none", or
+    /// any other garbage) must fail loudly rather than silently be treated
+    /// as "not none" and ignored -- see review Minor #6.
+    #[test]
+    fn select_anchor_with_unrecognized_trust_anchor_value_errors() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = repo_root();
+        for bogus in ["None", "vendor", "mok", "nonee", "NONE"] {
+            let result = with_anchor_env(&[(TRUST_ANCHOR_ENV, bogus)], || select_anchor(&root));
+            assert!(
+                result.is_err(),
+                "AGENTOS_TRUST_ANCHOR={bogus:?} must be rejected, not silently ignored"
+            );
+        }
+    }
+
+    /// AGENTOS_TRUST_ANCHOR=none set together with a signing key does not
+    /// error (the configured key safely wins, strictest-first) and does
+    /// not silently discard the opt-in without comment -- see review Minor
+    /// #6. This only exercises the non-error path; the NOTE is printed to
+    /// stderr and not asserted here, but the selection itself must still
+    /// be the gating tier the key implies, not NONE.
+    #[test]
+    fn select_anchor_with_none_opt_in_and_a_key_prefers_the_key() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = repo_root();
+        let dev_seed_abs = root.join(DEV_SIGNING_KEY_REL_PATH);
+        let dev_seed_abs_str = dev_seed_abs.to_str().unwrap();
+        let selection = with_anchor_env(
+            &[
+                (TRUST_ANCHOR_ENV, TRUST_ANCHOR_OPT_IN_NONE),
+                (VENDOR_SIGNING_KEY_ENV, dev_seed_abs_str),
+            ],
+            || select_anchor(&root),
+        )
+        .expect("a configured key alongside the none opt-in must still succeed");
+        assert_eq!(
+            selection.tier,
+            AnchorTier::Vendor,
+            "a configured vendor key must win over a none opt-in, strictest-first"
         );
     }
 

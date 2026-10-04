@@ -23,7 +23,8 @@ endif
 
 BUILD_DIR := $(abspath ../../_build/tools/agentctl)
 TARGET  := $(BUILD_DIR)/agentctl
-SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c ../../platform/inspect/authority.c
+SRC     := agentctl.c ../../platform/inspect/inspect_snapshot.c ../../platform/inspect/authority.c \
+           ../../libs/pd-support/trust_anchor.c
 
 .PHONY: all test install clean
 
