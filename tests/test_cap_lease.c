@@ -105,6 +105,62 @@ int main(void)
     assert(aos_lease_get(&table, AOS_LEASE_MAX_ACTIVE + 1000) == NULL);
     assert(aos_lease_get(&table, 0xffffffffu) == NULL);
 
+    /*
+     * ABA protection: a stale id from a lease whose slot was reclaimed
+     * must not alias the new, unrelated lease now occupying that slot.
+     * Use a fresh table so the slot being exercised is unambiguous.
+     */
+    {
+        aos_lease_table_t t2;
+        aos_lease_table_init(&t2);
+
+        uint32_t a_id;
+        assert(aos_lease_open(&t2, 10, 0x1, &a_id) == 0);
+        assert(aos_lease_close(&t2, a_id) == 0);
+
+        /* B reclaims A's slot (the only slot touched so far). */
+        uint32_t b_id;
+        assert(aos_lease_open(&t2, 20, 0x2, &b_id) == 0);
+        assert(b_id != a_id);
+
+        /* Closing with A's stale id must fail outright, and must not
+         * revoke B's still-active lease. */
+        assert(aos_lease_close(&t2, a_id) != 0);
+        {
+            const aos_lease_t *b = aos_lease_get(&t2, b_id);
+            assert(b != NULL);
+            assert(b->state == AOS_LEASE_ACTIVE);
+            assert(b->borrower_pd == 20);
+        }
+
+        /* aos_lease_get() on A's stale id must not alias B either. */
+        assert(aos_lease_get(&t2, a_id) == NULL);
+
+        /* Happy path across many open/close cycles reusing the same
+         * slot: each new id differs from its predecessor's, and the
+         * predecessor's id goes stale the moment it is superseded. */
+        uint32_t prev_id = b_id;
+        for (int cycle = 0; cycle < 50; cycle++) {
+            assert(aos_lease_close(&t2, prev_id) == 0);
+
+            uint32_t next_id;
+            assert(aos_lease_open(&t2, 1000u + (uint32_t)cycle, 0x3,
+                                   &next_id) == 0);
+            assert(next_id != prev_id);
+
+            const aos_lease_t *l = aos_lease_get(&t2, next_id);
+            assert(l != NULL);
+            assert(l->state == AOS_LEASE_ACTIVE);
+            assert(l->borrower_pd == 1000u + (uint32_t)cycle);
+
+            /* The superseded id is now stale. */
+            assert(aos_lease_get(&t2, prev_id) == NULL);
+            assert(aos_lease_close(&t2, prev_id) != 0);
+
+            prev_id = next_id;
+        }
+    }
+
     printf("PASS: test_cap_lease\n");
     return 0;
 }
