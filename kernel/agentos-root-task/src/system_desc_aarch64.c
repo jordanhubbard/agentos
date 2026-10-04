@@ -53,6 +53,7 @@
 
 #include "system_desc.h"
 #include "contracts/native_rust_probe.h"
+#include "contracts/cap_lend_test.h"
 #include <platform/guest_memory_layout.h>
 #ifdef AGENTOS_GUEST_INPUT
 #define AOS_INPUT_PD_EXTRA 1u
@@ -74,6 +75,11 @@
 #elif defined(AGENTOS_SEL4_TEST_IMAGE)
 #define AOS_TEST_PD_EXTRA (2u + AOS_INPUT_PD_EXTRA)
 #elif defined(AGENTOS_NATIVE_RUST_TEST)
+#define AOS_TEST_PD_EXTRA (2u + AOS_INPUT_PD_EXTRA)
+#elif defined(AGENTOS_CAP_LEND_TEST)
+/* T5: cap_lend_lender + cap_lend_borrower, test image only (see
+ * tests/cap-lend/{lender,borrower}_pd.c and cap_lend_test.h). The default
+ * booted PD set is unchanged -- this is a separate image variant. */
 #define AOS_TEST_PD_EXTRA (2u + AOS_INPUT_PD_EXTRA)
 #else
 #define AOS_TEST_PD_EXTRA AOS_INPUT_PD_EXTRA
@@ -641,6 +647,50 @@ const system_desc_t system_desc_aarch64 = {
             .init_eps = {
                 { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
                 { SVC_ID_NATIVE_RUST_PROBE, 16u },
+            },
+        },
+#endif
+
+#ifdef AGENTOS_CAP_LEND_TEST
+        /* T5 capability-lending demonstration pair (test image only; see
+         * cap_lend_test.h). No device frames, IRQs, or guest-execution
+         * authority in either PD -- the only capability either one holds
+         * beyond its own boot-time init EPs is the single frame the root
+         * task retypes, maps, and moves into cap_lend_lender's CNode below
+         * (see main.c's AGENTOS_CAP_LEND_TEST provisioning block). Both get a
+         * SVC_ID_SERIAL init EP (same slot/pattern as native_rust_client)
+         * so they can emit the greppable AOS_CAP_LEND_MARKER_* boot-log
+         * markers -- otherwise a mint/map/verify failure is indistinguishable
+         * from success in the boot log, which Task 3's oracle depends on
+         * not being true. */
+        {
+            .name = "cap_lend_lender",
+            .elf_path = "cap_lend_lender.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 200u,
+            .self_svc_id = 0u,
+            .init_ep_count = 2u,
+            .init_eps = {
+                { SVC_ID_CAP_LEND_XFER, AOS_CAP_LEND_XFER_EP_SLOT },
+                { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
+            },
+        },
+        {
+            .name = "cap_lend_borrower",
+            .elf_path = "cap_lend_borrower.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = 8u,
+            .priority = 199u,
+            /* Distinct self_svc_id (not 0u, unlike the lender) so main.c's
+             * ROOT_FAULT_PROBE block can mint exactly this PD a badged fault
+             * endpoint -- Task 3's Probe 2 oracle, which must fire for this
+             * PD's post-revoke access and nothing else. */
+            .self_svc_id = SVC_ID_CAP_LEND_BORROWER,
+            .init_ep_count = 2u,
+            .init_eps = {
+                { SVC_ID_CAP_LEND_XFER, AOS_CAP_LEND_XFER_EP_SLOT },
+                { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
             },
         },
 #endif

@@ -237,6 +237,11 @@ typedef struct {
 #define SVC_ID_X86_SECONDARY_RUNNER 38u /* Secondary guest bootstrap executor */
 #define SVC_ID_X86_SECONDARY_AP_RUNNER 39u /* Secondary guest AP executor */
 #define SVC_ID_ENTROPY_PD 40u /* virtio-rng driver PD */
+#define SVC_ID_CAP_LEND_XFER 40u /* T5 cap-lend demonstration pair transfer EP (test image only) */
+#define SVC_ID_CAP_LEND_BORROWER 41u /* T5 cap-lend borrower identity, for the Task 3 fault probe
+                                       * (test image only) -- distinguishes cap_lend_borrower from
+                                       * every other PD so the root task can mint it a badged fault
+                                       * endpoint the way it does for SVC_ID_NATIVE_RUST_PROBE etc. */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */

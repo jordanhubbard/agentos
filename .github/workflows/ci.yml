@@ -521,6 +521,13 @@ jobs:
       - name: GATE — make test-entropy-unavailable
         timeout-minutes: 10
         run: make test-entropy-unavailable
+      # T5 capability lending: the borrower uses the loan, the lender's
+      # revoke faults the borrower's next access, and a capability the
+      # borrower sub-delegated before revocation dies too. Added here
+      # rather than relying on `make gate`, which no CI job invokes.
+      - name: GATE — make test-cap-lending
+        timeout-minutes: 10
+        run: make test-cap-lending
 
       - name: Boot gate summary
         run: |
@@ -531,6 +538,7 @@ jobs:
           echo "   - PD image verification (control / tampered-PD refusal / stripped-manifest refusal)"
           echo "   - entropy_pd reachable; reports UNAVAILABLE (no device wired"
           echo "     on QEMU virt) and validates over-length requests"
+          echo "   - T5 capability lending (loan used, revoked, sub-delegate dies too)"
           echo "GUEST_OS=none is a stub VMM: this proves PD load and root-task"
           echo "parking only. Guest I/O is proven by the guest proof jobs; the"
           echo "os-claim-summary job combines them."

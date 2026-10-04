@@ -902,7 +902,7 @@ ifdef GUEST_INPUT
   else ifneq ($(ARCH),aarch64)
     $(error GUEST_INPUT requires aarch64 or x86_64 firmware mode)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
     $(error GUEST_INPUT cannot be combined with focused test images)
   endif
   ifeq ($(ARCH),x86_64)
@@ -925,7 +925,7 @@ ifdef GUEST_GRAPHICS
   else ifneq ($(ARCH),aarch64)
     $(error GUEST_GRAPHICS requires aarch64 or x86_64 firmware mode)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
     $(error GUEST_GRAPHICS cannot be combined with focused test images)
   endif
   ifeq ($(ARCH),x86_64)
@@ -944,7 +944,7 @@ ifdef FRAMEBUFFER_TEST
   ifneq ($(ARCH),aarch64)
     $(error FRAMEBUFFER_TEST requires aarch64)
   endif
-  ifneq ($(strip $(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+  ifneq ($(strip $(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
     $(error FRAMEBUFFER_TEST is a separate image variant)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_FRAMEBUFFER_TEST=1
@@ -972,8 +972,8 @@ ifdef NATIVE_RUST_TEST
   ifneq ($(ARCH),aarch64)
     $(error NATIVE_RUST_TEST currently requires aarch64)
   endif
-  ifdef SEL4_TEST_IMAGE
-    $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE are separate image variants)
+  ifneq ($(strip $(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+    $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE/CAP_LEND_TEST are separate image variants)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_NATIVE_RUST_TEST=1
   CFLAGS += -DAGENTOS_NATIVE_RUST_TEST=1
@@ -982,6 +982,22 @@ ifdef NATIVE_RUST_TEST
     CFLAGS += -DAGENTOS_NATIVE_NET_ISOLATION_PROBE=$(NATIVE_NET_ISOLATION_PROBE)
   endif
   IMAGES += native_rust_probe.elf native_rust_client.elf
+endif
+
+# T5: capability-lending demonstration pair (test image only). See
+# tests/cap-lend/{lender,borrower}_pd.c, cap_lend.h/.c, and
+# docs/superpowers/plans/2026-10-04-t5-capability-lending.md. Absent from
+# the default image and from every other focused test-image variant.
+ifdef CAP_LEND_TEST
+  ifneq ($(ARCH),aarch64)
+    $(error CAP_LEND_TEST currently requires aarch64)
+  endif
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+    $(error CAP_LEND_TEST is a separate image variant)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_CAP_LEND_TEST=1
+  CFLAGS += -DAGENTOS_CAP_LEND_TEST=1
+  IMAGES += cap_lend_lender.elf cap_lend_borrower.elf
 endif
 
 ifdef BLK_ISOLATION_PROBE
@@ -1373,6 +1389,19 @@ $(BUILD_DIR)/native_rust_client.o: $(REPO_ROOT)/tests/native-rust/client.c
 $(BUILD_DIR)/native_rust_client.elf: $(BUILD_DIR)/native_rust_client.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+# T5: capability-lending demonstration pair. cap_lend.o/cap_lease.o build
+# through the generic libs/pd-support pattern rule above (line ~1140).
+$(BUILD_DIR)/cap_lend_lender.o: $(REPO_ROOT)/tests/cap-lend/lender_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/cap_lend_borrower.o: $(REPO_ROOT)/tests/cap-lend/borrower_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/cap_lend_lender.elf: $(BUILD_DIR)/cap_lend_lender.o $(BUILD_DIR)/cap_lend.o $(BUILD_DIR)/cap_lease.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+$(BUILD_DIR)/cap_lend_borrower.elf: $(BUILD_DIR)/cap_lend_borrower.o $(BUILD_DIR)/cap_lend.o $(BUILD_DIR)/cap_lease.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 # Swap slot sources need wasm3 headers + bare-metal shim
 $(BUILD_DIR)/swap_slot.o: $(REPO_ROOT_MK)/services/legacy-pds/swap_slot.c
 	@mkdir -p $(BUILD_DIR)
@@ -1742,6 +1771,11 @@ SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-native-rust-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
 	{ cat $<; printf '\n[[pd]]\nname = "native_rust_probe"\npriority = 245\n'; printf '\n[[pd]]\nname = "native_rust_client"\npriority = 250\n'; } > $@
+else ifdef CAP_LEND_TEST
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-cap-lend-test.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "cap_lend_lender"\npriority = 200\n'; printf '\n[[pd]]\nname = "cap_lend_borrower"\npriority = 199\n'; } > $@
 else ifdef SEL4_TEST_IMAGE
 # agentos-8f5: test images (with no guest profiles) append the contract-runner PD
 # so gen-pd-bundle embeds test_runner.elf and the root task can spawn it, plus

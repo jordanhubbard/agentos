@@ -860,7 +860,9 @@ gate-guest-io:
 	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
-gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-image-verify test-trust-anchor test-entropy-unavailable
+gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io \
+      test-cc-envelope test-authority test-inspect test-image-verify \
+      test-entropy-unavailable test-cap-lending test-trust-anchor
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
@@ -934,6 +936,16 @@ test-entropy-host:
 		tests/test_entropy_contract.c services/entropy-service/entropy_proto.c \
 		-o $(BUILD_TMP_DIR)/test_entropy_contract
 	$(BUILD_TMP_DIR)/test_entropy_contract
+test-host: test-cap-lease-host
+
+.PHONY: test-cap-lease-host
+test-cap-lease-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_cap_lease.c libs/pd-support/cap_lease.c \
+		-o $(BUILD_TMP_DIR)/test_cap_lease
+	$(BUILD_TMP_DIR)/test_cap_lease
 
 .PHONY: test-cc-envelope-host
 test-cc-envelope-host:
@@ -1693,6 +1705,10 @@ test-inspect:
 .PHONY: test-inspect-readonly
 test-inspect-readonly:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --inspect-write-probe --timeout-secs $(QEMU_TEST_TIMEOUT)
+.PHONY: test-cap-lending
+test-cap-lending:
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-cap-lending --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 .PHONY: test-authority
 test-authority:
 	$(MAKE) -C tools/agentctl
