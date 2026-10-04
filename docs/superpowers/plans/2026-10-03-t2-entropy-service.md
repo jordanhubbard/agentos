@@ -209,6 +209,8 @@ QEMU `virt` places virtio-mmio devices at `0x0a000000 + slot * 0x200`, with IRQ 
 
 Use slot **4**: `0x0a000800`. Create `platform/include/platform/entropy_host_layout.h` defining `AGENTOS_HOST_ENTROPY_MMIO_PA 0x0A000800UL` and a VA, following the shape of `platform/include/platform/net_host_layout.h`. Document that only `entropy_pd` receives this mapping.
 
+> **Superseded (R19/R20).** Slot 4 collides with the root task's own virtio-mmio probe frame and fails retype; the whole bus is in fact fully subscribed (see `docs/TCB.md`). A RAM-backed substitute frame was tried next (R19) and dropped (R20) because it isn't an honest device frame. The shipped design provisions no MMIO frame for entropy_pd at all on QEMU virt — this section is the historical record of what was tried, not the current design.
+
 - [ ] **Step 2: Write the driver**
 
 Replace `services/entropy-service/entropy_svc.c` entirely. It must:
@@ -220,6 +222,8 @@ Replace `services/entropy-service/entropy_svc.c` entirely. It must:
 - [ ] **Step 3: Add the descriptor row**
 
 Add `entropy_pd` to `system_desc_aarch64.c` following the `serial_pd` row's shape (`system_desc_aarch64.c:158-178`): `init_eps` for nameserver and log_drain, `irq_count = 0u`, and `device_frame_count = 1u` with `.paddr = AGENTOS_HOST_ENTROPY_MMIO_PA`, `.size_bits = 12u`, a free `cnode_slot`, and `.name = "virtio-rng-mmio"`. Choose a priority below the drivers that carry latency requirements; entropy has none.
+
+> **Superseded (R19/R20).** The shipped descriptor row declares no `device_frame_count` at all; `AGENTOS_HOST_ENTROPY_MMIO_PA` does not exist in the final design. See the note after Step 1 and `docs/TCB.md`.
 
 - [ ] **Step 4: Add the matching manifest entry**
 
