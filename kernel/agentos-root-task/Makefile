@@ -93,6 +93,11 @@ else
   OBJCOPY ?= llvm-objcopy
 endif
 
+# llvm-nm, resolved alongside the llvm-objcopy found above. Used only by the
+# child-spawn test image, to check the run-time-created child ELF fits the
+# single page its parent maps for it.
+CHILD_SPAWN_NM := $(subst objcopy,nm,$(OBJCOPY))
+
 # ─── Root task seL4 boot binary ──────────────────────────────────────────────
 # main.c is the seL4 root task entry point and boot sequence orchestrator.
 # It is NOT a Microkit PD — it links without libmicrokit and uses its own
@@ -545,6 +550,10 @@ $(BUILD_DIR)/inspect_snapshot.pd.o: $(REPO_ROOT_MK)/platform/inspect/inspect_sna
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/authority.pd.o: $(REPO_ROOT_MK)/platform/inspect/authority.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/endow_ledger.pd.o: $(REPO_ROOT_MK)/platform/inspect/endow_ledger.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -1340,8 +1349,47 @@ $(BUILD_DIR)/cap_lend_borrower.elf: $(BUILD_DIR)/cap_lend_borrower.o $(BUILD_DIR
 $(BUILD_DIR)/child_spawn_child.o: $(REPO_ROOT)/tests/child-spawn/child_pd.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
-$(BUILD_DIR)/child_spawn_child.elf: $(BUILD_DIR)/child_spawn_child.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
-	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+# The child gets its OWN pd_entry object, built WITHOUT AGENTOS_LOG_RINGS.
+# Every other PD is created by the root task, which maps the log-config page
+# at AOS_LOG_CONFIG_VA into it; _start() reads that page unconditionally
+# under -DAGENTOS_LOG_RINGS and also writes log_drain_rings_vaddr, which the
+# linker places in .bss past the end of the single content page. This child
+# has neither: it holds exactly what its parent endowed it, and log rings are
+# not on that list. Linking the shared pd_entry.o into it makes it fault at
+# its very first instruction, before pd_main() -- which is precisely the bug
+# "the child is endowed exactly this and nothing more" is supposed to
+# surface, so the fix is to stop linking authority-assuming startup code into
+# it, not to widen the endowment.
+$(BUILD_DIR)/child_spawn_pd_entry.o: $(REPO_ROOT_MK)/libs/pd-support/pd_entry.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(filter-out -DAGENTOS_LOG_RINGS=1,$(CFLAGS)) $< -o $@
+# Two deliberate omissions from this link, both forced by the one-page budget
+# above and both correct on their own terms:
+#   - rust_pd_memory.o (memcpy/memmove/memset/memcmp/strlen, ~3 KiB of .text).
+#     This child copies nothing and formats nothing; it reads two words,
+#     writes four, and makes three syscalls.
+#   - page alignment between output sections (--nmagic). sel4_crt.c's unused
+#     1 KiB IPC-buffer placeholder lands in .bss, and the default 4 KiB
+#     segment alignment would push it past the mapped page on its own.
+#     pd_entry.c's _start repoints __sel4_ipc_buffer at the real mapped
+#     buffer before any IPC, so that placeholder is never touched -- but
+#     "never touched" is not something to rely on silently, which is why the
+#     check below covers .bss too.
+$(BUILD_DIR)/child_spawn_child.elf: $(BUILD_DIR)/child_spawn_child.o $(BUILD_DIR)/child_spawn_pd_entry.o $(BUILD_DIR)/sel4_crt.o
+	$(LD) $(LDFLAGS) --nmagic $^ $(LIBS) -o $@
+	@# The parent maps exactly ONE page for this image, so every allocated
+	@# section -- including .bss, which the payload blob below does not even
+	@# contain -- must fit inside [AOS_CHILD_SPAWN_CONTENT_VA, +4096). A
+	@# section landing above that is unmapped memory the child touches with
+	@# no diagnostic beyond a fault at a surprising address, so fail the
+	@# build instead.
+	@set -eu; \
+	end=$$($(CHILD_SPAWN_NM) $@ | awk '$$3 == "_end" { print $$1 }'); \
+	test -n "$$end" || { echo "ERROR: child_spawn_child.elf has no _end symbol"; exit 1; }; \
+	if [ "$$(printf '%d' 0x$$end)" -gt "$$(printf '%d' 0x401000)" ]; then \
+		echo "ERROR: child_spawn_child.elf spans past the single page its parent maps for it (_end=0x$$end, limit 0x401000); shrink tests/child-spawn/child_pd.c or map a second page"; \
+		exit 1; \
+	fi
 $(BUILD_DIR)/child_spawn_payload.bin: $(BUILD_DIR)/child_spawn_child.elf
 	$(OBJCOPY) -O binary $< $@
 $(BUILD_DIR)/child_spawn_payload.o: $(BUILD_DIR)/child_spawn_payload.bin
@@ -1358,7 +1406,7 @@ $(BUILD_DIR)/child_spawn_payload.o: $(BUILD_DIR)/child_spawn_payload.bin
 $(BUILD_DIR)/child_spawn_parent.o: $(REPO_ROOT)/tests/child-spawn/parent_pd.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
-$(BUILD_DIR)/child_spawn_parent.elf: $(BUILD_DIR)/child_spawn_parent.o $(BUILD_DIR)/child_spawn.o $(BUILD_DIR)/endowment.o $(BUILD_DIR)/child_spawn_payload.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+$(BUILD_DIR)/child_spawn_parent.elf: $(BUILD_DIR)/child_spawn_parent.o $(BUILD_DIR)/child_spawn.o $(BUILD_DIR)/endowment.o $(BUILD_DIR)/endow_ledger.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/child_spawn_payload.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 # Swap slot sources need wasm3 headers + bare-metal shim

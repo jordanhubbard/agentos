@@ -1552,3 +1552,35 @@ while holding the capability and does not recover data the borrower copied --
 lending bounds authority in time, it is not confinement. The bound is operation
 completion, not elapsed time: agentOS has no timer service. The lender/borrower
 pair exists only in the test image; no default-image PD lends anything yet.
+
+### Hierarchical delegation (T6)
+
+A protection domain may create a child domain at run time and endow it from its
+own authority. The parent retypes the child's CNode, VSpace and TCB from an
+untyped pool root granted it at boot, mints rights-reduced derivatives of
+capabilities it already holds into the child's CSpace, and starts it only after
+every endowment succeeded. `make test-child-spawn` verifies on target that the
+child uses an endowed capability, faults on one the parent withheld, does not
+start at all when an endowment fails, and appears in the authority page with the
+endowed kinds.
+
+Endowment is a mint, not a loan. It does not reuse the T5 lending path above:
+`aos_cap_lend_revoke()` revokes the lender's own original, which would strip
+every other child endowed from the same capability if one spawn failed. The two
+lifetimes are separate and share no teardown. A failed spawn instead deletes the
+child's CNode, which destroys every mint already placed in it, and never resumes
+the thread.
+
+Scope and limits. This creates a domain at run time; it does not load code at
+run time. The child's ELF comes from the bundle verified at boot, so image
+verification is unaffected. The subsetting invariant -- no domain holds authority
+its parent did not hold -- is enforced by seL4 itself, since a parent cannot mint
+from a capability it does not possess; the authority page *reports* the
+endowment but cannot verify it, because seL4 exposes no capability-enumeration
+syscall. The report comes from a delegator-local endowment ledger
+(`platform/endow_ledger.h`), merged into the T4 authority snapshot through the
+runtime-delegation path `platform/authority.h` already describes; it records what
+the parent says it granted and cannot read kernel state back. A parent can create
+children only from the pool it was granted; exhaustion is a resource limit, not
+an authority boundary. The parent/child pair exists only in the test image; no
+default-image PD creates children.

@@ -112,23 +112,35 @@
  * would need to delete to reclaim everything by hand, since that is the
  * one path this module does not unwind automatically.
  *
- * ── Reporting: there is currently none beyond the kernel itself ─────────
+ * ── Reporting: the endowment-delta ledger ───────────────────────────────
  *
- * aos_child_spawn() does not write any ledger. Because endowment is now a
- * direct seL4_CNode_Mint (see above) rather than a call through
- * aos_cap_lend(), it does not pick up T5's lease-table side effect
- * either; nothing records a runtime-spawned child's endowment anywhere a
- * human or T4's authority page could read it. seL4 itself enforces the
- * subsetting invariant regardless (a mint can never exceed its source's
- * actual rights), but there is currently no "report, not proof" layer at
- * all for this path -- that is a real, open gap, not a deferred one; see
- * docs/superpowers/plans/2026-10-04-t6-hierarchical-delegation.md. A
- * caller that wants its endowments self-reported can still call
- * aos_cap_lend() itself, separately, understanding that doing so creates
- * a T5-lifetime loan (revocable in full by the parent later) layered on
- * top of the permanent mint this module already made -- two different
- * capabilities with two different lifetimes, not a substitute for one
- * another.
+ * Because endowment is a direct seL4_CNode_Mint (see above) rather than a
+ * call through aos_cap_lend(), it does not pick up T5's lease-table side
+ * effect -- and it should not: the lease table records LOANS, authority
+ * whose whole point is that it will be withdrawn again, and an endowment
+ * has no such lifetime. Instead, aos_child_spawn() appends one entry to a
+ * caller-supplied endowment-delta ledger (platform/endow_ledger.h) per
+ * SUCCESSFUL mint, and rolls the whole spawn's worth of entries back if
+ * the spawn fails for any reason -- including the one failure path that
+ * leaves objects in place (AOS_CHILD_SPAWN_ERR_START), because that child
+ * never ran either. The ledger therefore only ever describes children
+ * that actually started.
+ *
+ * That ledger folds into T4's authority snapshot
+ * (aos_endow_ledger_merge), which is exactly the channel
+ * platform/authority.h already names for this: "it covers the boot-time
+ * static set; runtime delegation must be separately reported by the
+ * delegating domain." This is that separate report, not a second
+ * reporting system.
+ *
+ * It is a REPORT, NOT A PROOF. seL4 exposes no capability-enumeration
+ * syscall, so the ledger records what this module was ASKED to mint and
+ * succeeded in minting -- it cannot read kernel state back. The
+ * subsetting invariant holds regardless of what the ledger says, because
+ * seL4_CNode_Mint masks requested rights against the source capability's
+ * actual rights and a domain cannot mint from a capability it does not
+ * hold. req->ledger may be NULL, in which case nothing is recorded and
+ * the mints are unaffected.
  *
  * ── Not a broker ─────────────────────────────────────────────────────────
  *
@@ -145,6 +157,8 @@
 
 #include <sel4/sel4.h>
 #include <stdint.h>
+
+#include <platform/endow_ledger.h>
 
 #include "contracts/endowment_contract.h"
 
@@ -203,10 +217,32 @@
  * destroying authority that was correctly granted because of an unrelated
  * failure in the final kernel call. The child is still Inactive (never
  * ran), so no authority was exercised, but the caller owns the decision
- * of whether to retry the resume or tear the child down itself --
- * result->scratch_base/.scratch_next report the full slot range to delete
- * for that purpose (every object this call created, not just the three
- * named in the handle). */
+ * of whether to retry the resume or tear the child down itself.
+ *
+ * MANUAL TEARDOWN RECIPE. A caller that chooses to tear the child down
+ * rather than retry the resume must do BOTH of the following, in this
+ * order:
+ *
+ *   1. Unmap every CALLER-OWNED frame this call mapped into the child's
+ *      VSpace -- req->content_frame, and req->extra_maps[i].frame for
+ *      every i < req->extra_map_count. These are the caller's own
+ *      capabilities; this module never retyped them, so step 2 does not
+ *      and cannot reach them. seL4_ARM_Page_Map records the mapping ON
+ *      THE FRAME CAPABILITY, so skipping this leaves the caller's own
+ *      frame caps believing they are mapped into a VSpace that step 2
+ *      destroyed -- and a later retry with the same frames then fails at
+ *      the mapping step for a reason unrelated to whatever went wrong
+ *      here. (Every OTHER failure path in this module performs these
+ *      unmaps itself; this is the only one that cannot, because it does
+ *      not know whether the caller means to retry the resume.)
+ *   2. seL4_CNode_Delete every slot in
+ *      [result->scratch_base, result->scratch_next) -- the complete set
+ *      of objects this call created, not just the three named in
+ *      .cnode/.vspace/.tcb.
+ *
+ * The endowment-delta ledger has already been rolled back to its
+ * pre-call state when this is returned: the child never ran, so nothing
+ * it was granted is reported. */
 #define AOS_CHILD_SPAWN_ERR_START          (-8)
 
 /* ── Sizing ───────────────────────────────────────────────────────────── */
@@ -215,13 +251,21 @@
  * Upper bound on how many fresh capability slots in the PARENT's own
  * CNode a single aos_child_spawn() call may use while staging: CNode (1),
  * VSpace (1), up to 3 intermediate page-table levels PER mapped region
- * (content, stack, IPC buffer -- 3 regions x 3 levels = 9), the stack and
- * IPC leaf frames (2 -- the content frame itself is supplied already
- * retyped by the caller, see req->content_frame), TCB (1), and (MCS only)
- * one SchedContext (1). 1+1+9+2+1+1 = 15; rounded up for headroom without
+ * (content, stack, IPC buffer, and one extra map -- 4 regions x 3 levels
+ * = 12), the stack and IPC leaf frames (2 -- the content frame and every
+ * extra-map frame are supplied already retyped by the caller, see
+ * req->content_frame / req->extra_maps), TCB (1), and (MCS only) one
+ * SchedContext (1). 1+1+12+2+1+1 = 18; rounded up for headroom without
  * pretending to be unbounded.
+ *
+ * A caller passing more than ONE extra map must size req->scratch_count
+ * above this bound itself: three further page-table levels per additional
+ * region is the worst case, and this constant does not try to express a
+ * number that depends on a run-time count. aos_child_spawn() returns
+ * AOS_CHILD_SPAWN_ERR_RETYPE (not silent corruption) if the scratch range
+ * runs out mid-way, because pt_scratch_claim() refuses past its limit.
  */
-#define AOS_CHILD_SPAWN_SCRATCH_SLOTS       20u
+#define AOS_CHILD_SPAWN_SCRATCH_SLOTS       24u
 
 /* Maximum intermediate page-table levels aos_pt_map_retrying() (below)
  * will retype for a single mapped VA before giving up -- AArch64 has at
@@ -293,6 +337,35 @@ void aos_pt_scratch_init(aos_pt_scratch_t *sc, seL4_CPtr pool_ut,
 seL4_Error aos_pt_map_retrying(aos_pt_scratch_t *sc, seL4_CPtr frame,
                                 seL4_CPtr vspace, seL4_Word va);
 
+/* ── Extra mappings ───────────────────────────────────────────────────── */
+
+/*
+ * One additional caller-owned frame to map into the CHILD's VSpace before
+ * the child is started.
+ *
+ * req->content_frame covers the child's program image; this covers memory
+ * the parent means to ENDOW. It has to happen inside this call, not after
+ * it: the hard rule is that no partially endowed child ever runs, and a
+ * mapping installed after aos_child_spawn() returns would be authority
+ * arriving at a domain that is already executing. The frames are
+ * caller-owned on exactly the same terms as content_frame -- this module
+ * maps them, never retypes, writes, flushes or deletes them, and unmaps
+ * them again on every failure path it unwinds (see
+ * AOS_CHILD_SPAWN_ERR_START for the one it does not).
+ *
+ * A caller that also wants the child to hold a CAPABILITY to such a frame,
+ * rather than only a window onto it, lists it in req->endow as well: the
+ * mapping and the mint are independent grants and this struct is only the
+ * former.
+ */
+typedef struct {
+    seL4_CPtr   frame;  /* caller-owned frame capability, already populated
+                          * and already cache-cleaned by the caller if it
+                          * wrote through its own mapping first (see
+                          * aos_pt_map_retrying()'s doc comment). */
+    seL4_Word   va;     /* VA in the child's VSpace to map it at. */
+} aos_child_spawn_map_t;
+
 /* ── Request ──────────────────────────────────────────────────────────── */
 
 /*
@@ -350,6 +423,22 @@ typedef struct {
     seL4_Word   content_va;         /* VA to map content_frame at in the
                                       * child's VSpace (its entry point
                                       * lives inside this page). */
+
+    /* Additional caller-owned frames to map into the child's VSpace
+     * before it starts -- see aos_child_spawn_map_t. May be NULL with
+     * extra_map_count == 0. */
+    const aos_child_spawn_map_t *extra_maps;
+    seL4_Word   extra_map_count;
+
+    /* Fault handler endpoint installed on the child's TCB
+     * (seL4_TCB_SetSchedParams' fault_ep argument). seL4_CapNull leaves
+     * the child with no fault handler, in which case a faulting child is
+     * simply suspended by the kernel and nobody is told. A caller that
+     * wants a child's faults to be OBSERVABLE -- by the root task, or by
+     * itself -- passes a (typically badged) endpoint capability here. The
+     * child cannot see or name this capability: it is written into the
+     * TCB, not into the child's CSpace. */
+    seL4_CPtr   fault_ep;
     seL4_Word   entry_point;        /* child's initial PC */
     seL4_Word   stack_va_top;       /* child's initial SP (top of a single
                                       * freshly retyped, zeroed stack page) */
@@ -401,14 +490,38 @@ typedef struct {
                                          * where endowed derivatives land;
                                          * entry i lands at base_slot + i. */
     seL4_Word   endow_badge;           /* badge used for every mint in this
-                                         * endowment (single badge: this
-                                         * demo endows one capability; a
-                                         * caller endowing several distinct
-                                         * kinds that need distinguishable
-                                         * badges would need a per-entry
-                                         * badge array, not added here
-                                         * because nothing in this tree
-                                         * needs it yet). */
+                                         * endowment (single badge: a
+                                         * caller endowing several kinds
+                                         * that need distinguishable badges
+                                         * would need a per-entry badge
+                                         * array, not added here because
+                                         * nothing in this tree needs it
+                                         * yet). NOTE: seL4 refuses to
+                                         * re-badge a derivative, so every
+                                         * capability named by endow_cptrs
+                                         * must be an original (a freshly
+                                         * retyped object, or a frame) --
+                                         * minting an already-badged
+                                         * endpoint with a different badge
+                                         * fails, and is reported as
+                                         * AOS_CHILD_SPAWN_ERR_ENDOW. */
+
+    /*
+     * Endowment-delta ledger this call appends to, once per SUCCESSFUL
+     * mint, and rolls back in full if the spawn fails -- see
+     * platform/endow_ledger.h and the file header's "Reporting" section.
+     * May be NULL: nothing is recorded and the mints are unaffected.
+     *
+     * aos_endow_cap_t.kind is recorded verbatim, so a caller that wants
+     * its deltas to merge meaningfully into a T4 authority snapshot
+     * numbers its kinds as aos_authority_kind_t values.
+     */
+    aos_endow_ledger_t *ledger;
+    uint32_t    child_index;        /* the caller's own identifier for this
+                                      * child, used as the ledger/authority
+                                      * row key. */
+    const char *child_name;         /* the caller's name for this child, as
+                                      * it should appear in the report. */
 } aos_child_spawn_req_t;
 
 /* ── Result ───────────────────────────────────────────────────────────── */
@@ -428,8 +541,22 @@ typedef struct {
                               * AOS_CHILD_SPAWN_ERR_ENDOW: which entry in
                               * req->endow->caps[] failed to mint. */
     seL4_Word   scratch_base;  /* req->scratch_slot: first slot this call
-                              * may have staged objects into. Populated on
-                              * every return, success or failure. */
+                              * may have staged objects into.
+                              *
+                              * Populated on every return that reached the
+                              * staging stage. The three up-front rejections
+                              * -- AOS_CHILD_SPAWN_ERR_VALIDATE (including
+                              * req == NULL) and AOS_CHILD_SPAWN_ERR_SCRATCH
+                              * -- return with this and .scratch_next both
+                              * ZERO, because no slot range was claimed and
+                              * reporting req->scratch_slot would imply one
+                              * had been. On those paths there is nothing to
+                              * tear down: no seL4 object was touched. The
+                              * two fields are equal on every failure path
+                              * except AOS_CHILD_SPAWN_ERR_START, so
+                              * "scratch_next == scratch_base" is a valid
+                              * "nothing is left staged" test on all of
+                              * them. */
     seL4_Word   scratch_next;  /* one past the LAST slot this call actually
                               * used. On AOS_CHILD_SPAWN_ERR_START (the one
                               * path that does not auto-teardown), a caller
@@ -438,9 +565,17 @@ typedef struct {
                               * [scratch_base, scratch_next) -- that is the
                               * complete set of objects this call created,
                               * not just the three named in .cnode/.vspace/
-                              * .tcb. On every other failure path this
-                              * equals scratch_base (everything was already
-                              * torn down). On success it reports exactly
+                              * .tcb -- and it must be preceded by unmapping
+                              * the caller-owned frames listed in that error
+                              * code's manual-teardown recipe above
+                              * (content_frame and every extra_maps[i]),
+                              * which this range does NOT cover because this
+                              * call never retyped them. On every other
+                              * failure path this equals scratch_base
+                              * (everything was already torn down, and the
+                              * caller-owned frames were already unmapped
+                              * for the caller). On success it reports
+                              * exactly
                               * what the child's live object set occupies,
                               * for a caller that wants to know. */
 } aos_child_spawn_result_t;

@@ -193,6 +193,30 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #define ROOT_PROBE_ADDRESS AOS_CAP_LEND_FRAME_VA
 #define ROOT_PROBE_WRITE 0u
 #define ROOT_PROBE_MESSAGE AOS_CAP_LEND_MARKER_ROOT_FAULT_VERIFIED
+#elif defined(AGENTOS_CHILD_SPAWN_TEST)
+/* T6 Task 3 target proof, Probe 2: the child domain child_spawn_parent
+ * created at run time reads AOS_CHILD_SPAWN_WITHHELD_VA -- a page its
+ * parent deliberately never mapped and never endowed -- and must fault. A
+ * plain read, so WRITE=0. This is the ONLY event that may emit
+ * AOS_CHILD_SPAWN_MARKER_ROOT_FAULT_VERIFIED: exact badge, address and
+ * direction, observed by the root task independently of both the parent
+ * (which must not be able to claim a fault happened) and the child (which
+ * never returns control after this fault, and has no serial capability
+ * with which to say anything in any case).
+ *
+ * The badge comes from the fault endpoint root mints into the PARENT's
+ * CNode at AOS_CHILD_SPAWN_FAULT_EP_SLOT, which the parent then installs
+ * on its child's TCB via aos_child_spawn_req_t.fault_ep. ROOT_PROBE_NATIVE
+ * deliberately matches no PD in the pd_fault_ep selection block below:
+ * child_spawn_parent itself keeps the ordinary unbadged fault endpoint, so
+ * a fault by the PARENT can never be mistaken for the child's. */
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 6
+#define ROOT_PROBE_CLIENT 0u
+#define ROOT_PROBE_BADGE AOS_CHILD_SPAWN_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_CHILD_SPAWN_WITHHELD_VA
+#define ROOT_PROBE_WRITE 0u
+#define ROOT_PROBE_MESSAGE AOS_CHILD_SPAWN_MARKER_ROOT_FAULT_VERIFIED
 #endif
 #if defined(ROOT_FAULT_PROBE) || defined(__aarch64__)
 #include "serial_log.h"
@@ -3806,6 +3830,35 @@ void root_task_main(const seL4_BootInfo *bi)
                 continue;
             }
 #endif
+
+            /*
+             * Badged copy of root's own fault endpoint, for the parent to
+             * install as its CHILD's fault handler (Probe 2). Root mints
+             * the badge, not the parent: AOS_CHILD_SPAWN_PROBE_BADGE is
+             * what the fault oracle above matches on, so the parent cannot
+             * substitute an endpoint of its own and manufacture the
+             * marker. Minting from seL4_CapInitThreadCNode into a root
+             * scratch slot and then moving it is the same two-step pattern
+             * the pd_fault_ep block above uses.
+             *
+             * This grants the parent no new reach: a send-only badged
+             * endpoint whose only receiver is root's own fault loop. It
+             * is also the ONLY capability granted here that the parent
+             * passes to aos_child_spawn() without endowing -- it goes into
+             * the child's TCB, never into the child's CSpace.
+             */
+            seL4_CPtr child_spawn_fault_ep = ut_alloc_slot();
+            if (child_spawn_fault_ep == seL4_CapNull ||
+                g_fault_ep == seL4_CapNull ||
+                seL4_CNode_Mint(seL4_CapInitThreadCNode, child_spawn_fault_ep, 64u,
+                    seL4_CapInitThreadCNode, g_fault_ep, 64u, seL4_AllRights,
+                    AOS_CHILD_SPAWN_PROBE_BADGE) != seL4_NoError ||
+                seL4_CNode_Move(pd_cnode, AOS_CHILD_SPAWN_FAULT_EP_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    child_spawn_fault_ep, 64u) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn fault endpoint grant failed; refusing PD start\n");
+                continue;
+            }
         }
 #endif
 

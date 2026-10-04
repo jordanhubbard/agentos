@@ -45,6 +45,7 @@ enum {
     STEP_VSPACE,
     STEP_ASID,
     STEP_CONTENT_MAP,
+    STEP_EXTRA_MAP,
     STEP_STACK_FRAME,
     STEP_STACK_MAP,
     STEP_IPC_FRAME,
@@ -164,22 +165,32 @@ static void staging_teardown(aos_pt_scratch_t *sc)
 }
 
 /*
- * fail_teardown — the common failure path once the content frame may
+ * fail_teardown — the common failure path once CALLER-OWNED frames may
  * already be mapped into the child's (about-to-be-destroyed) VSpace.
  *
- * req->content_frame is CALLER-owned and never staged (so staging_teardown
- * never touches it), but seL4_ARM_Page_Map records the mapping ON THE
- * FRAME CAPABILITY itself. If this call leaves that mapping in place and
- * then destroys the VSpace it pointed into, the caller's own frame cap is
- * left believing it is mapped somewhere that no longer exists -- a retry
- * with the SAME content_frame would then fail at the content-map step for
- * a completely different reason than the original failure (see I2 in the
- * Task 2 review). Unmapping it here, before tearing down the objects it
- * was mapped into, keeps a retry possible with the same frame.
+ * req->content_frame and every req->extra_maps[i].frame are CALLER-owned
+ * and never staged (so staging_teardown never touches them), but
+ * seL4_ARM_Page_Map records the mapping ON THE FRAME CAPABILITY itself.
+ * If this call leaves those mappings in place and then destroys the VSpace
+ * they pointed into, the caller's own frame caps are left believing they
+ * are mapped somewhere that no longer exists -- a retry with the SAME
+ * frames would then fail at a mapping step for a completely different
+ * reason than the original failure (see I2 in the Task 2 review).
+ * Unmapping them here, before tearing down the objects they were mapped
+ * into, keeps a retry possible with the same frames.
+ *
+ * `extra_mapped` is the number of req->extra_maps entries that were
+ * successfully mapped, so a failure PART WAY through the extra-map loop
+ * unmaps exactly the ones that landed and leaves the rest alone.
  */
 static void fail_teardown(aos_pt_scratch_t *sc, int content_mapped,
-                           seL4_CPtr content_frame)
+                           seL4_CPtr content_frame,
+                           const aos_child_spawn_map_t *extra_maps,
+                           seL4_Word extra_mapped)
 {
+    for (seL4_Word i = extra_mapped; i > 0u; i--) {
+        (void)seL4_ARM_Page_Unmap(extra_maps[i - 1u].frame);
+    }
     if (content_mapped) {
         (void)seL4_ARM_Page_Unmap(content_frame);
     }
@@ -248,10 +259,27 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
         return out->error;
     }
 
+    if (req->extra_map_count != 0u && req->extra_maps == NULL) {
+        out->error = AOS_CHILD_SPAWN_ERR_VALIDATE;
+        return out->error;
+    }
+
     aos_pt_scratch_t st;
     aos_pt_scratch_init(&st, req->pool_ut, req->self_cnode, req->self_cnode_bits,
                          req->scratch_slot, req->scratch_count);
     int content_mapped = 0;
+    seL4_Word extra_mapped = 0u;
+
+    /*
+     * Everything this call appends to the endowment-delta ledger between
+     * here and the final resume=1 is provisional: a child that does not
+     * end up running was never endowed, whatever mints the kernel accepted
+     * on the way (its CNode, and every mint in it, is destroyed by
+     * teardown). Take the mark now and roll back to it on EVERY failure
+     * exit, including AOS_CHILD_SPAWN_ERR_START -- see child_spawn.h's
+     * "Reporting" section.
+     */
+    uint32_t ledger_mark = aos_endow_ledger_mark(req->ledger);
 
     /* ── Step 1: retype the child's CNode, VSpace and TCB from the
      * parent's pool. Every retype below names req->pool_ut (via `st`) and
@@ -263,7 +291,7 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
                     &child_cnode) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_RETYPE;
         out->failed_step = STEP_CNODE;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
 
@@ -271,14 +299,14 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
     if (retype_one(&st, seL4_ARM_VSpaceObject, 0u, &child_vspace) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_RETYPE;
         out->failed_step = STEP_VSPACE;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
 
     if (seL4_ARM_ASIDPool_Assign(req->asid_pool, child_vspace) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_ASID;
         out->failed_step = STEP_ASID;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
 
@@ -298,10 +326,31 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
                              req->content_va) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_MAP;
         out->failed_step = STEP_CONTENT_MAP;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
     content_mapped = 1;
+
+    /*
+     * Endowed memory: map every caller-supplied extra frame into the
+     * child's VSpace, before the child exists as a runnable thread. These
+     * are grants of the caller's own memory authority, so they belong
+     * inside the "no partially endowed child ever runs" window exactly as
+     * the CNode mints below do -- a mapping installed after this function
+     * returned would be authority arriving at an already-executing domain.
+     * Like content_frame, these frames are caller-owned: this module maps
+     * them and nothing else (see aos_child_spawn_map_t).
+     */
+    for (seL4_Word i = 0u; i < req->extra_map_count; i++) {
+        if (aos_pt_map_retrying(&st, req->extra_maps[i].frame, child_vspace,
+                                 req->extra_maps[i].va) != seL4_NoError) {
+            out->error = AOS_CHILD_SPAWN_ERR_MAP;
+            out->failed_step = STEP_EXTRA_MAP;
+            fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
+            goto done_fail;
+        }
+        extra_mapped++;
+    }
 
     /* Stack: one fresh, zeroed page (seL4_Untyped_Retype zero-fills new
      * objects), mapped below stack_va_top. */
@@ -309,14 +358,14 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
     if (retype_one(&st, seL4_ARM_SmallPageObject, 0u, &stack_frame) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_RETYPE;
         out->failed_step = STEP_STACK_FRAME;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
     seL4_Word stack_va = req->stack_va_top - 0x1000u;
     if (aos_pt_map_retrying(&st, stack_frame, child_vspace, stack_va) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_MAP;
         out->failed_step = STEP_STACK_MAP;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
 
@@ -325,13 +374,13 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
     if (retype_one(&st, seL4_ARM_SmallPageObject, 0u, &ipc_frame) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_RETYPE;
         out->failed_step = STEP_IPC_FRAME;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
     if (aos_pt_map_retrying(&st, ipc_frame, child_vspace, req->ipc_buf_va) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_MAP;
         out->failed_step = STEP_IPC_MAP;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
 
@@ -339,7 +388,7 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
     if (retype_one(&st, seL4_TCBObject, 0u, &child_tcb) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_RETYPE;
         out->failed_step = STEP_TCB;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
 
@@ -352,7 +401,7 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
                             req->ipc_buf_va, ipc_frame) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_CONFIGURE;
         out->failed_step = STEP_CONFIGURE;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
 
@@ -375,7 +424,7 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
             (seL4_Word)(sizeof(seL4_UserContext) / sizeof(seL4_Word)), &regs) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_CONFIGURE;
         out->failed_step = STEP_REGS;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
 
@@ -383,7 +432,7 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
     if (retype_one(&st, seL4_SchedContextObject, seL4_MinSchedContextBits, &sc) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_RETYPE;
         out->failed_step = STEP_SC;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
     if (seL4_SchedControl_ConfigureFlags(req->sched_control, sc,
@@ -392,18 +441,23 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
             0u, 0u, 0u) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_CONFIGURE;
         out->failed_step = STEP_SC_CONFIGURE;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
     /* Binds the SC and sets mcp/priority/fault_ep; does NOT change the
      * thread's Inactive state -- only WriteRegisters(resume=1) below does
      * that, and that call is the LAST thing this function does on
-     * success. */
+     * success.
+     *
+     * req->fault_ep is the child's fault handler. It is written into the
+     * TCB, never into the child's CSpace, so the child can neither name
+     * nor forge it; a seL4_CapNull here simply means nobody is told when
+     * the child faults (see the field's doc comment). */
     if (seL4_TCB_SetSchedParams(child_tcb, req->self_tcb, 255u, (seL4_Word)req->priority,
-                                 sc, seL4_CapNull) != seL4_NoError) {
+                                 sc, req->fault_ep) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_CONFIGURE;
         out->failed_step = STEP_SCHED_PARAMS;
-        fail_teardown(&st, content_mapped, req->content_frame);
+        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
 
@@ -439,9 +493,20 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
             out->error = AOS_CHILD_SPAWN_ERR_ENDOW;
             out->failed_step = STEP_ENDOW;
             out->failed_endow_index = i;
-            fail_teardown(&st, content_mapped, req->content_frame);
+            fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
             goto done_fail;
         }
+        /*
+         * Self-report this mint -- and only now that the kernel has
+         * actually accepted it. The ledger records what was asked for and
+         * granted; it cannot read back what the child holds, because seL4
+         * has no capability-enumeration syscall. See
+         * platform/endow_ledger.h. A NULL ledger records nothing and
+         * changes nothing about the mint.
+         */
+        (void)aos_endow_ledger_record(req->ledger, req->child_index,
+                                       req->child_name, c->kind, c->rights,
+                                       (uint64_t)req->endow_badge);
     }
 
     /* ── Step 3 (part 2): start, only now that every endowment has
@@ -454,7 +519,14 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
          * this does NOT unwind them automatically. The child is still
          * Inactive -- it never ran -- but is left in place for the
          * caller to retry the resume or tear it down explicitly using
-         * the full [scratch_base, scratch_next) range reported below. */
+         * the full [scratch_base, scratch_next) range reported below.
+         *
+         * The ledger IS rolled back here, unlike the objects: the child
+         * never ran, so reporting its endowment would describe authority
+         * nothing is exercising. If the caller retries the resume
+         * successfully it owns re-recording the delta; this module cannot
+         * know whether it will. */
+        aos_endow_ledger_rollback(req->ledger, ledger_mark);
         out->cnode  = child_cnode;
         out->vspace = child_vspace;
         out->tcb    = child_tcb;
@@ -474,6 +546,9 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
     return AOS_CHILD_SPAWN_OK;
 
 done_fail:
+    /* No child started, so nothing this call minted is held by anybody:
+     * the child's CNode is gone and every mint in it with it. */
+    aos_endow_ledger_rollback(req->ledger, ledger_mark);
     out->scratch_base = st.base_slot;
     out->scratch_next = st.base_slot; /* fully torn down by fail_teardown */
     return out->error;
