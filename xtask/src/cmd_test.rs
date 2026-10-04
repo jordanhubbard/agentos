@@ -5294,8 +5294,8 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
         );
         let count = rd32(&first.shmem, 72);
         anyhow::ensure!(
-            count == 14 && rd32(&first.shmem, 32) == count,
-            "inspect did not report the 14 successfully started default PDs"
+            count == 15 && rd32(&first.shmem, 32) == count,
+            "inspect did not report the 15 successfully started default PDs"
         );
         for i in 0..count as usize {
             anyhow::ensure!(
