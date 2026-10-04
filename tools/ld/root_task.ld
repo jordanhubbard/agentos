@@ -98,5 +98,20 @@ SECTIONS {
         . = ALIGN(0x1000);
     }
 
+    /*
+     * .pd_manifest: signed boot manifest (T3 image verification).
+     *
+     * Produced by `xtask gen-pd-bundle` alongside .pd_bundle (see
+     * kernel/agentos-root-task/Makefile) and converted to a linkable
+     * object the same way, providing __pd_manifest_start/__pd_manifest_end.
+     * main.c validates this blob's structure, verifies its Ed25519
+     * signature against the compiled-in public key, and refuses to spawn
+     * any PD if it is absent, malformed, or fails verification.
+     */
+    .pd_manifest : {
+        KEEP(*(.pd_manifest))
+        . = ALIGN(0x1000);
+    }
+
     _end = .;
 }

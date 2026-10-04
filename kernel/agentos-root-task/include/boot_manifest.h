@@ -136,6 +136,18 @@ const aos_boot_manifest_entry_t *aos_boot_manifest_find(const uint8_t *blob,
                                                           uint32_t len,
                                                           const char *name);
 
+/*
+ * ABI lock: the build-side Rust signer (xtask/src/boot_manifest.rs) and
+ * this C reader must agree on these sizes byte-for-byte, or verification
+ * either fails confusingly or — worse — silently validates the wrong
+ * bytes.  header = 8 (magic) + 4 (version) + 4 (count) + 16 (reserved);
+ * entry = 48 (name) + 32 (sha256).  The Rust side asserts the identical
+ * sizes at compile time, and xtask's boot-manifest round-trip test
+ * exercises both implementations against the same bytes.
+ */
+_Static_assert(sizeof(aos_boot_manifest_hdr_t) == 32, "manifest header ABI");
+_Static_assert(sizeof(aos_boot_manifest_entry_t) == 80, "manifest entry ABI");
+
 #ifdef __cplusplus
 }
 #endif

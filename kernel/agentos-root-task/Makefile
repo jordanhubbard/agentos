@@ -108,7 +108,7 @@ ROOT_TASK_SRCS := src/main.c src/ep_alloc.c src/cap_accounting.c \
                   src/sel4_crt.c src/log.c \
                   src/ut_alloc.c src/pd_vspace.c src/cap_audit.c \
                   src/vos_create.c src/pd_bundle_stub.c \
-                  src/authority_kindmap.c
+                  src/authority_kindmap.c src/boot_manifest.c
 
 ifeq ($(ARCH),aarch64)
 CFLAGS += -DAGENTOS_LOG_RINGS=1
@@ -124,10 +124,20 @@ ROOT_TASK_SRCS += src/system_desc_riscv64.c
 CFLAGS_ROOT_TASK := $(CFLAGS)
 ROOT_TASK_ASM_OBJS :=
 endif
+# main.c includes the generated boot-manifest public-key header
+# (boot_manifest_pubkey.h) straight out of the build directory.
+CFLAGS_ROOT_TASK += -I$(BUILD_DIR)
 
 ROOT_TASK_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/rt_%.o, $(ROOT_TASK_SRCS))
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_authority.o
+# Boot manifest verification (T3 image verification): the root task hashes
+# each PD's ELF bytes (sha256_mini) and checks the manifest's Ed25519
+# signature (ed25519_verify / monocypher) before spawning anything. These
+# use the same libs/pd-support/%.c -> $(BUILD_DIR)/%.o pattern rule already
+# used by the legacy monitor PD, so the object is shared/deduped rather than
+# duplicated under an rt_ prefix.
+ROOT_TASK_OBJS += $(BUILD_DIR)/sha256_mini.o $(BUILD_DIR)/ed25519_verify.o $(BUILD_DIR)/monocypher.o
 ifeq ($(ARCH),x86_64)
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
 endif
@@ -557,6 +567,13 @@ $(BUILD_DIR)/rt_start_x86_64.o: src/start_x86_64.S
 # provide agentOS extra BootInfo chunks.
 PD_BUNDLE       := $(BUILD_DIR)/agentos_pd_bundle.bin
 PD_BUNDLE_OBJ   := $(BUILD_DIR)/agentos_pd_bundle.o
+# Signed boot manifest (T3 image verification) and the generated C header
+# declaring the Ed25519 public key to verify it against. Both are written
+# by the same `xtask gen-pd-bundle` invocation that writes PD_BUNDLE — see
+# cmd_gen_pd_bundle.rs. There is no build flag to omit either.
+PD_MANIFEST            := $(BUILD_DIR)/agentos_pd_manifest.bin
+PD_MANIFEST_OBJ        := $(BUILD_DIR)/agentos_pd_manifest.o
+PD_MANIFEST_PUBKEY_HDR := $(BUILD_DIR)/boot_manifest_pubkey.h
 # Deferred reference: SYSTEM_TOML is set later in this Makefile.
 SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
 
@@ -582,7 +599,7 @@ $(BUILD_DIR)/loader.elf: FORCE
 # Step 4: Link root_task.elf with the custom AArch64 LD script + bundle object.
 # The PD bundle rules are declared after IMAGES/SYSTEM_TOML are finalized so
 # Make records the real PD ELF prerequisite list.
-$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(ROOT_TASK_LD)
+$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(PD_MANIFEST_OBJ) $(ROOT_TASK_LD)
 	$(LD) $(LDFLAGS) -T$(ROOT_TASK_LD) $(filter-out $(ROOT_TASK_LD),$^) -o $@
 
 else ifeq ($(ARCH),x86_64)
@@ -590,7 +607,7 @@ else ifeq ($(ARCH),x86_64)
 # x86_64 boots via seL4's multiboot path, with root_task.elf passed as the
 # initial module.  Embed the PD bundle in root_task.elf so it can launch PDs
 # without an agentOS-specific boot-info extension.
-$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(AGENTOS_LD)
+$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(PD_MANIFEST_OBJ) $(AGENTOS_LD)
 	$(LD) $(LDFLAGS) -T$(AGENTOS_LD) $(filter-out $(AGENTOS_LD),$^) -o $@
 
 else
@@ -1708,20 +1725,29 @@ endif
 
 ifneq ($(filter $(ARCH),aarch64 x86_64),)
 # Step 2: Generate the PD bundle after all service PD ELFs and the final
-# system TOML have been selected.
+# system TOML have been selected. The same invocation always also emits the
+# signed boot manifest (PD_MANIFEST) and its public-key header
+# (PD_MANIFEST_PUBKEY_HDR) — see cmd_gen_pd_bundle.rs. PD_MANIFEST and
+# PD_MANIFEST_PUBKEY_HDR are declared as targets of PD_BUNDLE below so `make`
+# tracks all three as products of this one recipe.
 $(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
-		--out $@
+		--out $@ \
+		--manifest-out $(PD_MANIFEST) \
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
 
-# Step 3: Turn the binary bundle into a relocatable ELF64 object.
+$(PD_MANIFEST) $(PD_MANIFEST_PUBKEY_HDR): $(PD_BUNDLE)
+
+# Step 3: Turn the binary bundle and manifest into relocatable ELF64 objects.
 #
 # objcopy --input binary derives symbol names from the input file path,
 # mangling every non-alphanumeric character to '_'.  To get predictable
 # symbol names we invoke objcopy from BUILD_DIR with just the basename, so
 # the mangled name is always:
 #   _binary_agentos_pd_bundle_bin_{start,end,size}
+#   _binary_agentos_pd_manifest_bin_{start,end,size}
 ifeq ($(ARCH),aarch64)
 $(PD_BUNDLE_OBJ): $(PD_BUNDLE)
 	cd $(BUILD_DIR) && $(OBJCOPY) \
@@ -1733,6 +1759,16 @@ $(PD_BUNDLE_OBJ): $(PD_BUNDLE)
 		--redefine-sym _binary_agentos_pd_bundle_bin_end=__pd_bundle_end \
 		--redefine-sym _binary_agentos_pd_bundle_bin_size=__pd_bundle_size \
 		agentos_pd_bundle.bin agentos_pd_bundle.o
+$(PD_MANIFEST_OBJ): $(PD_MANIFEST)
+	cd $(BUILD_DIR) && $(OBJCOPY) \
+		--input-target=binary \
+		--output-target=elf64-littleaarch64 \
+		--binary-architecture=aarch64 \
+		--rename-section .data=.pd_manifest,alloc,load,data,contents \
+		--redefine-sym _binary_agentos_pd_manifest_bin_start=__pd_manifest_start \
+		--redefine-sym _binary_agentos_pd_manifest_bin_end=__pd_manifest_end \
+		--redefine-sym _binary_agentos_pd_manifest_bin_size=__pd_manifest_size \
+		agentos_pd_manifest.bin agentos_pd_manifest.o
 else ifeq ($(ARCH),x86_64)
 $(PD_BUNDLE_OBJ): $(PD_BUNDLE)
 	cd $(BUILD_DIR) && $(OBJCOPY) \
@@ -1744,8 +1780,32 @@ $(PD_BUNDLE_OBJ): $(PD_BUNDLE)
 		--redefine-sym _binary_agentos_pd_bundle_bin_end=__pd_bundle_end \
 		--redefine-sym _binary_agentos_pd_bundle_bin_size=__pd_bundle_size \
 		agentos_pd_bundle.bin agentos_pd_bundle.o
+$(PD_MANIFEST_OBJ): $(PD_MANIFEST)
+	cd $(BUILD_DIR) && $(OBJCOPY) \
+		--input-target=binary \
+		--output-target=elf64-x86-64 \
+		--binary-architecture=i386:x86-64 \
+		--rename-section .data=.pd_manifest,alloc,load,data,contents \
+		--redefine-sym _binary_agentos_pd_manifest_bin_start=__pd_manifest_start \
+		--redefine-sym _binary_agentos_pd_manifest_bin_end=__pd_manifest_end \
+		--redefine-sym _binary_agentos_pd_manifest_bin_size=__pd_manifest_size \
+		agentos_pd_manifest.bin agentos_pd_manifest.o
 endif
+else
+# RISC-V does not embed a PD bundle at all (PDs load via the seL4 extra
+# BootInfo path, unchanged by T3 image verification) — see pd_bundle_stub.c
+# and tools/ld/agentos.ld's zero-size __pd_bundle_start/__pd_bundle_end.
+# main.c's manifest check is gated on the bundle actually being present
+# (bundle_size() > 0), which is never true here, so there is nothing to
+# verify on this path. It still needs *a* pubkey header to satisfy the
+# unconditional #include in main.c; generate a placeholder (never read,
+# since the manifest gate never fires when there is no bundle).
+$(PD_MANIFEST_PUBKEY_HDR):
+	@mkdir -p $(BUILD_DIR)
+	@printf '#pragma once\n#include <stdint.h>\n/* RISC-V: no PD bundle on this target; see tools/ld/agentos.ld. Never read. */\nstatic const uint8_t AOS_BOOT_MANIFEST_PUBKEY[32] = { 0 };\n' > $@
 endif
+
+$(BUILD_DIR)/rt_main.o: $(PD_MANIFEST_PUBKEY_HDR)
 
 $(IMAGE_FILE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(BUILD_DIR)/root_task.elf $(SYSTEM_TOML) $(KERNEL_ELF) $(_LOADER_DEP) $(GUEST_CONFIG_STAMP)
 	cargo run -p xtask -- gen-image \
