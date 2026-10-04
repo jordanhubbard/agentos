@@ -1466,9 +1466,12 @@ is the qualifying evidence under the pin.
 The root task verifies every protection-domain image before spawning it. The
 build emits a manifest of per-PD SHA-256 digests signed once with Ed25519; root
 verifies that signature against a public key fixed at build time, then checks
-each PD's digest immediately before spawn. Verification is unconditional: there
-is no build flag, environment variable or configuration that disables it, and an
-absent or malformed manifest refuses boot rather than skipping the check.
+each PD's digest immediately before spawn. Verification covers the AArch64 and
+x86_64 targets, which embed their PD images in a signed bundle. On those
+targets it is unconditional: no build flag, environment variable or
+configuration disables it, and an absent or malformed manifest refuses boot
+rather than skipping the check. RISC-V does not embed a PD bundle; PDs load
+there via the seL4 extra-BootInfo path and are **not** verified.
 `make test-image-verify` boots an unmodified image, a byte-tampered image, and
 an image with its manifest stripped, requiring the latter two to be refused with
 the tampered image named.

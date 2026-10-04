@@ -157,6 +157,18 @@ pub fn build_signed_manifest(
 //     and prints a clear warning. This key is committed in-tree, obviously
 //     not secret, and must never be used to sign anything but a development
 //     build.
+//
+// Whether a build is "development-signed" (is_dev_key / the on-system
+// `[rt] WARNING: DEVELOPMENT-signed image` marker) is decided by comparing
+// the loaded seed BYTES against the in-tree development seed's bytes — not
+// by whether AGENTOS_BUNDLE_SIGNING_KEY happened to be set. A path string
+// can lie: a relative path, an absolute path, a symlink, or a copy can all
+// point at the same 32 bytes as the dev seed while looking like "a real
+// key was configured." Pointing AGENTOS_BUNDLE_SIGNING_KEY directly at
+// kernel/agentos-root-task/keys/dev_signing_key.seed — by accident, or
+// because a CI script or Makefile defaults it there "helpfully" — must
+// still mark the resulting image as development-signed, exactly as if the
+// variable had been left unset.
 
 pub const DEV_SIGNING_KEY_REL_PATH: &str = "kernel/agentos-root-task/keys/dev_signing_key.seed";
 
@@ -167,9 +179,9 @@ pub struct LoadedSigningKey {
 }
 
 pub fn load_signing_key(repo_root: &Path) -> Result<LoadedSigningKey> {
-    let (path, is_dev_key) = match std::env::var_os("AGENTOS_BUNDLE_SIGNING_KEY") {
-        Some(p) => (std::path::PathBuf::from(p), false),
-        None => (repo_root.join(DEV_SIGNING_KEY_REL_PATH), true),
+    let path = match std::env::var_os("AGENTOS_BUNDLE_SIGNING_KEY") {
+        Some(p) => std::path::PathBuf::from(p),
+        None => repo_root.join(DEV_SIGNING_KEY_REL_PATH),
     };
 
     let seed = std::fs::read(&path)
@@ -185,12 +197,27 @@ pub fn load_signing_key(repo_root: &Path) -> Result<LoadedSigningKey> {
     seed_arr.copy_from_slice(&seed);
     let signing_key = SigningKey::from_bytes(&seed_arr);
 
+    // is_dev_key is a function of WHICH KEY actually signed this build —
+    // i.e. whether the loaded seed bytes equal the in-tree development
+    // seed's bytes — never of how AGENTOS_BUNDLE_SIGNING_KEY was supplied.
+    // See the module-level comment above for why a path comparison alone
+    // would be defeatable.
+    let dev_seed_path = repo_root.join(DEV_SIGNING_KEY_REL_PATH);
+    let dev_seed = std::fs::read(&dev_seed_path).with_context(|| {
+        format!(
+            "failed to read in-tree development signing key seed for dev-key comparison: {}",
+            dev_seed_path.display()
+        )
+    })?;
+    let is_dev_key = dev_seed.len() == 32 && dev_seed == seed;
+
     if is_dev_key {
         eprintln!(
-            "[gen-pd-bundle] WARNING: AGENTOS_BUNDLE_SIGNING_KEY is not set — \
-             signing the boot manifest with the well-known in-tree DEVELOPMENT \
-             key ({}). This image is DEVELOPMENT-SIGNED and must not be treated \
-             as coming from any trusted build pipeline.",
+            "[gen-pd-bundle] WARNING: this build's manifest is signed with the \
+             well-known in-tree DEVELOPMENT key ({}) — whether because \
+             AGENTOS_BUNDLE_SIGNING_KEY is unset or because it points at that \
+             same key. This image is DEVELOPMENT-SIGNED and must not be \
+             treated as coming from any trusted build pipeline.",
             DEV_SIGNING_KEY_REL_PATH
         );
     }
@@ -286,6 +313,79 @@ mod tests {
             seed.len(),
             32,
             "dev signing key seed must be exactly 32 bytes"
+        );
+    }
+
+    // Serialize access to AGENTOS_BUNDLE_SIGNING_KEY: std::env::set_var /
+    // remove_var affect the whole process, and cargo test runs tests in
+    // parallel threads by default.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Fix 2 regression test: pointing AGENTOS_BUNDLE_SIGNING_KEY directly at
+    /// the in-tree development seed — not leaving it unset — must still be
+    /// detected as development-signed. Before this fix, is_dev_key was keyed
+    /// on "was the env var set at all", so this exact case produced a
+    /// silently unmarked development-signed image.
+    #[test]
+    fn dev_seed_via_env_var_is_still_detected_as_dev_signed() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = repo_root();
+        let dev_seed_abs = root.join(DEV_SIGNING_KEY_REL_PATH);
+
+        let previous = std::env::var_os("AGENTOS_BUNDLE_SIGNING_KEY");
+        // SAFETY (env mutation): serialized across this module's tests by
+        // ENV_LOCK; restored immediately below before the lock is released.
+        unsafe {
+            std::env::set_var("AGENTOS_BUNDLE_SIGNING_KEY", &dev_seed_abs);
+        }
+
+        let loaded = load_signing_key(&root);
+
+        unsafe {
+            match &previous {
+                Some(value) => std::env::set_var("AGENTOS_BUNDLE_SIGNING_KEY", value),
+                None => std::env::remove_var("AGENTOS_BUNDLE_SIGNING_KEY"),
+            }
+        }
+
+        let loaded = loaded.expect("loading the dev seed via the env var must still succeed");
+        assert!(
+            loaded.is_dev_key,
+            "AGENTOS_BUNDLE_SIGNING_KEY pointed at the in-tree dev seed must still be \
+             detected as development-signed, not just the unset-env-var default path"
+        );
+    }
+
+    /// Converse of the above: a key that is NOT the dev seed must not be
+    /// marked development-signed, preserving today's production-key
+    /// behavior (no warning, AOS_BOOT_MANIFEST_DEV_SIGNED 0).
+    #[test]
+    fn non_dev_seed_via_env_var_is_not_dev_signed() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = repo_root();
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let fake_key_path = tmp.path().join("not-the-dev-key.seed");
+        std::fs::write(&fake_key_path, [9u8; 32]).unwrap();
+
+        let previous = std::env::var_os("AGENTOS_BUNDLE_SIGNING_KEY");
+        unsafe {
+            std::env::set_var("AGENTOS_BUNDLE_SIGNING_KEY", &fake_key_path);
+        }
+
+        let loaded = load_signing_key(&root);
+
+        unsafe {
+            match &previous {
+                Some(value) => std::env::set_var("AGENTOS_BUNDLE_SIGNING_KEY", value),
+                None => std::env::remove_var("AGENTOS_BUNDLE_SIGNING_KEY"),
+            }
+        }
+
+        let loaded = loaded.expect("loading a well-formed 32-byte seed must succeed");
+        assert!(
+            !loaded.is_dev_key,
+            "a seed with different bytes than the in-tree dev seed must not be marked dev-signed"
         );
     }
 
