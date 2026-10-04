@@ -69,6 +69,29 @@ pub struct GenPdBundleArgs {
     /// Defaults to `boot_manifest_pubkey.h` next to `--out`.
     #[arg(long = "pubkey-header-out")]
     pub pubkey_header_out: Option<PathBuf>,
+
+    /// TEST-ONLY failure injection (T10 target proof, probe 4): compile in an
+    /// INCOHERENT trust anchor state — the gating tier `AOS_ANCHOR_MOK` with
+    /// no machine-owner key present — so the root task's Step 0 validation
+    /// has something to reject.
+    ///
+    /// `select_anchor()` has four exits and none of them can produce this
+    /// state; that is the whole point of the contract. But "a gating tier
+    /// whose key is missing refuses to boot rather than quietly becoming a
+    /// non-gating one" is the single most important rule in
+    /// contracts/trust_anchor.h, and a rule nothing can construct is a rule
+    /// nothing has ever tested. This flag constructs it, and only it: the
+    /// state is hardcoded, not parameterised.
+    ///
+    /// It is fail-closed by construction. The only image it can produce is
+    /// one that `aos_anchor_validate()` rejects, i.e. one that refuses to
+    /// start any PD. There is no value of this flag that makes an image gate
+    /// LESS than it otherwise would, so a build that set it by accident
+    /// fails loudly at boot instead of shipping something unverified.
+    /// `select_anchor()` itself is untouched — this rewrites the already
+    /// selected result on the way out.
+    #[arg(long = "incoherent-anchor-probe")]
+    pub incoherent_anchor_probe: bool,
 }
 
 // ─── run ─────────────────────────────────────────────────────────────────────
@@ -207,7 +230,24 @@ pub fn run(args: &GenPdBundleArgs) -> Result<()> {
     }
 
     let repo_root = boot_manifest_repo_root(&args.system)?;
-    let selection = select_anchor(&repo_root)?;
+    let mut selection = select_anchor(&repo_root)?;
+    if args.incoherent_anchor_probe {
+        // See --incoherent-anchor-probe. Exactly one state, hardcoded: a
+        // gating tier (MOK) with its required key absent. Everything else
+        // about the build — the signing key, the manifest, the PD set — is
+        // left alone, so the ONLY thing under test is what the root task
+        // does with an anchor state that does not validate.
+        eprintln!(
+            "[gen-pd-bundle] WARNING: --incoherent-anchor-probe is set. This build compiles \
+             in a DELIBERATELY INVALID trust anchor state (AOS_ANCHOR_MOK with no \
+             machine-owner key) and the resulting image WILL REFUSE TO BOOT. It is a test \
+             fixture for the T10 target proof and must never be shipped."
+        );
+        selection.tier = AnchorTier::Mok;
+        selection.mok.present = false;
+        selection.mok.pubkey = [0u8; 32];
+    }
+    let selection = selection;
     let manifest_blob = build_signed_manifest(&manifest_entries, &selection.signing_key)
         .context("failed to build signed boot manifest")?;
 
@@ -371,6 +411,7 @@ priority = 1
             out: out_file.path().to_path_buf(),
             manifest_out: Some(manifest_out.path().to_path_buf()),
             pubkey_header_out: Some(pubkey_header_out.path().to_path_buf()),
+            incoherent_anchor_probe: false,
         };
 
         run_with_dev_vendor_key(&args).expect("gen-pd-bundle failed");
@@ -427,6 +468,7 @@ priority = 1
             out: out_file.path().to_path_buf(),
             manifest_out: None,
             pubkey_header_out: None,
+            incoherent_anchor_probe: false,
         };
 
         let err = run_with_dev_vendor_key(&args).expect_err("48-byte PD name must be rejected");

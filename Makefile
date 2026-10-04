@@ -860,7 +860,7 @@ gate-guest-io:
 	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
-gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-image-verify test-entropy-unavailable
+gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-image-verify test-trust-anchor test-entropy-unavailable
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
@@ -1718,6 +1718,48 @@ test-image-verify:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 1
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 2
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 3
+# test-trust-anchor — T10 target proof: image verification runs under a named
+# trust anchor tier, the tier decides whether a mismatch stops boot, and the
+# tier a running system reports is the one its image was built with
+# (contracts/trust_anchor.h, docs/TCB.md "Protection-domain image
+# verification"). Each probe performs its own fresh build under an explicitly
+# named anchor environment — xtask sets the anchor variables it wants and
+# REMOVES the rest, so a variable exported in the caller's shell cannot
+# redirect a probe to a tier it did not mean to test.
+#   1. vendor control  — an unmodified vendor-signed image boots to completion
+#                         and the banner names vendor as gating.
+#   2. vendor gates     — one tampered byte refuses the whole boot and names
+#                         the PD; agentOS boot complete never appears. (1+2
+#                         together are T3's behaviour re-proven through the
+#                         tier machinery rather than an unconditional check.)
+#   3. THE PROBE        — the SAME tampered image under the development
+#                         anchor emits the digest mismatch naming the same PD
+#                         AND boots to completion. Both assertions, not
+#                         either: completion alone would also pass against an
+#                         image that skipped verification entirely (the
+#                         quarantined VIBE_VERIFY_MODE shape in
+#                         services/legacy-pds/verify.c), and the mismatch
+#                         alone would not show that development stops gating.
+#   4. no silent downgrade — a gating tier compiled in with its required key
+#                         absent refuses at the root task's first step. The
+#                         refusal is SILENT on this board (Step 0 runs before
+#                         the UART is mapped — see boot_init_trust_anchor()),
+#                         so the probe asserts the loader reached seL4 and the
+#                         root task then produced no output at all.
+#   5. visible at runtime — a machine-owner image's inspect snapshot reports
+#                         tier 2 / machine-owner, deliberately NOT the vendor
+#                         tier test-inspect already pins, so the field is
+#                         shown tracking the build rather than matching a
+#                         constant.
+.PHONY: test-trust-anchor
+test-trust-anchor:
+	$(MAKE) -C tools/agentctl
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 1
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 2
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 3
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 4
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 5
+
 # test-entropy-unavailable: entropy_pd is reachable and degrades safely on
 # QEMU virt, where no virtio-mmio slot remains to wire a real virtio-rng
 # device to it (docs/TCB.md). This is NOT a working-entropy proof -- it

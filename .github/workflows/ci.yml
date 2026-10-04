@@ -499,6 +499,18 @@ jobs:
       - name: GATE — make test-image-verify
         timeout-minutes: 15
         run: make test-image-verify
+
+      # T10 trust anchor tiers target proof: verification runs under a named
+      # anchor, the anchor decides whether a mismatch stops boot, a gating
+      # tier with no key refuses rather than downgrading, and a running
+      # system reports the tier its image was built with. The development
+      # probe asserts BOTH the digest mismatch and the completed boot — see
+      # the target's comment in the Makefile for why either alone is
+      # worthless. Listed here explicitly as well as in `gate:` because no CI
+      # job invokes `make gate`.
+      - name: GATE — make test-trust-anchor
+        timeout-minutes: 25
+        run: make test-trust-anchor
       # entropy_pd reachability and safe degradation. NOT a working-entropy
       # proof: QEMU virt's virtio-mmio aperture is fully subscribed before
       # entropy_pd exists (docs/TCB.md), so no device is ever attached here.

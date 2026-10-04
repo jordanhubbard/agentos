@@ -123,6 +123,19 @@ pub struct TestArgs {
     /// zeroed boot manifest refuses to boot.
     #[arg(long, conflicts_with = "block_isolation_probe", value_parser = clap::value_parser!(u8).range(1..=3))]
     pub image_verify_probe: Option<u8>,
+    /// Test T10 trust anchor tiers (target proof). Each probe builds its own
+    /// image under an explicitly named anchor (the build environment is set
+    /// by xtask, never inherited) and boots it:
+    ///   1 vendor tier, unmodified: boots, banner names vendor as gating;
+    ///   2 vendor tier, byte-tampered PD: refused, PD named, boot incomplete;
+    ///   3 development tier, byte-tampered PD: mismatch REPORTED naming the
+    ///     PD *and* boot completes — reports without enforcing;
+    ///   4 a gating tier whose required key is absent: boot refused at the
+    ///     root task's first step, never silently downgraded;
+    ///   5 machine-owner tier: the inspect snapshot reports the tier the
+    ///     image was actually built with, not a hardcoded one.
+    #[arg(long, conflicts_with_all = ["block_isolation_probe", "image_verify_probe"], value_parser = clap::value_parser!(u8).range(1..=5))]
+    pub trust_anchor_probe: Option<u8>,
     /// Test-only VMM fault probe: 1..4 primary foreign/disk read/write; 5..8 secondary.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
     pub block_isolation_probe: Option<u8>,

@@ -1568,6 +1568,22 @@ requiring the latter two to be refused, with the tampered image named. The
 manifest-stripped case refuses boot on every tier, not just gating ones (see
 above).
 
+`make test-trust-anchor` boots the tier behaviour itself, each probe on its own
+freshly built image: the vendor anchor booting an unmodified image and refusing
+a byte-tampered one by name; the *same* tampered image under the development
+anchor emitting the digest mismatch, naming the same PD, **and** completing
+boot — both asserted, since the completed boot alone would equally describe an
+image that skipped verification; a gating tier compiled with its required key
+absent refusing at the root task's first step rather than downgrading (that
+refusal is silent on AArch64, because the check runs before the UART is mapped,
+so the probe asserts the root task produced no output at all); and a
+machine-owner image's inspect snapshot reporting the machine-owner tier, not
+the vendor tier the rest of the inspect suite pins. What this does **not**
+cover on target is a digest mismatch under the machine-owner anchor: that it
+refuses follows from the same `aos_anchor_gates_boot()` decision the vendor
+probe exercises, and is host-tested, but no booted image has been made to
+demonstrate it.
+
 Scope: this constrains every adversary who can modify an image but not replace
 the boot chain. Under the vendor and machine-owner tiers it does NOT establish
 resistance to the local operator, who is untrusted under the platform threat
@@ -1576,6 +1592,6 @@ replaced along with the image it validates. Only a hardware anchor would
 change that, and none is confirmed for the target boards.
 
 Qualification boundary: development results were obtained under Microkit SDK
-2.1.0. `make test-image-verify` is additionally run by the CI `os-claim-gate`
-job, which installs the verified SDK artifact; that job's result on a given
-revision is the qualifying evidence under the pin.
+2.1.0. `make test-image-verify` and `make test-trust-anchor` are additionally
+run by the CI `os-claim-gate` job, which installs the verified SDK artifact;
+that job's result on a given revision is the qualifying evidence under the pin.

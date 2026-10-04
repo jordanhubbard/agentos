@@ -622,6 +622,65 @@ AGENTOS_BUNDLE_SIGNING_KEY ?= $(REPO_ROOT_MK)/kernel/agentos-root-task/keys/dev_
 export AGENTOS_BUNDLE_SIGNING_KEY
 endif
 
+# Trust anchor selection stamp (T10 Task 3). `xtask gen-pd-bundle` reads the
+# three anchor env vars above out of its OWN environment, so none of them is
+# visible to make's dependency graph: without this stamp, PD_BUNDLE /
+# PD_MANIFEST / PD_MANIFEST_PUBKEY_HDR depend only on the PD ELFs, the system
+# TOML and GUEST_CONFIG_STAMP, and a build that changes ONLY the anchor
+# selection regenerates nothing.
+#
+# What saves it today is an ACCIDENT, not a dependency: guest_vmm_primary.elf
+# is in IMAGES and is relinked unconditionally (`: FORCE`) on every build, so
+# it usually lands newer than PD_BUNDLE and drags the whole trio along with it.
+# That is an mtime race, not a guarantee — measured on this tree, a plain
+# `make build` was observed re-running gen-pd-bundle on most invocations and
+# skipping it on one, where the relink and the previous bundle write fell in
+# the same filesystem timestamp tick.
+#
+# Losing that race in the AGENTOS_TRUST_ANCHOR=none -> plain `make build`
+# direction is the one outcome this whole feature exists to prevent: the image
+# left on disk is still the NON-GATING development one, while every signal the
+# operator has — the command they typed, the Makefile default, the absence of
+# any opt-in — says it is a gating vendor image. Recording the selection in a
+# stamp file and depending on it makes the anchor a tracked input, so a changed
+# anchor rebuilds the bundle, the manifest and the compiled-in key header
+# together, deterministically and regardless of what any unrelated PD ELF's
+# mtime happens to be.
+#
+# The signing key FILES are listed as prerequisites too (via $(wildcard ...),
+# so an unset or not-yet-created path is simply no prerequisite rather than a
+# hard error): rotating a key in place, at an unchanged path, must also
+# invalidate the compiled-in public key.
+#
+# Same write-only-if-changed shape as GUEST_CONFIG_STAMP above, so an unchanged
+# selection does not churn mtimes and force a rebuild on every invocation.
+PD_ANCHOR_STAMP := $(BUILD_DIR)/trust_anchor_selection.stamp
+PD_ANCHOR_KEY_FILES := $(wildcard $(AGENTOS_BUNDLE_SIGNING_KEY)) $(wildcard $(AGENTOS_MOK_SIGNING_KEY))
+
+# TEST-ONLY (T10 target proof, probe 4). TRUST_ANCHOR_INCOHERENT_PROBE=1 makes
+# gen-pd-bundle compile in a gating tier with its required key absent, so the
+# root task's Step 0 validation has something to reject; see that flag's doc
+# comment in xtask/src/cmd_gen_pd_bundle.rs for why the state has to be
+# constructed rather than configured, and why it is fail-closed (the only
+# image it can produce is one that refuses to start any PD). Same shape as the
+# other test-only build knobs in this file (INSPECT_WRITE_PROBE,
+# AUTHORITY_WRITE_PROBE, GUEST_GIC_FAILURE_PROBE): off unless named, and
+# recorded in the stamp below so switching it on or off rebuilds the image
+# rather than leaving the previous one in place.
+ifeq ($(TRUST_ANCHOR_INCOHERENT_PROBE),1)
+PD_ANCHOR_PROBE_FLAG := --incoherent-anchor-probe
+else
+PD_ANCHOR_PROBE_FLAG :=
+endif
+
+$(PD_ANCHOR_STAMP): FORCE
+	@mkdir -p $(BUILD_DIR)
+	@tmp="$@.tmp"; \
+	printf 'AGENTOS_TRUST_ANCHOR=%s\nAGENTOS_BUNDLE_SIGNING_KEY=%s\nAGENTOS_MOK_SIGNING_KEY=%s\nPROBE=%s\n' \
+		'$(AGENTOS_TRUST_ANCHOR)' '$(AGENTOS_BUNDLE_SIGNING_KEY)' '$(AGENTOS_MOK_SIGNING_KEY)' \
+		'$(PD_ANCHOR_PROBE_FLAG)' > "$$tmp"; \
+	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
+
 # ─── AArch64: root_task uses custom LD script + embedded PD bundle ───────────
 # On AArch64 the loader (kernel/loader/) loads root_task.elf from DRAM at
 # 0x41000000.  The custom root_task.ld places it there and provides the
@@ -1786,29 +1845,29 @@ ifneq ($(filter $(ARCH),aarch64 x86_64),)
 # `$(PD_MANIFEST_OBJ): $(PD_MANIFEST)` objcopy rule fails on a missing
 # input. Giving each file its own full recipe means deleting any one of
 # the three — individually or together — always regenerates all three.
-$(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+$(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG)
 
-$(PD_MANIFEST): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+$(PD_MANIFEST): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG)
 
-$(PD_MANIFEST_PUBKEY_HDR): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+$(PD_MANIFEST_PUBKEY_HDR): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG)
 
 # Step 3: Turn the binary bundle and manifest into relocatable ELF64 objects.
 #
