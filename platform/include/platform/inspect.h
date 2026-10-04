@@ -15,7 +15,25 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AOS_INSPECT_VERSION            1u
+/*
+ * AOS_INSPECT_VERSION — bumped 1 -> 2 by T10.
+ *
+ * The LAYOUT did not change (the snapshot is still 1488 bytes) but the
+ * MEANING of a field did: the always-zero `reserved` word became
+ * `anchor_tier`, and aos_inspect_validate()'s check on it changed from
+ * "must be zero" to "must be a tier or the unverified sentinel". A
+ * consumer built before that change, pointed at a system running a VENDOR
+ * or MOK image, would read 1 or 2 in a word it believes is reserved and
+ * reject the whole snapshot as malformed -- reporting a broken system
+ * rather than a tier. The version field is the only signal such a
+ * mismatched pair has, so it has to move even though sizeof() did not.
+ *
+ * In-tree this cannot happen: agentctl is built from the same tree, and
+ * tools/agentctl/Makefile depends on the trust anchor contract header so
+ * it rebuilds when the tier model changes. The bump is for anything built
+ * outside this tree against an older copy of this ABI.
+ */
+#define AOS_INSPECT_VERSION            2u
 #define AOS_INSPECT_MAX_THREADS        32u
 #define AOS_INSPECT_NAME_LEN           32u
 
@@ -74,7 +92,12 @@ typedef struct __attribute__((packed)) aos_inspect_snapshot {
     uint32_t thread_count;
     /*
      * anchor_tier -- the trust anchor tier (aos_anchor_tier_t: 0=NONE,
-     * 1=VENDOR, 2=MOK, 3=HARDWARE) THIS image booted under. Was `reserved`
+     * 1=VENDOR, 2=MOK, 3=HARDWARE) THIS image booted under, or
+     * AOS_ANCHOR_UNVERIFIED (0xFFFFFFFF) on an architecture that embeds no
+     * PD bundle and therefore runs no tier at all -- RISC-V today. That
+     * sentinel is deliberately NOT a tier: reporting a real tier on a box
+     * that verifies nothing would be a lie in the one field an operator
+     * reads to find out what their machine enforces. Was `reserved`
      * (always zero); repurposed by T10 so an operator can ask a LIVE
      * machine which anchor it booted under, not just read a boot log that
      * has long since scrolled away. This struct's own layout stays

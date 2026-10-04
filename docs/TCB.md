@@ -1515,6 +1515,13 @@ root checks that signature, then checks each PD's digest immediately before
 spawn. Verification covers the AArch64 and x86_64 targets, which embed their
 PD images in a signed bundle. RISC-V does not embed a PD bundle; PDs load
 there via the seL4 extra-BootInfo path and are **not** verified, on any tier.
+A RISC-V boot says so rather than naming a tier it does not run: the boot
+banner reports `unverified (no PD bundle on this target)` and states that no
+digest is computed and no signature checked, and `trust.anchor_tier` in the
+inspect snapshot carries the same sentinel rather than a tier value. Reporting
+any real tier there — `none` included, which would read as "a development
+anchor was chosen" — would be false in the one place an operator looks to find
+out what their machine enforces.
 
 Image verification runs under one of three trust anchors, recorded in the
 image and announced at boot (and visible on a running system via the inspect
@@ -1564,13 +1571,13 @@ above).
 
 `make test-trust-anchor` boots the tier behaviour itself, each probe on its own
 freshly built image: the vendor anchor booting an unmodified image and refusing
-a byte-tampered one by name; the *same* tampered image under the development
-anchor emitting the digest mismatch, naming the same PD, **and** completing
-boot — both asserted, since the completed boot alone would equally describe an
-image that skipped verification; a gating tier compiled with its required key
-absent refusing rather than downgrading; and a machine-owner image's inspect
-snapshot reporting the machine-owner tier, not the vendor tier the rest of the
-inspect suite pins.
+a byte-tampered one by name; the same tamper, applied to a separate build under
+the development anchor, emitting the digest mismatch and naming the same PD,
+**and** completing boot — both asserted, since the completed boot alone
+would equally describe an image that skipped verification; a gating tier
+compiled with its required key absent refusing rather than downgrading; and a
+machine-owner image's inspect snapshot reporting the machine-owner tier, not
+the vendor tier the rest of the inspect suite pins.
 
 Two limits on that, stated rather than implied. **The key-less gating tier
 probe asserts an absence, not a refusal message.** That check runs before the

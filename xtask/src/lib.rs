@@ -146,13 +146,19 @@ pub struct TestArgs {
     /// reason that has nothing to do with what it was testing. Rejecting the
     /// combination at parse time beats a confusing failure inside
     /// `verify_inspect`.
+    ///
+    /// Keep this list current when a new boot-pinning assertion lands:
+    /// `assert_cap_lending` arrived from T5 after this list was written and
+    /// had to be added later. The tell is an argument that is permitted on
+    /// `qemu_virt_aarch64` / `GUEST_OS=none`, since that is the exact
+    /// configuration these probes require.
     #[arg(long, conflicts_with_all = [
         "block_isolation_probe", "image_verify_probe", "guest_gic_failure_probe",
         "assert_inspect", "inspect_write_probe", "authority_probe", "cc_envelope_probe",
         "assert_entropy_unavailable", "assert_operator_session", "operator_isolation_probe",
         "assert_log_rings", "log_isolation_probe", "assert_native_rust", "assert_native_guest",
         "assert_framebuffer", "serial_isolation_probe", "network_isolation_probe",
-        "virtualizer_authority_probe", "keep_running", "no_build",
+        "virtualizer_authority_probe", "assert_cap_lending", "keep_running", "no_build",
     ], value_parser = clap::value_parser!(u8).range(1..=5))]
     pub trust_anchor_probe: Option<u8>,
     /// Test-only VMM fault probe: 1..4 primary foreign/disk read/write; 5..8 secondary.

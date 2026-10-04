@@ -1990,11 +1990,27 @@ else
 # main.c's manifest check is gated on the bundle actually being present
 # (bundle_size() > 0), which is never true here, so there is nothing to
 # verify on this path. It still needs *a* pubkey header to satisfy the
-# unconditional #include in main.c; generate a placeholder (never read,
-# since the manifest gate never fires when there is no bundle).
+# unconditional #include in main.c.
+#
+# The placeholder declares NOTHING, deliberately. It used to declare T3's
+# AOS_BOOT_MANIFEST_PUBKEY, and when T10 replaced that single symbol with a
+# tier and two key slots, this recipe was not updated and the RISC-V root
+# task stopped compiling — seven undeclared-identifier errors in rt_main.o.
+# The fix is NOT to paste the new macros in here with plausible values: a
+# tier macro would make boot_announce_trust_anchor() print an authoritative
+# trust anchor on a target that verifies nothing, turning a compile error
+# (fail-closed) into a lying boot banner (the exact overclaim this feature
+# exists to prevent). Instead main.c compiles every consumer of those macros
+# out on !AGENTOS_HAS_PD_BUNDLE and reports AOS_ANCHOR_UNVERIFIED, so there
+# is nothing left here to declare.
+#
+# Which means this file is now a tripwire as well as a placeholder: if a
+# future change makes main.c reference a generated anchor macro outside the
+# AGENTOS_HAS_PD_BUNDLE guard, RISC-V fails to compile again rather than
+# silently reporting a tier it does not run.
 $(PD_MANIFEST_PUBKEY_HDR):
 	@mkdir -p $(BUILD_DIR)
-	@printf '#pragma once\n#include <stdint.h>\n/* RISC-V: no PD bundle on this target; see tools/ld/agentos.ld. Never read. */\nstatic const uint8_t AOS_BOOT_MANIFEST_PUBKEY[32] = { 0 };\n' > $@
+	@printf '#pragma once\n/* No PD bundle on this target (see tools/ld/agentos.ld), so no trust\n * anchor is selected and no key is compiled in. Declares nothing on\n * purpose: main.c guards every consumer on AGENTOS_HAS_PD_BUNDLE and\n * reports AOS_ANCHOR_UNVERIFIED here. See the recipe in\n * kernel/agentos-root-task/Makefile. */\n' > $@
 endif
 
 $(BUILD_DIR)/rt_main.o: $(PD_MANIFEST_PUBKEY_HDR)

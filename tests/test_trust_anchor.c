@@ -150,6 +150,38 @@ int main(void)
     assert(strcmp(n_unknown, n_mok) != 0);
     assert(strcmp(n_unknown, n_hw) != 0);
 
+    /* AOS_ANCHOR_UNVERIFIED — the sentinel reported on architectures that
+     * embed no PD bundle and therefore run no tier at all. Its three
+     * properties are load-bearing and each is asserted here, because each
+     * one falls out of it NOT being a member of aos_anchor_tier_t and a
+     * future "tidy-up" that promoted it to a fifth enum variant would
+     * silently change all three. See its comment in trust_anchor.h.
+     *
+     * 1. It has its own distinct, non-empty name, so an operator reading a
+     *    boot banner or `agentctl inspect` on such a box is told the truth
+     *    ("no PD bundle here") rather than being shown a tier. In
+     *    particular it must NOT read as AOS_ANCHOR_NONE, which would claim
+     *    a development anchor was chosen and that digests are computed. */
+    const char *n_unver = aos_anchor_tier_name(AOS_ANCHOR_UNVERIFIED);
+    assert(n_unver != NULL && n_unver[0] != '\0');
+    assert(strcmp(n_unver, n_none) != 0);
+    assert(strcmp(n_unver, n_vendor) != 0);
+    assert(strcmp(n_unver, n_mok) != 0);
+    assert(strcmp(n_unver, n_hw) != 0);
+    assert(strcmp(n_unver, n_unknown) != 0);
+
+    /* 2. No build may SELECT it as its anchor: aos_anchor_validate()
+     *    rejects it exactly as it rejects any other non-tier value. It is
+     *    a reporting value, not a selectable anchor. */
+    s = base_state(AOS_ANCHOR_UNVERIFIED);
+    assert(aos_anchor_validate(&s) != AOS_ANCHOR_OK);
+
+    /* 3. It is NOT a third non-gating tier. aos_anchor_gates_boot() must
+     *    report gating for it via the fail-closed default. Nothing on the
+     *    bundle-less path consults this, but if anything ever does, the
+     *    safe answer is "refuse", never "permit". */
+    assert(aos_anchor_gates_boot(&s) != 0);
+
     printf("PASS: test_trust_anchor\n");
     return 0;
 }

@@ -107,10 +107,15 @@ int aos_inspect_validate(const aos_inspect_snapshot_t *snap)
     if (snap->version != AOS_INSPECT_VERSION) return AOS_INSPECT_ERR_VERSION;
     if (snap->thread_count > AOS_INSPECT_MAX_THREADS) return AOS_INSPECT_ERR_TOO_MANY;
     /* anchor_tier must be one of the four defined aos_anchor_tier_t values
-     * (NONE=0 .. HARDWARE=3). This mirrors contracts/trust_anchor.h's enum
-     * range without including that header -- see the field comment in
-     * platform/include/platform/inspect.h. */
-    if ((snap->flags & ~AOS_INSPECT_FLAG_KNOWN) || snap->anchor_tier > 3u ||
+     * (NONE=0 .. HARDWARE=3), or AOS_ANCHOR_UNVERIFIED on an architecture
+     * that embeds no PD bundle and so runs no tier at all. Note the
+     * asymmetry with aos_anchor_validate(), which REJECTS the sentinel:
+     * that function validates a SELECTABLE anchor state, and no build may
+     * select "unverified"; this one validates an OBSERVED snapshot, and
+     * "this box runs no tier" is a true observation. See the sentinel's
+     * comment in contracts/trust_anchor.h. */
+    if ((snap->flags & ~AOS_INSPECT_FLAG_KNOWN) ||
+        (snap->anchor_tier > 3u && snap->anchor_tier != AOS_ANCHOR_UNVERIFIED) ||
         snap->mem.reserved || snap->mem.pd_count != snap->thread_count ||
         (snap->mem.ut_total_bytes && snap->mem.ut_used_bytes > snap->mem.ut_total_bytes) ||
         snap->hw.arch > AOS_INSPECT_ARCH_RISCV64) return AOS_INSPECT_ERR_INVALID;

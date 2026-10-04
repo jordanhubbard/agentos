@@ -55,7 +55,7 @@ static void sample_view(aos_inspect_view_t *v)
 
 static int test_abi(void)
 {
-    CHECK(AOS_INSPECT_VERSION == 1u);
+    CHECK(AOS_INSPECT_VERSION == 2u);
     CHECK(AOS_INSPECT_MAX_THREADS == 32u);
     CHECK(sizeof(aos_inspect_memory_t) == 32u);
     CHECK(sizeof(aos_inspect_hardware_t) == 32u);
@@ -91,7 +91,7 @@ static int test_fill_report(void)
 
     n = aos_inspect_format(&snap, buf, sizeof(buf));
     CHECK(n > 0);
-    CHECK(strstr(buf, "inspect.version=1\n") != NULL);
+    CHECK(strstr(buf, "inspect.version=2\n") != NULL);
     CHECK(strstr(buf, "memory.ut_total_bytes=1073741824\n") != NULL);
     CHECK(strstr(buf, "hardware.arch=aarch64\n") != NULL);
     CHECK(strstr(buf, "hardware.virtio_net_ipa=0xa010000\n") != NULL);

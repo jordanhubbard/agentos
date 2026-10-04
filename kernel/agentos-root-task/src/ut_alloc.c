@@ -164,7 +164,23 @@ static uint8_t ut_object_bits(uint32_t type, uint32_t size_bits)
     case seL4_ARCH_LargePageObject:
         return (uint8_t)seL4_ARCH_LargePageBits;
     case seL4_ARCH_IntermediatePTObject:
+#if !defined(__riscv)
+    /*
+     * On RISC-V both of these names expand to seL4_RISCV_PageTableObject
+     * (include/boot_info.h: the VSpace root and an intermediate page table
+     * are the same object type there), so listing both is a duplicate case
+     * label and -Werror rejects it. They are genuinely distinct types on
+     * AArch64 (ARM_PageTableObject vs ARM_VSpaceObject) and x86_64
+     * (X64_PageTableObject vs X64_PML4Object), where both labels are
+     * needed. Same answer either way -- both return seL4_PageTableBits.
+     *
+     * Pre-existing and unrelated to trust anchors; fixed here only because
+     * it is the sole remaining thing between this branch and a RISC-V
+     * build that compiles, which is how the T10 RISC-V regression went
+     * unnoticed in the first place.
+     */
     case seL4_ARM_VSpaceObject:
+#endif
         return (uint8_t)seL4_PageTableBits;
     default:
         return 0u;

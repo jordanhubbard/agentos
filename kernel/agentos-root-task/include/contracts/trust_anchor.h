@@ -58,6 +58,33 @@
  *                        key-source work is a new key source rather
  *                        than a redesign of this contract.
  *
+ *                        READ THIS BEFORE MAKING THIS TIER REACHABLE.
+ *                        AOS_ANCHOR_HARDWARE is the SECOND non-gating
+ *                        tier -- aos_anchor_gates_boot() returns false
+ *                        for it exactly as it does for AOS_ANCHOR_NONE.
+ *                        Today that is harmless only because no build
+ *                        can emit it: xtask's AnchorTier (xtask/src/
+ *                        boot_manifest.rs) has no Hardware variant, so
+ *                        select_anchor() cannot produce tier 3 and the
+ *                        tier is safe by UNREACHABILITY, not by a check.
+ *                        AOS_ANCHOR_NONE, the other non-gating tier, is
+ *                        guarded by an explicit opt-in that must be
+ *                        named literally (AGENTOS_TRUST_ANCHOR=none) and
+ *                        a hard build error otherwise. This tier has
+ *                        none of that discipline, because it has never
+ *                        needed it.
+ *
+ *                        So: whoever adds a Hardware variant to wire up
+ *                        an OTP or firmware-TPM key source inherits a
+ *                        non-gating tier reachable from a build, with no
+ *                        opt-in guarding it. Either give it the same
+ *                        opt-in discipline AOS_ANCHOR_NONE has, or make
+ *                        it gate (which is presumably the point of
+ *                        having hardware-rooted keys at all) -- but do
+ *                        not make it reachable and leave it non-gating.
+ *                        That combination is the silent-downgrade shape
+ *                        this whole contract exists to prevent.
+ *
  * THE SINGLE MOST IMPORTANT RULE IN THIS CONTRACT: aos_anchor_gates_boot()
  * returns false ONLY for AOS_ANCHOR_NONE and AOS_ANCHOR_HARDWARE. It never
  * returns false as a fallback because a key happens to be missing. A
@@ -86,6 +113,42 @@ typedef enum {
     AOS_ANCHOR_MOK      = 2,
     AOS_ANCHOR_HARDWARE = 3,
 } aos_anchor_tier_t;
+
+/*
+ * AOS_ANCHOR_UNVERIFIED — deliberately NOT a member of aos_anchor_tier_t.
+ *
+ * It is the answer to "which tier is this box running under?" on an
+ * architecture that runs no tier at all: RISC-V embeds no PD bundle, so
+ * PD images there are not verified on any tier (docs/TCB.md). Reporting
+ * any real tier on such a box would be a lie in the one place an operator
+ * looks to find out what their machine enforces -- AOS_ANCHOR_NONE in
+ * particular would read as "development anchor", which claims a tier was
+ * chosen and that digests are being computed and reported. Neither is
+ * true there.
+ *
+ * It lives here, rather than as a private constant in the inspect ABI,
+ * for one reason: aos_anchor_tier_name() must stay the SINGLE source of
+ * tier display strings (platform/inspect/inspect_snapshot.c calls it
+ * rather than carrying its own table). A sentinel whose name lived
+ * somewhere else would reintroduce exactly the split that was already
+ * found and removed once.
+ *
+ * Being outside the enum gives the right behaviour from the existing
+ * policy functions with no change to either, which is why it is a
+ * sentinel and not a fifth tier:
+ *   - aos_anchor_validate() REJECTS it (AOS_ANCHOR_ERR_TIER), because no
+ *     build may ever select it as its anchor -- it is a reporting value,
+ *     not a selectable anchor;
+ *   - aos_anchor_gates_boot() returns nonzero (gating) for it, via the
+ *     fail-closed default for unknown tiers. It is never consulted on the
+ *     bundle-less path, and if it ever were, refusing is the safe answer.
+ * Do NOT "fix" either of those by special-casing this value.
+ *
+ * The value is far outside the tier range on purpose: a future tier can
+ * be added at 4 without colliding, and an all-ones field is unmistakably
+ * not a tier index.
+ */
+#define AOS_ANCHOR_UNVERIFIED 0xFFFFFFFFu
 
 /* A single key slot from a key source. `present` is a boolean (0/1); the
  * key bytes are not read or interpreted at all at this layer. */

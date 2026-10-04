@@ -5801,6 +5801,15 @@ fn wait_for_x86_vtx_proof(
     Ok(format!("{marker} (x86 VMX/EPT entry qualification)"))
 }
 
+/// Mirrors `AOS_INSPECT_VERSION` in platform/include/platform/inspect.h.
+///
+/// Hand-synced, which is safe here because drift fails loudly rather than
+/// silently: cc_pd rejects any request whose version is not the compiled-in
+/// one, so a header bump without a bump here makes every inspect call return
+/// the error path and `make test-inspect` fails on the first assertion. It is
+/// also asserted directly, as the fourth word of the reply header below.
+const AOS_INSPECT_VERSION: u32 = 2;
+
 /// Ask a RUNNING system which trust anchor it booted under, and require the
 /// answer to be the one the image was actually built with.
 ///
@@ -5823,7 +5832,7 @@ fn verify_reported_anchor_tier(
 ) -> anyhow::Result<String> {
     let snapshot = {
         let mut client = CcClient::connect(socket)?;
-        client.call(0x261a, 1, 0, 0, &[])?
+        client.call(0x261a, AOS_INSPECT_VERSION, 0, 0, &[])?
     };
     let reported = rd32(&snapshot.shmem, 76);
     anyhow::ensure!(
@@ -5862,18 +5871,23 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
     let first;
     {
         let mut client = CcClient::connect(socket)?;
-        for version in [0, 2, u32::MAX] {
+        for version in [
+            0,
+            AOS_INSPECT_VERSION - 1,
+            AOS_INSPECT_VERSION + 1,
+            u32::MAX,
+        ] {
             let bad = client.call(0x261a, version, 0, 0, &[])?;
             anyhow::ensure!(
                 bad.mr == [9, 0, 0, 0] && bad.shmem.iter().all(|b| *b == 0),
                 "inspect invalid version returned data or wrong error"
             );
         }
-        let bad = client.call(0x261a, 1, 1, 0, &[])?;
+        let bad = client.call(0x261a, AOS_INSPECT_VERSION, 1, 0, &[])?;
         anyhow::ensure!(bad.mr == [9, 0, 0, 0], "inspect accepted reserved argument");
-        first = client.call(0x261a, 1, 0, 0, &[])?;
+        first = client.call(0x261a, AOS_INSPECT_VERSION, 0, 0, &[])?;
         anyhow::ensure!(
-            first.mr == [0, 1488, 7, 1],
+            first.mr == [0, 1488, 7, AOS_INSPECT_VERSION],
             "inspect header: {:?}",
             first.mr
         );
@@ -5931,7 +5945,7 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
     }
     println!("{report}");
     let mut client = CcClient::connect(socket)?;
-    let second = client.call(0x261a, 1, 0, 0, &[])?;
+    let second = client.call(0x261a, AOS_INSPECT_VERSION, 0, 0, &[])?;
     anyhow::ensure!(
         first.mr == second.mr && first.shmem == second.shmem,
         "boot snapshot changed after reconnect and intervening requests"

@@ -104,6 +104,12 @@ const char *aos_anchor_tier_name(uint32_t tier)
         return "machine-owner";
     case AOS_ANCHOR_HARDWARE:
         return "hardware (not available)";
+    case AOS_ANCHOR_UNVERIFIED:
+        /* Not a tier: this architecture embeds no PD bundle, so no tier
+         * runs and PD images are not verified at all. See the sentinel's
+         * comment in contracts/trust_anchor.h for why this string lives
+         * here with the real tier names rather than in the inspect ABI. */
+        return "unverified (no PD bundle on this target)";
     default:
         return "unknown";
     }

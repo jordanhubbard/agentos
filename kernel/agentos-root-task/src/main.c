@@ -802,6 +802,33 @@ static void dbg_hex(seL4_Word v);
  * deferring validation until the UART is live, where the refusal would be
  * printed but a few more boot steps would already have run first.
  */
+#if !AGENTOS_HAS_PD_BUNDLE
+/*
+ * Bundle-less architectures (RISC-V): there is no PD bundle, no manifest,
+ * and therefore no trust anchor. The generated boot_manifest_pubkey.h
+ * carries no tier or key macros here, because there is no selection to
+ * record -- see the placeholder recipe in kernel/agentos-root-task/
+ * Makefile, and docs/TCB.md on PD images not being verified on this
+ * target on any tier.
+ *
+ * The state is filled with AOS_ANCHOR_UNVERIFIED so that every consumer
+ * that reports it -- the boot banner below and the inspect snapshot --
+ * says "no tier runs here" rather than naming one. Note what is NOT done:
+ * aos_anchor_validate() is not called, because AOS_ANCHOR_UNVERIFIED is
+ * deliberately not a valid anchor state and validating it would refuse a
+ * boot that is legitimately unverified on this architecture. Nothing on
+ * this path consults aos_anchor_gates_boot() either; if anything ever
+ * did, it would get "gating" from the fail-closed default.
+ */
+static int boot_init_trust_anchor(void)
+{
+    g_trust_anchor_state.version        = AOS_ANCHOR_VERSION;
+    g_trust_anchor_state.tier           = AOS_ANCHOR_UNVERIFIED;
+    g_trust_anchor_state.vendor.present = 0u;
+    g_trust_anchor_state.mok.present    = 0u;
+    return 1;
+}
+#else
 static int boot_init_trust_anchor(void)
 {
     g_trust_anchor_state.version = AOS_ANCHOR_VERSION;
@@ -825,6 +852,7 @@ static int boot_init_trust_anchor(void)
 
     return 1;
 }
+#endif /* AGENTOS_HAS_PD_BUNDLE */
 
 /*
  * boot_announce_trust_anchor — print the UNMISSABLE trust anchor banner.
@@ -834,9 +862,26 @@ static int boot_init_trust_anchor(void)
  * — so an operator reading the boot log, not just a running system's
  * inspect snapshot, can name the tier: vendor, machine-owner, or
  * development (not gating).
+ *
+ * On a bundle-less architecture it says so instead of naming a tier. The
+ * banner's one job is telling an operator what THIS box enforces, so
+ * printing any tier on a target that verifies nothing would be a lie in
+ * precisely the place the lie does most damage. See AOS_ANCHOR_UNVERIFIED
+ * in contracts/trust_anchor.h.
  */
 static void boot_announce_trust_anchor(void)
 {
+#if !AGENTOS_HAS_PD_BUNDLE
+    dbg_puts("[rt] ================================================================\n");
+    dbg_puts("[rt] TRUST ANCHOR: ");
+    dbg_puts(aos_anchor_tier_name(g_trust_anchor_state.tier));
+    dbg_puts(" -- this target embeds no PD bundle, so PD images are NOT\n"
+             "[rt]                VERIFIED here, on any tier. No digest is computed and\n"
+             "[rt]                no signature is checked: PDs load via the seL4 extra\n"
+             "[rt]                BootInfo path. Nothing on this box establishes image\n"
+             "[rt]                integrity -- see docs/TCB.md.\n");
+    dbg_puts("[rt] ================================================================\n");
+#else
     dbg_puts("[rt] ================================================================\n");
     dbg_puts("[rt] TRUST ANCHOR: ");
     dbg_puts(aos_anchor_tier_name(g_trust_anchor_state.tier));
@@ -848,6 +893,7 @@ static void boot_announce_trust_anchor(void)
                    "[rt]                absent or invalid manifest is still refused on every\n"
                    "[rt]                tier -- there is nothing to compute or compare without one.\n");
     dbg_puts("[rt] ================================================================\n");
+#endif
 }
 
 /*
@@ -897,6 +943,22 @@ static seL4_Word manifest_size(void)
  * already printed a `[rt]` diagnostic naming the reason; the caller MUST
  * NOT spawn any PD in that case, for every trust anchor tier.
  */
+#if !AGENTOS_HAS_PD_BUNDLE
+/*
+ * Bundle-less architectures have no manifest and no compiled-in keys, so
+ * there is nothing for this function to check. Its one caller is guarded
+ * by `bundle_size() > 0`, which is never true here, so this is dead code
+ * on this architecture -- but it returns 0 (refuse) rather than 1, so if
+ * a future change ever does reach it, the result is a refused boot and
+ * not an unverified spawn.
+ */
+static int boot_verify_manifest(void)
+{
+    dbg_puts("[rt] boot manifest check reached on a target with no PD bundle:"
+             " refusing to start any PD\n");
+    return 0;
+}
+#else
 static int boot_verify_manifest(void)
 {
     seL4_Word mlen = manifest_size();
@@ -963,6 +1025,7 @@ static int boot_verify_manifest(void)
 #endif
     return 1;
 }
+#endif /* AGENTOS_HAS_PD_BUNDLE */
 
 /*
  * boot_verify_pd_digest — check one PD's ELF bytes against the manifest

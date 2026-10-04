@@ -1748,10 +1748,12 @@ test-image-verify:
 #                         the PD; agentOS boot complete never appears. (1+2
 #                         together are T3's behaviour re-proven through the
 #                         tier machinery rather than an unconditional check.)
-#   3. THE PROBE        — the SAME tampered image under the development
-#                         anchor emits the digest mismatch naming the same PD
-#                         AND boots to completion. Both assertions, not
-#                         either: completion alone would also pass against an
+#   3. THE PROBE        — the SAME TAMPER, applied to a separate build under
+#                         the development anchor (each probe builds its own
+#                         image; these are two image files, not one), emits
+#                         the digest mismatch naming the SAME PD and boots to
+#                         completion. Both assertions, not either: completion
+#                         alone would also pass against an
 #                         image that skipped verification entirely (the
 #                         quarantined VIBE_VERIFY_MODE shape in
 #                         services/legacy-pds/verify.c), and the mismatch
