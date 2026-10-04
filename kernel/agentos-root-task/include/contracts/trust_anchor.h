@@ -133,9 +133,14 @@ typedef enum {
  * somewhere else would reintroduce exactly the split that was already
  * found and removed once.
  *
- * Being outside the enum gives the right behaviour from the existing
- * policy functions with no change to either, which is why it is a
- * sentinel and not a fifth tier:
+ * It gets the right behaviour from the existing policy functions with no
+ * change to either, which is why it is a sentinel and not a fifth tier.
+ * Be precise about WHY, because the obvious reading is wrong: both policy
+ * switches are over uint32_t with a default: arm, so merely promoting this
+ * to an enum variant would change nothing by itself. What the behaviour
+ * actually rests on is that NEITHER SWITCH HAS A case LABEL FOR IT, so
+ * both fall to their fail-closed default:. Adding one is the hazard --
+ * see "Do NOT special-case this value" below. The properties are:
  *   - aos_anchor_validate() REJECTS it (AOS_ANCHOR_ERR_TIER), because no
  *     build may ever select it as its anchor -- it is a reporting value,
  *     not a selectable anchor;

@@ -152,10 +152,13 @@ int main(void)
 
     /* AOS_ANCHOR_UNVERIFIED — the sentinel reported on architectures that
      * embed no PD bundle and therefore run no tier at all. Its three
-     * properties are load-bearing and each is asserted here, because each
-     * one falls out of it NOT being a member of aos_anchor_tier_t and a
-     * future "tidy-up" that promoted it to a fifth enum variant would
-     * silently change all three. See its comment in trust_anchor.h.
+     * properties are load-bearing and each is asserted here. Each one falls
+     * out of NEITHER policy switch having a case label for this value, so
+     * both reach their fail-closed default: arm. Note the precise hazard:
+     * both switches are over uint32_t, so promoting this to a fifth enum
+     * variant would NOT by itself change anything -- what would silently
+     * change all three is someone adding a case label for it. See its
+     * comment in trust_anchor.h.
      *
      * 1. It has its own distinct, non-empty name, so an operator reading a
      *    boot banner or `agentctl inspect` on such a box is told the truth
