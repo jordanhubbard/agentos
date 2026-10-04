@@ -2622,7 +2622,8 @@ void root_task_main(const seL4_BootInfo *bi)
      * seL4 hands out device untypeds with a bump watermark, and QEMU virt
      * RISC-V exposes its whole 0x10000000 device region as ONE untyped, so
      * every retype in it must go in ascending physical address.  The host
-     * NIC (0x10001000) sits below the host block transport (0x10002000),
+     * NIC (0x10002000, virtio-mmio-bus.1) sits below the host block
+     * transport (0x10003000, virtio-mmio-bus.2),
      * so taking block first moved the watermark past the NIC and the NIC
      * retype then failed with seL4_InvalidArgument -- net_pd got no MMIO
      * and never started.  AArch64 virt's block page (0x0A001000) is already

@@ -133,10 +133,39 @@ HOST_TEST_SEL4_SDK := $(if $(wildcard $(SEL4_SDK)/board),$(SEL4_SDK),$(firstword
 HOST_X86_SEL4_INCLUDE := $(HOST_TEST_SEL4_SDK)/board/x86_64_generic/release/include
 
 # ─── BOARD_NAME: selects a boards/<name>/board.mk configuration ──────────────
-# Derive from TARGET_ARCH when not explicitly provided.  Override with
+# Override with
 #   make BOARD_NAME=intel-nuc build
 #   make BOARD_NAME=rpi5 build
+#
+# BOARD -> BOARD_NAME, the inverse of each board.mk's BOARD_NAME ->
+# MICROKIT_BOARD mapping.  It has to live here, ahead of the -include below,
+# because board.mk is found at boards/$(BOARD_NAME)/board.mk: a BOARD_NAME
+# derived wrongly selects the wrong board.mk and that file can never correct
+# it.  Deriving BOARD_NAME from TARGET_ARCH alone (which is what this did) and
+# BOARD separately is what let `make build BOARD=qemu_virt_riscv64` compile a
+# riscv64 root task -- ARCH is derived from BOARD -- against the *aarch64*
+# system TOML, because BOARD_NAME fell back to qemu-aarch64 from the
+# config.yaml default TARGET_ARCH.  The image's descriptor and its PD bundle
+# then disagreed with nothing in the build saying so; it surfaced only as
+# "[rt] pd elf <name> NOT FOUND" at boot, and only if someone booted it.
+#
+# x86_64_generic is deliberately mapped to qemu-x86_64, not intel-nuc: both
+# boards/ entries name that Microkit board, and the QEMU one is the default
+# this Makefile has always picked for TARGET_ARCH=x86_64.  Reaching intel-nuc
+# still requires an explicit BOARD_NAME=intel-nuc, which the consistency check
+# further down accepts because it compares architectures, not names.
+_BOARD_NAME_FOR_qemu_virt_aarch64  := qemu-aarch64
+_BOARD_NAME_FOR_qemu_virt_riscv64  := qemu-riscv64
+_BOARD_NAME_FOR_x86_64_generic     := qemu-x86_64
+_BOARD_NAME_FOR_x86_64_generic_vtx := qemu-x86_64-vtx
+_BOARD_NAME_FOR_rpi4b_4gb          := rpi5
+
 ifndef BOARD_NAME
+  ifdef BOARD
+    BOARD_NAME := $(_BOARD_NAME_FOR_$(subst -,_,$(BOARD)))
+  endif
+endif
+ifeq ($(strip $(BOARD_NAME)),)
   ifeq ($(TARGET_ARCH),aarch64)
     BOARD_NAME := qemu-aarch64
   else ifeq ($(TARGET_ARCH),x86_64)
@@ -176,9 +205,25 @@ ifeq ($(BOARD),qemu_virt_aarch64)
   ARCH := aarch64
 else ifeq ($(BOARD),$(filter $(BOARD),x86_64_generic x86_64_generic_vtx))
   ARCH := x86_64
-else
+else ifeq ($(BOARD),qemu_virt_riscv64)
   ARCH := riscv64
   BIOS ?= /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
+else
+  # Any board outside the QEMU set (rpi4b_4gb, …): board.mk is authoritative.
+  # This used to fall through to ARCH := riscv64, so a BOARD_NAME=rpi5 build
+  # compiled an aarch64 board as riscv64.
+  ARCH := $(TARGET_ARCH)
+endif
+
+# Board and board configuration must name the same architecture.  ARCH comes
+# from BOARD; TARGET_ARCH comes from the selected boards/<name>/board.mk.  They
+# can only differ if BOARD and BOARD_NAME were set to different machines, which
+# is precisely the silent descriptor/bundle mismatch described above — so say
+# so, loudly, at parse time rather than at boot.
+ifneq ($(strip $(ARCH)),$(strip $(TARGET_ARCH)))
+$(error BOARD=$(BOARD) is $(ARCH) but BOARD_NAME=$(BOARD_NAME) is \
+$(TARGET_ARCH); they must name the same machine. Set BOARD alone — BOARD_NAME \
+is derived from it — or set both consistently)
 endif
 
 SEL4_PROFILE ?= release
@@ -860,9 +905,13 @@ gate-guest-io:
 	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
-gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-image-verify test-entropy-unavailable
-gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-cap-lending
-gate: test-riscv64
+# One rule, one list.  This was briefly three `gate:` lines; GNU make unions
+# prerequisites across rules for a recipe-less target, so nothing was dropped,
+# but editing one line and not the others would have silently removed a proof
+# with no error.  Add new proofs here.
+gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io \
+      test-cc-envelope test-authority test-inspect test-image-verify \
+      test-entropy-unavailable test-cap-lending test-riscv64
 
 # test-riscv64 — the riscv64 PD-set proof.
 #
@@ -886,7 +935,19 @@ gate: test-riscv64
 test-riscv64:
 	@echo ""
 	@echo "── [GATE] TARGET/QEMU test: riscv64 (GUEST_OS=none, exact PD count) ──"
-	@cargo xtask qemu-test --board qemu_virt_riscv64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT)
+	@if [ ! -d "$(SEL4_SDK)/board/qemu_virt_riscv64" ]; then \
+		echo ""; \
+		echo "  !! riscv64 proof NOT RUN -- nothing here proves anything about riscv64."; \
+		echo "  !! The SDK at $(SEL4_SDK)"; \
+		echo "  !! carries no qemu_virt_riscv64 board, so this target cannot build."; \
+		echo "  !! This is the Task 1 gap: tools/sdk/candidate.mk does not list"; \
+		echo "  !! qemu_virt_riscv64 in --boards, so no riscv64 kernel is produced."; \
+		echo "  !! Until that lands, run it against a local SDK that has the board:"; \
+		echo "  !!     make test-riscv64 SEL4_SDK_VERSION=2.1.0"; \
+		echo ""; \
+		exit 0; \
+	fi; \
+	cargo xtask qemu-test --board qemu_virt_riscv64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
