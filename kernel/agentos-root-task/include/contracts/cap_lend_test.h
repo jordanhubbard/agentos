@@ -14,7 +14,8 @@
  * delete-receive-slot-before-SetCapReceivePath pattern from
  * net_virt.c:567-570. Task 3 (see docs/superpowers/plans/
  * 2026-10-04-t5-capability-lending.md) builds the target proof -- borrower
- * use succeeding, then faulting after aos_cap_lend_revoke -- on this pair.
+ * use succeeding, revocation faulting it, and a sub-delegated copy dying
+ * too -- on this pair.
  *
  * Slot numbers below are chosen in the range above the well-known
  * PD_CNODE_SLOT_* assignments (system_desc.h, which top out at 42) and
@@ -78,6 +79,72 @@
 #define AOS_CAP_LEND_FRAME_VA            0x30000000UL
 
 /*
+ * ── Task 3 target-proof additions ───────────────────────────────────────
+ *
+ * A synchronisation pair of Notification objects (the same mechanism
+ * tests/platform/framebuffer_client_pd.c uses for its peer rendezvous).
+ * Each slot name below is shared between both PDs' descriptors in
+ * system_desc_aarch64.c, but the root task grants a DIFFERENT,
+ * non-overlapping right to each side (see main.c's AGENTOS_CAP_LEND_TEST
+ * provisioning block) -- Wait-only to the receiver, Signal-only to the
+ * sender -- so neither side can forge the other's half of the handshake.
+ *
+ * Without this pair, nothing coordinates the two PDs: the lender could
+ * revoke before the borrower finishes using (or sub-delegating) the loan,
+ * making "the borrower faults after revoke" true by race rather than by
+ * revocation; and the borrower could re-probe the capability before the
+ * revoke has actually happened, making Probes 2/3 pass on a timing fluke
+ * rather than on the kernel having actually torn anything down. The
+ * handshake is exactly two one-shot signals:
+ *
+ *   1. borrower -> lender on AOS_CAP_LEND_DONE_NTFN_SLOT: "I've used the
+ *      loan (Probe 1), minted my own sub-delegated copy of it, and
+ *      confirmed that copy is alive (Probe 3's precondition) -- you may
+ *      revoke now."
+ *   2. lender -> borrower on AOS_CAP_LEND_REVOKED_NTFN_SLOT: "revoked --
+ *      your next access, and your sub-delegate's, must now fail."
+ *
+ * The lender MUST NOT call aos_cap_lend_revoke() before receiving signal
+ * 1, and the borrower MUST NOT re-probe the capability before receiving
+ * signal 2 -- see lender_pd.c / borrower_pd.c for exactly where each wait
+ * sits in the control flow.
+ */
+#define AOS_CAP_LEND_DONE_NTFN_SLOT          51u
+#define AOS_CAP_LEND_REVOKED_NTFN_SLOT       52u
+
+/* Slot in the borrower's own CNode for the capability it sub-delegates
+ * from its received derivative (Probe 3: a further-derived copy must die
+ * when the lender revokes the ORIGINAL, not just the direct loan). Minted
+ * via aos_cap_lend() from AOS_CAP_LEND_BORROWER_RECV_SLOT, same as any
+ * other lend -- the borrower acting as its own (test-only) further
+ * lender, which is exactly the sub-delegation this probe exists to catch
+ * if revocation ever missed it. */
+#define AOS_CAP_LEND_SUBDELEGATE_SLOT        53u
+
+/* Scratch slot the borrower uses twice to test whether
+ * AOS_CAP_LEND_SUBDELEGATE_SLOT is still a live capability: seL4_CNode_Copy
+ * from it into this slot, then immediately seL4_CNode_Delete this slot
+ * again. Before revoke this must succeed (proving the sub-delegate was
+ * ever alive, mirroring Probe 1's "prove it worked first" discipline);
+ * after revoke this must fail -- a kernel-enforced error on an already-
+ * deleted capability, not a self-report. Pure CSpace check, no VA or page
+ * table involved. */
+#define AOS_CAP_LEND_SUBDELEGATE_PROBE_SLOT  54u
+
+/* Badge the borrower mints its sub-delegated copy with. Distinct from
+ * AOS_CAP_LEND_BADGE (the lender's own mint) purely so a boot-log/ledger
+ * reader can tell the two mints apart; aos_cap_lend()'s subsetting check
+ * does not care what badge is requested. */
+#define AOS_CAP_LEND_SUBDELEGATE_BADGE        0xCA9Du
+
+/* Badge the root task mints cap_lend_borrower's dedicated fault endpoint
+ * with (ROOT_PROBE_BADGE in main.c's AGENTOS_CAP_LEND_TEST branch of the
+ * ROOT_FAULT_PROBE chain) -- distinct from every other image variant's
+ * probe badge so a fault from an unrelated source can never satisfy this
+ * oracle by coincidence. */
+#define AOS_CAP_LEND_PROBE_BADGE               0xCA5Eu
+
+/*
  * Greppable boot-log markers, printed via serial_log (serial_log.h) over
  * the normal serial-contract shared page both PDs are provisioned with
  * (same channel native_rust_client uses for boot diagnostics -- see
@@ -106,3 +173,56 @@
     "[cap-lend-borrower] FAIL: map received derivative\n"
 #define AOS_CAP_LEND_MARKER_BORROWER_FAIL_VERIFY \
     "[cap-lend-borrower] FAIL: pattern mismatch\n"
+
+/*
+ * Task 3 target-proof markers. Probe 1 is AOS_CAP_LEND_MARKER_BORROWER_OK
+ * above (the loan was actually usable, exact bytes). These cover Probes 2
+ * and 3 -- revocation withdrawing both the direct loan and a sub-delegated
+ * copy -- plus the non-vacuity evidence Step 4 of the plan requires: if
+ * revoke is ever neutered, the FAIL markers below are what proves it,
+ * instead of a bare timeout that could mean anything.
+ */
+#define AOS_CAP_LEND_MARKER_BORROWER_FAIL_SUBDELEGATE \
+    "[cap-lend-borrower] FAIL: aos_cap_lend subdelegate mint\n"
+#define AOS_CAP_LEND_MARKER_BORROWER_FAIL_SUBDELEGATE_PRECHECK \
+    "[cap-lend-borrower] FAIL: sub-delegated copy not alive before revoke\n"
+/* Probe 3 precondition: the sub-delegated copy exists and is demonstrably
+ * alive BEFORE revoke -- mirrors Probe 1's "prove it worked first"
+ * discipline so "the sub-delegate is dead" means something afterward. */
+#define AOS_CAP_LEND_MARKER_BORROWER_SUBDELEGATE_OK \
+    "[cap-lend-borrower] OK: sub-delegated copy minted and alive\n"
+
+#define AOS_CAP_LEND_MARKER_LENDER_FAIL_REVOKE \
+    "[cap-lend-lender] FAIL: aos_cap_lend_revoke\n"
+/* Probe 2 precondition on the lender's side: the revoke call itself
+ * returned success. (The borrower's side of Probe 2's pass evidence is
+ * NOT a marker from either test PD at all -- see
+ * AOS_CAP_LEND_MARKER_ROOT_FAULT_VERIFIED below.) */
+#define AOS_CAP_LEND_MARKER_LENDER_REVOKE_OK \
+    "[cap-lend-lender] OK: revoked original\n"
+
+/* Probe 3 pass: the sub-delegated copy is dead too -- a kernel-enforced
+ * seL4_CNode_Copy failure on a capability that was alive moments earlier,
+ * not a self-report. */
+#define AOS_CAP_LEND_MARKER_BORROWER_SUBDELEGATE_DEAD_OK \
+    "[cap-lend-borrower] OK: sub-delegated copy dead after revoke\n"
+/* Probe 3 non-vacuity evidence: would only appear if revoke failed to tear
+ * down a sub-delegation (e.g. Step 4's neutered-revoke run). */
+#define AOS_CAP_LEND_MARKER_BORROWER_FAIL_SUBDELEGATE_ALIVE \
+    "[cap-lend-borrower] FAIL: sub-delegated copy still alive after revoke\n"
+
+/* Probe 2 non-vacuity evidence: would only appear if the borrower's direct
+ * read of the full pattern succeeded after the lender's revoke call --
+ * i.e. revocation did not actually withdraw the loan. In the normal
+ * (revoke genuinely works) case, execution never reaches this check: the
+ * read faults on its very first byte and the PD never returns here. */
+#define AOS_CAP_LEND_MARKER_BORROWER_STILL_READABLE \
+    "[cap-lend-borrower] WARN: read succeeded after revoke call (non-vacuity check)\n"
+
+/* Probe 2 pass, emitted by the ROOT TASK (main.c's ROOT_FAULT_PROBE /
+ * ROOT_PROBE_* block), never by the borrower itself: a successful fault
+ * never returns control to the faulting PD, so the pass evidence has to
+ * come from the kernel-enforced fault path the root task observes
+ * independently, not a self-report from the PD that just got cut off. */
+#define AOS_CAP_LEND_MARKER_ROOT_FAULT_VERIFIED \
+    "[cap-lend-probe] OK: borrower access faulted after revoke\n"

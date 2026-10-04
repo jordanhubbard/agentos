@@ -19,11 +19,17 @@
  *   3. Transfer that derivative to cap_lend_borrower by IPC capability
  *      transfer over the shared AOS_CAP_LEND_XFER_EP endpoint.
  *
- * This file provisions and exercises the mint + transfer steps (Task 2).
- * The synchronized revoke-then-fault proof, and the sub-delegation check,
- * are Task 3's target proof and are driven externally (not from this PD's
- * own unsupervised boot-time control flow, which has no way to learn when
- * the borrower has finished using its loan).
+ * This file provisions and exercises the mint + transfer steps (Task 2),
+ * plus Task 3's target proof: after transferring the loan, this PD waits
+ * on AOS_CAP_LEND_DONE_NTFN_SLOT for the borrower to signal that it has
+ * used the loan (Probe 1) and sub-delegated and verified its own copy of
+ * it (Probe 3's precondition), THEN calls aos_cap_lend_revoke() on its own
+ * original, THEN signals AOS_CAP_LEND_REVOKED_NTFN_SLOT so the borrower
+ * knows it is now safe (and necessary) to observe that both its loan and
+ * its sub-delegated copy are dead. See cap_lend_test.h's doc comment on
+ * those two slots for why this handshake exists: without it, revocation
+ * could race the borrower's use, making either passing or failing probes
+ * mean nothing.
  */
 #include <sel4/sel4.h>
 
@@ -117,9 +123,41 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
 
     serial_log_puts(&log_channel, AOS_CAP_LEND_MARKER_LENDER_OK);
 
-    /* Loan transferred; this PD's part of the Task 2 demonstration is
-     * done. Revocation is exercised by Task 3's externally-driven proof,
-     * which can call aos_cap_lend_revoke(AOS_CAP_LEND_FRAME_SLOT) through
-     * whatever control channel that proof wires up. Park rather than spin. */
+    /*
+     * Task 3: wait for the borrower to finish using the loan before
+     * revoking it. Without this wait, aos_cap_lend_revoke() below could
+     * run before the borrower has even mapped the derivative, which would
+     * make "the borrower faults after revoke" true for the wrong reason
+     * (the borrower never got to use it) instead of because revocation
+     * actually withdrew a working loan -- exactly the vacuous-proof trap
+     * Probe 1 and this handshake both exist to avoid.
+     */
+    seL4_Word done_badge = 0u;
+    seL4_Wait(AOS_CAP_LEND_DONE_NTFN_SLOT, &done_badge);
+
+    /*
+     * Revoke the ORIGINAL -- never the derivative at AOS_CAP_LEND_DERIVED_SLOT
+     * -- so the kernel tears down the whole derivation subtree: the
+     * derivative this PD minted, the copy the borrower received over IPC,
+     * and anything the borrower further sub-delegated from it. See
+     * cap_lend.h / cap_lend.c for why revoking the derivative instead would
+     * only remove ITS descendants and leave the original (and the
+     * borrower's sub-delegation) fully intact.
+     */
+    int revoke_err = aos_cap_lend_revoke(AOS_CAP_LEND_FRAME_SLOT);
+    if (revoke_err != AOS_CAP_LEND_OK) {
+        serial_log_puts(&log_channel, AOS_CAP_LEND_MARKER_LENDER_FAIL_REVOKE);
+        park(xfer_ep);
+    }
+    serial_log_puts(&log_channel, AOS_CAP_LEND_MARKER_LENDER_REVOKE_OK);
+
+    /*
+     * Tell the borrower revocation has happened. The borrower MUST NOT
+     * re-probe its capability before observing this signal -- otherwise a
+     * probe run before the revoke actually executed could pass (or fail)
+     * by scheduling luck rather than by what seL4_CNode_Revoke did.
+     */
+    seL4_Signal(AOS_CAP_LEND_REVOKED_NTFN_SLOT);
+
     park(xfer_ep);
 }

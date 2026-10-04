@@ -682,7 +682,11 @@ const system_desc_t system_desc_aarch64 = {
             .stack_size = 0x4000u,
             .cnode_size_bits = 8u,
             .priority = 199u,
-            .self_svc_id = 0u,
+            /* Distinct self_svc_id (not 0u, unlike the lender) so main.c's
+             * ROOT_FAULT_PROBE block can mint exactly this PD a badged fault
+             * endpoint -- Task 3's Probe 2 oracle, which must fire for this
+             * PD's post-revoke access and nothing else. */
+            .self_svc_id = SVC_ID_CAP_LEND_BORROWER,
             .init_ep_count = 2u,
             .init_eps = {
                 { SVC_ID_CAP_LEND_XFER, AOS_CAP_LEND_XFER_EP_SLOT },

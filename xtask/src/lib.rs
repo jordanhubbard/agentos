@@ -81,6 +81,10 @@ pub struct TestArgs {
     /// Boot a no_std Rust PD and verify its IPC contract from a separate C PD.
     #[arg(long, conflicts_with_all = ["serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe"])]
     pub assert_native_rust: bool,
+    /// T5 capability lending: borrower uses the loan, revocation faults it,
+    /// and a sub-delegated copy dies too (test image only).
+    #[arg(long, conflicts_with_all = ["assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "assert_native_rust", "assert_native_guest", "assert_framebuffer", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "cc_envelope_probe", "authority_probe"])]
+    pub assert_cap_lending: bool,
     /// Qualify framebuffer queue transactions from two isolated native clients.
     #[arg(long, conflicts_with_all = ["assert_native_rust", "assert_native_guest", "assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "assert_vmx_exit"])]
     pub assert_framebuffer: bool,
