@@ -1561,8 +1561,22 @@ untyped pool root granted it at boot, mints rights-reduced derivatives of
 capabilities it already holds into the child's CSpace, and starts it only after
 every endowment succeeded. `make test-child-spawn` verifies on target that the
 child uses an endowed capability, faults on one the parent withheld, does not
-start at all when an endowment fails, and appears in the authority page with the
-endowed kinds.
+start at all when an endowment fails, and is named with the endowed kinds in the
+delegating domain's own endowment report.
+
+That report is delegator-side, not root-side. The parent keeps an
+endowment-delta ledger in its own memory (`platform/endow_ledger.h`), appends to
+it on each successful mint, renders it with T4's authority formatter and writes
+it to the serial log; the probe asserts that log line. It is **not** an entry in
+the root-published authority page that `MSG_CC_AUTHORITY` and `make
+test-authority` read. No channel exists from a protection domain into that page,
+and none should: it is published read-only precisely so no domain can write its
+own claims into root's accounting (`make test-inspect` proves the read-only
+property). A runtime-created child therefore does not appear in `agentctl
+authority` output. The consequence is that a delegator's report is only as
+available as the delegator chooses to make it — visibility here depends on the
+delegating domain, which is the honest position given that seL4 offers root no
+way to enumerate what a domain holds.
 
 Endowment is a mint, not a loan. It does not reuse the T5 lending path above:
 `aos_cap_lend_revoke()` revokes the lender's own original, which would strip
@@ -1575,12 +1589,13 @@ Scope and limits. This creates a domain at run time; it does not load code at
 run time. The child's ELF comes from the bundle verified at boot, so image
 verification is unaffected. The subsetting invariant -- no domain holds authority
 its parent did not hold -- is enforced by seL4 itself, since a parent cannot mint
-from a capability it does not possess; the authority page *reports* the
+from a capability it does not possess. The delegator's ledger *reports* the
 endowment but cannot verify it, because seL4 exposes no capability-enumeration
-syscall. The report comes from a delegator-local endowment ledger
-(`platform/endow_ledger.h`), merged into the T4 authority snapshot through the
-runtime-delegation path `platform/authority.h` already describes; it records what
-the parent says it granted and cannot read kernel state back. A parent can create
+syscall: it records what the parent says it granted and cannot read kernel state
+back. It uses T4's `aos_authority_snapshot_t` shape and formatter -- that is a
+reuse of the reporting vocabulary `platform/authority.h` defines, not an entry
+in the page root publishes, and nothing verifies a delegator's claim against the
+kernel. A parent can create
 children only from the pool it was granted; exhaustion is a resource limit, not
 an authority boundary. The parent/child pair exists only in the test image; no
 default-image PD creates children.

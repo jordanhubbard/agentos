@@ -541,6 +541,8 @@ jobs:
           echo "   - entropy_pd reachable; reports UNAVAILABLE (no device wired"
           echo "     on QEMU virt) and validates over-length requests"
           echo "   - T5 capability lending (loan used, revoked, sub-delegate dies too)"
+          echo "   - T6 hierarchical delegation (child uses its endowment, faults on a"
+          echo "     withheld page, never starts when an endowment fails, delegator reports it)"
           echo "GUEST_OS=none is a stub VMM: this proves PD load and root-task"
           echo "parking only. Guest I/O is proven by the guest proof jobs; the"
           echo "os-claim-summary job combines them."

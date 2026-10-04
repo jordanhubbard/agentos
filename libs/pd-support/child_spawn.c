@@ -74,7 +74,20 @@ void aos_pt_scratch_init(aos_pt_scratch_t *sc, seL4_CPtr pool_ut,
     sc->limit_slot      = base_slot + count;
 }
 
-/* Claim the next free scratch slot, or seL4_CapNull if none remain. */
+/*
+ * Claim the next free scratch slot, or seL4_CapNull if none remain.
+ *
+ * This overloads seL4_CapNull (slot 0) as the exhaustion sentinel, so a
+ * scratch range BASED AT SLOT 0 would make its own first slot
+ * indistinguishable from "none left" and retype_one() would report
+ * seL4_NotEnoughMemory for a perfectly good allocation. Slot 0 is the null
+ * capability in every CSpace in this tree and no caller can usefully stage
+ * objects there, so the constraint costs nothing -- but it is a real
+ * precondition on req->scratch_slot and is stated here rather than left
+ * implicit. contracts/child_spawn_contract.h's _Static_assert block keeps
+ * AOS_CHILD_SPAWN_SCRATCH_BASE above every fixed slot, which enforces it
+ * for the only caller in this tree.
+ */
 static seL4_CPtr pt_scratch_claim(aos_pt_scratch_t *sc)
 {
     if (sc->next_slot >= sc->limit_slot) {
@@ -175,9 +188,12 @@ static void staging_teardown(aos_pt_scratch_t *sc)
  * they pointed into, the caller's own frame caps are left believing they
  * are mapped somewhere that no longer exists -- a retry with the SAME
  * frames would then fail at a mapping step for a completely different
- * reason than the original failure (see I2 in the Task 2 review).
- * Unmapping them here, before tearing down the objects they were mapped
- * into, keeps a retry possible with the same frames.
+ * reason than the original failure. Unmapping them here, before tearing
+ * down the objects they were mapped into, keeps a retry possible with the
+ * same frames. tests/child-spawn/parent_pd.c exercises exactly this on
+ * target: its doomed spawn (Probe 3) and its real spawn pass the SAME
+ * content_frame capability, so dropping this unmap makes the real spawn
+ * fail at STEP_CONTENT_MAP and Probe 1's marker never appear.
  *
  * `extra_mapped` is the number of req->extra_maps entries that were
  * successfully mapped, so a failure PART WAY through the extra-map loop

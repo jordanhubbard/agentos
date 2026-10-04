@@ -98,7 +98,7 @@ Four probes. **Probe 1 is what makes 2–4 mean anything.**
 - [ ] **Probe 1 — the child runs and uses what it was given.** It exercises an endowed capability and reports a specific, asserted result (read an exact byte pattern from an endowed frame). Not "it started" — what it *did*.
 - [ ] **Probe 2 — the child cannot exceed its endowment.** It attempts an access the parent deliberately withheld and **faults**. Use the existing fault-probe oracle (`main.c:134-140`, `ROOT_PROBE_*`): exact badge, address and direction. A timeout or unrelated fault must not satisfy it.
 - [ ] **Probe 3 — a failed endowment leaves nothing running.** Force one endowment step to fail; assert the child never starts and the parent reports the failure. This pins Review Focus item 2.
-- [ ] **Probe 4 — the ledger shows the child.** Build the endowment-delta ledger first (moved here from Task 2 by ruling): a small, endowment-local record that `aos_child_spawn` appends to on each successful mint, explicitly **not** T5's lease table. T4's design already anticipates this shape — root-recorded grants plus delegator-reported deltas — so feed it through that path rather than inventing a second channel. Then assert the T4 authority page reports the child domain with the endowed capability kinds and that the counts match what was endowed. Note in the code that this is a *report*, not proof: seL4 exposes no capability-enumeration syscall, so nothing here verifies the subsetting invariant, which the kernel enforces unconditionally and independently.
+- [ ] **Probe 4 — the ledger shows the child.** Build the endowment-delta ledger first (moved here from Task 2 by ruling): a small, endowment-local record that `aos_child_spawn` appends to on each successful mint, explicitly **not** T5's lease table. T4's design already anticipates this shape — root-recorded grants plus delegator-reported deltas — so feed it through that path rather than inventing a second channel. Then assert that report names the child domain with the endowed capability kinds and that the counts match what was endowed. **(Amended after the branch review: this originally said "the T4 authority page reports the child domain". It does not and must not.** `aos_endow_ledger_merge()` folds the delta into an `aos_authority_snapshot_t` **in the delegating PD's own memory**, which the PD formats with T4's formatter and prints to serial; the probe asserts that log line. The root-published authority page `MSG_CC_AUTHORITY` and `make test-authority` read is a different artifact, and there is deliberately no channel from a PD into it -- `make test-inspect` proves it is read-only. "Feed it through T4's path" is satisfied by reusing T4's snapshot shape and formatter, not by writing into root's page. A delegator that could write its own claims into root's accounting would be worse than no report at all.) Note in the code that this is a *report*, not proof: seL4 exposes no capability-enumeration syscall, so nothing here verifies the subsetting invariant, which the kernel enforces unconditionally and independently.
 - [ ] **Step 5: Prove probe 2 is not vacuous.** Temporarily endow the withheld capability too; rebuild; confirm probe 2 **fails** — the child now succeeds where it should have faulted. Restore; confirm it passes. Paste all three outputs.
 - [ ] **Step 6: CI.** Add `test-child-spawn` to `gate` **and** as a step in the `os-claim-gate` job. No CI job invokes `make gate`.
 - [ ] **Step 7: `docs/TCB.md`:**
@@ -110,14 +110,16 @@ untyped pool root granted it at boot, mints rights-reduced derivatives of
 capabilities it already holds into the child's CSpace, and starts it only after
 every endowment succeeded. `make test-child-spawn` verifies on target that the
 child uses an endowed capability, faults on one the parent withheld, does not
-start at all when an endowment fails, and appears in the authority page with the
-endowed kinds.
+start at all when an endowment fails, and is named with the endowed kinds in the
+delegating domain's own endowment report. (Amended: see Probe 4 above -- the
+report is PD-local and reaches the serial log, not root's published authority
+page. `docs/TCB.md` carries the corrected wording.)
 
 Scope and limits. This creates a domain at run time; it does not load code at
 run time. The child's ELF comes from the bundle verified at boot, so image
 verification is unaffected. The subsetting invariant — no domain holds authority
 its parent did not hold — is enforced by seL4 itself, since a parent cannot mint
-from a capability it does not possess; the authority page *reports* the
+from a capability it does not possess; the delegator's ledger *reports* the
 endowment but cannot verify it, because seL4 exposes no capability-enumeration
 syscall. A parent can create children only from the pool it was granted;
 exhaustion is a resource limit, not an authority boundary. The parent/child pair

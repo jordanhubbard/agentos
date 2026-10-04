@@ -69,6 +69,28 @@ static seL4_CPtr g_cap_lend_revoked_ntfn = seL4_CapNull;
 #endif
 #ifdef AGENTOS_CHILD_SPAWN_TEST
 #include "contracts/child_spawn_contract.h"
+/*
+ * Tie T6's slot numbering to root's own, which child_spawn_contract.h
+ * cannot do for itself (it is included by the child, which must not pull in
+ * system_desc.h). T6's fixed grants start at 44 and so numerically overlap
+ * PD_CNODE_SLOT_NET_SECONDARY_NOTIFY (44) .. PD_CNODE_SLOT_ENTROPY_PD_EP
+ * (47), and its scratch range runs past PD_IRQHANDLER_SLOT_BASE (64). Both
+ * are safe for one reason only: root populates those slots solely for a PD
+ * of the matching role, and child_spawn_parent is none of them and has
+ * irq_count == 0. T5 relies on the same property for slots 45-54.
+ *
+ * What is NOT safe is a slot root fills for EVERY PD. Those are
+ * PD_CNODE_SLOT_NAMESERVER_EP (0), PD_CNODE_SLOT_SERIAL_EP (1) and
+ * AOS_LOG_NOTIFY_CAP (31); if a future one lands anywhere in 44..79,
+ * child_spawn_parent's untyped pool, ASID pool or fault endpoint is
+ * silently clobbered and the only symptom is a spawn failure in an image
+ * nothing builds by default. Assert the three known ones stay clear, so
+ * that mistake is a compile error rather than a 300-second timeout.
+ */
+_Static_assert(PD_CNODE_SLOT_NAMESERVER_EP < AOS_CHILD_SPAWN_SELF_CNODE_SLOT &&
+               PD_CNODE_SLOT_SERIAL_EP < AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
+               "a slot root fills for every PD must not land inside "
+               "child_spawn_parent's T6 slot range");
 #endif
 #include <platform/serial_uart.h>
 #include "boot_manifest.h"   /* aos_boot_manifest_validate/_find (T3 image verification) */
@@ -119,6 +141,14 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
                PD_CNODE_SLOT_FB_PEER_NOTIFY > AOS_LOG_NOTIFY_CAP &&
                PD_CNODE_SLOT_FB_PEER_NOTIFY + FB_PEERS <= PD_IRQHANDLER_SLOT_BASE,
                "framebuffer caps must not overlap logs or IRQ handlers");
+#endif
+#ifdef AGENTOS_CHILD_SPAWN_TEST
+/* The third "every PD" slot, completing the block near the
+ * child_spawn_contract.h include above -- asserted here because
+ * AOS_LOG_NOTIFY_CAP only becomes visible with this header. */
+_Static_assert(AOS_LOG_NOTIFY_CAP < AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
+               "the per-PD log notification slot must not land inside "
+               "child_spawn_parent's T6 slot range");
 #endif
 #endif
 #include <contracts/virtualizer_authority.h>

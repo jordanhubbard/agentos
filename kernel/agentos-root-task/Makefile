@@ -897,7 +897,7 @@ ifdef CAP_LEND_TEST
   ifneq ($(ARCH),aarch64)
     $(error CAP_LEND_TEST currently requires aarch64)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CHILD_SPAWN_TEST)),)
     $(error CAP_LEND_TEST is a separate image variant)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_CAP_LEND_TEST=1
@@ -1335,8 +1335,12 @@ $(BUILD_DIR)/cap_lend_borrower.elf: $(BUILD_DIR)/cap_lend_borrower.o $(BUILD_DIR
 # T5's cap_lend.c, so this pair does not link cap_lend.o/cap_lease.o at
 # all -- see child_spawn.h's "Endowment: a MINT, not a loan".
 #
-# child_spawn_child.elf is built exactly like any other service PD (same
-# pd_entry.o/_start, same tools/ld/agentos.ld link address) but is NOT
+# child_spawn_child.elf uses the same _start convention and the same
+# tools/ld/agentos.ld link address as any other service PD, but NOT the
+# same link line -- see the three deliberate differences at its own rule
+# below (own pd_entry object without AGENTOS_LOG_RINGS, no
+# rust_pd_memory.o, --nmagic) and the long comment at the top of
+# tests/child-spawn/child_pd.c. It is NOT
 # added to IMAGES and is NOT a system_desc_aarch64.c row -- it is never
 # loaded by the root task's per-PD boot loop. Instead its loadable bytes
 # are extracted (objcopy -O binary) and linked directly into

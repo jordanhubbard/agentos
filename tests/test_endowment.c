@@ -50,6 +50,34 @@ static void test_valid_subset_accepted(void)
     printf("PASS: valid narrowing subset accepted\n");
 }
 
+/*
+ * Rights EQUAL to the parent's are accepted. This is the one place the
+ * endowment validator deliberately differs from T5's aos_cap_lend(), which
+ * refuses to lend at full rights because a loan must always narrow (see
+ * unpack_rights()'s comment in libs/pd-support/child_spawn.c): an endowment
+ * is not a loan, and a parent may hand a child exactly what it holds. The
+ * subset test above happens to exercise this through its second entry; this
+ * test exists so the decision is named rather than incidental, and so a
+ * future change to a strict-subset rule fails a test that says why.
+ */
+static void test_rights_equal_to_parent_accepted(void)
+{
+    aos_endowment_t parent = make_parent();
+    aos_endowment_t req;
+    memset(&req, 0, sizeof(req));
+    req.version = AOS_ENDOWMENT_VERSION;
+    req.count = 2;
+    req.caps[0].kind = 1;
+    req.caps[0].rights = 0x7;   /* exactly the parent's 0x7 */
+    req.caps[0].parent_slot = 10;
+    req.caps[1].kind = 2;
+    req.caps[1].rights = 0x3;   /* exactly the parent's 0x3 */
+    req.caps[1].parent_slot = 11;
+
+    assert(aos_endowment_validate(&req, &parent) == 0);
+    printf("PASS: rights equal to the parent's accepted (endowment is not a loan)\n");
+}
+
 /* A request naming a capability the parent does not hold is rejected. */
 static void test_unknown_slot_rejected(void)
 {
@@ -165,6 +193,7 @@ static void test_null_arguments_rejected(void)
 int main(void)
 {
     test_valid_subset_accepted();
+    test_rights_equal_to_parent_accepted();
     test_unknown_slot_rejected();
     test_kind_mismatch_rejected();
     test_rights_escalation_rejected();

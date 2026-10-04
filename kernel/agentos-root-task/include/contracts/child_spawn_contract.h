@@ -323,12 +323,20 @@ _Static_assert(AOS_CHILD_SPAWN_GIFT_VA != AOS_CHILD_SPAWN_WITHHELD_VA &&
                "was actually given, or Probe 2 proves nothing");
 
 /* VA of the child's IPC buffer. MUST be 0x10000000 -- this is not a free
- * choice: the child is linked against the SAME pd_entry.c every other
- * service PD uses (see tests/child-spawn/child_pd.c), and pd_entry.c's
- * _start() unconditionally redirects __sel4_ipc_buffer to
- * PD_IPC_BUF_VA == 0x10000000 before calling pd_main(). Mapping the IPC
- * frame anywhere else would leave the child's IPC buffer pointer aimed at
- * a page that was never mapped. */
+ * choice: the child is linked against pd_entry.c, whose _start()
+ * unconditionally redirects __sel4_ipc_buffer to PD_IPC_BUF_VA ==
+ * 0x10000000 before calling pd_main(). Mapping the IPC frame anywhere else
+ * would leave the child's IPC buffer pointer aimed at a page that was
+ * never mapped.
+ *
+ * Note it is the child's OWN pd_entry object (built from the same source
+ * with -DAGENTOS_LOG_RINGS filtered out, and linked without
+ * rust_pd_memory.o and with --nmagic), NOT the pd_entry.o every other
+ * service PD shares. That is not a stylistic difference: the shared
+ * object's _start() dereferences AOS_LOG_CONFIG_VA, which this domain was
+ * never endowed, and faults before pd_main(). See the long comment at the
+ * top of tests/child-spawn/child_pd.c and the child_spawn_child.elf rule
+ * in kernel/agentos-root-task/Makefile before changing the link line. */
 #define AOS_CHILD_SPAWN_IPC_BUF_VA     0x10000000UL
 
 /* Priority the parent grants its child. Below the parent's own so the

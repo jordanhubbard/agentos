@@ -192,8 +192,12 @@
  * content frame had already been successfully mapped before this failure
  * (i.e. the failure is on the stack or IPC buffer mapping), it is
  * unmapped again as part of teardown so a caller can retry the spawn with
- * the SAME content_frame capability -- see I2 in the Task 2 review this
- * module was revised against. */
+ * the SAME content_frame capability: seL4_ARM_Page_Map records the mapping
+ * ON THE FRAME CAPABILITY, so a frame left "mapped" into a destroyed
+ * VSpace fails its next map for a reason unrelated to whatever went wrong
+ * here. tests/child-spawn/parent_pd.c relies on this -- its doomed spawn
+ * and its real spawn use the same content_frame -- which makes
+ * make test-child-spawn a regression test for it. */
 #define AOS_CHILD_SPAWN_ERR_MAP            (-5)
 /* seL4_TCB_Configure, seL4_TCB_WriteRegisters(resume=0), or (MCS only)
  * SchedContext retype/configure/SetSchedParams failed. Torn down (content

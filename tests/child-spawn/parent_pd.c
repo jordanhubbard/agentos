@@ -266,6 +266,17 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
      * The mint of entry 1 then fails inside the kernel, after entry 0 has
      * already landed in the child's CNode. That is precisely the state the
      * "no partially-endowed child ever runs" rule exists for.
+     *
+     * This also, deliberately, regression-tests aos_child_spawn()'s
+     * caller-owned-frame unmap on failure. The doomed spawn below and the
+     * real spawn further down pass the SAME content_frame capability.
+     * seL4_ARM_Page_Map records the mapping ON THE FRAME CAPABILITY, so if
+     * fail_teardown() ever stopped unmapping it, this frame would still
+     * believe it is mapped into the VSpace the doomed spawn destroyed, and
+     * the real spawn would fail at STEP_CONTENT_MAP -- Probe 1's marker
+     * would vanish and make test-child-spawn would fail. Keep the two
+     * spawns sharing one content_frame; it is load-bearing, not
+     * incidental economy.
      */
     {
         aos_endowment_t doomed_holdings = {

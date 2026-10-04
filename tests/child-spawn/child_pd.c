@@ -4,18 +4,50 @@
  *
  * This file is NOT a system_desc_aarch64.c row and is never loaded by the
  * root task's normal per-PD boot loop. It is compiled and linked through
- * the ordinary $(CC)/$(LD) pipeline every other service PD uses (same
- * pd_entry.o/_start convention, same tools/ld/agentos.ld link address),
- * producing a small standalone ELF whose loadable bytes the Makefile then
- * extracts (objcopy -O binary) and links directly into child_spawn_parent's
- * OWN ELF as a read-only data blob (see the Makefile's
- * AGENTOS_CHILD_SPAWN_TEST rules and child_spawn.h's file header on why: a
- * byte array inside the PARENT's own ELF is already covered by the SAME
- * T3 bundle verification that covers the rest of the parent's binary,
- * with no new loading path). parent_pd.c retypes a fresh VSpace and TCB at
- * run time via aos_child_spawn() and maps these exact bytes in at
- * AOS_CHILD_SPAWN_CONTENT_VA -- this file never runs until the parent
- * explicitly spawns it.
+ * the ordinary $(CC)/$(LD) pipeline, at the same tools/ld/agentos.ld link
+ * address every other service PD uses, producing a small standalone ELF
+ * whose loadable bytes the Makefile then extracts (objcopy -O binary) and
+ * links directly into child_spawn_parent's OWN ELF as a read-only data
+ * blob (see the Makefile's AGENTOS_CHILD_SPAWN_TEST rules and
+ * child_spawn.h's file header on why: a byte array inside the PARENT's own
+ * ELF is already covered by the SAME T3 bundle verification that covers
+ * the rest of the parent's binary, with no new loading path). parent_pd.c
+ * retypes a fresh VSpace and TCB at run time via aos_child_spawn() and
+ * maps these exact bytes in at AOS_CHILD_SPAWN_CONTENT_VA -- this file
+ * never runs until the parent explicitly spawns it.
+ *
+ * ── DO NOT link this against the shared pd_entry.o ──────────────────────
+ *
+ * This PD's link line is deliberately NOT the one every other service PD
+ * uses, and "tidying" it back to the common one reintroduces a bug that
+ * survived two reviews. See the child_spawn_child.elf rule in
+ * kernel/agentos-root-task/Makefile. Three differences, all load-bearing:
+ *
+ *   1. It links $(BUILD_DIR)/child_spawn_pd_entry.o, built from the same
+ *      pd_entry.c but with -DAGENTOS_LOG_RINGS=1 FILTERED OUT. Under that
+ *      define, _start() UNCONDITIONALLY dereferences AOS_LOG_CONFIG_VA
+ *      (0x1000a000) before it can even decide whether log rings exist, and
+ *      conditionally writes log_drain_rings_vaddr, which the linker places
+ *      in .bss at 0x401000. Root maps the log-config page into every PD it
+ *      creates at boot. NOBODY maps it into this one: this domain holds
+ *      exactly what its parent endowed it, and log rings are not on that
+ *      list. Linking the shared object makes this PD fault inside _start()
+ *      before pd_main() ever runs -- which is the endowment boundary doing
+ *      its job, and is why the fix is to stop linking authority-assuming
+ *      startup code into it rather than to widen the endowment.
+ *   2. It does not link rust_pd_memory.o (~3 KiB of memcpy/memmove/memset/
+ *      memcmp/strlen this PD never calls).
+ *   3. It links --nmagic, so sel4_crt.c's unused 1 KiB IPC-buffer
+ *      placeholder in .bss is not pushed past the mapped page by default
+ *      4 KiB segment alignment.
+ *
+ * (2) and (3) exist because the parent maps exactly ONE page for this
+ * image; the Makefile's `_end <= 0x401000` check enforces that and will
+ * fail the build if this file outgrows it. That check does NOT backstop
+ * (1): a log-rings regression is a touch of an unmapped VA, not a size
+ * overrun, so it builds cleanly and shows up only as a 300-second timeout
+ * with Probe 1's marker missing, on an image only CI's os-claim-gate job
+ * ever builds.
  *
  * This PD holds exactly what its parent endowed it with and nothing else:
  * its own image, stack and IPC buffer pages; a Signal-only derivative of
