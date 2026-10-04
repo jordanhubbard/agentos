@@ -619,8 +619,34 @@ else ifdef AGENTOS_MOK_SIGNING_KEY
 # requested explicitly: do not force a vendor key into it.
 else
 AGENTOS_BUNDLE_SIGNING_KEY ?= $(REPO_ROOT_MK)/kernel/agentos-root-task/keys/dev_signing_key.seed
-export AGENTOS_BUNDLE_SIGNING_KEY
 endif
+
+# Export all three unconditionally. `xtask gen-pd-bundle` reads them from its
+# own environment, make's own view of them is what the stamp below records, and
+# those two views MUST be the same view -- a build whose stamp says "vendor key
+# configured" while gen-pd-bundle saw no key is the silent-downgrade shape this
+# whole feature exists to prevent.
+#
+# Only AGENTOS_BUNDLE_SIGNING_KEY was exported before, and only in the `else`
+# branch above, which left the equality resting on an implementation detail:
+# GNU make automatically marks command-line variables for export, so
+# `make build AGENTOS_BUNDLE_SIGNING_KEY=...` happens to reach the recipe even
+# in the branches that never say `export`. (Measured on GNU Make 3.81: all
+# three command-line forms select the intended tier today.) That is true, but
+# it is not something this invariant should depend on knowing. Exporting
+# unconditionally makes make's view and gen-pd-bundle's view the same by
+# construction, and the --anchor-selection-stamp cross-check passed to
+# gen-pd-bundle below turns any future divergence into a hard build error
+# rather than a quietly mis-tiered image.
+#
+# NOTE on the empty case: `export` on an UNDEFINED variable still puts
+# `NAME=` (empty) into the recipe environment. load_env_seed_key() in
+# xtask/src/boot_manifest.rs therefore treats an empty value as "not set",
+# which is both what make means here and fail-closed -- no key, so
+# select_anchor() takes its no-key path and errors without an explicit opt-in.
+export AGENTOS_BUNDLE_SIGNING_KEY
+export AGENTOS_MOK_SIGNING_KEY
+export AGENTOS_TRUST_ANCHOR
 
 # Trust anchor selection stamp (T10 Task 3). `xtask gen-pd-bundle` reads the
 # three anchor env vars above out of its OWN environment, so none of them is
@@ -1885,7 +1911,8 @@ $(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFI
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG) \
+		--anchor-selection-stamp $(PD_ANCHOR_STAMP)
 
 $(PD_MANIFEST): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
@@ -1893,7 +1920,8 @@ $(PD_MANIFEST): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CON
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG) \
+		--anchor-selection-stamp $(PD_ANCHOR_STAMP)
 
 $(PD_MANIFEST_PUBKEY_HDR): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
@@ -1901,7 +1929,8 @@ $(PD_MANIFEST_PUBKEY_HDR): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) 
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG) \
+		--anchor-selection-stamp $(PD_ANCHOR_STAMP)
 
 # Step 3: Turn the binary bundle and manifest into relocatable ELF64 objects.
 #

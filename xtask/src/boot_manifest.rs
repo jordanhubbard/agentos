@@ -256,9 +256,24 @@ fn load_env_seed_key(
     repo_root: &Path,
     env_var: &str,
 ) -> Result<Option<(SigningKey, bool, std::path::PathBuf)>> {
+    // An EMPTY value means "not set", not "a key at the empty path".
+    //
+    // This is not defensive padding: `export NAME` in a Makefile puts `NAME=`
+    // into the recipe's environment even when NAME is undefined, and
+    // kernel/agentos-root-task/Makefile now exports all three anchor variables
+    // unconditionally so that make's view of the selection and this function's
+    // view cannot diverge. Without this, every ordinary build -- which sets no
+    // MOK -- would see `Some("")` here and die on `failed to read signing key
+    // seed: ` with an empty path.
+    //
+    // Treating it as unset is also the fail-closed reading: it yields NO KEY,
+    // so select_anchor() takes its key-less path, which is a hard error unless
+    // the caller explicitly opted in to the development anchor. There is no
+    // value of this variable that turns a gating build into a non-gating one
+    // without that opt-in.
     let path = match std::env::var_os(env_var) {
-        Some(p) => std::path::PathBuf::from(p),
-        None => return Ok(None),
+        Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+        _ => return Ok(None),
     };
 
     let seed = std::fs::read(&path).with_context(|| {
@@ -753,6 +768,47 @@ mod tests {
             selection.signing_key_is_dev,
             "AOS_ANCHOR_NONE signs with the dev seed so the manifest is still a parseable, \
              checkable blob for the digest machinery -- it is not a trust claim at this tier"
+        );
+    }
+
+    /// An exported-but-EMPTY key variable means "no key", not "a key at the
+    /// empty path".
+    ///
+    /// kernel/agentos-root-task/Makefile exports all three anchor variables
+    /// unconditionally so make's recorded selection and gen-pd-bundle's
+    /// environment cannot diverge; `export` on an undefined make variable puts
+    /// `NAME=` into the recipe environment, so this is the ordinary case for
+    /// AGENTOS_MOK_SIGNING_KEY on every vendor build, not a corner case.
+    #[test]
+    fn empty_key_env_vars_are_treated_as_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = repo_root();
+        let dev_seed_abs = root.join(DEV_SIGNING_KEY_REL_PATH);
+        let dev_seed_abs_str = dev_seed_abs.to_str().unwrap();
+
+        // Vendor key set, MOK exported empty: still a plain VENDOR build.
+        let selection = with_anchor_env(
+            &[
+                (VENDOR_SIGNING_KEY_ENV, dev_seed_abs_str),
+                (MOK_SIGNING_KEY_ENV, ""),
+            ],
+            || select_anchor(&root),
+        )
+        .expect("an empty MOK variable must read as unset, not as a key at the empty path");
+        assert_eq!(selection.tier, AnchorTier::Vendor);
+        assert!(!selection.mok.present);
+
+        // Both key variables exported empty and no opt-in: fail-closed. The
+        // empty value must not be mistaken for a configured key, and must not
+        // quietly become AOS_ANCHOR_NONE either.
+        let result = with_anchor_env(
+            &[(VENDOR_SIGNING_KEY_ENV, ""), (MOK_SIGNING_KEY_ENV, "")],
+            || select_anchor(&root),
+        );
+        assert!(
+            result.is_err(),
+            "empty key variables with no explicit opt-in must be a build error, not a \
+             silently non-gating image"
         );
     }
 

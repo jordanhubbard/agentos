@@ -92,11 +92,101 @@ pub struct GenPdBundleArgs {
     /// selected result on the way out.
     #[arg(long = "incoherent-anchor-probe")]
     pub incoherent_anchor_probe: bool,
+
+    /// Path to the build system's record of the trust anchor selection
+    /// (`$(PD_ANCHOR_STAMP)`, kernel/agentos-root-task/Makefile). When given,
+    /// this command refuses to run unless make's recorded view of the
+    /// selection is byte-identical to the environment this process actually
+    /// sees.
+    ///
+    /// The stamp exists to make the anchor a tracked build input. That is only
+    /// worth anything if what make recorded is what got compiled in: a build
+    /// whose stamp says "a vendor key is configured" while this process saw no
+    /// key would produce a non-gating image with a gating-looking audit trail.
+    /// Make's view and this process's view travel by different routes (make
+    /// variables vs. the recipe's environment), so nothing structural keeps
+    /// them equal — this flag checks it instead of assuming it.
+    #[arg(long = "anchor-selection-stamp")]
+    pub anchor_selection_stamp: Option<PathBuf>,
+}
+
+/// Cross-check the build system's recorded trust anchor selection against the
+/// environment this process is actually reading. Any divergence is a hard
+/// error: there is no safe way to continue, because the two disagree about
+/// which tier this image is.
+///
+/// Format is the stamp file's own, one `KEY=VALUE` per line, written by
+/// `$(PD_ANCHOR_STAMP)`'s recipe. Unknown keys are ignored so the stamp can
+/// grow; a MISSING expected key is an error, since silently skipping a
+/// comparison is the failure this check exists to prevent.
+fn verify_anchor_selection_stamp(stamp_path: &std::path::Path, probe: bool) -> Result<()> {
+    let text = fs::read_to_string(stamp_path).with_context(|| {
+        format!(
+            "failed to read the trust anchor selection stamp: {}",
+            stamp_path.display()
+        )
+    })?;
+
+    let expected: [(&str, String); 4] = [
+        (
+            "AGENTOS_TRUST_ANCHOR",
+            std::env::var("AGENTOS_TRUST_ANCHOR").unwrap_or_default(),
+        ),
+        (
+            "AGENTOS_BUNDLE_SIGNING_KEY",
+            std::env::var("AGENTOS_BUNDLE_SIGNING_KEY").unwrap_or_default(),
+        ),
+        (
+            "AGENTOS_MOK_SIGNING_KEY",
+            std::env::var("AGENTOS_MOK_SIGNING_KEY").unwrap_or_default(),
+        ),
+        (
+            "PROBE",
+            String::from(if probe {
+                "--incoherent-anchor-probe"
+            } else {
+                ""
+            }),
+        ),
+    ];
+
+    for (key, mine) in &expected {
+        let recorded = text
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .with_context(|| {
+                format!(
+                    "{} records no {key} line; the build system's view of the trust anchor \
+                     selection cannot be compared with this process's view",
+                    stamp_path.display()
+                )
+            })?;
+        anyhow::ensure!(
+            recorded == mine,
+            "trust anchor selection MISMATCH: the build system recorded {key}={recorded:?} but \
+             gen-pd-bundle sees {key}={mine:?}. These must be the same value -- the stamp is \
+             what makes the anchor a tracked build input, and if it disagrees with the \
+             environment the keys are actually read from, the image's real tier is not the one \
+             the build recorded. Refusing to produce an image whose audit trail is wrong. \
+             (Most likely cause: a variable that reaches make but not the recipe's \
+             environment; see the `export` block in kernel/agentos-root-task/Makefile.)"
+        );
+    }
+    Ok(())
 }
 
 // ─── run ─────────────────────────────────────────────────────────────────────
 
 pub fn run(args: &GenPdBundleArgs) -> Result<()> {
+    // 0. Before anything is read or written: confirm the build system's view
+    //    of the trust anchor selection matches the environment this process
+    //    will actually read the keys from. Running first means a divergence
+    //    produces no output files at all, rather than relying on
+    //    .DELETE_ON_ERROR to clean up a half-written bundle.
+    if let Some(stamp) = &args.anchor_selection_stamp {
+        verify_anchor_selection_stamp(stamp, args.incoherent_anchor_probe)?;
+    }
+
     // 1. Parse system TOML
     let toml_text = fs::read_to_string(&args.system)
         .with_context(|| format!("failed to read system TOML: {}", args.system.display()))?;
@@ -412,6 +502,7 @@ priority = 1
             manifest_out: Some(manifest_out.path().to_path_buf()),
             pubkey_header_out: Some(pubkey_header_out.path().to_path_buf()),
             incoherent_anchor_probe: false,
+            anchor_selection_stamp: None,
         };
 
         run_with_dev_vendor_key(&args).expect("gen-pd-bundle failed");
@@ -469,6 +560,7 @@ priority = 1
             manifest_out: None,
             pubkey_header_out: None,
             incoherent_anchor_probe: false,
+            anchor_selection_stamp: None,
         };
 
         let err = run_with_dev_vendor_key(&args).expect_err("48-byte PD name must be rejected");

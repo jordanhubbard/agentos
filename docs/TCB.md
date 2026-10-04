@@ -1568,12 +1568,20 @@ a byte-tampered one by name; the *same* tampered image under the development
 anchor emitting the digest mismatch, naming the same PD, **and** completing
 boot — both asserted, since the completed boot alone would equally describe an
 image that skipped verification; a gating tier compiled with its required key
-absent refusing at the root task's first step rather than downgrading (that
-refusal is silent on AArch64, because the check runs before the UART is mapped,
-so the probe asserts the root task produced no output at all); and a
-machine-owner image's inspect snapshot reporting the machine-owner tier, not
-the vendor tier the rest of the inspect suite pins. What this does **not**
-cover on target is a digest mismatch under the machine-owner anchor: that it
+absent refusing rather than downgrading; and a machine-owner image's inspect
+snapshot reporting the machine-owner tier, not the vendor tier the rest of the
+inspect suite pins.
+
+Two limits on that, stated rather than implied. **The key-less gating tier
+probe asserts an absence, not a refusal message.** That check runs before the
+UART is mapped, so the refusal cannot print; the probe asserts a loader-stage
+marker and then the sustained absence of every root-task marker. It attributes
+that silence to the anchor state only by running its own control first — the
+identical build without the fault injected, required to boot to completion —
+and by re-reading the generated header to confirm the key-less state was
+compiled in. A positive refusal marker would be better and needs the Step 0
+check re-ordered or given a channel that is live that early. **And a digest
+mismatch under the machine-owner anchor is not covered on target**: that it
 refuses follows from the same `aos_anchor_gates_boot()` decision the vendor
 probe exercises, and is host-tested, but no booted image has been made to
 demonstrate it.

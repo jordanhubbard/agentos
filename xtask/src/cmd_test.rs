@@ -983,6 +983,36 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
          probe builds its own image under a named anchor, so --no-build would boot \
          whatever tier happened to be on disk and assert against the wrong one"
     );
+    if args.trust_anchor_probe == Some(4) {
+        // Probe 4's own control pass.
+        //
+        // Probe 4 proves a NEGATIVE: an image with a gating tier and no key
+        // produces no root-task output. A negative is only attributable to the
+        // thing under test if the identical configuration WITHOUT that thing
+        // produces the positive. Probe 1 is exactly that configuration --
+        // same board, same guest-os, same anchor environment
+        // (AGENTOS_BUNDLE_SIGNING_KEY at the dev seed), differing ONLY by
+        // TRUST_ANCHOR_INCOHERENT_PROBE=1 -- so it is run here, inside probe
+        // 4, rather than left to happen to run first in `make
+        // test-trust-anchor`. A probe whose soundness depends on a sibling's
+        // ordering in one Makefile target is not a probe anyone can run alone.
+        //
+        // Recursion terminates immediately: the control is probe 1, which
+        // takes neither this branch nor any other re-entry.
+        println!(
+            "[xtask:test] trust-anchor probe 4: control pass -- the same build WITHOUT \
+             the incoherent-anchor flag must boot to completion"
+        );
+        let mut control = args.clone();
+        control.trust_anchor_probe = Some(1);
+        run(&control).context(
+            "trust-anchor probe 4 control FAILED: the identical build without \
+             TRUST_ANCHOR_INCOHERENT_PROBE=1 did not boot to completion, so the silence \
+             probe 4 is about to assert could not be attributed to the incoherent anchor \
+             state. Fix the boot first; probe 4 proves nothing until this control passes",
+        )?;
+        println!("[xtask:test] trust-anchor probe 4: control passed; now the real probe");
+    }
     anyhow::ensure!(
         !(args.assert_inspect
             || args.inspect_write_probe
@@ -3224,8 +3254,16 @@ pub fn run_make(args: &[&str], cwd: &Path) -> anyhow::Result<()> {
 /// Removing matters as much as setting for the trust-anchor probes: a
 /// developer or CI runner with `AGENTOS_MOK_SIGNING_KEY` already exported
 /// would otherwise silently retarget a probe that means to build a vendor
-/// image, and the probe would then "pass" against a tier it never meant to
-/// test. Each probe names its full anchor environment and inherits none of it.
+/// image.
+///
+/// Scope, precisely: this covers the ENVIRONMENT. It does not and cannot
+/// cover make COMMAND-LINE variables — `make test-trust-anchor
+/// AGENTOS_MOK_SIGNING_KEY=...` reaches the child make through `MAKEFLAGS`
+/// and outranks anything set here. That case is loud rather than silent: each
+/// probe's banner assertion is a whole phrase naming the tier *and* its
+/// gating policy, so a retargeted probe fails on the banner instead of
+/// passing against a tier it never meant to test. Still, do not read this as
+/// "a probe's anchor environment is hermetic".
 pub fn run_make_with_env(
     args: &[&str],
     cwd: &Path,
@@ -5312,13 +5350,48 @@ fn verify_trust_anchor_probe(
         "[rt] TRUST ANCHOR: machine-owner -- gates boot on a manifest/digest mismatch";
     const DEV_NOT_GATING: &str = "[rt] TRUST ANCHOR: none (development, not gating) -- does NOT gate boot on a manifest/digest MISMATCH";
 
-    /// Read the whole log after the awaited markers have landed, giving the
-    /// tail of the boot a moment to arrive so an absence assertion is not
-    /// just "it had not been printed yet".
-    fn settled_log(log_path: &Path) -> anyhow::Result<String> {
-        std::thread::sleep(Duration::from_millis(500));
-        Ok(std::fs::read_to_string(log_path)?)
+    /// Assert that none of `forbidden` appears in the log at any point during
+    /// `window`, re-reading throughout rather than sampling once after a fixed
+    /// sleep.
+    ///
+    /// These probes assert ABSENCES, and an absence assertion fails OPEN if it
+    /// is really "that had not been printed yet". Both failure modes it guards
+    /// against are things that would appear LATE: a root task that continues
+    /// past the refusal, or a boot that completes after the marker that was
+    /// waited for. A single sample after 500 ms on a loaded CI runner can miss
+    /// either. Polling across a window costs nothing extra on the pass path
+    /// (the probe already waited for its positive marker) and turns "was not
+    /// there at one instant" into "was not there for the whole window".
+    ///
+    /// Scale: a healthy AArch64 GUEST_OS=none boot reaches `[rt] UART mapped`
+    /// in tens of milliseconds and `agentOS boot complete` in a couple of
+    /// seconds, so the window below is roughly an order of magnitude of margin
+    /// over the slowest thing it needs to outlast.
+    fn assert_absent_throughout(
+        log_path: &Path,
+        forbidden: &[&str],
+        window: Duration,
+        context: &str,
+    ) -> anyhow::Result<()> {
+        let deadline = Instant::now() + window;
+        loop {
+            let text = std::fs::read_to_string(log_path).unwrap_or_default();
+            for marker in forbidden {
+                anyhow::ensure!(
+                    !text.contains(marker),
+                    "{context}: {marker:?} appeared in the boot log"
+                );
+            }
+            if Instant::now() >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
     }
+
+    /// How long the absence assertions keep watching. See
+    /// `assert_absent_throughout` for why this is a window and not a sample.
+    const ABSENCE_WINDOW: Duration = Duration::from_secs(10);
 
     match probe {
         // Probe 1 (brief Probe 1, control half): the vendor tier still boots
@@ -5354,11 +5427,12 @@ fn verify_trust_anchor_probe(
                 qemu,
             )
             .and_then(|proof| {
-                let text = settled_log(log_path)?;
-                anyhow::ensure!(
-                    !text.contains("agentOS boot complete"),
-                    "the vendor anchor reported a tampered PD and then finished booting anyway"
-                );
+                assert_absent_throughout(
+                    log_path,
+                    &["agentOS boot complete"],
+                    ABSENCE_WINDOW,
+                    "the vendor anchor reported a tampered PD and then finished booting anyway",
+                )?;
                 Ok(format!("{proof}; agentOS boot complete absent"))
             })
         }
@@ -5398,15 +5472,48 @@ fn verify_trust_anchor_probe(
         // Probe 4 (brief Probe 3): a gating tier with its required key absent
         // is refused, not downgraded.
         //
+        // READ THIS BEFORE TRUSTING THIS PROBE. It is the weakest of the five
+        // and its exact strength is:
+        //
         // boot_init_trust_anchor() runs at Step 0, before the UART is mapped,
         // so its diagnostic is dropped and the refusal is SILENT on this
-        // board — a documented trade in main.c, not a defect introduced here.
-        // The assertion is therefore shaped around what is observable: the
-        // loader handed control to seL4 and seL4 to the root task, and then
-        // the root task produced NOTHING. "[rt] UART mapped" is the root
-        // task's first output and comes from Step 1, strictly after Step 0,
-        // so its absence pins the refusal to Step 0 specifically rather than
-        // to a build or boot failure earlier than the root task.
+        // board. That is a trade main.c documents deliberately (check as early
+        // as possible, accept that the refusal cannot be printed), not a
+        // defect introduced here — but it means there is no positive marker to
+        // assert, so what follows is an ABSENCE.
+        //
+        // What is asserted:
+        //   - one positive marker, "MMU enabled, jumping to seL4...", which is
+        //     emitted by the LOADER (kernel/loader/). It establishes that the
+        //     image was built and the loader ran. It does NOT establish that
+        //     seL4 started, or that seL4 started the root task — nothing in
+        //     this log can, because nothing between the loader and Step 1
+        //     prints;
+        //   - the absence, for a window far longer than a healthy boot needs,
+        //     of every root-task marker: "[rt] UART mapped" is the root task's
+        //     FIRST output and comes from Step 1, strictly after Step 0.
+        //
+        // So the raw signature "loader marker, then nothing" is also the
+        // signature of a seL4 panic, a root-task crash before Step 1, or any
+        // future regression in the pre-Step-1 path. Two things, and only these
+        // two, make the silence attributable to the anchor state:
+        //
+        //   1. The CONTROL PASS run by this probe itself (see the probe-4
+        //      branch near the top of run()): the identical build and boot,
+        //      differing ONLY by TRUST_ANCHOR_INCOHERENT_PROBE=1, must reach
+        //      "agentOS boot complete" first. A generic boot break fails the
+        //      control, so it cannot be mistaken for the refusal. This is
+        //      carried by the probe, not borrowed from a sibling's ordering in
+        //      `make test-trust-anchor`.
+        //   2. The post-build re-read of the generated header (see the probe-4
+        //      branch in the build step), which proves the incoherent state
+        //      was actually compiled in, so this cannot pass against an image
+        //      that was never doctored.
+        //
+        // The honest fix is a positive refusal marker, which requires the
+        // Step 0 check to emit through a channel live at Step 0, or to be
+        // re-ordered after platform_debug_init(). That is a change to Task 2's
+        // deliberate ordering in main.c and is deliberately NOT made here.
         4 => wait_for_all_markers(
             log_path,
             &["MMU enabled, jumping to seL4..."],
@@ -5414,21 +5521,23 @@ fn verify_trust_anchor_probe(
             qemu,
         )
         .and_then(|proof| {
-            let text = settled_log(log_path)?;
-            for forbidden in [
-                "[rt] UART mapped",
-                "[rt] TRUST ANCHOR:",
-                "[rt] starting",
-                "agentOS boot complete",
-            ] {
-                anyhow::ensure!(
-                    !text.contains(forbidden),
-                    "a gating trust anchor with no key reached {forbidden:?}: the root \
-                             task continued past Step 0 instead of refusing"
-                );
-            }
+            assert_absent_throughout(
+                log_path,
+                &[
+                    "[rt] UART mapped",
+                    "[rt] TRUST ANCHOR:",
+                    "[rt] starting",
+                    "agentOS boot complete",
+                ],
+                ABSENCE_WINDOW,
+                "a gating trust anchor with no key produced root-task output: the root \
+                 task continued past Step 0 instead of refusing",
+            )?;
             Ok(format!(
-                "{proof}; root task refused at Step 0 (no [rt] output, no PD started)"
+                "{proof} (loader-stage marker); no root-task output for {}s afterwards, \
+                 and the control pass of the same build without the flag booted to \
+                 completion",
+                ABSENCE_WINDOW.as_secs()
             ))
         }),
 

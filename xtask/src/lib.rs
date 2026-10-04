@@ -138,7 +138,22 @@ pub struct TestArgs {
     ///     root task's first step, never silently downgraded;
     ///   5 machine-owner tier: the inspect snapshot reports the tier the
     ///     image was actually built with, not a hardcoded one.
-    #[arg(long, conflicts_with_all = ["block_isolation_probe", "image_verify_probe"], value_parser = clap::value_parser!(u8).range(1..=5))]
+    ///
+    /// Conflicts with every other assertion that pins a boot: probes 2 and 4
+    /// deliberately refuse to boot, and probes 3 and 5 boot images built under
+    /// a non-vendor anchor, so anything expecting a normal vendor boot (most
+    /// of all `--assert-inspect`, which asserts tier 1) would fail for a
+    /// reason that has nothing to do with what it was testing. Rejecting the
+    /// combination at parse time beats a confusing failure inside
+    /// `verify_inspect`.
+    #[arg(long, conflicts_with_all = [
+        "block_isolation_probe", "image_verify_probe", "guest_gic_failure_probe",
+        "assert_inspect", "inspect_write_probe", "authority_probe", "cc_envelope_probe",
+        "assert_entropy_unavailable", "assert_operator_session", "operator_isolation_probe",
+        "assert_log_rings", "log_isolation_probe", "assert_native_rust", "assert_native_guest",
+        "assert_framebuffer", "serial_isolation_probe", "network_isolation_probe",
+        "virtualizer_authority_probe", "keep_running", "no_build",
+    ], value_parser = clap::value_parser!(u8).range(1..=5))]
     pub trust_anchor_probe: Option<u8>,
     /// Test-only VMM fault probe: 1..4 primary foreign/disk read/write; 5..8 secondary.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]

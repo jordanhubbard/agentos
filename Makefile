@@ -1760,8 +1760,16 @@ test-image-verify:
 #                         absent refuses at the root task's first step. The
 #                         refusal is SILENT on this board (Step 0 runs before
 #                         the UART is mapped — see boot_init_trust_anchor()),
-#                         so the probe asserts the loader reached seL4 and the
-#                         root task then produced no output at all.
+#                         so there is no positive marker: the probe asserts a
+#                         loader-stage marker plus the sustained ABSENCE of
+#                         every root-task marker. That absence is attributable
+#                         to the anchor state only because the probe runs its
+#                         own control first — the identical build without the
+#                         flag, required to boot to completion — and because
+#                         it re-reads the generated header to confirm the
+#                         incoherent state was compiled in. Read the probe-4
+#                         comment in xtask/src/cmd_test.rs before relying on
+#                         this one; it is the weakest of the five.
 #   5. visible at runtime — a machine-owner image's inspect snapshot reports
 #                         tier 2 / machine-owner, deliberately NOT the vendor
 #                         tier test-inspect already pins, so the field is
