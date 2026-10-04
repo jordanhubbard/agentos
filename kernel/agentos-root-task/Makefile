@@ -107,7 +107,8 @@ ROOT_TASK_SRCS := src/main.c src/ep_alloc.c src/cap_accounting.c \
                   src/pd_tcb.c src/m3_bare_metal.c \
                   src/sel4_crt.c src/log.c \
                   src/ut_alloc.c src/pd_vspace.c src/cap_audit.c \
-                  src/vos_create.c src/pd_bundle_stub.c
+                  src/vos_create.c src/pd_bundle_stub.c \
+                  src/authority_kindmap.c
 
 ifeq ($(ARCH),aarch64)
 CFLAGS += -DAGENTOS_LOG_RINGS=1
@@ -126,6 +127,7 @@ endif
 
 ROOT_TASK_OBJS := $(patsubst src/%.c, $(BUILD_DIR)/rt_%.o, $(ROOT_TASK_SRCS))
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_inspect_snapshot.o
+ROOT_TASK_OBJS += $(BUILD_DIR)/rt_authority.o
 ifeq ($(ARCH),x86_64)
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
 endif
@@ -520,11 +522,19 @@ $(BUILD_DIR)/rt_inspect_snapshot.o: $(REPO_ROOT_MK)/platform/inspect/inspect_sna
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/rt_authority.o: $(REPO_ROOT_MK)/platform/inspect/authority.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/rt_virtio_pci_caps.o: $(REPO_ROOT_MK)/platform/blk-virt/virtio_pci_caps.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS_ROOT_TASK) -c $< -o $@
 
 $(BUILD_DIR)/inspect_snapshot.pd.o: $(REPO_ROOT_MK)/platform/inspect/inspect_snapshot.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/authority.pd.o: $(REPO_ROOT_MK)/platform/inspect/authority.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -911,6 +921,10 @@ $(BUILD_DIR)/operator_session.o: $(GUEST_CONFIG_STAMP)
 ifeq ($(INSPECT_WRITE_PROBE),1)
   CFLAGS += -DAGENTOS_INSPECT_WRITE_PROBE=1
   CFLAGS_ROOT_TASK += -DAGENTOS_INSPECT_WRITE_PROBE=1
+endif
+ifeq ($(AUTHORITY_WRITE_PROBE),1)
+  CFLAGS += -DAGENTOS_AUTHORITY_WRITE_PROBE=1
+  CFLAGS_ROOT_TASK += -DAGENTOS_AUTHORITY_WRITE_PROBE=1
 endif
 
 # AArch64: include the configured profile-backed VMM slots.
@@ -1414,7 +1428,7 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 $(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)

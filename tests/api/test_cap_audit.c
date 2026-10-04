@@ -9,7 +9,7 @@
  *   4.  OP_CAP_AUDIT (all PDs) count equals total cap_acct_count()
  *   5.  OP_CAP_AUDIT with pd_id==0 returns all nodes (count > 0)
  *   6.  OP_CAP_AUDIT with pd_id==0xFF99 (unused) returns count==0
- *   7.  OP_CAP_AUDIT entry 0 has valid pd_id field
+ *   7.  OP_CAP_AUDIT entry 0 has valid pd_id field (CAP_ACCT_ROOT_PD_INDEX)
  *   8.  OP_CAP_AUDIT entry 0 has valid cslot field (cap value)
  *   9.  OP_CAP_AUDIT entry 0 has non-empty name
  *   10. OP_CAP_AUDIT rep.data[0..3] encodes count little-endian
@@ -19,10 +19,12 @@
  *   14. OP_CAP_AUDIT_GUEST with valid handle (stub) → SEL4_ERR_OK
  *   15. OP_CAP_AUDIT_GUEST result count matches expected guest cap count
  *   16. audit buffer reset between calls (entries are zeroed)
- *   17. revocable==0 for root-task (pd_index==0) caps
+ *   17. revocable==0 for root-task (pd_index==CAP_ACCT_ROOT_PD_INDEX) caps
  *   18. revocable==1 for non-root PD caps
  *   19. Multiple sequential OP_CAP_AUDIT calls produce same count
  *   20. cap_tree_verify_all_pds completes without crash
+ *   21. OP_CAP_AUDIT with explicit pd_id==0 selects descriptor index 0
+ *       (pd[0]/nameserver) only, not all PDs
  *
  * Build & run:
  *   cc -DAGENTOS_TEST_HOST \
@@ -69,19 +71,46 @@ typedef struct {
 } cap_acct_entry_t;
 
 /*
+ * CAP_ACCT_ROOT_PD_INDEX — reserved sentinel pd_index for the root task's
+ * own capabilities (R16; see kernel/agentos-root-task/include/
+ * cap_accounting.h). Defined here, ahead of the stub table below, because
+ * cap_audit.c's own `#ifndef CAP_ACCT_ROOT_PD_INDEX` guard (included later
+ * at the bottom of this file) only takes effect if nothing upstream has
+ * already defined it -- this keeps a single literal value in both places.
+ */
+#define CAP_ACCT_ROOT_PD_INDEX 0xFFFFFFFFu
+
+/*
+ * CAP_AUDIT_PD_ALL — reserved pd_id request-filter value meaning "every
+ * domain" (see kernel/agentos-root-task/include/cap_accounting.h). Defined
+ * here for the same reason as CAP_ACCT_ROOT_PD_INDEX above: cap_audit.c's
+ * own `#ifndef CAP_AUDIT_PD_ALL` guard only takes effect if nothing upstream
+ * has already defined it.
+ */
+#define CAP_AUDIT_PD_ALL 0xFFFFFFFEu
+
+/*
  * Stub table — 10 entries with known pd_index / cap values.
  *
- *   Indices 0-2: pd_index=0 (root task) — root-level caps
- *   Indices 3-4: pd_index=1 (nameserver)
- *   Indices 5-6: pd_index=2 (controller)
- *   Indices 7-9: pd_index=3 (VMM / guest handle==3)
+ * Root's own capabilities are recorded under the CAP_ACCT_ROOT_PD_INDEX
+ * sentinel, not pd_index==0: descriptor index 0 is a real protection domain
+ * (pd[0], the nameserver per main.c), so pd_index==0 denotes that ordinary,
+ * revocable domain's own caps, not root's.
+ *
+ *   Indices 0-2: pd_index=CAP_ACCT_ROOT_PD_INDEX (root task) — not revocable
+ *   Indices 3-4: pd_index=1 (nameserver-like PD) — ordinary, revocable
+ *   Indices 5-6: pd_index=2 (controller) — ordinary, revocable
+ *   Indices 7-9: pd_index=3 (VMM / guest handle==3) — ordinary, revocable
+ *   Index  10:   pd_index=0 (pd[0]/nameserver itself) — ordinary, revocable;
+ *                exists so a pd_id==0 request can be shown to select this
+ *                PD alone, not "all" (see CAP_AUDIT_PD_ALL)
  */
-#define STUB_TABLE_SIZE 10u
+#define STUB_TABLE_SIZE 11u
 
 static cap_acct_entry_t g_stub_table[STUB_TABLE_SIZE] = {
-    { 1u,   10u, 0u, "root-cnode"  },
-    { 2u,   11u, 0u, "root-vspace" },
-    { 3u,    1u, 0u, "root-tcb"    },
+    { 1u,   10u, CAP_ACCT_ROOT_PD_INDEX, "root-cnode"  },
+    { 2u,   11u, CAP_ACCT_ROOT_PD_INDEX, "root-vspace" },
+    { 3u,    1u, CAP_ACCT_ROOT_PD_INDEX, "root-tcb"    },
     { 100u,  1u, 1u, "ns-tcb"      },
     { 101u,  2u, 1u, "ns-ep"       },
     { 200u,  1u, 2u, "ctrl-tcb"    },
@@ -89,6 +118,10 @@ static cap_acct_entry_t g_stub_table[STUB_TABLE_SIZE] = {
     { 300u,  1u, 3u, "vmm-tcb"     },
     { 301u,  2u, 3u, "vmm-ep"      },
     { 302u,  3u, 3u, "vmm-vcpu"    },
+    { 400u,  4u, 0u, "pd0-ep"      },  /* pd_index==0: descriptor index 0,
+                                        * pd[0]/nameserver -- the entry the
+                                        * Finding-1 fix (pd_id==0 selects
+                                        * this PD only) exercises. */
 };
 
 uint32_t cap_acct_count(void)
@@ -198,7 +231,7 @@ static void test_non_ctrl_badge_denied(void)
 static void test_ctrl_badge_ok(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     uint32_t rc = handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     ASSERT_EQ(rc, (uint64_t)SEL4_ERR_OK,
@@ -209,24 +242,24 @@ static void test_ctrl_badge_ok(void)
 static void test_audit_all_count_equals_total(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     uint32_t count = rep_count(&rep);
     ASSERT_EQ(count, (uint64_t)cap_acct_count(),
-              "OP_CAP_AUDIT pd_id=0: count equals cap_acct_count()");
+              "OP_CAP_AUDIT pd_id=CAP_AUDIT_PD_ALL: count equals cap_acct_count()");
 }
 
 /* Test 5: pd_id==0 returns all nodes (count > 0) */
 static void test_audit_all_nonzero(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     uint32_t count = rep_count(&rep);
     ASSERT_TRUE(count > 0u,
-                "OP_CAP_AUDIT pd_id=0: count > 0");
+                "OP_CAP_AUDIT pd_id=CAP_AUDIT_PD_ALL: count > 0");
 }
 
 /* Test 6: unused pd_id → count==0 */
@@ -245,20 +278,22 @@ static void test_audit_unused_pd_zero_count(void)
 static void test_entry0_pd_id(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     const cap_audit_entry_t *e = cap_audit_test_get_entry(0u);
-    /* First entry comes from stub table[0]: pd_index==0 */
-    ASSERT_EQ(e ? e->pd_id : 0xFFFFu, 0u,
-              "OP_CAP_AUDIT: entry[0].pd_id == 0 (root task)");
+    /* First entry comes from stub table[0]: pd_index==CAP_ACCT_ROOT_PD_INDEX
+     * (root task's own caps; pd_index==0 is the nameserver-like PD, not
+     * root -- see the stub table comment above). */
+    ASSERT_EQ(e ? e->pd_id : 0u, CAP_ACCT_ROOT_PD_INDEX,
+              "OP_CAP_AUDIT: entry[0].pd_id == CAP_ACCT_ROOT_PD_INDEX (root task)");
 }
 
 /* Test 8: entry 0 has valid cslot field (CPtr from stub table[0] == 1) */
 static void test_entry0_cslot(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     const cap_audit_entry_t *e = cap_audit_test_get_entry(0u);
@@ -270,7 +305,7 @@ static void test_entry0_cslot(void)
 static void test_entry0_name_nonempty(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     const cap_audit_entry_t *e = cap_audit_test_get_entry(0u);
@@ -282,7 +317,7 @@ static void test_entry0_name_nonempty(void)
 static void test_rep_count_little_endian(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     uint32_t from_rep  = rep_count(&rep);
@@ -352,7 +387,7 @@ static void test_guest_count_in_rep(void)
 /* Test 16: reset zeroes audit buffer entries */
 static void test_reset_zeroes_buffer(void)
 {
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     cap_audit_test_reset();
@@ -361,28 +396,34 @@ static void test_reset_zeroes_buffer(void)
                 "cap_audit_test_reset: entry[0] is fully zeroed");
 }
 
-/* Test 17: revocable==0 for root-task (pd_index==0) caps */
+/* Test 17: revocable==0 for root-task (pd_index==CAP_ACCT_ROOT_PD_INDEX) caps */
 static void test_root_caps_not_revocable(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
-    /* First 3 audit entries correspond to stub entries 0,1,2 (pd_index==0) */
+    /*
+     * First 3 audit entries correspond to stub entries 0,1,2, which carry
+     * pd_index==CAP_ACCT_ROOT_PD_INDEX (root task's own caps). pd_index==0
+     * is an ordinary protection domain (the nameserver-like PD at stub
+     * entries 3,4) and is revocable -- see test_pd_caps_revocable below,
+     * which already covers that case.
+     */
     const cap_audit_entry_t *e0 = cap_audit_test_get_entry(0u);
     const cap_audit_entry_t *e1 = cap_audit_test_get_entry(1u);
     const cap_audit_entry_t *e2 = cap_audit_test_get_entry(2u);
     ASSERT_TRUE(e0 && e0->revocable == 0u &&
                 e1 && e1->revocable == 0u &&
                 e2 && e2->revocable == 0u,
-                "OP_CAP_AUDIT: pd_index==0 entries have revocable==0");
+                "OP_CAP_AUDIT: pd_index==CAP_ACCT_ROOT_PD_INDEX entries have revocable==0");
 }
 
 /* Test 18: revocable==1 for non-root PD caps */
 static void test_pd_caps_revocable(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep;
     handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
     /* Entry index 3 in audit buffer corresponds to stub[3] (ns-tcb, pd_index==1) */
@@ -395,7 +436,7 @@ static void test_pd_caps_revocable(void)
 static void test_sequential_calls_same_count(void)
 {
     cap_audit_test_reset();
-    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, CAP_AUDIT_PD_ALL);
     sel4_msg_t rep1, rep2;
     handle_cap_audit(ctrl_badge(), &req, &rep1, (void *)0);
     cap_audit_test_reset();
@@ -411,11 +452,33 @@ static void test_verify_all_pds_no_crash(void)
     TAP_OK("cap_tree_verify_all_pds: completes without crash");
 }
 
+/*
+ * Test 21: explicit pd_id==0 selects descriptor index 0 (pd[0]/nameserver)
+ * only, not every PD. This is the Finding-1 fix under review: before
+ * CAP_AUDIT_PD_ALL existed, pd_id==0 was overloaded to mean "all PDs",
+ * which silently returned every domain's capabilities instead of just the
+ * one recorded under descriptor index 0 -- see CAP_AUDIT_PD_ALL in
+ * cap_accounting.h and the filter in handle_cap_audit.
+ */
+static void test_audit_explicit_zero_selects_pd0_only(void)
+{
+    cap_audit_test_reset();
+    sel4_msg_t req = make_req_u32(OP_CAP_AUDIT, 0u);
+    sel4_msg_t rep;
+    handle_cap_audit(ctrl_badge(), &req, &rep, (void *)0);
+    uint32_t count = rep_count(&rep);
+    const cap_audit_entry_t *e0 = cap_audit_test_get_entry(0u);
+    ASSERT_EQ(count, 1u,
+              "OP_CAP_AUDIT pd_id=0: count==1 (pd[0] only, not all PDs)");
+    ASSERT_TRUE(e0 && e0->pd_id == 0u && e0->cslot == 400u,
+                "OP_CAP_AUDIT pd_id=0: entry is stub[10] (pd_index==0)");
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
 {
-    TAP_PLAN(20);
+    TAP_PLAN(22);
 
     test_entry_size();
     test_non_ctrl_badge_denied();
@@ -437,6 +500,7 @@ int main(void)
     test_pd_caps_revocable();
     test_sequential_calls_same_count();
     test_verify_all_pds_no_crash();
+    test_audit_explicit_zero_selects_pd0_only();
 
     return tap_exit();
 }
