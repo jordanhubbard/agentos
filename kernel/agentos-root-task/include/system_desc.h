@@ -236,6 +236,7 @@ typedef struct {
 #define SVC_ID_X86_AP_RUNNER 37u /* Second private VMM execution context */
 #define SVC_ID_X86_SECONDARY_RUNNER 38u /* Secondary guest bootstrap executor */
 #define SVC_ID_X86_SECONDARY_AP_RUNNER 39u /* Secondary guest AP executor */
+#define SVC_ID_ENTROPY_PD 40u /* virtio-rng driver PD */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */
@@ -311,3 +312,10 @@ _Static_assert(PD_CNODE_SLOT_INPUT_VIRT_EP > PD_CNODE_SLOT_NET_SECONDARY_NOTIFY 
 _Static_assert(PD_CNODE_SLOT_NET_PRIMARY_NOTIFY > PD_CNODE_SLOT_CC_IRQ_WAIT &&
                PD_CNODE_SLOT_NET_SECONDARY_NOTIFY < PD_IRQHANDLER_SLOT_BASE,
                "network notification slots must not overlap input, display or IRQ slots");
+/* cc_pd -> entropy_pd (PPC), used only to relay MSG_CC_ENTROPY_GET so the
+ * host-side QEMU test harness can reach entropy_pd's absent-device and
+ * range-validation behavior through the existing CC socket bridge. */
+#define PD_CNODE_SLOT_ENTROPY_PD_EP 47u
+_Static_assert(PD_CNODE_SLOT_ENTROPY_PD_EP > PD_CNODE_SLOT_FB_REBIND_EP &&
+               PD_CNODE_SLOT_ENTROPY_PD_EP < PD_IRQHANDLER_SLOT_BASE,
+               "entropy relay endpoint must not overlap other slots or IRQ slots");

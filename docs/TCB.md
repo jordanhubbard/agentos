@@ -1086,10 +1086,11 @@ guest channel before virtio-net is a backend, CapStore/MsgBus/ModelSvc/ToolSvc
 as "core OS".
 
 **Status:** museum PDs are no longer bundled or booted. The root task
-spawns exactly the PDs in `src/system_desc_aarch64.c` (14 in the default
+spawns exactly the PDs in `src/system_desc_aarch64.c` (15 in the default
 image: `nameserver`, `log_drain`, `serial_pd`, `virtio_blk`,
 `block_pd`, `blk_virt`, `net_pd`, `net_virt`, `serial_virt`, `guest_vmm_primary`,
-`vm_manager`, `cc_pd`, `fault_handler`, `operator_session`; `guest_vmm_secondary`, `fault_inject`,
+`vm_manager`, `cc_pd`, `fault_handler`, `operator_session`, `entropy_pd`;
+`guest_vmm_secondary`, `fault_inject`,
 and `test_runner` + `event_bus` are added only to the image variants that use
 them), and
 `agentos.toml` lists that same set and nothing else (MAC
@@ -1108,6 +1109,30 @@ also uses the separate serial virtualizer and CC frontend queues. The
 printed by `cc_pd`, the lowest-priority PD in the image, right before it enters
 its request loop. `tests/platform/lint_source_invariants.c` fails if any of
 the dropped PDs reappears in the default descriptor.
+
+**`entropy_pd` has no live source on QEMU `virt` today.** It is in the
+booted set, owns an MMIO-probe frame uniquely (TCB invariant 1 holds), and
+runs the full virtio handshake (reset, ACKNOWLEDGE/DRIVER, feature
+negotiation, queue setup) against it. But QEMU `virt`'s virtio-mmio
+aperture is exactly 32 slots (4 retypeable 4 KiB pages), and all four
+pages are already exclusively owned by `cc_pd` (page 0, alongside the
+root task's own probe frame), `virtio_blk`'s primary and secondary media
+(pages 1 and 3), and `net_pd` (page 2) -- confirmed by a failed retype at
+the first slot tried and by `qemu-system-aarch64 -machine virt,help` /
+`info mtree`. A physical address outside that aperture is not a safe
+substitute either: genuinely unbacked device-reserved memory was tried
+and reliably wedged the reading thread instead of faulting cleanly, so
+entropy_pd's frame is ordinary RAM standing in for a device register bank
+(see `platform/include/platform/entropy_host_layout.h` for the full
+account). There is no slot left to attach a `-device virtio-rng-device`
+without two PDs mapping one physical frame, so none is attached, and
+`entropy_pd` correctly reports `AOS_ENTROPY_ERR_UNAVAILABLE` to every
+request rather than hanging or fabricating bytes. **No live entropy
+source is proven on this platform.** Measured boot and attestation (T8)
+remain blocked on one; unblocking it
+needs either shrinking an existing driver's device-frame footprint or a
+virtio-pci transport for entropy, both out of scope for the PD that
+exists today.
 
 ## QEMU host transports
 

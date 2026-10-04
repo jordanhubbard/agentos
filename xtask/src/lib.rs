@@ -57,6 +57,12 @@ pub struct TestArgs {
     /// Query the root-provisioned boot snapshot through CC and agentctl.
     #[arg(long)]
     pub assert_inspect: bool,
+    /// Verify entropy_pd is reachable, reports AOS_ENTROPY_ERR_UNAVAILABLE
+    /// (no virtio-rng device can be wired to it on QEMU virt -- see
+    /// docs/TCB.md), and validates an over-length request with
+    /// AOS_ENTROPY_ERR_RANGE. This does NOT prove a working entropy source.
+    #[arg(long)]
+    pub assert_entropy_unavailable: bool,
     /// Exercise the native read-only operator protocol through serial_virt.
     #[arg(long)]
     pub assert_operator_session: bool,

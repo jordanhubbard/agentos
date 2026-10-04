@@ -38,6 +38,7 @@
 #include "cc_operator_credential.h"
 #include "cc_vm_client.h"
 #include "contracts/vm_manager_contract.h"
+#include "contracts/entropy_contract.h"
 #include "sel4_ipc.h"
 #include "sel4_boot.h"
 #include "serial_log.h"
@@ -1748,6 +1749,39 @@ static void handle_authority(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     rep->mr[3] = snap->version;
 }
 
+/*
+ * handle_entropy_get() — relay-only path from the host-side CC socket to
+ * entropy_pd's MSG_ENTROPY_GET, so xtask's qemu-test harness can exercise
+ * entropy_pd's absent-device and range-validation behavior without a
+ * dedicated client PD. req->mr[0]=version, req->mr[1]=length. Reply:
+ * mr[0]=AOS_ENTROPY_* status, mr[1]=length (bytes valid in shmem); bytes,
+ * when present, land in rep->shmem[0..length). entropy_pd itself still
+ * performs every validation and device check -- this is pure relay, not a
+ * second validator.
+ */
+static void handle_entropy_get(const cc_req_wire_t *req, cc_reply_wire_t *rep)
+{
+    sel4_msg_t ereq = {0}, erep = {0};
+    ereq.opcode = MSG_ENTROPY_GET;
+    ereq.length = 12u;
+    /* version comes from the caller unmodified, so the harness can also
+     * exercise AOS_ENTROPY_ERR_VERSION end to end by passing a bad one. */
+    rep_u32(&ereq, 0, req->mr[0]);
+    rep_u32(&ereq, 4, req->mr[1]);
+    rep_u32(&ereq, 8, 0u);
+    sel4_call((seL4_CPtr)PD_CNODE_SLOT_ENTROPY_PD_EP, &ereq, &erep);
+
+    uint32_t status = msg_u32(&erep, 0);
+    uint32_t length = msg_u32(&erep, 4);
+    rep->mr[0] = status;
+    rep->mr[1] = length;
+    rep->mr[2] = 0;
+    rep->mr[3] = 0;
+    for (uint32_t i = 0; i < length && i < sizeof(rep->shmem); i++) {
+        rep->shmem[i] = erep.data[8u + i];
+    }
+}
+
 static void handle_operator(const cc_req_wire_t *req, cc_reply_wire_t *rep, bool write)
 {
     rep->mr[0] = CC_ERR_INVALID_ARG;
@@ -1983,6 +2017,7 @@ static void cc_dispatch(const cc_req_wire_t *req, cc_reply_wire_t *rep)
     /* Relay API */
     case MSG_CC_INSPECT:            handle_inspect(req, rep);           break;
     case MSG_CC_AUTHORITY:          handle_authority(req, rep);         break;
+    case MSG_CC_ENTROPY_GET:        handle_entropy_get(req, rep);       break;
     case MSG_CC_OPERATOR_WRITE:     handle_operator(req, rep, true);    break;
     case MSG_CC_OPERATOR_READ:      handle_operator(req, rep, false);   break;
     case MSG_CC_LIST_GUESTS:        handle_list_guests(rep);             break;

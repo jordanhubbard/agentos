@@ -861,6 +861,7 @@ gate-guest-io:
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
 gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-image-verify
+gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-entropy-unavailable
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
@@ -1708,6 +1709,15 @@ test-image-verify:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 1
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 2
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 3
+# test-entropy-unavailable: entropy_pd is reachable and degrades safely on
+# QEMU virt, where no virtio-mmio slot remains to wire a real virtio-rng
+# device to it (docs/TCB.md). This is NOT a working-entropy proof -- it
+# asserts AOS_ENTROPY_ERR_UNAVAILABLE on a well-formed request and
+# AOS_ENTROPY_ERR_RANGE on an over-length one. See xtask's
+# verify_entropy_unavailable() for exactly what is and is not checked.
+.PHONY: test-entropy-unavailable
+test-entropy-unavailable:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --assert-entropy-unavailable
 
 test-native-rust:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-native-rust --timeout-secs $(QEMU_TEST_TIMEOUT)

@@ -11,10 +11,12 @@ int main(void)
     /* A well-formed request is accepted. */
     memset(&r, 0, sizeof(r));
     r.version = AOS_ENTROPY_VERSION;
-    r.length  = 32u;
+    r.length  = 16u;
     assert(aos_entropy_validate_req(&r) == AOS_ENTROPY_OK);
 
-    /* Boundary: the maximum is accepted, one past it is not. */
+    /* Boundary: the maximum (32 bytes -- a 256-bit key/nonce, and the most
+     * this driver's single-round-trip IPC reply can carry; see
+     * entropy_contract.h) is accepted, one past it is not. */
     r.length = AOS_ENTROPY_MAX_BYTES;
     assert(aos_entropy_validate_req(&r) == AOS_ENTROPY_OK);
     r.length = AOS_ENTROPY_MAX_BYTES + 1u;

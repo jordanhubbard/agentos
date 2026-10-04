@@ -21,7 +21,18 @@
 #include <stdint.h>
 
 #define AOS_ENTROPY_VERSION    1u
-#define AOS_ENTROPY_MAX_BYTES  64u
+
+/*
+ * AOS_ENTROPY_MAX_BYTES is wire-derived, not an arbitrary policy choice:
+ * aos_entropy_reply_t travels inline in a sel4_msg_t, which carries
+ * SEL4_MSG_DATA_BYTES (48) bytes total. entropy_pd's reply spends the
+ * first 8 of those on a status word and a length word, leaving 40 for
+ * data; 32 is the largest round number that fits with margin, and it is
+ * also a complete 256-bit key or nonce -- the actual use. A caller needing
+ * more than 32 bytes in one call needs a shmem-backed opcode, not a
+ * larger value here.
+ */
+#define AOS_ENTROPY_MAX_BYTES  32u
 
 #ifndef MSG_ENTROPY_GET
 #define MSG_ENTROPY_GET        0x2C01u

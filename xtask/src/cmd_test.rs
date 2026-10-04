@@ -923,7 +923,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             || args.assert_log_rings
             || args.log_isolation_probe.is_some()
             || args.cc_envelope_probe.is_some()
-            || args.authority_probe.is_some())
+            || args.authority_probe.is_some()
+            || args.assert_entropy_unavailable)
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
         "inspect qualification requires AArch64 with guest-os none"
     );
@@ -2330,6 +2331,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if result.is_ok() && args.authority_probe == Some(1) {
         result = verify_authority(&cc_sock, &repo_root);
     }
+    if result.is_ok() && args.assert_entropy_unavailable {
+        result = verify_entropy_unavailable(&cc_sock);
+    }
     if result.is_ok() && args.assert_operator_session {
         result =
             verify_operator_session(&cc_sock, &repo_root, Duration::from_secs(args.timeout_secs));
@@ -3332,6 +3336,30 @@ pub(crate) fn spawn_qemu_with_guest(
                 .arg("virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0")
                 .arg("-device")
                 .arg("virtserialport,bus=vser0.0,chardev=cc_pd_char,name=cc.0,nr=1")
+                /*
+                 * entropy_pd does NOT get a `-device virtio-rng-device`
+                 * here. QEMU's `virt` machine hard-caps virtio-mmio at 32
+                 * slots (4 retypeable 4 KiB pages; confirmed via
+                 * `-machine virt,help` and `info mtree`), and all 4 pages
+                 * are already exclusively owned: page 0 (slots 0-7) by the
+                 * root task's generic virtio-mmio probe frame plus cc_pd's
+                 * virtio-serial at slot 2, page 1 (slots 8-15) by
+                 * virtio_blk's primary medium, page 2 (slots 16-23) by
+                 * net_pd, page 3 (slots 24-31) by virtio_blk's secondary
+                 * medium. There is no slot left to attach a real device
+                 * without taking a frame another driver already owns, and
+                 * a physical address outside that aperture is not a safe
+                 * substitute either: genuinely unbacked memory there
+                 * reliably wedges a reading thread instead of faulting
+                 * cleanly (see platform/entropy_host_layout.h for how that
+                 * was confirmed). entropy_pd's MMIO-probe frame is
+                 * therefore ordinary RAM it owns privately, not a host
+                 * device; no device can be wired there until either an
+                 * existing driver's footprint shrinks or entropy moves to
+                 * virtio-pci. The driver correctly detects the resulting
+                 * absent device and reports AOS_ENTROPY_ERR_UNAVAILABLE
+                 * rather than hanging.
+                 */
                 .arg("-device")
                 .arg(format!("loader,file={},cpu-num=0", loader.display()))
                 .arg("-device")
@@ -5294,7 +5322,7 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
         "hardware.arch=aarch64\n",
         "hardware.virtio_net_ipa=0xa010000\n",
         "hardware.virtio_net_virq=50\n",
-        "memory.pd_count=14\n",
+        "memory.pd_count=15\n",
         ".name=cc_pd\n",
         ".name=net_virt\n",
         ".name=serial_virt\n",
@@ -5377,8 +5405,8 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
             "authority version mismatch: {version}"
         );
         anyhow::ensure!(
-            pd_count == 15,
-            "expected 15 published protection domains for the default aarch64 \
+            pd_count == 16,
+            "expected 16 published protection domains for the default aarch64 \
              GUEST_OS=none image, got {pd_count}"
         );
         anyhow::ensure!(
@@ -5460,6 +5488,77 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
         "boot authority counts matched the compiled descriptor (serial_pd/cc_pd each \
         own their one IRQ handler; net_virt/blk_virt/serial_virt own none); CC and \
         agentctl agree; repeat stable"
+            .into(),
+    )
+}
+
+/*
+ * verify_entropy_unavailable() — entropy_pd is reachable and degrades
+ * safely, not that it has a working entropy source.
+ *
+ * QEMU `virt`'s virtio-mmio aperture is fully subscribed before entropy_pd
+ * exists (see docs/TCB.md and platform/include/platform/entropy_host_layout.h),
+ * so no `-device virtio-rng-device` is ever attached in this harness. This
+ * only proves: the service answers MSG_ENTROPY_GET (relayed through cc_pd's
+ * MSG_CC_ENTROPY_GET), a well-formed request gets AOS_ENTROPY_ERR_UNAVAILABLE
+ * rather than a hang, a zeroed/fabricated reply, or a fault, and an
+ * over-length request gets AOS_ENTROPY_ERR_RANGE -- exercising the
+ * validator on target, not just in the host test. It does NOT prove two
+ * reads differ, and must never be read as a working-entropy proof.
+ */
+const AOS_ENTROPY_VERSION: u32 = 1;
+const AOS_ENTROPY_OK: u32 = 0;
+const AOS_ENTROPY_ERR_RANGE: u32 = 2;
+const AOS_ENTROPY_ERR_UNAVAILABLE: u32 = 3;
+const AOS_ENTROPY_MAX_BYTES: u32 = 32;
+
+fn verify_entropy_unavailable(socket: &Path) -> anyhow::Result<String> {
+    let mut client = CcClient::connect(socket)?;
+
+    // A well-formed, in-range request: the service must be reachable and
+    // must report UNAVAILABLE, not hang, not fabricate bytes, not fault.
+    let reply = client.call(0x2621, AOS_ENTROPY_VERSION, 16, 0, &[])?;
+    anyhow::ensure!(
+        reply.mr[0] == AOS_ENTROPY_ERR_UNAVAILABLE,
+        "expected AOS_ENTROPY_ERR_UNAVAILABLE ({AOS_ENTROPY_ERR_UNAVAILABLE}) for a \
+         well-formed request on a platform with no virtio-rng device wired to \
+         entropy_pd, got status={} length={}",
+        reply.mr[0],
+        reply.mr[1]
+    );
+    anyhow::ensure!(
+        reply.mr[1] == 0,
+        "AOS_ENTROPY_ERR_UNAVAILABLE must report zero bytes, got length={}",
+        reply.mr[1]
+    );
+    anyhow::ensure!(
+        reply.mr[0] != AOS_ENTROPY_OK,
+        "entropy_pd reported AOS_ENTROPY_OK with no device attached -- this \
+         would mean fabricated bytes, not a real read"
+    );
+
+    // An over-length request: the validator must reject it on target, the
+    // same boundary tests/test_entropy_contract.c checks on host.
+    let over_length = client.call(
+        0x2621,
+        AOS_ENTROPY_VERSION,
+        AOS_ENTROPY_MAX_BYTES + 1,
+        0,
+        &[],
+    )?;
+    anyhow::ensure!(
+        over_length.mr[0] == AOS_ENTROPY_ERR_RANGE,
+        "expected AOS_ENTROPY_ERR_RANGE ({AOS_ENTROPY_ERR_RANGE}) for a length-{} \
+         request (max is {AOS_ENTROPY_MAX_BYTES}), got status={}",
+        AOS_ENTROPY_MAX_BYTES + 1,
+        over_length.mr[0]
+    );
+
+    Ok(
+        "entropy_pd reachable via cc_pd relay; well-formed request -> \
+         AOS_ENTROPY_ERR_UNAVAILABLE (no virtio-rng device wired on QEMU virt, \
+         not a working entropy source); over-length request -> \
+         AOS_ENTROPY_ERR_RANGE"
             .into(),
     )
 }
