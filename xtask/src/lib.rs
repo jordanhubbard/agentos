@@ -112,6 +112,11 @@ pub struct TestArgs {
     /// Test CC operator authority envelope: 1 admitted op, 2 bad credential, 3 out-of-envelope op.
     #[arg(long, conflicts_with = "block_isolation_probe", value_parser = clap::value_parser!(u8).range(1..=3))]
     pub cc_envelope_probe: Option<u8>,
+    /// Test T3 image verification (target proof): 1 unmodified control boot,
+    /// 2 a byte-tampered PD ELF refuses to boot and names the PD, 3 a
+    /// zeroed boot manifest refuses to boot.
+    #[arg(long, conflicts_with = "block_isolation_probe", value_parser = clap::value_parser!(u8).range(1..=3))]
+    pub image_verify_probe: Option<u8>,
     /// Test-only VMM fault probe: 1..4 primary foreign/disk read/write; 5..8 secondary.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
     pub block_isolation_probe: Option<u8>,

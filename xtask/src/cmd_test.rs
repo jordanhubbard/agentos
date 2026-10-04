@@ -639,6 +639,201 @@ fn run_seeded_cold_boots(args: &TestArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ─── T3 image verification: target-proof tamper helpers ───────────────────
+//
+// These mutate a just-built `agentos.img` file in place, driving probes 2
+// and 3 of `--image-verify-probe` (see docs/superpowers/plans/
+// 2026-10-03-t3-image-verification.md Task 3). They do NOT touch the
+// verification logic, manifest format, or signing path in
+// kernel/agentos-root-task/ or xtask/src/boot_manifest.rs — those are
+// reviewed and closed; this only edits bytes already written to disk by a
+// normal build.
+//
+// Byte layout mirrors (read-only, never written by these functions):
+//   - agentos_bundle_hdr_t / agentos_bundle_pd_entry_t, kernel/agentos-
+//     root-task/src/main.c.
+//   - aos_boot_manifest_hdr_t / aos_boot_manifest_entry_t, kernel/agentos-
+//     root-task/include/boot_manifest.h.
+//   - the top-level agentos.img header, xtask/src/cmd_gen_image.rs
+//     (IMAGE_MAGIC/HEADER_SIZE/PD_ENTRY_SIZE) — reused, byte-for-byte, as
+//     the format of the embedded `.pd_bundle` blob (cmd_gen_pd_bundle.rs).
+
+/// Magic for both the top-level agentos.img header and the embedded
+/// `.pd_bundle` header it is reused for (AGENTOS_IMAGE_MAGIC_BUNDLE in
+/// main.c / IMAGE_MAGIC in cmd_gen_image.rs). The two headers share a
+/// magic value by design, which is exactly why probe 2 must restrict its
+/// search to the root_task.elf byte range (see below) rather than
+/// scanning the whole image: a naive whole-file scan would find the
+/// top-level header at offset 0 as well as the real, verified bundle
+/// header nested inside root_task.elf, and silently tamper the wrong
+/// (unverified, dead) copy of the PD table.
+const BUNDLE_MAGIC_LE: [u8; 8] = 0x4147_454E_544F_5300u64.to_le_bytes();
+
+/// Magic for the signed boot manifest header (AOS_BOOT_MANIFEST_MAGIC,
+/// boot_manifest.h) — distinct from BUNDLE_MAGIC_LE by construction.
+const MANIFEST_MAGIC_LE: [u8; 8] = 0x314e_414d_4253_4f41u64.to_le_bytes();
+
+fn read_u32_le(buf: &[u8], off: usize) -> anyhow::Result<u32> {
+    let bytes: [u8; 4] = buf
+        .get(off..off + 4)
+        .context("read_u32_le: offset out of range")?
+        .try_into()
+        .unwrap();
+    Ok(u32::from_le_bytes(bytes))
+}
+
+/// Locate the root_task.elf byte range within a built `agentos.img`, from
+/// the top-level header at offset 0 (root_off/root_len fields — see
+/// cmd_gen_image.rs HEADER_SIZE layout). This is itself "derive from the
+/// header at runtime", not a hardcoded constant: if the header layout or
+/// the kernel/PD-table sizes that precede root_task.elf ever change,
+/// root_off/root_len change with them and this still finds the right
+/// range.
+fn root_task_region(img: &[u8]) -> anyhow::Result<(usize, usize)> {
+    anyhow::ensure!(img.len() >= 64, "image too small to contain a header");
+    anyhow::ensure!(
+        img.get(0..8) == Some(&BUNDLE_MAGIC_LE[..]),
+        "image does not start with the expected agentos.img magic"
+    );
+    let root_off = read_u32_le(img, 24)? as usize;
+    let root_len = read_u32_le(img, 28)? as usize;
+    anyhow::ensure!(
+        root_off
+            .checked_add(root_len)
+            .is_some_and(|end| end <= img.len()),
+        "root_task region [{root_off}, {root_off}+{root_len}) exceeds image length {}",
+        img.len()
+    );
+    Ok((root_off, root_len))
+}
+
+/// Find the first occurrence of an 8-byte magic value inside `haystack`.
+fn find_magic(haystack: &[u8], magic: &[u8; 8]) -> Option<usize> {
+    haystack.windows(8).position(|w| w == magic)
+}
+
+/// Flip one byte inside a PD's ELF region of the embedded, SIGNATURE-
+/// VERIFIED `.pd_bundle` section nested inside root_task.elf — not the
+/// separate, unverified top-level PD copy that cmd_gen_image.rs also
+/// writes into agentos.img (boot_find_elf() in main.c always resolves the
+/// bundle copy first; per boot_elf_in_verified_bundle(), the root task
+/// refuses to spawn from anywhere else). The byte offset is derived at
+/// boot-artifact-read time from the on-disk headers — top-level header to
+/// find root_task.elf, then a magic-anchored search within it for the
+/// nested bundle header, then that header's own pd_table_off/elf_off
+/// fields — so a layout change shifts the computed offset instead of
+/// silently leaving this probe testing stale bytes.
+///
+/// Returns the tampered PD's name (bytes up to the first NUL, or all 48
+/// bytes if unterminated, exactly as the root task's own name comparison
+/// treats the field).
+fn tamper_bundle_pd_byte(image_path: &Path) -> anyhow::Result<String> {
+    let mut img = std::fs::read(image_path).with_context(|| {
+        format!(
+            "failed to read built image for tampering: {}",
+            image_path.display()
+        )
+    })?;
+
+    let (root_off, root_len) = root_task_region(&img)?;
+    let bundle_rel = find_magic(&img[root_off..root_off + root_len], &BUNDLE_MAGIC_LE)
+        .context("embedded .pd_bundle header not found inside the root_task.elf region")?;
+    let bundle_off = root_off + bundle_rel;
+
+    anyhow::ensure!(
+        img.len() >= bundle_off + 64,
+        "bundle header at {bundle_off} is truncated by image length {}",
+        img.len()
+    );
+    let num_pds = read_u32_le(&img, bundle_off + 12)?;
+    let pd_table_off = read_u32_le(&img, bundle_off + 32)? as usize;
+    anyhow::ensure!(
+        num_pds > 0,
+        "bundle at {bundle_off} declares zero PDs; nothing to tamper"
+    );
+
+    let entry_off = bundle_off + pd_table_off; // first PD entry in the table
+    anyhow::ensure!(
+        img.len() >= entry_off + 64,
+        "PD entry table at {entry_off} is truncated by image length {}",
+        img.len()
+    );
+    let name_field = &img[entry_off..entry_off + 48];
+    let name_len = name_field.iter().position(|&b| b == 0).unwrap_or(48);
+    let pd_name = String::from_utf8_lossy(&name_field[..name_len]).into_owned();
+    anyhow::ensure!(
+        !pd_name.is_empty(),
+        "PD entry at {entry_off} has an empty name"
+    );
+
+    let elf_off = read_u32_le(&img, entry_off + 48)? as usize;
+    let elf_len = read_u32_le(&img, entry_off + 52)? as usize;
+    anyhow::ensure!(
+        elf_len > 0,
+        "PD '{pd_name}' has a zero-length ELF in the bundle"
+    );
+
+    // Any byte within [elf_off, elf_off+elf_len) suffices per the T3 plan;
+    // pick the midpoint so this is never the first or last byte of the ELF.
+    let target = bundle_off + elf_off + (elf_len / 2);
+    anyhow::ensure!(
+        target < bundle_off + elf_off + elf_len && target < img.len(),
+        "computed tamper offset {target} falls outside PD '{pd_name}' ELF region"
+    );
+    img[target] ^= 0xFF;
+
+    std::fs::write(image_path, &img)
+        .with_context(|| format!("failed to write tampered image: {}", image_path.display()))?;
+    Ok(pd_name)
+}
+
+/// Zero the embedded, signed `.pd_manifest` section in a built
+/// `agentos.img` (located the same magic-anchored way as the bundle
+/// above), pinning the "absent/malformed manifest must refuse boot, not
+/// skip verification" case (T3 plan Review Focus item 2). The section's
+/// own size (header.count) is read first so exactly the manifest bytes —
+/// header + entries + trailing Ed25519 signature — are zeroed, nothing
+/// more and nothing less.
+fn tamper_zero_manifest(image_path: &Path) -> anyhow::Result<()> {
+    let mut img = std::fs::read(image_path).with_context(|| {
+        format!(
+            "failed to read built image for tampering: {}",
+            image_path.display()
+        )
+    })?;
+
+    let (root_off, root_len) = root_task_region(&img)?;
+    let manifest_rel = find_magic(&img[root_off..root_off + root_len], &MANIFEST_MAGIC_LE)
+        .context("embedded .pd_manifest header not found inside the root_task.elf region")?;
+    let manifest_off = root_off + manifest_rel;
+
+    anyhow::ensure!(
+        img.len() >= manifest_off + 16,
+        "manifest header at {manifest_off} is truncated by image length {}",
+        img.len()
+    );
+    let count = read_u32_le(&img, manifest_off + 12)? as usize;
+    // header(32) + count * entry(80) + signature(64), per boot_manifest.h.
+    let total = 32usize
+        .checked_add(count.saturating_mul(80))
+        .and_then(|v| v.checked_add(64))
+        .context("manifest size computation overflowed")?;
+    anyhow::ensure!(
+        img.len() >= manifest_off + total,
+        "manifest blob [{manifest_off}, {}) exceeds image length {}",
+        manifest_off + total,
+        img.len()
+    );
+
+    for b in &mut img[manifest_off..manifest_off + total] {
+        *b = 0;
+    }
+
+    std::fs::write(image_path, &img)
+        .with_context(|| format!("failed to write tampered image: {}", image_path.display()))?;
+    Ok(())
+}
+
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
         !args.retain_failed_guest || (args.keep_running && std::io::stdin().is_terminal()),
@@ -709,6 +904,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 && !args.no_build
                 && !args.keep_running),
         "guest GIC failure qualification requires a fresh ARM boot-only image"
+    );
+    anyhow::ensure!(
+        args.image_verify_probe.is_none()
+            || (args.board == "qemu_virt_aarch64"
+                && args.guest_os == "none"
+                && !args.no_build
+                && !args.keep_running),
+        "image verification qualification requires a fresh AArch64 GUEST_OS=none image \
+         (tampering happens in-process right after the build, before QEMU launch, so a \
+         rebuild can never clobber it)"
     );
     anyhow::ensure!(
         !(args.assert_inspect
@@ -1080,6 +1285,40 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
         run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
+    }
+
+    // T3 image verification (probes 2/3): mutate the just-built image file
+    // in place, in this same process, strictly after the build step above
+    // and strictly before QEMU is spawned below. No further build or make
+    // step runs between tampering and boot, so a rebuild can never clobber
+    // the tamper — see docs/superpowers/plans/2026-10-03-t3-image-verification.md.
+    let mut image_verify_tampered_pd: Option<String> = None;
+    if let Some(probe) = args.image_verify_probe {
+        let image_path = repo_root
+            .join("_build")
+            .join(&args.board)
+            .join("agentos.img");
+        match probe {
+            2 => {
+                let pd_name = tamper_bundle_pd_byte(&image_path).context(
+                    "image-verify probe 2: failed to flip a byte in a PD's bundle ELF region",
+                )?;
+                println!(
+                    "[xtask:test] image-verify probe 2: tampered PD '{pd_name}' in {}",
+                    image_path.display()
+                );
+                image_verify_tampered_pd = Some(pd_name);
+            }
+            3 => {
+                tamper_zero_manifest(&image_path)
+                    .context("image-verify probe 3: failed to zero the embedded boot manifest")?;
+                println!(
+                    "[xtask:test] image-verify probe 3: zeroed .pd_manifest in {}",
+                    image_path.display()
+                );
+            }
+            _ => {}
+        }
     }
 
     let seeded_plan = format!("{profile_plan:#?}\n");
@@ -1470,6 +1709,60 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "root continued guest startup after GIC failure"
             );
             Ok(proof)
+        })
+    } else if args.image_verify_probe == Some(1) {
+        // Control: an unmodified image boots and completes verification.
+        wait_for_all_markers(
+            &log_path,
+            &[
+                "[rt] boot manifest OK: signature verified",
+                "agentOS boot complete",
+            ],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.image_verify_probe == Some(2) {
+        // Proof: a single tampered byte inside one PD's verified bundle ELF
+        // region refuses the ENTIRE boot, names the tampered PD, and never
+        // reaches agentOS boot complete.
+        let pd_name = image_verify_tampered_pd
+            .as_deref()
+            .context("image-verify probe 2 requires a tampered PD name from the build step")?;
+        let digest_marker = format!(
+            "[rt] pd {pd_name}: ELF digest MISMATCH against signed manifest; refusing boot"
+        );
+        wait_for_all_markers(
+            &log_path,
+            &[digest_marker.as_str()],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+        .and_then(|proof| {
+            std::thread::sleep(Duration::from_millis(500));
+            let text = std::fs::read_to_string(&log_path)?;
+            anyhow::ensure!(
+                !text.contains("agentOS boot complete"),
+                "root continued boot after a tampered PD digest mismatch"
+            );
+            Ok(format!("{proof}; agentOS boot complete absent"))
+        })
+    } else if args.image_verify_probe == Some(3) {
+        // Pins the fail-open case: an absent/zeroed manifest refuses boot
+        // rather than being treated as "nothing to verify".
+        wait_for_all_markers(
+            &log_path,
+            &["[rt] refusing boot: PD image manifest failed verification"],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+        .and_then(|proof| {
+            std::thread::sleep(Duration::from_millis(500));
+            let text = std::fs::read_to_string(&log_path)?;
+            anyhow::ensure!(
+                !text.contains("agentOS boot complete"),
+                "root continued boot after a zeroed boot manifest"
+            );
+            Ok(format!("{proof}; agentOS boot complete absent"))
         })
     } else if args.log_isolation_probe.is_some() {
         wait_for_all_markers(
@@ -2050,7 +2343,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     // Every AArch64 image includes log_drain and the serial driver. Require
     // actual driver-backed output even on release kernels with debug printing
     // disabled; PD load alone missed malformed serial requests in log_drain.
-    if result.is_ok() && args.board == "qemu_virt_aarch64" && args.guest_gic_failure_probe.is_none()
+    if result.is_ok()
+        && args.board == "qemu_virt_aarch64"
+        && args.guest_gic_failure_probe.is_none()
+        && args.image_verify_probe.is_none()
     {
         if let Err(error) = wait_for_all_markers(
             &log_path,

@@ -492,12 +492,21 @@ jobs:
         timeout-minutes: 10
         run: make test-authority
 
+      # T3 image verification target proof: control boot, a byte-tampered PD
+      # image refusing to boot (named), and a zeroed boot manifest refusing
+      # to boot. See docs/superpowers/plans/2026-10-03-t3-image-verification.md
+      # and docs/TCB.md.
+      - name: GATE — make test-image-verify
+        timeout-minutes: 15
+        run: make test-image-verify
+
       - name: Boot gate summary
         run: |
           echo "✅ Dual-arch boot gate passed:"
           echo "   - aarch64 GUEST_OS=none (target/QEMU)"
           echo "   - x86_64  GUEST_OS=none (target/QEMU)"
           echo "   - CC operator authority envelope (admit / refuse / exact code)"
+          echo "   - PD image verification (control / tampered-PD refusal / stripped-manifest refusal)"
           echo "GUEST_OS=none is a stub VMM: this proves PD load and root-task"
           echo "parking only. Guest I/O is proven by the guest proof jobs; the"
           echo "os-claim-summary job combines them."
