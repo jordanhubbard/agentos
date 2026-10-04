@@ -237,6 +237,7 @@ typedef struct {
 #define SVC_ID_X86_SECONDARY_RUNNER 38u /* Secondary guest bootstrap executor */
 #define SVC_ID_X86_SECONDARY_AP_RUNNER 39u /* Secondary guest AP executor */
 #define SVC_ID_ENTROPY_PD 40u /* virtio-rng driver PD */
+#define SVC_ID_CAP_LEND_XFER 40u /* T5 cap-lend demonstration pair transfer EP (test image only) */
 
 /* Standard per-PD CNode slot assignments for well-known capabilities.
  * These are the slots at which each PD finds its initial endpoint caps. */

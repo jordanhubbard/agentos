@@ -57,6 +57,9 @@
 #include <platform/blk_layout.h>      /* shared sDDF block region (VMMs + blk_virt) */
 #include <platform/serial_virt_layout.h>
 #include "contracts/queue_rebind_caps.h"
+#ifdef AGENTOS_CAP_LEND_TEST
+#include "contracts/cap_lend_test.h"
+#endif
 #include <platform/serial_uart.h>
 #include "boot_manifest.h"   /* aos_boot_manifest_validate/_find (T3 image verification) */
 #include "ed25519_verify.h"  /* ed25519_verify — manifest signature check                */
@@ -3589,6 +3592,49 @@ void root_task_main(const seL4_BootInfo *bi)
                 return;
             }
         }
+
+#ifdef AGENTOS_CAP_LEND_TEST
+        /*
+         * T5 cap-lend demonstration pair (test image only; see
+         * tests/cap-lend/{lender,borrower}_pd.c and cap_lend_test.h).
+         * Both PDs need a self-reference to their own CNode and VSpace --
+         * the same pattern as the queue-service block just above (and
+         * AOS_GUEST_RAM_SELF_CNODE elsewhere) -- because aos_cap_lend()
+         * and aos_cap_lend_revoke() operate on capabilities in the
+         * caller's own CSpace and need a root argument to name it, and
+         * each PD maps its own frame rather than having a service PD do
+         * it on their behalf.
+         */
+        if (name_eq(pd->name, "cap_lend_lender") ||
+            name_eq(pd->name, "cap_lend_borrower")) {
+            if (pd->cnode_size_bits != AOS_CAP_LEND_CNODE_BITS ||
+                seL4_CNode_Copy(pd_cnode, AOS_CAP_LEND_SELF_CNODE_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, pd_cnode,
+                    64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_CAP_LEND_SELF_VSPACE_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, vspace,
+                    64u, seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] cap-lend self-reference grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+        /*
+         * The object being lent: a single 4K frame, retyped directly into
+         * cap_lend_lender's own CNode (full rights -- a fresh Untyped
+         * retype always grants seL4_AllRights) at AOS_CAP_LEND_FRAME_SLOT.
+         * This PD owns it outright; nothing else in the system holds a
+         * capability to it until aos_cap_lend() mints a reduced-rights
+         * derivative from it.
+         */
+        if (name_eq(pd->name, "cap_lend_lender")) {
+            seL4_Error frame_err = ut_alloc(seL4_ARM_SmallPageObject, 0u,
+                pd_cnode, AOS_CAP_LEND_FRAME_SLOT, pd->cnode_size_bits);
+            if (frame_err != seL4_NoError) {
+                dbg_puts("[rt] cap-lend frame retype failed; refusing PD start\n");
+                continue;
+            }
+        }
+#endif
 
         /* ── 4g.4: Distribute device MMIO frame caps ────────────────────────
          * For each device_frame_desc_t, find the device untyped covering its
