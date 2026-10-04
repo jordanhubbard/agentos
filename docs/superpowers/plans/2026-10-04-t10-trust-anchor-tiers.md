@@ -103,28 +103,16 @@ Today `render_pubkey_header()` emits `AOS_BOOT_MANIFEST_DEV_SIGNED` as a boolean
 - [ ] **Probe 4 — the tier is visible at runtime.** Read the inspect snapshot and assert it reports the tier the image was built with.
 - [ ] **Step 5: Prove probe 2 is not vacuous.** Make the dev-tier path skip the digest comparison entirely, rebuild, and confirm probe 2 **fails** — the mismatch report is absent. Restore; confirm it passes. Paste all three outputs. Without this, "dev mode still verifies" is an untested claim.
 - [ ] **Step 6: CI.** Add `test-trust-anchor` to `gate` **and** as a step in the `os-claim-gate` job. No CI job invokes `make gate`.
-- [ ] **Step 7: Rewrite the T3 paragraph in `docs/TCB.md`.** Replace the "unconditional" sentence with the tier table and these statements:
+- [ ] **Step 7: Verify the `docs/TCB.md` trust-anchor section — do NOT rewrite it.** Task 2 already replaced the old "unconditional" claim, and a reviewer confirmed the result is accurate and that there is exactly one qualification paragraph (an earlier merge in this project left two contradictory ones, so check for that specifically). Your job is to confirm the text still matches the shipped behaviour after Task 3's changes, not to paste in replacement prose. Assert each of these is present and true:
+  - verification runs under a named anchor, recorded in the image and announced at boot;
+  - under the vendor and machine-owner anchors, a manifest or digest mismatch refuses boot;
+  - the machine-owner anchor **stands alone** — the vendor key is optional, and on an owner-only machine agentOS's own vendor-signed images are refused unless the owner signs or counter-signs them;
+  - the machine-owner anchor does **not** defend against the machine owner, and no anchor available today does, because an owner with physical access can replace the boot chain;
+  - under the development anchor digests are still computed and mismatches still reported, with only the decision to stop boot changing, and it requires an explicit opt-in;
+  - `AOS_ANCHOR_HARDWARE` is defined and **not implemented**, reports unavailable, and claims nothing about TPM or measured boot;
+  - MOK enrolment is build-time-provisioned, with no runtime physical-presence flow.
 
-```markdown
-Image verification runs under one of three trust anchors, recorded in the image
-and announced at boot. Under the vendor anchor (a public key fixed at build
-time) and the machine-owner anchor (an enrolled key, additive to the vendor
-key), a manifest or digest mismatch refuses boot. Under the development anchor,
-digests are still computed and mismatches still reported, but boot proceeds —
-it establishes nothing about image integrity and exists so the platform can be
-iterated on before production key storage exists. The development anchor
-requires an explicit build opt-in; a build with no key and no opt-in fails
-rather than producing a non-gating image.
-
-The machine-owner anchor does NOT defend against the machine owner, who can
-sign any image they choose. It constrains remote compromise and third-party
-tampering. Only the vendor anchor excludes the owner, and neither excludes an
-adversary who can replace the boot chain — that needs a hardware root of trust.
-
-A hardware anchor (OTP-fused key or firmware TPM) is defined as a key source
-and is NOT implemented; it reports unavailable. No claim is made about TPM or
-measured-boot support.
-```
+  If any statement has drifted out of true, fix that statement. Do not restructure the section.
 
 - [ ] **Step 8:** Full verification — `make test-host`, `make policy-check`, the aarch64 boot test, `make test-trust-anchor`, `make test-image-verify`, `make test-authority`, `make test-inspect`. Report that `make gate` was not run. Commit.
 
