@@ -1456,5 +1456,35 @@ published counts against the compiled descriptor, including that `net_virt` and
 write to the page faults. The page is read over CC as `MSG_CC_AUTHORITY`,
 admitted to `CC_ENVELOPE_OPERATOR` alongside `MSG_CC_INSPECT`; the handler is
 read-only, so admitting it conveys no authority and cannot mutate state.
-Qualification boundary: obtained under Microkit SDK 2.1.0, not the pin in
-`tools/sdk/default-version`; release qualification must re-run it.
+Qualification boundary: development results were obtained under Microkit SDK
+2.1.0. `make test-authority` is additionally run by the CI `os-claim-gate` job,
+which installs the verified SDK artifact; that job's result on a given revision
+is the qualifying evidence under the pin.
+
+### Protection-domain image verification
+
+The root task verifies every protection-domain image before spawning it. The
+build emits a manifest of per-PD SHA-256 digests signed once with Ed25519; root
+verifies that signature against a public key fixed at build time, then checks
+each PD's digest immediately before spawn. Verification covers the AArch64 and
+x86_64 targets, which embed their PD images in a signed bundle. On those
+targets it is unconditional: no build flag, environment variable or
+configuration disables it, and an absent or malformed manifest refuses boot
+rather than skipping the check. RISC-V does not embed a PD bundle; PDs load
+there via the seL4 extra-BootInfo path and are **not** verified.
+`make test-image-verify` boots an unmodified image, a byte-tampered image, and
+an image with its manifest stripped, requiring the latter two to be refused with
+the tampered image named.
+
+Scope: this constrains every adversary who can modify an image but not replace
+the boot chain. It does NOT establish resistance to the local operator, who is
+untrusted under the platform threat model and has physical access: a public key
+shipped in the image can be replaced along with the image it validates. Only a
+hardware anchor — OTP-fused signed boot or a firmware TPM — would change that,
+and none is confirmed for the target boards. This is not a measured-boot chain
+and produces no attestation.
+
+Qualification boundary: development results were obtained under Microkit SDK
+2.1.0. `make test-image-verify` is additionally run by the CI `os-claim-gate`
+job, which installs the verified SDK artifact; that job's result on a given
+revision is the qualifying evidence under the pin.

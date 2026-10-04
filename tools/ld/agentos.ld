@@ -43,10 +43,23 @@ SECTIONS {
 
     . = ALIGN(4096);
 
-    /* Zero-size PD bundle placeholder — no bundle on non-AArch64 targets */
+    /* Zero-size PD bundle placeholder — no bundle on non-AArch64 targets.
+     * On x86_64 the PD_BUNDLE_OBJ object (produced the same way as on
+     * AArch64; see kernel/agentos-root-task/Makefile) supplies a non-empty
+     * .pd_bundle input section here. On RISC-V nothing feeds this input
+     * section, so it stays zero-size and PDs load via the seL4 extra
+     * BootInfo path instead (see main.c boot_find_elf()). */
     __pd_bundle_start = .;
     .pd_bundle : { KEEP(*(.pd_bundle)) }
     __pd_bundle_end = .;
+
+    /* Signed boot manifest (T3 image verification) — same pattern as
+     * .pd_bundle above: a real .pd_manifest input section on x86_64
+     * (PD_MANIFEST_OBJ), zero-size on RISC-V where there is no bundle to
+     * verify in the first place. */
+    __pd_manifest_start = .;
+    .pd_manifest : { KEEP(*(.pd_manifest)) }
+    __pd_manifest_end = .;
 
     _end = .;
 }

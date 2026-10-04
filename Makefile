@@ -860,7 +860,7 @@ gate-guest-io:
 	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
-gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority
+gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io test-cc-envelope test-authority test-image-verify
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
@@ -922,6 +922,7 @@ test-host: test-authority-kindmap-host
 test-host: test-cc-envelope-host
 test-host: test-cc-envelope-dispatch-host
 test-host: test-cc-session-reap-host
+test-host: test-boot-manifest-host
 
 .PHONY: test-cc-envelope-host
 test-cc-envelope-host:
@@ -958,6 +959,15 @@ test-remoteos-client-host:
 		tests/test_remoteos_client.c kernel/agentos-root-task/src/remoteos_client.c \
 		-o $(BUILD_TMP_DIR)/test_remoteos_client
 	$(BUILD_TMP_DIR)/test_remoteos_client
+
+.PHONY: test-boot-manifest-host
+test-boot-manifest-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_boot_manifest.c kernel/agentos-root-task/src/boot_manifest.c \
+		-o $(BUILD_TMP_DIR)/test_boot_manifest
+	$(BUILD_TMP_DIR)/test_boot_manifest
 
 .PHONY: test-authority-host
 test-authority-host:
@@ -1668,6 +1678,26 @@ test-authority:
 	$(MAKE) -C tools/agentctl
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --authority-probe 1
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --authority-probe 2
+
+# test-image-verify — T3 target proof: the root task verifies every PD
+# image before spawning it (docs/superpowers/plans/
+# 2026-10-03-t3-image-verification.md). Each probe performs its own fresh
+# build (no --no-build), so a stale image from a previous probe can never
+# leak into the next one; probes 2 and 3 tamper the just-built image file
+# in-process, strictly after that build and strictly before QEMU launch
+# (xtask/src/cmd_test.rs), so a rebuild can never clobber the tamper.
+#   1. control        — an unmodified image boots and completes verification.
+#   2. the proof       — a single tampered byte inside one PD's verified
+#                         bundle ELF region refuses the entire boot and
+#                         names the tampered PD; agentOS boot complete never
+#                         appears.
+#   3. fail-open pin    — a zeroed .pd_manifest section refuses boot rather
+#                         than being treated as nothing to verify.
+.PHONY: test-image-verify
+test-image-verify:
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 1
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 2
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 3
 
 test-native-rust:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-native-rust --timeout-secs $(QEMU_TEST_TIMEOUT)

@@ -24,3 +24,4 @@ libc       = "0.2"
 flate2     = "1"
 sha2       = "0.10"
 zstd       = { version = "0.13", default-features = false }
+ed25519-dalek = { version = "2", features = ["std"] }
