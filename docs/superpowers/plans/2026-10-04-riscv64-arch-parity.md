@@ -81,6 +81,9 @@ This task buys the ability to measure everything after it. It adds no features.
 
 **Files:** `kernel/agentos-root-task/Makefile` (bundle predicate, ~line 1762), `kernel/agentos-root-task/src/main.c` (`AGENTOS_HAS_PD_BUNDLE`, ~line 446, and the false claim at 2976-2979).
 
+- [ ] **Step 0 (carried from the Task 2 review — do these first, they are small and one is a latent crash):**
+  - `main.c:3799-3802` — the `serial_pd` UART handover nulls `g_uart_dr`/`g_uart_fr` but **not** the RISC-V pair `g_uart_thr`/`g_uart_lsr` that Task 2 introduced. `dbg_puts`'s guard at `main.c:1397` then still passes and `main.c:1401` spins on an unmapped VA. It is doubly masked today (riscv PDs do not load; the riscv descriptor gives `serial_pd` no device frame) and fires the moment Task 4 gives `serial_pd` the UART at `0x10000000` — which `AGENTOS_UART_PA` now equals because of Task 2. The symptom would be the root task dying between starting `serial_pd` and `[rt] boot complete`, console already dead, looking exactly like a Task 4 descriptor bug. Two lines.
+  - `main.c:2551-2560` — the GIC vCPU frame cap producer is arch-blind, so `[rt] GIC vCPU frame cap err=0` "succeeds" on RISC-V because the AArch64 GIC physical address happens to land in a riscv device untyped. The *consumer* at `main.c:3978` is already `#if defined(__aarch64__)`; guard the producer to match. This is the arch-blind pattern Review Focus #4 names, and it is assigned here because Task 3 is already in `main.c`.
 - [ ] **Step 1:** Delete the comment at `main.c:2976-2979` claiming PDs load on RISC-V via the seL4 extra BootInfo path. There is no producer; the claim is false and it is why nobody noticed PDs cannot start there.
 - [ ] **Step 2:** Extend `AGENTOS_HAS_PD_BUNDLE` to riscv64 so PDs are embedded and loaded exactly as on aarch64. Check every site the predicate guards — T10 added several, including the trust-anchor banner and `boot_verify_manifest()`.
 - [ ] **Step 3:** This necessarily turns on signed-manifest verification for riscv64. That is the point: it must not be weaker there. Confirm `make build TARGET_ARCH=riscv64` produces a signed bundle and the boot refuses a tampered PD.
@@ -92,7 +95,7 @@ This task buys the ability to measure everything after it. It adds no features.
 
 ### Task 4: A real riscv64 PD set, and an honest guest statement
 
-**Files:** `kernel/agentos-root-task/src/system_desc_riscv64.c`, `kernel/agentos-root-task/agentos.toml` / `boards/qemu-riscv64/`, `docs/TCB.md`, `xtask/src/cmd_test.rs`, `Makefile`, `.github/workflows/ci.yml`.
+**Files:** `kernel/agentos-root-task/src/system_desc_riscv64.c`, `kernel/agentos-root-task/src/main.c`, `kernel/agentos-root-task/agentos.toml` / `boards/qemu-riscv64/`, `docs/TCB.md`, `xtask/src/cmd_test.rs`, `Makefile`, `.github/workflows/ci.yml`.
 
 riscv64's descriptor is the pre-virtualizer topology plus HURD-era PDs (`event_bus`, `irq_pd`, `timer_pd`, `controller`, `init_agent`, `agentfs`, `vibe_engine`, `vfs_server`, `net_server`, `framebuffer_pd`) and is missing all three virtualizers. It never tracked the aarch64 evolution.
 
