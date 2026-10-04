@@ -44,6 +44,14 @@ int main(void)
      * silently degrade to non-gating. */
     s = base_state(AOS_ANCHOR_VENDOR);
     assert(aos_anchor_validate(&s) != AOS_ANCHOR_OK);
+    /* This state is rejected by aos_anchor_validate() above and a real
+     * caller should never reach gates_boot() with it. But if it is
+     * asked anyway, it must still answer "gate" -- gates_boot() must
+     * never read key presence and decide "no key, so don't gate",
+     * which is the exact silent-degradation anti-pattern this whole
+     * design exists to prevent. Do not delete this as testing an
+     * impossible case: it is a regression guard on that one rule. */
+    assert(aos_anchor_gates_boot(&s) != 0);
 
     /* AOS_ANCHOR_MOK requires BOTH vendor and mok present. */
     s = base_state(AOS_ANCHOR_MOK);
@@ -58,12 +66,22 @@ int main(void)
     s = base_state(AOS_ANCHOR_MOK);
     make_key(&s.mok, 1);
     assert(aos_anchor_validate(&s) != AOS_ANCHOR_OK);
+    /* Same guard as above, for the MOK-without-vendor-key incoherent
+     * state: validate() rejects it, but if gates_boot() is asked about
+     * it anyway it must not answer "don't gate". Not testing a
+     * reachable case -- testing that gates_boot() never branches on
+     * key presence at all. */
+    assert(aos_anchor_gates_boot(&s) != 0);
 
     /* AOS_ANCHOR_MOK with vendor present but mok absent is also
      * rejected -- also an incoherent gating tier with a missing key. */
     s = base_state(AOS_ANCHOR_MOK);
     make_key(&s.vendor, 1);
     assert(aos_anchor_validate(&s) != AOS_ANCHOR_OK);
+    /* Same guard again, for MOK-without-mok-key: gates_boot() must
+     * still say "gate" even though validate() has already rejected
+     * this state. */
+    assert(aos_anchor_gates_boot(&s) != 0);
 
     /* AOS_ANCHOR_NONE validates with no keys present and does not gate. */
     s = base_state(AOS_ANCHOR_NONE);
