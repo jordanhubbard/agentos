@@ -5303,6 +5303,19 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
                 "boot snapshot advertised live thread state"
             );
         }
+        // T10: anchor_tier lives at byte offset 76 (right after
+        // thread_count at 72), repurposed from the always-zero `reserved`
+        // field -- see platform/include/platform/inspect.h. The default
+        // test build signs with the in-tree dev seed via
+        // AGENTOS_BUNDLE_SIGNING_KEY (kernel/agentos-root-task/Makefile's
+        // default), which selects AOS_ANCHOR_VENDOR (value 1) -- gating,
+        // not AOS_ANCHOR_NONE. A running system must be askable which
+        // trust anchor it booted under, not just the boot log.
+        anyhow::ensure!(
+            rd32(&first.shmem, 76) == 1,
+            "inspect did not report the AOS_ANCHOR_VENDOR trust anchor tier (offset 76): {}",
+            rd32(&first.shmem, 76)
+        );
     }
     let out = std::process::Command::new(root.join("_build/tools/agentctl/agentctl"))
         .arg("--socket")
@@ -5326,6 +5339,8 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
         ".name=cc_pd\n",
         ".name=net_virt\n",
         ".name=serial_virt\n",
+        "trust.anchor_tier=1\n",
+        "trust.anchor_tier_name=vendor\n",
     ] {
         anyhow::ensure!(report.contains(expected), "inspect missing {expected}");
     }

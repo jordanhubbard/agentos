@@ -72,7 +72,18 @@ typedef struct __attribute__((packed)) aos_inspect_snapshot {
     aos_inspect_memory_t mem;
     aos_inspect_hardware_t hw;
     uint32_t thread_count;
-    uint32_t reserved;
+    /*
+     * anchor_tier -- the trust anchor tier (aos_anchor_tier_t: 0=NONE,
+     * 1=VENDOR, 2=MOK, 3=HARDWARE) THIS image booted under. Was `reserved`
+     * (always zero); repurposed by T10 so an operator can ask a LIVE
+     * machine which anchor it booted under, not just read a boot log that
+     * has long since scrolled away. See
+     * kernel/agentos-root-task/include/contracts/trust_anchor.h for the
+     * tier semantics -- this field intentionally does not depend on that
+     * header (host-testable, no cross-module coupling); it only carries
+     * the numeric value root already validated against it.
+     */
+    uint32_t anchor_tier;
     aos_inspect_thread_t threads[AOS_INSPECT_MAX_THREADS];
 } aos_inspect_snapshot_t;
 
@@ -94,6 +105,7 @@ typedef struct aos_inspect_view {
     uint64_t gic_dist_pa;
     uint64_t virtio_net_ipa;
     uint32_t thread_count;
+    uint32_t anchor_tier; /* see aos_inspect_snapshot_t.anchor_tier above */
     aos_inspect_thread_t threads[AOS_INSPECT_MAX_THREADS];
 } aos_inspect_view_t;
 

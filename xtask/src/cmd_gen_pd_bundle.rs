@@ -36,8 +36,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use crate::boot_manifest::{
-    build_signed_manifest, load_signing_key, render_pubkey_header, verifying_key_bytes,
-    ManifestEntry,
+    build_signed_manifest, render_pubkey_header, select_anchor, AnchorTier, ManifestEntry,
 };
 
 // Re-use the same SystemDesc / PdDesc types from cmd_gen_image
@@ -208,8 +207,8 @@ pub fn run(args: &GenPdBundleArgs) -> Result<()> {
     }
 
     let repo_root = boot_manifest_repo_root(&args.system)?;
-    let loaded_key = load_signing_key(&repo_root)?;
-    let manifest_blob = build_signed_manifest(&manifest_entries, &loaded_key.signing_key)
+    let selection = select_anchor(&repo_root)?;
+    let manifest_blob = build_signed_manifest(&manifest_entries, &selection.signing_key)
         .context("failed to build signed boot manifest")?;
 
     let manifest_out = args
@@ -219,35 +218,47 @@ pub fn run(args: &GenPdBundleArgs) -> Result<()> {
     fs::write(&manifest_out, &manifest_blob)
         .with_context(|| format!("failed to write boot manifest: {}", manifest_out.display()))?;
 
-    let pubkey = verifying_key_bytes(&loaded_key.signing_key);
     let pubkey_header_out = args.pubkey_header_out.clone().unwrap_or_else(|| {
         args.out
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("boot_manifest_pubkey.h")
     });
-    fs::write(
-        &pubkey_header_out,
-        render_pubkey_header(&pubkey, loaded_key.is_dev_key),
-    )
-    .with_context(|| {
+    fs::write(&pubkey_header_out, render_pubkey_header(&selection)).with_context(|| {
         format!(
             "failed to write boot manifest pubkey header: {}",
             pubkey_header_out.display()
         )
     })?;
 
+    let tier_name = match selection.tier {
+        AnchorTier::None => "NONE (development, not gating)",
+        AnchorTier::Vendor => "VENDOR",
+        AnchorTier::Mok => "MOK",
+    };
     println!(
-        "[gen-pd-bundle] wrote {}: {} bytes, {} entries, signed with {} key ({})",
+        "[gen-pd-bundle] wrote {}: {} bytes, {} entries, trust anchor tier {} \
+         (vendor key {}, mok key {}), signed with {} key ({})",
         manifest_out.display(),
         manifest_blob.len(),
         manifest_entries.len(),
-        if loaded_key.is_dev_key {
+        tier_name,
+        if selection.vendor.present {
+            "present"
+        } else {
+            "absent"
+        },
+        if selection.mok.present {
+            "present"
+        } else {
+            "absent"
+        },
+        if selection.signing_key_is_dev {
             "DEVELOPMENT"
         } else {
             "custom"
         },
-        loaded_key.source.display(),
+        selection.signing_key_source.display(),
     );
     println!("[gen-pd-bundle] wrote {}", pubkey_header_out.display());
 
@@ -298,6 +309,8 @@ fn boot_manifest_repo_root(system_toml: &std::path::Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boot_manifest::test_support::{with_anchor_env, ENV_LOCK};
+    use crate::boot_manifest::{DEV_SIGNING_KEY_REL_PATH, VENDOR_SIGNING_KEY_ENV};
     use std::io::Read;
     use tempfile::NamedTempFile;
 
@@ -306,6 +319,30 @@ mod tests {
         v.extend_from_slice(&[0u8; 12]);
         v
     }
+
+    /// `run()` calls `select_anchor()`, which reads the same process-global
+    /// trust-anchor env vars boot_manifest.rs's own tests mutate -- hence
+    /// ENV_LOCK/with_anchor_env are shared across both modules. Tests here
+    /// just need SOME gating key configured so `run()` succeeds; the dev
+    /// seed (committed in-tree, not a secret) mirrors what the real
+    /// Makefile defaults AGENTOS_BUNDLE_SIGNING_KEY to.
+    fn run_with_dev_vendor_key(args: &GenPdBundleArgs) -> anyhow::Result<()> {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let repo_root = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .expect("git rev-parse failed to run");
+        let repo_root = std::path::PathBuf::from(
+            String::from_utf8(repo_root.stdout)
+                .expect("git output not UTF-8")
+                .trim(),
+        );
+        let dev_seed_abs = repo_root.join(DEV_SIGNING_KEY_REL_PATH);
+        let dev_seed_abs_str = dev_seed_abs.to_str().unwrap();
+        with_anchor_env(&[(VENDOR_SIGNING_KEY_ENV, dev_seed_abs_str)], || run(args))
+    }
+
+    use std::process::Command;
 
     #[test]
     fn test_gen_pd_bundle_magic_and_layout() {
@@ -336,7 +373,7 @@ priority = 1
             pubkey_header_out: Some(pubkey_header_out.path().to_path_buf()),
         };
 
-        run(&args).expect("gen-pd-bundle failed");
+        run_with_dev_vendor_key(&args).expect("gen-pd-bundle failed");
 
         let mut bytes = Vec::new();
         std::fs::File::open(out_file.path())
@@ -392,7 +429,7 @@ priority = 1
             pubkey_header_out: None,
         };
 
-        let err = run(&args).expect_err("48-byte PD name must be rejected");
+        let err = run_with_dev_vendor_key(&args).expect_err("48-byte PD name must be rejected");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("47-byte limit"),
@@ -404,6 +441,6 @@ priority = 1
         std::fs::write(pd_dir.path().join(format!("{ok_name}.elf")), fake_elf()).unwrap();
         let toml_str_ok = format!("[[pd]]\nname = \"{ok_name}\"\npriority = 1\n");
         std::fs::write(toml_file.path(), toml_str_ok).unwrap();
-        run(&args).expect("47-byte PD name must be accepted");
+        run_with_dev_vendor_key(&args).expect("47-byte PD name must be accepted");
     }
 }

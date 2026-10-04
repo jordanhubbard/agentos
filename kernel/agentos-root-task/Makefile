@@ -138,6 +138,13 @@ ROOT_TASK_OBJS += $(BUILD_DIR)/rt_authority.o
 # used by the legacy monitor PD, so the object is shared/deduped rather than
 # duplicated under an rt_ prefix.
 ROOT_TASK_OBJS += $(BUILD_DIR)/sha256_mini.o $(BUILD_DIR)/ed25519_verify.o $(BUILD_DIR)/monocypher.o
+# Trust anchor tier contract and gating policy (T10) -- host-testable, no
+# seL4/key material of its own; see libs/pd-support/trust_anchor.c and
+# kernel/agentos-root-task/include/contracts/trust_anchor.h.
+ROOT_TASK_OBJS += $(BUILD_DIR)/trust_anchor.o
+# Inspect snapshot (platform/inspect/inspect_snapshot.c) now also carries the
+# trust anchor tier (T10); root_task links it via rt_inspect_snapshot.o above
+# already, no new object needed there.
 ifeq ($(ARCH),x86_64)
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
 endif
@@ -576,6 +583,32 @@ PD_MANIFEST_OBJ        := $(BUILD_DIR)/agentos_pd_manifest.o
 PD_MANIFEST_PUBKEY_HDR := $(BUILD_DIR)/boot_manifest_pubkey.h
 # Deferred reference: SYSTEM_TOML is set later in this Makefile.
 SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
+
+# Trust anchor tier selection (T10) for `xtask gen-pd-bundle`: strictest-first
+# on AGENTOS_BUNDLE_SIGNING_KEY / AGENTOS_MOK_SIGNING_KEY / AGENTOS_TRUST_ANCHOR
+# -- see xtask/src/boot_manifest.rs::select_anchor. A build with NEITHER a
+# signing key NOR an explicit AGENTOS_TRUST_ANCHOR=none opt-in is a build
+# ERROR by design (the one outcome this whole feature must not produce is a
+# silently non-gating image). This Makefile default exists so `make build`/
+# `make test` with no special environment keep working exactly as they did
+# before this task -- by EXPLICITLY exporting AGENTOS_BUNDLE_SIGNING_KEY at
+# the dev seed path (committed in-tree, not a secret) rather than relying on
+# any implicit fallback inside xtask. That still selects AOS_ANCHOR_VENDOR
+# (gating) with the dev-signed indicator set, identical to today's behavior;
+# it is not the non-gating AOS_ANCHOR_NONE tier. `?=` lets a real
+# AGENTOS_BUNDLE_SIGNING_KEY (or AGENTOS_MOK_SIGNING_KEY / AGENTOS_TRUST_ANCHOR
+# opt-in) from the caller's environment take priority untouched, and a
+# caller deliberately exercising AOS_ANCHOR_NONE or a MOK-only build is not
+# second-guessed by this default forcing a vendor key back in.
+ifeq ($(AGENTOS_TRUST_ANCHOR),none)
+# Explicit opt-in to the non-gating development anchor: leave it alone.
+else ifdef AGENTOS_MOK_SIGNING_KEY
+# MOK-only (or MOK + vendor, if the caller also sets the vendor var) build
+# requested explicitly: do not force a vendor key into it.
+else
+AGENTOS_BUNDLE_SIGNING_KEY ?= $(REPO_ROOT_MK)/kernel/agentos-root-task/keys/dev_signing_key.seed
+export AGENTOS_BUNDLE_SIGNING_KEY
+endif
 
 # ─── AArch64: root_task uses custom LD script + embedded PD bundle ───────────
 # On AArch64 the loader (kernel/loader/) loads root_task.elf from DRAM at

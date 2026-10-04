@@ -1516,25 +1516,58 @@ is the qualifying evidence under the pin.
 ### Protection-domain image verification
 
 The root task verifies every protection-domain image before spawning it. The
-build emits a manifest of per-PD SHA-256 digests signed once with Ed25519; root
-verifies that signature against a public key fixed at build time, then checks
-each PD's digest immediately before spawn. Verification covers the AArch64 and
-x86_64 targets, which embed their PD images in a signed bundle. On those
-targets it is unconditional: no build flag, environment variable or
-configuration disables it, and an absent or malformed manifest refuses boot
-rather than skipping the check. RISC-V does not embed a PD bundle; PDs load
-there via the seL4 extra-BootInfo path and are **not** verified.
+build emits a manifest of per-PD SHA-256 digests signed once with Ed25519;
+root checks that signature, then checks each PD's digest immediately before
+spawn. Verification covers the AArch64 and x86_64 targets, which embed their
+PD images in a signed bundle. RISC-V does not embed a PD bundle; PDs load
+there via the seL4 extra-BootInfo path and are **not** verified, on any tier.
+
+Image verification runs under one of three trust anchors, recorded in the
+image and announced at boot (and visible on a running system via the inspect
+snapshot's `trust.anchor_tier` field — `agentctl inspect`). Under the vendor
+anchor (a public key fixed at build time) and the machine-owner anchor (an
+enrolled key), a manifest or digest mismatch refuses boot. Under the
+development anchor, digests are still computed and mismatches still
+reported, but boot proceeds — it establishes nothing about image integrity
+and exists so the platform can be iterated on before production key storage
+exists. The development anchor requires an explicit build opt-in
+(`AGENTOS_TRUST_ANCHOR=none`); a build with no key and no opt-in fails rather
+than producing a non-gating image.
+
+The machine-owner anchor does NOT defend against the machine owner, who can
+sign any image they choose. It constrains remote compromise and third-party
+tampering. The vendor key is **optional** for this tier: a machine owner may
+enrol their own key alone, with no vendor key at all, in which case the
+owner is the sole root of trust on that machine and agentOS's own
+vendor-signed images are refused unless the owner signs or counter-signs
+them — that is the intended meaning of standing alone, not a defect. Only a
+tier that excludes the owner, or that the owner cannot re-key with physical
+access, would exclude the local operator from the trust model, and neither
+tier here does; only a hardware anchor — OTP-fused signed boot or a firmware
+TPM — would change that. `AOS_ANCHOR_HARDWARE` is defined as a key source in
+the contract (`kernel/agentos-root-task/include/contracts/trust_anchor.h`)
+and is **not implemented**; it reports unavailable and makes no claim about
+TPM or measured-boot support. This is not a measured-boot chain and produces
+no attestation.
+
+The machine-owner key is enrolled by setting `AGENTOS_MOK_SIGNING_KEY` to a
+seed file at build time — **build-time-provisioned, not a persistent runtime
+enrolment mechanism.** There is no on-target storage a running system writes
+to when an owner enrols a key with physical presence; see
+`kernel/agentos-root-task/keys/README.md` for what would need to exist
+(writable, attested storage reachable at boot) before this becomes a real
+runtime flow.
+
 `make test-image-verify` boots an unmodified image, a byte-tampered image, and
 an image with its manifest stripped, requiring the latter two to be refused with
-the tampered image named.
+the tampered image named under a gating tier.
 
 Scope: this constrains every adversary who can modify an image but not replace
-the boot chain. It does NOT establish resistance to the local operator, who is
-untrusted under the platform threat model and has physical access: a public key
-shipped in the image can be replaced along with the image it validates. Only a
-hardware anchor — OTP-fused signed boot or a firmware TPM — would change that,
-and none is confirmed for the target boards. This is not a measured-boot chain
-and produces no attestation.
+the boot chain. Under the vendor and machine-owner tiers it does NOT establish
+resistance to the local operator, who is untrusted under the platform threat
+model and has physical access: a public key shipped in the image can be
+replaced along with the image it validates. Only a hardware anchor would
+change that, and none is confirmed for the target boards.
 
 Qualification boundary: development results were obtained under Microkit SDK
 2.1.0. `make test-image-verify` is additionally run by the CI `os-claim-gate`

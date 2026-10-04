@@ -70,6 +70,7 @@ int aos_inspect_fill(aos_inspect_snapshot_t *snap, const aos_inspect_view_t *vie
     snap->hw.gic_dist_pa = view->gic_dist_pa;
     snap->hw.virtio_net_ipa = view->virtio_net_ipa;
     snap->thread_count = view->thread_count;
+    snap->anchor_tier = view->anchor_tier;
 
     for (i = 0u; i < view->thread_count; i++) {
         snap->threads[i].pd_index = view->threads[i].pd_index;
@@ -90,7 +91,11 @@ int aos_inspect_validate(const aos_inspect_snapshot_t *snap)
     if (!snap) return AOS_INSPECT_ERR_NULL;
     if (snap->version != AOS_INSPECT_VERSION) return AOS_INSPECT_ERR_VERSION;
     if (snap->thread_count > AOS_INSPECT_MAX_THREADS) return AOS_INSPECT_ERR_TOO_MANY;
-    if ((snap->flags & ~AOS_INSPECT_FLAG_KNOWN) || snap->reserved ||
+    /* anchor_tier must be one of the four defined aos_anchor_tier_t values
+     * (NONE=0 .. HARDWARE=3). This mirrors contracts/trust_anchor.h's enum
+     * range without including that header -- see the field comment in
+     * platform/include/platform/inspect.h. */
+    if ((snap->flags & ~AOS_INSPECT_FLAG_KNOWN) || snap->anchor_tier > 3u ||
         snap->mem.reserved || snap->mem.pd_count != snap->thread_count ||
         (snap->mem.ut_total_bytes && snap->mem.ut_used_bytes > snap->mem.ut_total_bytes) ||
         snap->hw.arch > AOS_INSPECT_ARCH_RISCV64) return AOS_INSPECT_ERR_INVALID;
@@ -215,6 +220,33 @@ static const char *arch_name(uint32_t arch)
     }
 }
 
+/*
+ * anchor_tier_name -- local copy of the tier -> name mapping in
+ * libs/pd-support/trust_anchor.c::aos_anchor_tier_name(), kept here
+ * because inspect_snapshot.c is deliberately decoupled from
+ * contracts/trust_anchor.h (host-testable, no cross-module build
+ * coupling -- see the field comment in platform/include/platform/
+ * inspect.h). Keep these strings in sync by hand; both must stay
+ * distinct and non-empty for every tier, and both must name NONE as
+ * "not gating" so an operator reading either surface gets the same
+ * answer.
+ */
+static const char *anchor_tier_name(uint32_t tier)
+{
+    switch (tier) {
+    case 0u: /* AOS_ANCHOR_NONE */
+        return "none (development, not gating)";
+    case 1u: /* AOS_ANCHOR_VENDOR */
+        return "vendor";
+    case 2u: /* AOS_ANCHOR_MOK */
+        return "machine-owner";
+    case 3u: /* AOS_ANCHOR_HARDWARE */
+        return "hardware (not available)";
+    default:
+        return "unknown";
+    }
+}
+
 static const char *thr_state_name(uint32_t state)
 {
     switch (state) {
@@ -304,7 +336,9 @@ int aos_inspect_format(const aos_inspect_snapshot_t *snap, char *buf, size_t buf
         || line_hex(&p, end, "hardware.gic_dist_pa", snap->hw.gic_dist_pa) != 0
         || line_hex(&p, end, "hardware.virtio_net_ipa", snap->hw.virtio_net_ipa) != 0
         || line_u64(&p, end, "hardware.virtio_net_virq", snap->hw.virtio_net_virq) != 0
-        || line_u64(&p, end, "thread.count", snap->thread_count) != 0) {
+        || line_u64(&p, end, "thread.count", snap->thread_count) != 0
+        || line_u64(&p, end, "trust.anchor_tier", snap->anchor_tier) != 0
+        || line_str(&p, end, "trust.anchor_tier_name", anchor_tier_name(snap->anchor_tier)) != 0) {
         *p = '\0';
         return AOS_INSPECT_ERR_TRUNC;
     }

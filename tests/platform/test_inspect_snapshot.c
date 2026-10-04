@@ -50,6 +50,7 @@ static void sample_view(aos_inspect_view_t *v)
     v->threads[2].prio = 225u;
     v->threads[2].state = AOS_INSPECT_THR_IDLE;
     set_name(&v->threads[2], "serial_pd");
+    v->anchor_tier = 1u; /* AOS_ANCHOR_VENDOR, see contracts/trust_anchor.h */
 }
 
 static int test_abi(void)
@@ -79,6 +80,9 @@ static int test_fill_report(void)
     CHECK(snap.mem.pd_count == 3u);
     CHECK(snap.hw.virtio_net_ipa == AOS_VIRTIO_NET_GUEST_IPA);
     CHECK(snap.thread_count == 3u);
+    /* An operator must be able to ask a LIVE machine which trust anchor
+     * tier it booted under (T10), not just read a boot log. */
+    CHECK(snap.anchor_tier == 1u);
 
     CHECK(aos_inspect_thread_by_name(&snap, "guest_vmm_primary", &thr) == AOS_INSPECT_OK);
     CHECK(thr->prio == 250u);
@@ -94,6 +98,8 @@ static int test_fill_report(void)
     CHECK(strstr(buf, "thread[1].name=guest_vmm_primary\n") != NULL);
     CHECK(strstr(buf, "thread[1].state=blocked\n") != NULL);
     CHECK(strstr(buf, "thread[2].name=serial_pd\n") != NULL);
+    CHECK(strstr(buf, "trust.anchor_tier=1\n") != NULL);
+    CHECK(strstr(buf, "trust.anchor_tier_name=vendor\n") != NULL);
     PASS("test_fill_report");
 }
 
