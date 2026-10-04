@@ -923,6 +923,16 @@ test-host: test-cc-envelope-host
 test-host: test-cc-envelope-dispatch-host
 test-host: test-cc-session-reap-host
 test-host: test-boot-manifest-host
+test-host: test-entropy-host
+
+.PHONY: test-entropy-host
+test-entropy-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_entropy_contract.c services/entropy-service/entropy_proto.c \
+		-o $(BUILD_TMP_DIR)/test_entropy_contract
+	$(BUILD_TMP_DIR)/test_entropy_contract
 
 .PHONY: test-cc-envelope-host
 test-cc-envelope-host:
