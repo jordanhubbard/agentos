@@ -918,6 +918,7 @@ test-host: test-x86-cpu-host
 test-host: test-x86-composition-host
 test-host: test-vm-manager-identity-host
 test-host: test-remoteos-client-host
+test-host: test-endowment-host
 test-host: test-authority-host
 test-host: test-authority-kindmap-host
 test-host: test-cc-envelope-host
@@ -980,6 +981,15 @@ test-remoteos-client-host:
 		tests/test_remoteos_client.c kernel/agentos-root-task/src/remoteos_client.c \
 		-o $(BUILD_TMP_DIR)/test_remoteos_client
 	$(BUILD_TMP_DIR)/test_remoteos_client
+
+.PHONY: test-endowment-host
+test-endowment-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_endowment.c libs/pd-support/endowment.c \
+		-o $(BUILD_TMP_DIR)/test_endowment
+	$(BUILD_TMP_DIR)/test_endowment
 
 .PHONY: test-boot-manifest-host
 test-boot-manifest-host:
