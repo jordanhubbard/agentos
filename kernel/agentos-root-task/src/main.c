@@ -404,6 +404,26 @@ static uint32_t g_guest_ram_reservation_count;
 /* ── ELF lookup helpers ───────────────────────────────────────────────────── */
 
 /*
+ * AGENTOS_HAS_PD_BUNDLE — compile-time predicate for "this architecture
+ * embeds a .pd_bundle/.pd_manifest section at all", mirroring exactly the
+ * `ifneq ($(filter $(ARCH),aarch64 x86_64),)` condition in
+ * kernel/agentos-root-task/Makefile that decides whether PD_BUNDLE_OBJ /
+ * PD_MANIFEST_OBJ get linked in. This is a per-architecture compile-time
+ * fact, not anything settable by a build flag, env var, or attacker/
+ * operator input — it exists so the boot manifest gate below can be an
+ * ASSERTION ("this arch must have a non-empty bundle+manifest, full stop")
+ * rather than inferring the same thing from bundle_size() == 0, which would
+ * silently degrade from "refuse boot" to "skip verification" if a future
+ * change ever made bundle_size() able to legitimately read 0 here (e.g. a
+ * new PD-loading path on these architectures).
+ */
+#if defined(__aarch64__) || defined(__x86_64__)
+#define AGENTOS_HAS_PD_BUNDLE 1
+#else
+#define AGENTOS_HAS_PD_BUNDLE 0
+#endif
+
+/*
  * Embedded PD bundle — linked into root_task.elf by the build system.
  *
  * tools/ld/root_task.ld places a .pd_bundle section with linker symbols
@@ -764,6 +784,20 @@ static int boot_verify_manifest(void)
     }
 
     dbg_puts("[rt] boot manifest OK: signature verified\n");
+#if defined(AOS_BOOT_MANIFEST_DEV_SIGNED) && AOS_BOOT_MANIFEST_DEV_SIGNED
+    /*
+     * AOS_BOOT_MANIFEST_DEV_SIGNED is defined by the GENERATED
+     * boot_manifest_pubkey.h (xtask/src/boot_manifest.rs
+     * render_pubkey_header()) whenever this build's manifest was signed
+     * with the well-known in-tree development key rather than a key from
+     * AGENTOS_BUNDLE_SIGNING_KEY. The build-time stderr warning
+     * (cmd_gen_pd_bundle.rs) is gone by the time anyone is looking at a
+     * running system; this is the on-system, unmissable equivalent — a
+     * development artifact must announce itself at boot, not just at
+     * build time.
+     */
+    dbg_puts("[rt] WARNING: DEVELOPMENT-signed image (dev key, not for production use)\n");
+#endif
     return 1;
 }
 
@@ -811,6 +845,34 @@ static int boot_verify_pd_digest(const char *pd_name, const void *elf_data, seL4
     }
 
     return 1;
+}
+
+/*
+ * boot_elf_in_verified_bundle — true iff `elf_data` lies entirely within
+ * the mapped, manifest-verified `.pd_bundle` section.
+ *
+ * boot_find_elf() tries the embedded bundle first and only falls back to
+ * the (unverified, legacy) seL4 extra-BootInfo scan if the bundle lookup
+ * misses. On a bundle-capable, manifest-trusted boot, a PD whose ELF
+ * somehow came from that fallback path instead of the bundle would bypass
+ * the digest check's guarantee entirely — the manifest only covers
+ * bundle-sourced bytes. This closes that gap explicitly rather than
+ * relying on "nothing currently produces extra-BootInfo ELF chunks on this
+ * architecture" as an unstated assumption.
+ */
+static int boot_elf_in_verified_bundle(const void *elf_data, seL4_Word elf_size)
+{
+    if (!elf_data || elf_size == 0u) {
+        return 0;
+    }
+    uintptr_t p     = (uintptr_t)elf_data;
+    uintptr_t bstart = (uintptr_t)__pd_bundle_start;
+    uintptr_t bend   = (uintptr_t)__pd_bundle_end;
+    uintptr_t pend;
+    if (__builtin_add_overflow(p, (uintptr_t)elf_size, &pend)) {
+        return 0;
+    }
+    return (p >= bstart) && (pend <= bend);
 }
 
 /*
@@ -2829,14 +2891,24 @@ void root_task_main(const seL4_BootInfo *bi)
 
     /* ── Step 3.5: Verify the signed boot manifest before spawning anything ──
      *
-     * Gated on bundle_size() > 0: the embedded PD bundle (and therefore the
-     * manifest that covers it) only exists on targets that use it
-     * (AArch64, x86_64). On RISC-V there is no bundle at all — PDs load via
-     * the seL4 extra BootInfo path, unchanged by this task — so there is
-     * nothing for a manifest to cover. This is NOT a way to disable
-     * verification: bundle_size() reflects what the build produced, not
-     * anything settable at boot time, and on every target that embeds a
-     * bundle it is always > 0, so the gate below always runs there.
+     * On architectures that embed a PD bundle at all (AGENTOS_HAS_PD_BUNDLE
+     * — AArch64, x86_64), a bundle with no PDs in it (bundle_size() == 0)
+     * is NOT "nothing to verify, skip ahead" — it is a build/link defect
+     * and refuses boot with its own diagnostic, same as every other
+     * manifest failure. This is an ASSERTION, not an inference from
+     * whatever the build happened to produce: today nothing on these
+     * architectures can reach the spawn loop with an empty bundle (the
+     * seL4 extra-BootInfo PD-loading path has no producer anywhere in this
+     * tree on AArch64/x86_64), but if that ever changes, this refuses boot
+     * instead of silently falling through to unverified spawning.
+     *
+     * On RISC-V (AGENTOS_HAS_PD_BUNDLE == 0) there is no bundle at all —
+     * PDs load via the seL4 extra BootInfo path, unchanged by this task —
+     * so bundle_size() == 0 there is simply "this architecture doesn't use
+     * a bundle", not a defect, and the #if below compiles the refusal out
+     * entirely rather than ever evaluating it. This is a compile-time,
+     * per-architecture fact (see AGENTOS_HAS_PD_BUNDLE above), never a
+     * runtime flag, env var, or #ifdef an attacker or operator can flip.
      */
     int manifest_trusted = 0;
     if (bundle_size() > 0u) {
@@ -2845,6 +2917,11 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] refusing boot: PD image manifest failed verification\n");
             return;
         }
+#if AGENTOS_HAS_PD_BUNDLE
+    } else {
+        dbg_puts("[rt] PD bundle EMPTY on a bundle-capable target: refusing to start any PD\n");
+        return;
+#endif
     }
 
     /* ── Step 4: Load and start each PD ───────────────────────────────────── */
@@ -2969,6 +3046,12 @@ void root_task_main(const seL4_BootInfo *bi)
          * earlier in this loop passed their own checks and are unaffected.
          */
         if (manifest_trusted) {
+            if (!boot_elf_in_verified_bundle(elf_data, elf_size)) {
+                dbg_puts("[rt] pd ");
+                dbg_puts(pd->name);
+                dbg_puts(": ELF not sourced from the verified bundle; refusing boot\n");
+                return;
+            }
             if (!boot_verify_pd_digest(pd->name, elf_data, elf_size)) {
                 return;
             }

@@ -1725,20 +1725,43 @@ endif
 
 ifneq ($(filter $(ARCH),aarch64 x86_64),)
 # Step 2: Generate the PD bundle after all service PD ELFs and the final
-# system TOML have been selected. The same invocation always also emits the
-# signed boot manifest (PD_MANIFEST) and its public-key header
-# (PD_MANIFEST_PUBKEY_HDR) — see cmd_gen_pd_bundle.rs. PD_MANIFEST and
-# PD_MANIFEST_PUBKEY_HDR are declared as targets of PD_BUNDLE below so `make`
-# tracks all three as products of this one recipe.
+# system TOML have been selected. One `xtask gen-pd-bundle` invocation
+# always produces all three outputs together (PD_BUNDLE, the signed boot
+# manifest PD_MANIFEST, and its public-key header PD_MANIFEST_PUBKEY_HDR —
+# see cmd_gen_pd_bundle.rs) and the invocation is cheap/idempotent, so each
+# of the three gets its own full recipe below rather than one target with
+# the other two as recipe-less co-targets. A recipe-less co-target rule
+# (`$(PD_MANIFEST) $(PD_MANIFEST_PUBKEY_HDR): $(PD_BUNDLE)`, with no
+# commands) looks like it tracks all three as outputs, but only actually
+# regenerates PD_BUNDLE: if just PD_MANIFEST is deleted while PD_BUNDLE
+# stays current, make considers the co-target rule satisfied (PD_BUNDLE
+# didn't change) and never re-runs the recipe, so the later
+# `$(PD_MANIFEST_OBJ): $(PD_MANIFEST)` objcopy rule fails on a missing
+# input. Giving each file its own full recipe means deleting any one of
+# the three — individually or together — always regenerates all three.
 $(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
-		--out $@ \
+		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
 		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
 
-$(PD_MANIFEST) $(PD_MANIFEST_PUBKEY_HDR): $(PD_BUNDLE)
+$(PD_MANIFEST): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+	cargo run -p xtask -- gen-pd-bundle \
+		--system $(SYSTEM_TOML) \
+		--pd-dir $(BUILD_DIR) \
+		--out $(PD_BUNDLE) \
+		--manifest-out $(PD_MANIFEST) \
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+
+$(PD_MANIFEST_PUBKEY_HDR): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+	cargo run -p xtask -- gen-pd-bundle \
+		--system $(SYSTEM_TOML) \
+		--pd-dir $(BUILD_DIR) \
+		--out $(PD_BUNDLE) \
+		--manifest-out $(PD_MANIFEST) \
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
 
 # Step 3: Turn the binary bundle and manifest into relocatable ELF64 objects.
 #

@@ -1,0 +1,12 @@
+# GitGuardian ggshield configuration.
+#
+# kernel/agentos-root-task/keys/dev_signing_key.seed is a deliberately
+# public, non-secret Ed25519 development seed (see the README.md next to
+# it and docs/superpowers/plans/2026-10-03-t3-image-verification.md). It's
+# allowlisted here so a filename- or entropy-based secret-scanning rule
+# doesn't turn an intentional, documented artifact into a confusing CI
+# failure.
+version: 2
+secret:
+  ignored-paths:
+    - "kernel/agentos-root-task/keys/dev_signing_key.seed"
