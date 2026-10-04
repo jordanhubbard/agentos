@@ -431,7 +431,7 @@ static uint32_t g_guest_ram_reservation_count;
 /*
  * AGENTOS_HAS_PD_BUNDLE — compile-time predicate for "this architecture
  * embeds a .pd_bundle/.pd_manifest section at all", mirroring exactly the
- * `ifneq ($(filter $(ARCH),aarch64 x86_64),)` condition in
+ * `ifneq ($(filter $(ARCH),aarch64 x86_64 riscv64),)` condition in
  * kernel/agentos-root-task/Makefile that decides whether PD_BUNDLE_OBJ /
  * PD_MANIFEST_OBJ get linked in. This is a per-architecture compile-time
  * fact, not anything settable by a build flag, env var, or attacker/
@@ -442,7 +442,7 @@ static uint32_t g_guest_ram_reservation_count;
  * change ever made bundle_size() able to legitimately read 0 here (e.g. a
  * new PD-loading path on these architectures).
  */
-#if defined(__aarch64__) || defined(__x86_64__)
+#if defined(__aarch64__) || defined(__x86_64__) || defined(__riscv)
 #define AGENTOS_HAS_PD_BUNDLE 1
 #else
 #define AGENTOS_HAS_PD_BUNDLE 0
@@ -2548,6 +2548,15 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
     }
 
+#if defined(__aarch64__)
+    /*
+     * GICv2 virtual CPU interface — an AArch64-only device.  The consumer
+     * (the guest-VMM mapping in the PD start loop) is already
+     * `#if defined(__aarch64__)`; the producer must match.  Left arch-blind
+     * this "succeeds" on RISC-V, where 0x08040000 happens to fall inside a
+     * device untyped, printing `err=0` for a frame no architecture there
+     * has a GIC behind.
+     */
     {
         seL4_Error gic_err = ut_alloc_device_cap(GIC_VCPU_IF_PA,
                                                  &g_gic_vcpu_frame_cap);
@@ -2557,6 +2566,7 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_hex((seL4_Word)g_gic_vcpu_frame_cap);
         dbg_puts("\n");
     }
+#endif
 
     {
         seL4_Error virtio_err = ut_alloc_device_cap(VIRTIO_MMIO_PAGE_PA,
@@ -2999,24 +3009,22 @@ void root_task_main(const seL4_BootInfo *bi)
 
     /* ── Step 3.5: Verify the signed boot manifest before spawning anything ──
      *
-     * On architectures that embed a PD bundle at all (AGENTOS_HAS_PD_BUNDLE
-     * — AArch64, x86_64), a bundle with no PDs in it (bundle_size() == 0)
-     * is NOT "nothing to verify, skip ahead" — it is a build/link defect
-     * and refuses boot with its own diagnostic, same as every other
-     * manifest failure. This is an ASSERTION, not an inference from
-     * whatever the build happened to produce: today nothing on these
-     * architectures can reach the spawn loop with an empty bundle (the
-     * seL4 extra-BootInfo PD-loading path has no producer anywhere in this
-     * tree on AArch64/x86_64), but if that ever changes, this refuses boot
-     * instead of silently falling through to unverified spawning.
+     * Every architecture this tree builds (AArch64, x86_64, RISC-V) embeds
+     * a PD bundle, so AGENTOS_HAS_PD_BUNDLE is 1 everywhere today and the
+     * refusal below is always compiled in. A bundle with no PDs in it
+     * (bundle_size() == 0) is NOT "nothing to verify, skip ahead" — it is
+     * a build/link defect and refuses boot with its own diagnostic, same
+     * as every other manifest failure. This is an ASSERTION, not an
+     * inference from whatever the build happened to produce: nothing can
+     * reach the spawn loop with an empty bundle (the seL4 extra-BootInfo
+     * PD-loading path has no producer anywhere in this tree, on any
+     * architecture), but if that ever changes, this refuses boot instead
+     * of silently falling through to unverified spawning.
      *
-     * On RISC-V (AGENTOS_HAS_PD_BUNDLE == 0) there is no bundle at all —
-     * PDs load via the seL4 extra BootInfo path, unchanged by this task —
-     * so bundle_size() == 0 there is simply "this architecture doesn't use
-     * a bundle", not a defect, and the #if below compiles the refusal out
-     * entirely rather than ever evaluating it. This is a compile-time,
-     * per-architecture fact (see AGENTOS_HAS_PD_BUNDLE above), never a
-     * runtime flag, env var, or #ifdef an attacker or operator can flip.
+     * The #if is retained for a future architecture that genuinely loads
+     * PDs some other way; it is a compile-time, per-architecture fact (see
+     * AGENTOS_HAS_PD_BUNDLE above), never a runtime flag, env var, or
+     * #ifdef an attacker or operator can flip.
      */
     int manifest_trusted = 0;
     if (bundle_size() > 0u) {
@@ -3798,8 +3806,21 @@ void root_task_main(const seL4_BootInfo *bi)
                 df->paddr == AGENTOS_UART_PA &&
                 g_uart_frame_cap != seL4_CapNull) {
                 (void)seL4_ARCH_Page_Unmap(g_uart_frame_cap);
+                /*
+                 * Null every register pointer dbg_puts() guards on, for
+                 * EVERY architecture's UART — not just the PL011 pair.
+                 * dbg_puts() picks its guard by #ifdef (g_uart_thr on
+                 * RISC-V's NS16550A, g_uart_dr on PL011), so leaving the
+                 * other architecture's pointers non-NULL means the guard
+                 * still passes after the frame has been unmapped and the
+                 * next debug print spins on an unmapped VA.
+                 */
                 g_uart_dr = (volatile uint32_t *)0;
                 g_uart_fr = (volatile uint32_t *)0;
+#if defined(__riscv)
+                g_uart_thr = (volatile uint8_t *)0;
+                g_uart_lsr = (volatile uint8_t *)0;
+#endif
 
                 df_err = pd_vspace_map_device_frame(vspace,
                                                      g_uart_frame_cap,
@@ -4205,6 +4226,13 @@ void root_task_main(const seL4_BootInfo *bi)
             }
             if (net_err != seL4_NoError) continue;
 #else
+            /*
+             * No host NIC MMIO path on this target (RISC-V, and x86_64
+             * without AGENTOS_X86_FIRMWARE_RESET).  Skipping silently made
+             * net_pd vanish from the boot log between "SC bound, starting"
+             * and the next PD with no diagnostic at all; say so instead.
+             */
+            dbg_puts("[rt] net_pd: no host NIC MMIO path on this target; not started\n");
             continue;
 #endif
             net_err = seL4_NotEnoughMemory;

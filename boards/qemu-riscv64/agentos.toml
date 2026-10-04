@@ -1,0 +1,117 @@
+# agentOS system descriptor (TOML) — QEMU RISC-V 64 board override
+#
+# Consumed by: cargo xtask gen-pd-bundle / gen-image, selected by
+# kernel/agentos-root-task/Makefile's `_BOARD_TOML` rule because this file
+# exists and is non-empty.
+#
+# Why this file exists
+# --------------------
+# Task 3 of the arch-parity plan gave riscv64 an embedded, signed PD bundle
+# (AGENTOS_HAS_PD_BUNDLE).  The bundle's contents come from this TOML; the
+# PDs the root task actually spawns come from src/system_desc_riscv64.c.  A
+# PD named by the descriptor but absent from the bundle prints
+# "[rt] pd elf <name> NOT FOUND" and never starts, so the two lists must
+# agree.
+#
+# The default list (kernel/agentos-root-task/agentos.toml) is the *aarch64*
+# PD set — virtualizers, cc_pd, operator_session, entropy_pd — and does not
+# match the riscv64 descriptor, which is still the pre-virtualizer topology.
+# This file therefore enumerates exactly the 18 PDs
+# src/system_desc_riscv64.c declares, in descriptor order, with the
+# descriptor's own priorities.
+#
+# This is deliberately a transcription of today's descriptor, NOT a design.
+# Task 4 of the arch-parity plan rewrites system_desc_riscv64.c to the
+# aarch64 topology (driver PDs + net_virt / blk_virt / serial_virt, museum
+# PDs dropped); this file must be rewritten in lockstep with it and most of
+# the names below will disappear then.
+#
+# Priorities here are documentation only — the root task enforces the
+# descriptor's values.
+
+# ── Foundation: nameserver, logging, UART ────────────────────────────────────
+
+[[pd]]
+name = "nameserver"
+priority = 240
+
+[[pd]]
+name = "log_drain"
+priority = 230
+
+[[pd]]
+name = "serial_pd"
+priority = 220
+
+# ── Pre-virtualizer / HURD-era service PDs (Task 4 removes these) ────────────
+
+[[pd]]
+name = "event_bus"
+priority = 195
+
+[[pd]]
+name = "irq_pd"
+priority = 250
+
+[[pd]]
+name = "timer_pd"
+priority = 245
+
+[[pd]]
+name = "controller"
+priority = 50
+
+[[pd]]
+name = "init_agent"
+priority = 110
+
+[[pd]]
+name = "agentfs"
+priority = 175
+
+[[pd]]
+name = "vibe_engine"
+priority = 165
+
+[[pd]]
+name = "vfs_server"
+priority = 185
+
+# ── Device-owning driver PDs ─────────────────────────────────────────────────
+
+[[pd]]
+name = "net_pd"
+priority = 210
+
+[[pd]]
+name = "virtio_blk"
+priority = 215
+
+[[pd]]
+name = "net_server"
+priority = 205
+
+[[pd]]
+name = "framebuffer_pd"
+priority = 170
+
+# ── Fault handling ───────────────────────────────────────────────────────────
+
+[[pd]]
+name = "fault_handler"
+priority = 255
+
+# ── VMM slots ────────────────────────────────────────────────────────────────
+# riscv64 has NO guest support and never will under upstream seL4 (no RISC-V
+# hypervisor extension).  These two ELFs are process-in-PD stubs that the
+# descriptor already names; bundling them only lets those descriptor entries
+# spawn instead of printing NOT FOUND.  No VMM, vCPU or stage-2 path is
+# wired on this architecture — see docs/TCB.md.
+
+[[pd]]
+name = "guest_vmm_primary"
+priority = 160
+
+[[pd]]
+name = "guest_vmm_secondary"
+priority = 155

@@ -587,6 +587,17 @@ PD_BUNDLE_OBJ   := $(BUILD_DIR)/agentos_pd_bundle.o
 PD_MANIFEST            := $(BUILD_DIR)/agentos_pd_manifest.bin
 PD_MANIFEST_OBJ        := $(BUILD_DIR)/agentos_pd_manifest.o
 PD_MANIFEST_PUBKEY_HDR := $(BUILD_DIR)/boot_manifest_pubkey.h
+ifeq ($(ARCH),riscv64)
+# RISC-V cannot use `llvm-objcopy --input-target=binary`: the ELF it emits
+# is tagged with the default soft-float ABI and ld.lld refuses to link it
+# against the lp64d root task ("cannot link object files with different
+# floating-point ABI").  src/pd_bundle_riscv64.S embeds both blobs with
+# .incbin through the same compiler driver and flags as every other root
+# task object, so one object carries both sections and PD_MANIFEST_OBJ is
+# folded into PD_BUNDLE_OBJ.
+PD_BUNDLE_OBJ   := $(BUILD_DIR)/agentos_pd_blobs.o
+PD_MANIFEST_OBJ :=
+endif
 # Deferred reference: SYSTEM_TOML is set later in this Makefile.
 SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
 
@@ -630,9 +641,10 @@ else
 # physical/virtual 0x90000000 (inside the kernel's available memory) and
 # provides __stack_top for start_riscv64.S.  kernel/loader/'s riscv64 arm
 # copies these LOAD segments to their physical addresses before enabling
-# Sv39 paging.  The current RISC-V path still expects PD ELFs via extra
-# BootInfo (Task 3 of the arch-parity plan changes that).
-$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(ROOT_TASK_RISCV_LD)
+# Sv39 paging.  Like AArch64, RISC-V embeds the PD bundle and the signed
+# boot manifest in root_task.elf (the .pd_bundle / .pd_manifest sections
+# placed by root_task_riscv64.ld); there is no extra-BootInfo PD path.
+$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(PD_MANIFEST_OBJ) $(ROOT_TASK_RISCV_LD)
 	$(LD) $(LDFLAGS) -T$(ROOT_TASK_RISCV_LD) $(filter-out $(ROOT_TASK_RISCV_LD),$^) -o $@
 
 endif
@@ -1531,9 +1543,13 @@ $(BUILD_DIR)/guest_vmm_secondary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
+# pd_entry.o supplies _start / the ELF entry point.  Without it this ELF
+# links with e_entry == 0 and the root task starts the PD at address 0,
+# which faults immediately.  Invisible until Task 3 made RISC-V actually
+# load PD ELFs; guest_vmm_primary.elf above always had it.
 $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o $(BUILD_DIR)/fdt_builder.o \
                                $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/m3_bare_metal.o \
-                               $(BUILD_DIR)/log.o
+                               $(BUILD_DIR)/log.o $(BUILD_DIR)/pd_entry.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 endif
 
@@ -1779,7 +1795,7 @@ else
 _LOADER_DEP :=
 endif
 
-ifneq ($(filter $(ARCH),aarch64 x86_64),)
+ifneq ($(filter $(ARCH),aarch64 x86_64 riscv64),)
 # Step 2: Generate the PD bundle after all service PD ELFs and the final
 # system TOML have been selected. One `xtask gen-pd-bundle` invocation
 # always produces all three outputs together (PD_BUNDLE, the signed boot
@@ -1869,19 +1885,16 @@ $(PD_MANIFEST_OBJ): $(PD_MANIFEST)
 		--redefine-sym _binary_agentos_pd_manifest_bin_end=__pd_manifest_end \
 		--redefine-sym _binary_agentos_pd_manifest_bin_size=__pd_manifest_size \
 		agentos_pd_manifest.bin agentos_pd_manifest.o
-endif
-else
-# RISC-V does not embed a PD bundle at all (PDs load via the seL4 extra
-# BootInfo path, unchanged by T3 image verification) — see pd_bundle_stub.c
-# and tools/ld/agentos.ld's zero-size __pd_bundle_start/__pd_bundle_end.
-# main.c's manifest check is gated on the bundle actually being present
-# (bundle_size() > 0), which is never true here, so there is nothing to
-# verify on this path. It still needs *a* pubkey header to satisfy the
-# unconditional #include in main.c; generate a placeholder (never read,
-# since the manifest gate never fires when there is no bundle).
-$(PD_MANIFEST_PUBKEY_HDR):
+else ifeq ($(ARCH),riscv64)
+# See the PD_BUNDLE_OBJ override above for why RISC-V assembles the blobs
+# instead of objcopy-ing them.
+$(PD_BUNDLE_OBJ): src/pd_bundle_riscv64.S $(PD_BUNDLE) $(PD_MANIFEST)
 	@mkdir -p $(BUILD_DIR)
-	@printf '#pragma once\n#include <stdint.h>\n/* RISC-V: no PD bundle on this target; see tools/ld/agentos.ld. Never read. */\nstatic const uint8_t AOS_BOOT_MANIFEST_PUBKEY[32] = { 0 };\n' > $@
+	$(CC) -c $(CFLAGS_ARCH) \
+		-DAGENTOS_PD_BUNDLE_PATH='"$(PD_BUNDLE)"' \
+		-DAGENTOS_PD_MANIFEST_PATH='"$(PD_MANIFEST)"' \
+		$< -o $@
+endif
 endif
 
 $(BUILD_DIR)/rt_main.o: $(PD_MANIFEST_PUBKEY_HDR)

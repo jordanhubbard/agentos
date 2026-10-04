@@ -16,9 +16,9 @@
  * kernel/agentos-root-task/Makefile): RISC-V's default medlow model can only
  * address the low 2 GiB, and every DRAM address on this board is above it.
  *
- * RISC-V has no embedded PD bundle yet (see src/pd_bundle_stub.c), so the
- * bundle/manifest symbols are defined here with zero size, exactly as
- * tools/ld/agentos.ld does for the PD ELFs.
+ * RISC-V embeds the PD bundle and signed boot manifest the same way
+ * AArch64 does: objcopy turns xtask gen-pd-bundle's output into relocatable
+ * objects that this script places in .pd_bundle / .pd_manifest.
  */
 
 ENTRY(_start)
@@ -70,16 +70,28 @@ SECTIONS {
 
     . = ALIGN(0x1000);
 
-    /* Zero-size PD bundle / boot manifest placeholders — RISC-V does not
-     * embed a bundle yet.  main.c's bundle_size() returns 0 and the
-     * manifest gate never fires. */
-    __pd_bundle_start = .;
-    .pd_bundle : { KEEP(*(.pd_bundle)) }
-    __pd_bundle_end = .;
+    /* PD bundle: embedded PD ELF data, and the signed boot manifest.
+     *
+     * Both are produced by `xtask gen-pd-bundle` and converted to linkable
+     * RISC-V ELF objects by objcopy (see kernel/agentos-root-task/Makefile).
+     * Those objects define __pd_bundle_start/__pd_bundle_end and
+     * __pd_manifest_start/__pd_manifest_end directly, so this script must
+     * NOT assign them: a linker-script assignment would override the
+     * objcopy symbols and make bundle_size() read a bogus length.
+     *
+     * The trailing ALIGN(0x1000) in each section keeps the final PT_LOAD
+     * memsz page-aligned, so seL4's ipcbuf_vptr = ui_v_reg.end lands on
+     * its own page (same reasoning as the stack alignment above).
+     */
+    .pd_bundle : {
+        KEEP(*(.pd_bundle))
+        . = ALIGN(0x1000);
+    }
 
-    __pd_manifest_start = .;
-    .pd_manifest : { KEEP(*(.pd_manifest)) }
-    __pd_manifest_end = .;
+    .pd_manifest : {
+        KEEP(*(.pd_manifest))
+        . = ALIGN(0x1000);
+    }
 
     . = ALIGN(0x1000);
     _end = .;

@@ -1512,15 +1512,27 @@ is the qualifying evidence under the pin.
 The root task verifies every protection-domain image before spawning it. The
 build emits a manifest of per-PD SHA-256 digests signed once with Ed25519; root
 verifies that signature against a public key fixed at build time, then checks
-each PD's digest immediately before spawn. Verification covers the AArch64 and
-x86_64 targets, which embed their PD images in a signed bundle. On those
-targets it is unconditional: no build flag, environment variable or
+each PD's digest immediately before spawn. Verification covers all three targets —
+AArch64, x86_64 and RISC-V — each of which embeds its PD images in a signed
+bundle. It is unconditional: no build flag, environment variable or
 configuration disables it, and an absent or malformed manifest refuses boot
-rather than skipping the check. RISC-V does not embed a PD bundle; PDs load
-there via the seL4 extra-BootInfo path and are **not** verified.
+rather than skipping the check. There is no longer any bundle-less
+architecture in this tree, so no architecture spawns unverified PDs.
+
+RISC-V was the exception until the arch-parity work: it had no PD-loading
+mechanism at all (the "PDs load via the seL4 extra BootInfo path" claim in
+`main.c` named a consumer with no producer anywhere in the tree, and every PD
+failed to spawn). It now embeds the same signed bundle the other two do;
+`AGENTOS_HAS_PD_BUNDLE` is 1 on all three. Evidence under Microkit SDK 2.1.0:
+a `riscv64` boot reports `[rt] boot manifest OK: signature verified` and
+starts PDs, and the same image with one byte flipped inside the bundle is
+refused with `[rt] pd vibe_engine: ELF digest MISMATCH against signed
+manifest; refusing boot`.
+
 `make test-image-verify` boots an unmodified image, a byte-tampered image, and
 an image with its manifest stripped, requiring the latter two to be refused with
-the tampered image named.
+the tampered image named. It runs on AArch64 only; the RISC-V result above is a
+manual run and is not yet a CI gate.
 
 Scope: this constrains every adversary who can modify an image but not replace
 the boot chain. It does NOT establish resistance to the local operator, who is
