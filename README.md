@@ -77,7 +77,7 @@ descriptor row with no bundle entry fails at ELF load.
 | `blk_virt` | Block virtualizer; no device, no IRQ | `platform/blk-virt/blk_virt.c` |
 | `serial_virt` | Serial queue virtualizer; no device, no IRQ | `platform/serial-virt/serial_virt.c` |
 | `operator_session` | Read-only native serial client | `platform/operator-session/operator_pd.c` |
-| `entropy_pd` | Owns an MMIO-probe frame uniquely and runs the full virtio handshake against it, but no QEMU device can be wired there (every virtio-mmio slot QEMU `virt` exposes is already owned, and unbacked physical memory outside that range reliably wedges a reading thread — see `docs/TCB.md` and `platform/include/platform/entropy_host_layout.h`) so the frame is ordinary RAM standing in for a device; reports `AOS_ENTROPY_ERR_UNAVAILABLE`, not a working entropy source | `services/entropy-service/entropy_svc.c` |
+| `entropy_pd` | Has no device frame on this machine at all — every virtio-mmio slot QEMU `virt` exposes is already owned, and unbacked physical memory outside that range reliably wedges a reading thread rather than faulting cleanly (see `docs/TCB.md`) — so it reports `AOS_ENTROPY_ERR_UNAVAILABLE` to every request; its virtio-rng handshake code is real but unexercised here, not a working entropy source | `services/entropy-service/entropy_svc.c` |
 | `guest_vmm_primary` | vCPU, vGIC, emulated virtio for the primary guest | `platform/guest-vmm/guest_vmm.c` |
 | `vm_manager` | Guest lifecycle control (create, bind, status) | `services/vm-manager/vm_manager.c` |
 | `cc_pd` | Owns QEMU virtio-serial (bus.2): the harness/`agentctl` console; prints `agentOS boot complete` | `services/command-console/cc_pd.c` |

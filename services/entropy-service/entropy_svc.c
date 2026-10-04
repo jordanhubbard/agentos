@@ -1,16 +1,36 @@
 /*
  * services/entropy-service/entropy_svc.c — virtio-rng driver PD for agentOS
  *
- * entropy_pd is a DRIVER protection domain: it owns one virtio-rng host
- * device and nothing else. It is not a virtualizer -- there is no
- * multiplexing decision to make, because every caller gets independent
- * output and no caller's request affects another's.
+ * THIS PD HAS NO LIVE ENTROPY SOURCE ON QEMU VIRT. QEMU's `virt` machine
+ * hard-caps virtio-mmio at 32 slots (4 retypeable 4 KiB pages), and all
+ * four are already exclusively owned by cc_pd, virtio_blk's two media, and
+ * net_pd before entropy_pd exists -- confirmed by a failed retype at the
+ * first slot tried and by `qemu-system-aarch64 -machine virt,help` /
+ * `info mtree` (full account in docs/TCB.md). There is no slot left to
+ * attach a `-device virtio-rng-device` without two PDs mapping one
+ * physical frame, which this project's TCB invariant 1 forbids, and no
+ * substitute physical address is safe either: a genuinely unbacked
+ * physical page outside QEMU's modeled devices and RAM does not fault
+ * cleanly when read -- it wedges the reading thread, confirmed by
+ * instrumenting this driver and watching it hang on its first register
+ * read. So the root task provisions no device frame for entropy_pd at
+ * all on this machine, and entropy_device_init() below checks for that
+ * and reports AOS_ENTROPY_ERR_UNAVAILABLE immediately, never touching
+ * memory that isn't there.
  *
- * SCOPE OF WHAT THIS PROVIDES. See contracts/entropy_contract.h: this
- * service returns bytes produced by the virtio-rng device it owns and makes
- * no claim about statistical quality, entropy estimation, or cryptographic
- * suitability of that source. Under QEMU the backing source is the host's
- * RNG, which establishes nothing about a real board.
+ * entropy_pd is still a DRIVER protection domain -- it is not a
+ * virtualizer, because there is no multiplexing decision to make, every
+ * caller gets independent output and no caller's request affects
+ * another's -- and the code below is written to actually drive a
+ * virtio-rng device: if a board (or a future QEMU configuration with a
+ * free slot) ever maps real device MMIO at entropy_mmio_vaddr, this same
+ * code runs the real handshake and serves real reads. Nothing about the
+ * wiring on this machine exercises that path today.
+ *
+ * SCOPE OF WHAT THIS PROVIDES WHEN A DEVICE EXISTS. See
+ * contracts/entropy_contract.h: the service returns bytes produced by the
+ * virtio-rng device it owns and makes no claim about statistical quality,
+ * entropy estimation, or cryptographic suitability of that source.
  *
  * Uses the shared virtio host transport (platform/virtio_host_transport.h)
  * for feature negotiation, status and queue setup -- the same transport
@@ -21,25 +41,6 @@
  * never reaches DRIVER_OK, this driver logs once and replies
  * AOS_ENTROPY_ERR_UNAVAILABLE to every request. It never spins or blocks
  * forever -- every poll loop below is bounded.
- *
- * ON THIS QEMU MACHINE, THE "MMIO FRAME" IS ORDINARY RAM, NOT A DEVICE.
- * QEMU `virt`'s virtio-mmio aperture is exactly 32 slots and all four are
- * already exclusively owned by other driver PDs (see
- * platform/include/platform/entropy_host_layout.h); there is no physical
- * address left in that aperture for entropy_pd. A physical address outside
- * any QEMU-modeled device or RAM region is NOT a safe substitute: reading
- * genuinely unbacked device-reserved physical memory was tried during this
- * task and reliably wedged the reading thread rather than delivering a
- * prompt fault -- exactly the hang this driver exists to avoid. So
- * entropy_mmio_vaddr here is backed by a private RAM frame the root task
- * allocates and maps the same way it maps the queue frame, not a `-device`
- * entry. Reading it is always safe (ordinary memory, no external-abort
- * risk) and, because real RAM near-never happens to start with the virtio
- * magic value, reliably exercises the same "no valid device" path real
- * hardware would present if a virtio-rng board header were wired and
- * powered off. This is a QEMU-virt-specific accommodation; a real board
- * would give entropy_pd actual device MMIO at this frame's physical
- * address instead.
  *
  * Copyright (c) 2026 The agentOS Project
  * SPDX-License-Identifier: BSD-2-Clause
@@ -169,8 +170,22 @@ static void entropy_device_init(void)
 {
     g_dev.initialized = false;
 
-    if (entropy_mmio_vaddr == 0u)
-        entropy_mmio_vaddr = AGENTOS_HOST_ENTROPY_MMIO_VA;
+    /*
+     * No fallback to a compile-time MMIO address: unlike blk/net, entropy
+     * has no real device frame on this machine at all (see the file
+     * header). entropy_mmio_vaddr is only ever nonzero if the root task
+     * actually provisioned and mapped a real device frame -- which, on
+     * QEMU virt, it never does, because there is no slot left to own one.
+     * A zero here means exactly "no device frame provisioned", so there
+     * is nothing to probe and no reason to touch virtio_host_transport at
+     * all.
+     */
+    if (entropy_mmio_vaddr == 0u) {
+        log_drain_write(17, 17,
+            "[entropy_pd] WARNING: no virtio-rng device frame provisioned; "
+            "serving AOS_ENTROPY_ERR_UNAVAILABLE\n");
+        return;
+    }
     if (entropy_queue_vaddr == 0u)
         entropy_queue_vaddr = AGENTOS_ENTROPY_QUEUE_VA;
 
@@ -278,7 +293,10 @@ static bool entropy_device_read(uint8_t *out, uint32_t len)
 
     uint16_t used_idx_before = used->idx;
     uint16_t avail_idx = avail->idx;
-    avail->ring[avail_idx % 1u] = 0;
+    /* Queue depth is 1 (single-descriptor chain, see entropy_desc()), so
+     * the available ring has exactly one slot and it always names
+     * descriptor 0 -- there is no other descriptor to name. */
+    avail->ring[0] = 0;
     ARCH_WMB();
     avail->idx = (uint16_t)(avail_idx + 1u);
     ARCH_WMB();
@@ -297,6 +315,14 @@ static bool entropy_device_read(uint8_t *out, uint32_t len)
     }
     ARCH_MB();
 
+    /* Depth-1 queue: the only descriptor chain we ever submit is head 0,
+     * so a completion naming any other id is a device that is confused
+     * about which request it is completing, not a short read -- treat it
+     * the same as a failed read rather than trusting its length. */
+    if (used->ring[0].id != 0u) {
+        log_drain_write(17, 17, "[entropy_pd] ERROR: unexpected completion id\n");
+        return false;
+    }
     uint32_t written = used->ring[0].len;
     if (written < len) {
         log_drain_write(17, 17, "[entropy_pd] ERROR: short device completion\n");

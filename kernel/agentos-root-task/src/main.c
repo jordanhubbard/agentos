@@ -1243,12 +1243,11 @@ static seL4_Error allocate_network_dma(const aos_net_pci_info_t *pci)
     AGENTOS_MEMORY_FENCE();
     return seL4_ARCH_Page_Unmap(g_net_dma_frame_cap);
 }
-/* entropy_pd's two private frames. Not shared with any other PD: entropy_pd
- * is the sole owner of each, mirroring the net/blk DMA windows.
- * g_host_entropy_mmio_frame_cap is ordinary RAM standing in for a device
- * register bank (see entropy_host_layout.h for why); g_entropy_queue_frame_cap
- * is the virtqueue/data frame. */
-static seL4_CPtr g_host_entropy_mmio_frame_cap = seL4_CapNull;
+/* entropy_pd's private virtqueue/data frame. Not shared with any other PD:
+ * entropy_pd is the sole owner, mirroring the net/blk DMA windows.
+ * entropy_pd has no device frame on this machine at all (see
+ * services/entropy-service/entropy_svc.c and docs/TCB.md) -- this is the
+ * only frame the root task provisions for it. */
 static seL4_CPtr g_entropy_queue_frame_cap = seL4_CapNull;
 static seL4_Error allocate_entropy_queue(void)
 {
@@ -2560,27 +2559,19 @@ void root_task_main(const seL4_BootInfo *bi)
 
     {
         /*
-         * Ordinary RAM, not a device untyped: QEMU virt has no virtio-mmio
-         * slot left to give entropy_pd (every one of the 32 is already
-         * owned -- see entropy_host_layout.h), and reading genuinely
-         * unbacked physical memory outside that aperture was tried and
-         * reliably wedges the reading thread instead of faulting cleanly.
-         * A private RAM frame is always safe to read and, because real
-         * memory essentially never starts with the virtio magic value,
-         * reliably exercises the driver's unmodified "no valid device"
-         * path. entropy_pd still owns this frame uniquely (TCB invariant
-         * 1); it is simply not a real device register bank here.
+         * No MMIO frame is provisioned for entropy_pd on this machine:
+         * QEMU virt has no virtio-mmio slot left to give it (every one of
+         * the 32 is already owned -- see
+         * services/entropy-service/entropy_svc.c and docs/TCB.md), and a
+         * physical address outside that aperture is not a safe substitute
+         * either -- reading genuinely unbacked physical memory was tried
+         * and reliably wedged the reading thread instead of faulting
+         * cleanly. entropy_mmio_vaddr therefore stays 0 in entropy_pd,
+         * which its own init code treats as "no device frame provisioned"
+         * and reports AOS_ENTROPY_ERR_UNAVAILABLE without touching memory
+         * that isn't there. Only the private queue/data frame below is
+         * allocated.
          */
-        seL4_Error entropy_err =
-            ut_alloc_cap(seL4_ARM_SmallPageObject, 0u, &g_host_entropy_mmio_frame_cap);
-        dbg_puts("[rt] host entropy MMIO-probe RAM frame cap err=");
-        dbg_hex((seL4_Word)entropy_err);
-        dbg_puts(" cap=");
-        dbg_hex((seL4_Word)g_host_entropy_mmio_frame_cap);
-        dbg_puts("\n");
-    }
-
-    {
         seL4_Error entropy_q_err = allocate_entropy_queue();
         dbg_puts("[rt] entropy queue frame allocation err=");
         dbg_hex((seL4_Word)entropy_q_err);
@@ -4054,40 +4045,21 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
         }
 
-        /* ── 4g.4.6d: Give entropy_pd sole access to its two private frames ──
-         * entropy_pd owns a RAM frame at AGENTOS_HOST_ENTROPY_MMIO_VA (not
-         * a real device: every virtio-mmio slot QEMU virt exposes already
-         * belongs to cc_pd/virtio_blk/net_pd, and genuinely unbacked
-         * physical memory outside that aperture reliably wedges a reading
-         * thread rather than faulting cleanly -- see entropy_host_layout.h
-         * for how that was confirmed) plus the private queue/data frame
-         * allocate_entropy_queue() reserved at boot; no other PD maps
-         * either. Neither failure here blocks PD start: entropy_svc detects
-         * a bad or absent device at init and reports
-         * AOS_ENTROPY_ERR_UNAVAILABLE rather than spinning (see
-         * services/entropy-service/entropy_svc.c). */
+        /* ── 4g.4.6d: Give entropy_pd sole access to its private queue frame ──
+         * entropy_pd has no device frame on this machine at all -- every
+         * virtio-mmio slot QEMU virt exposes already belongs to
+         * cc_pd/virtio_blk/net_pd, and genuinely unbacked physical memory
+         * outside that aperture reliably wedges a reading thread rather
+         * than faulting cleanly (see services/entropy-service/entropy_svc.c
+         * and docs/TCB.md for how that was confirmed), so none is mapped
+         * here. The private queue/data frame allocate_entropy_queue()
+         * reserved at boot is the only thing mapped; no other PD maps it.
+         * A mapping failure here does not block PD start: entropy_svc
+         * detects a missing device frame or bad queue metadata at init
+         * and reports AOS_ENTROPY_ERR_UNAVAILABLE rather than spinning
+         * (see services/entropy-service/entropy_svc.c). */
 #if defined(__aarch64__)
         if (name_eq(pd->name, "entropy_pd")) {
-            seL4_Error entropy_err = seL4_NotEnoughMemory;
-            if (g_host_entropy_mmio_frame_cap != seL4_CapNull) {
-                seL4_Word entropy_mmio_copy = ut_alloc_slot();
-                if (entropy_mmio_copy != seL4_CapNull) {
-                    entropy_err = seL4_CNode_Copy(
-                        seL4_CapInitThreadCNode, entropy_mmio_copy, 64u,
-                        seL4_CapInitThreadCNode,
-                        g_host_entropy_mmio_frame_cap, 64u,
-                        seL4_AllRights);
-                    if (entropy_err == seL4_NoError) {
-                        entropy_err = pd_vspace_map_device_frame(
-                            vspace, (seL4_CPtr)entropy_mmio_copy,
-                            AGENTOS_HOST_ENTROPY_MMIO_VA);
-                    }
-                }
-            }
-            dbg_puts("[rt] entropy_pd host MMIO map err=");
-            dbg_hex((seL4_Word)entropy_err);
-            dbg_puts("\n");
-
             seL4_Error entropy_q_err = seL4_NotEnoughMemory;
             if (g_entropy_queue_frame_cap != seL4_CapNull) {
                 seL4_Word entropy_queue_copy = ut_alloc_slot();

@@ -54,7 +54,6 @@
 #include "system_desc.h"
 #include "contracts/native_rust_probe.h"
 #include <platform/guest_memory_layout.h>
-#include <platform/entropy_host_layout.h>
 #ifdef AGENTOS_GUEST_INPUT
 #define AOS_INPUT_PD_EXTRA 1u
 #else
@@ -495,29 +494,23 @@ const system_desc_t system_desc_aarch64 = {
         },
 
         /* pd[N] — entropy_pd (prio 166; virtio-rng hardware driver)
-         * Owns one exclusive MMIO-probe frame and nothing else -- see
-         * platform/include/platform/entropy_host_layout.h for why QEMU
-         * virt has no virtio-mmio slot left for it (every one of the 32
-         * is already owned by cc_pd/virtio_blk/net_pd) and why that frame
-         * is backed by ordinary RAM rather than a physical address outside
-         * that aperture (genuinely unbacked memory there was tried and
-         * reliably wedged the reading thread instead of faulting cleanly).
-         * The driver still owns the frame uniquely and correctly reports
-         * the device absent rather than spinning.
+         * Owns NO device frame on this machine. QEMU virt has no
+         * virtio-mmio slot left for it (every one of the 32 is already
+         * owned by cc_pd/virtio_blk/net_pd), and a physical address
+         * outside that aperture is not a safe substitute: genuinely
+         * unbacked memory there was tried and reliably wedged the reading
+         * thread instead of faulting cleanly. See
+         * services/entropy-service/entropy_svc.c and docs/TCB.md for the
+         * full account. The driver still owns its private virtqueue/data
+         * frame (platform/include/platform/entropy_host_layout.h) and
+         * correctly reports the device absent -- entropy_mmio_vaddr stays
+         * 0 because the root task provisions no MMIO frame at all --
+         * rather than spinning or touching memory that isn't there.
          * Polls instead of taking an IRQ:
          * entropy has no latency requirement, so irq_count stays 0.
          * Priority sits just above cc_pd (164) so cc_pd keeps printing the
          * "agentOS boot complete" marker last, and well below the
-         * latency-sensitive device drivers (207-225).
-         *
-         * Like virtio_blk and net_pd (and unlike serial_pd), the MMIO frame
-         * is not declared via device_frame_count here: on this boot path
-         * that generic mechanism only installs a cap into the PD's own
-         * CNode slot without mapping it into the PD's VSpace (main.c's
-         * special-cased serial_pd branch is the only consumer that maps
-         * it). entropy_pd's frame is retyped and mapped directly by
-         * main.c's "Give entropy_pd sole access" block instead, the same
-         * way virtio_blk's and net_pd's device frames are. */
+         * latency-sensitive device drivers (207-225). */
         {
             .name           = "entropy_pd",
             .elf_path       = "entropy_pd.elf",

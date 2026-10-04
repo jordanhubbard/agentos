@@ -3351,13 +3351,13 @@ pub(crate) fn spawn_qemu_with_guest(
                  * a physical address outside that aperture is not a safe
                  * substitute either: genuinely unbacked memory there
                  * reliably wedges a reading thread instead of faulting
-                 * cleanly (see platform/entropy_host_layout.h for how that
-                 * was confirmed). entropy_pd's MMIO-probe frame is
-                 * therefore ordinary RAM it owns privately, not a host
-                 * device; no device can be wired there until either an
-                 * existing driver's footprint shrinks or entropy moves to
-                 * virtio-pci. The driver correctly detects the resulting
-                 * absent device and reports AOS_ENTROPY_ERR_UNAVAILABLE
+                 * cleanly (see services/entropy-service/entropy_svc.c and
+                 * docs/TCB.md for how that was confirmed). entropy_pd is
+                 * therefore provisioned with no device frame at all on
+                 * this machine; no device can be wired here until either
+                 * an existing driver's footprint shrinks or entropy moves
+                 * to virtio-pci. The driver correctly detects the missing
+                 * device frame and reports AOS_ENTROPY_ERR_UNAVAILABLE
                  * rather than hanging.
                  */
                 .arg("-device")
@@ -5497,9 +5497,11 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
  * safely, not that it has a working entropy source.
  *
  * QEMU `virt`'s virtio-mmio aperture is fully subscribed before entropy_pd
- * exists (see docs/TCB.md and platform/include/platform/entropy_host_layout.h),
- * so no `-device virtio-rng-device` is ever attached in this harness. This
- * only proves: the service answers MSG_ENTROPY_GET (relayed through cc_pd's
+ * exists, and a physical address outside that aperture is not a safe
+ * substitute (see services/entropy-service/entropy_svc.c and docs/TCB.md),
+ * so entropy_pd is provisioned with no device frame at all and no
+ * `-device virtio-rng-device` is ever attached in this harness. This only
+ * proves: the service answers MSG_ENTROPY_GET (relayed through cc_pd's
  * MSG_CC_ENTROPY_GET), a well-formed request gets AOS_ENTROPY_ERR_UNAVAILABLE
  * rather than a hang, a zeroed/fabricated reply, or a fault, and an
  * over-length request gets AOS_ENTROPY_ERR_RANGE -- exercising the
@@ -5510,6 +5512,10 @@ const AOS_ENTROPY_VERSION: u32 = 1;
 const AOS_ENTROPY_OK: u32 = 0;
 const AOS_ENTROPY_ERR_RANGE: u32 = 2;
 const AOS_ENTROPY_ERR_UNAVAILABLE: u32 = 3;
+/* Source of truth: AOS_ENTROPY_MAX_BYTES in
+ * kernel/agentos-root-task/include/contracts/entropy_contract.h. Duplicated
+ * here because this is a separate Rust binary with no shared header with
+ * the C target; keep in sync by hand if that constant ever changes. */
 const AOS_ENTROPY_MAX_BYTES: u32 = 32;
 
 fn verify_entropy_unavailable(socket: &Path) -> anyhow::Result<String> {
