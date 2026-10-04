@@ -922,6 +922,7 @@ test-host: test-authority-kindmap-host
 test-host: test-cc-envelope-host
 test-host: test-cc-envelope-dispatch-host
 test-host: test-cc-session-reap-host
+test-host: test-boot-manifest-host
 
 .PHONY: test-cc-envelope-host
 test-cc-envelope-host:
@@ -958,6 +959,15 @@ test-remoteos-client-host:
 		tests/test_remoteos_client.c kernel/agentos-root-task/src/remoteos_client.c \
 		-o $(BUILD_TMP_DIR)/test_remoteos_client
 	$(BUILD_TMP_DIR)/test_remoteos_client
+
+.PHONY: test-boot-manifest-host
+test-boot-manifest-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_boot_manifest.c kernel/agentos-root-task/src/boot_manifest.c \
+		-o $(BUILD_TMP_DIR)/test_boot_manifest
+	$(BUILD_TMP_DIR)/test_boot_manifest
 
 .PHONY: test-authority-host
 test-authority-host:
