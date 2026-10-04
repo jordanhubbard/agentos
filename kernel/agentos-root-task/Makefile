@@ -1351,13 +1351,18 @@ $(BUILD_DIR)/child_spawn_child.o: $(REPO_ROOT)/tests/child-spawn/child_pd.c
 	$(CC) -c $(CFLAGS) $< -o $@
 # The child gets its OWN pd_entry object, built WITHOUT AGENTOS_LOG_RINGS.
 # Every other PD is created by the root task, which maps the log-config page
-# at AOS_LOG_CONFIG_VA into it; _start() reads that page unconditionally
-# under -DAGENTOS_LOG_RINGS and also writes log_drain_rings_vaddr, which the
-# linker places in .bss past the end of the single content page. This child
-# has neither: it holds exactly what its parent endowed it, and log rings are
-# not on that list. Linking the shared pd_entry.o into it makes it fault at
-# its very first instruction, before pd_main() -- which is precisely the bug
-# "the child is endowed exactly this and nothing more" is supposed to
+# at AOS_LOG_CONFIG_VA into it. Under -DAGENTOS_LOG_RINGS, _start()
+# UNCONDITIONALLY dereferences that page (`logs->magic`) before it can decide
+# whether log rings are present at all -- that read is the fatal one. The
+# subsequent write to log_drain_rings_vaddr is guarded by the magic/version
+# compare and so is never reached; it is a second, latent problem only
+# because the linker places that word in .bss past the end of the single
+# content page.
+#
+# This child holds neither page: it has exactly what its parent endowed it,
+# and log rings are not on that list. Linking the shared pd_entry.o into it
+# makes it fault inside _start(), before pd_main() -- which is precisely the
+# bug "the child is endowed exactly this and nothing more" is supposed to
 # surface, so the fix is to stop linking authority-assuming startup code into
 # it, not to widen the endowment.
 $(BUILD_DIR)/child_spawn_pd_entry.o: $(REPO_ROOT_MK)/libs/pd-support/pd_entry.c
@@ -1384,8 +1389,12 @@ $(BUILD_DIR)/child_spawn_child.elf: $(BUILD_DIR)/child_spawn_child.o $(BUILD_DIR
 	@# no diagnostic beyond a fault at a surprising address, so fail the
 	@# build instead.
 	@set -eu; \
+	command -v $(CHILD_SPAWN_NM) >/dev/null 2>&1 || { \
+		echo "ERROR: $(CHILD_SPAWN_NM) not found on PATH; it is needed to check that"; \
+		echo "       child_spawn_child.elf fits the single page its parent maps for it."; \
+		exit 1; }; \
 	end=$$($(CHILD_SPAWN_NM) $@ | awk '$$3 == "_end" { print $$1 }'); \
-	test -n "$$end" || { echo "ERROR: child_spawn_child.elf has no _end symbol"; exit 1; }; \
+	test -n "$$end" || { echo "ERROR: child_spawn_child.elf has no _end symbol (tools/ld/agentos.ld should define it)"; exit 1; }; \
 	if [ "$$(printf '%d' 0x$$end)" -gt "$$(printf '%d' 0x401000)" ]; then \
 		echo "ERROR: child_spawn_child.elf spans past the single page its parent maps for it (_end=0x$$end, limit 0x401000); shrink tests/child-spawn/child_pd.c or map a second page"; \
 		exit 1; \

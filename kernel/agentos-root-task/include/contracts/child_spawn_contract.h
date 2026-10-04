@@ -135,10 +135,30 @@
  * fault_ep). Without this the child's Probe 2 fault would be unhandled
  * and invisible: seL4 would simply leave the thread faulted, and the
  * root task -- the independent observer the proof relies on -- would
- * never see it. The parent cannot forge this: root mints it with
+ * never see it.
+ *
+ * What the badge does and does NOT buy. Root, not the parent, chooses
  * AOS_CHILD_SPAWN_PROBE_BADGE, and the badge is what the oracle matches
- * on, so the parent could not substitute some other endpoint and still
- * produce the marker. */
+ * on, so the parent cannot substitute an endpoint of its own making and
+ * still produce the marker, and an ordinary unbadged fault (including one
+ * by child_spawn_parent itself, which keeps the plain fault endpoint --
+ * ROOT_PROBE_NATIVE 6 matches no PD in main.c's selection block) can never
+ * be mistaken for the child's.
+ *
+ * It does NOT make the marker unforgeable. Root mints this capability with
+ * seL4_AllRights, so the parent holds SEND rights on it, and main.c's
+ * oracle is a plain seL4_Wait comparing badge, message label and message
+ * registers -- which cannot distinguish a kernel-generated fault IPC from
+ * a user-mode seL4_Send carrying the same label and the same MRs. The
+ * oracle asserts the exact SHAPE of a VM fault at a specific address in a
+ * specific direction; it does not assert the kernel produced it. What
+ * makes the probe sound is that child_spawn_parent is the test's own code
+ * and demonstrably does not send on this endpoint, plus Step 5's
+ * non-vacuity run, in which the marker disappeared the moment the child
+ * stopped faulting. (T5's ROOT_PROBE_NATIVE 5 wiring has the same
+ * structural property -- the borrower holds its own badged endpoint -- so
+ * this is a pre-existing pattern, not a new gap.) A reader must not treat
+ * the badge as proof of provenance. */
 #define AOS_CHILD_SPAWN_FAULT_EP_SLOT         52u
 
 /* The parent's ORIGINAL capability to the frame it endows the child with

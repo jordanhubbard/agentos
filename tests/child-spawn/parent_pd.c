@@ -5,9 +5,14 @@
  * Built only under AGENTOS_CHILD_SPAWN_TEST (see system_desc_aarch64.c and
  * the root-task Makefile); absent from the default PD set. Exercises
  * libs/pd-support/child_spawn.c end-to-end against a real seL4 target, and
- * is the PD that emits three of T6 Task 3's four probe markers (the
- * fourth, Probe 2, is emitted by the ROOT TASK -- this PD deliberately
- * cannot claim a fault happened).
+ * is the PD that emits three of T6 Task 3's four probe markers. The
+ * fourth, Probe 2, is emitted by the ROOT TASK instead, because a PD
+ * reporting that its own child faulted is not evidence of anything. Note
+ * that this is a separation of roles, not an enforced one: root mints this
+ * PD's fault endpoint with send rights, so nothing in the kernel stops a
+ * PD in this position from fabricating the message -- see the oracle
+ * comment in main.c's AGENTOS_CHILD_SPAWN_TEST ROOT_PROBE_* block. This
+ * file simply does not do it.
  *
  *   1. Retype, from the pool root granted this PD at boot
  *      (AOS_CHILD_SPAWN_POOL_SLOT), the two objects this demo endows: a

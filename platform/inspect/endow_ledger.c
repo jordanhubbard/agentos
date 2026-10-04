@@ -32,6 +32,28 @@ static void copy_name(uint8_t dst[AOS_AUTHORITY_NAME_LEN], const char *src)
     }
 }
 
+/*
+ * Only endpoint and notification capabilities carry a badge. seL4 silently
+ * ignores the badge argument to seL4_CNode_Mint for every other type -- an
+ * ARM page capability minted with 0xC417 carries no badge at all -- so
+ * recording the requested value for those kinds would put a field in this
+ * record that does not describe anything the child holds. A record whose
+ * entire purpose is accurate self-reporting does not get to contain a
+ * number that is simply false, however harmless it is downstream (the
+ * authority snapshot counts kinds, not badges).
+ *
+ * AOS_AUTHORITY_KIND_OTHER is treated as badge-carrying: it is the bucket
+ * for kinds this enumeration does not name, so the honest thing is to
+ * preserve what the caller passed rather than discard it on a guess.
+ */
+static int kind_carries_badge(uint32_t kind)
+{
+    return kind == (uint32_t)AOS_AUTHORITY_KIND_ENDPOINT
+        || kind == (uint32_t)AOS_AUTHORITY_KIND_NOTIFICATION
+        || kind >= AOS_AUTHORITY_KIND_COUNT
+        || kind == (uint32_t)AOS_AUTHORITY_KIND_OTHER;
+}
+
 void aos_endow_ledger_init(aos_endow_ledger_t *led)
 {
     if (led == NULL) {
@@ -66,33 +88,41 @@ int aos_endow_ledger_record(aos_endow_ledger_t *led, uint32_t child_index,
     copy_name(e->child_name, child_name);
     e->kind   = kind;
     e->rights = rights;
-    e->badge  = badge;
+    e->badge  = kind_carries_badge(kind) ? badge : 0u;
     led->count++;
     return AOS_ENDOW_LEDGER_OK;
 }
 
-uint32_t aos_endow_ledger_mark(const aos_endow_ledger_t *led)
+aos_endow_ledger_mark_t aos_endow_ledger_mark(const aos_endow_ledger_t *led)
 {
+    aos_endow_ledger_mark_t mark = {0u, 0u};
+
     if (led == NULL) {
-        return 0u;
+        return mark;
     }
-    return led->count;
+    mark.count   = led->count;
+    mark.dropped = led->dropped;
+    return mark;
 }
 
-void aos_endow_ledger_rollback(aos_endow_ledger_t *led, uint32_t mark)
+void aos_endow_ledger_rollback(aos_endow_ledger_t *led,
+                               aos_endow_ledger_mark_t mark)
 {
-    if (led == NULL || mark > led->count) {
+    if (led == NULL || mark.count > led->count || mark.dropped > led->dropped) {
         return;
     }
     /* Zero the abandoned entries rather than just lowering the count: a
      * ledger page that a reader may map should not retain the name of a
      * child that never existed in its tail. */
-    memset(&led->entries[mark], 0,
-           (size_t)(led->count - mark) * sizeof(led->entries[0]));
-    led->count = mark;
-    /* A spawn that overflowed the table and then failed must not leave a
-     * permanent "entries were lost" claim behind -- nothing was granted. */
-    led->dropped = 0u;
+    memset(&led->entries[mark.count], 0,
+           (size_t)(led->count - mark.count) * sizeof(led->entries[0]));
+    led->count = mark.count;
+    /* RESTORE, not clear. Drop only the overflows this spawn itself caused;
+     * any that were already outstanding belong to a child that is running
+     * right now with a capability this record does not list, and erasing
+     * that flag would make an incomplete report claim to be a complete one.
+     * See the header. */
+    led->dropped = mark.dropped;
 }
 
 int aos_endow_ledger_validate(const aos_endow_ledger_t *led)

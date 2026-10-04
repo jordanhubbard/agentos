@@ -1836,10 +1836,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         //     ROOT TASK's fault oracle (main.c's AGENTOS_CHILD_SPAWN_TEST
         //     ROOT_PROBE_* block) after matching the exact badge, address
         //     and direction, so neither a timeout nor an unrelated fault
-        //     nor a claim by the parent can satisfy it. Step 5 of the task
-        //     brief (endow the withheld page too, rebuild, watch this
-        //     command FAIL on exactly this marker) is what establishes
-        //     that it is not vacuous.
+        //     can satisfy it. (The oracle asserts the exact shape of a
+        //     fault IPC, not that the kernel produced it -- the parent
+        //     holds send rights on that badged endpoint. It is trusted
+        //     test code that does not send; see the oracle comment in
+        //     main.c.) Step 5 of the task brief (endow the withheld page
+        //     too, rebuild, watch this command FAIL on exactly this
+        //     marker) is what establishes that it is not vacuous.
         //   Probe 4 -- the endowment-delta ledger, rendered through T4's
         //     own authority formatter. The pd= line is asserted verbatim:
         //     a row for the child with exactly one notification and one

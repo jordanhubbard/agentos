@@ -197,19 +197,33 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 /* T6 Task 3 target proof, Probe 2: the child domain child_spawn_parent
  * created at run time reads AOS_CHILD_SPAWN_WITHHELD_VA -- a page its
  * parent deliberately never mapped and never endowed -- and must fault. A
- * plain read, so WRITE=0. This is the ONLY event that may emit
- * AOS_CHILD_SPAWN_MARKER_ROOT_FAULT_VERIFIED: exact badge, address and
- * direction, observed by the root task independently of both the parent
- * (which must not be able to claim a fault happened) and the child (which
- * never returns control after this fault, and has no serial capability
- * with which to say anything in any case).
+ * plain read, so WRITE=0. The marker is emitted by the ROOT TASK -- not by
+ * the child, which never returns control after this fault and has no
+ * serial capability with which to say anything in any case, and not by the
+ * parent, whose own report would be worth nothing.
  *
  * The badge comes from the fault endpoint root mints into the PARENT's
  * CNode at AOS_CHILD_SPAWN_FAULT_EP_SLOT, which the parent then installs
  * on its child's TCB via aos_child_spawn_req_t.fault_ep. ROOT_PROBE_NATIVE
  * deliberately matches no PD in the pd_fault_ep selection block below:
  * child_spawn_parent itself keeps the ordinary unbadged fault endpoint, so
- * a fault by the PARENT can never be mistaken for the child's. */
+ * a fault by the PARENT can never be mistaken for the child's.
+ *
+ * What this oracle actually asserts -- and what it does not. It asserts
+ * the exact SHAPE of the event: badge, seL4_Fault_VMFault label, faulting
+ * address, PrefetchFault clear and FSR WnR direction. It does NOT assert
+ * that the kernel produced it. Root mints the fault endpoint with
+ * seL4_AllRights, so the parent holds send rights, and the loop below is a
+ * plain seL4_Wait that cannot tell a kernel fault IPC from a user-mode
+ * seL4_Send carrying the same label and the same message registers. The
+ * probe is sound because child_spawn_parent is the test's own code and
+ * does not send on this endpoint, and because Step 5's non-vacuity run
+ * showed the marker vanish the moment the child stopped faulting -- not
+ * because forgery is prevented. The same structural property already holds
+ * for AGENTOS_CAP_LEND_TEST's ROOT_PROBE_NATIVE 5 above. Making it
+ * genuinely unforgeable would mean root minting the fault endpoint without
+ * send rights for the parent -- a change to how fault endpoints are
+ * delegated, not a change to this probe. */
 #define ROOT_FAULT_PROBE 1
 #define ROOT_PROBE_NATIVE 6
 #define ROOT_PROBE_CLIENT 0u

@@ -279,7 +279,7 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
      * exit, including AOS_CHILD_SPAWN_ERR_START -- see child_spawn.h's
      * "Reporting" section.
      */
-    uint32_t ledger_mark = aos_endow_ledger_mark(req->ledger);
+    aos_endow_ledger_mark_t ledger_mark = aos_endow_ledger_mark(req->ledger);
 
     /* ── Step 1: retype the child's CNode, VSpace and TCB from the
      * parent's pool. Every retype below names req->pool_ut (via `st`) and
@@ -503,6 +503,15 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
          * has no capability-enumeration syscall. See
          * platform/endow_ledger.h. A NULL ledger records nothing and
          * changes nothing about the mint.
+         *
+         * The return value is deliberately discarded: running out of
+         * ledger space is a REPORTING limit, not a reason to refuse a
+         * child authority its parent legitimately holds, so a spawn that
+         * overflows the ledger still succeeds. What must then survive is
+         * the ledger's own .dropped counter, which is the only record that
+         * the resulting report is incomplete -- which is why
+         * aos_endow_ledger_rollback() restores the mark's .dropped rather
+         * than clearing it.
          */
         (void)aos_endow_ledger_record(req->ledger, req->child_index,
                                        req->child_name, c->kind, c->rights,

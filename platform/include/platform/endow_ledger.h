@@ -98,7 +98,13 @@
  *                   read, bit2 grant, bit3 grantreply). Recorded for the
  *                   human reading the report; the authority snapshot
  *                   itself counts kinds, not rights.
- *   badge       -- the badge the derivative was minted with.
+ *   badge       -- the badge the derivative actually carries, which is the
+ *                   badge requested at mint time ONLY for kinds that can
+ *                   carry one (endpoint, notification). seL4 silently
+ *                   ignores the badge argument for every other capability
+ *                   type -- a frame minted with a badge carries none -- so
+ *                   aos_endow_ledger_record() stores 0 for those kinds
+ *                   rather than echo a value the capability does not have.
  */
 typedef struct __attribute__((packed)) aos_endow_ledger_entry {
     uint32_t child_index;
@@ -144,11 +150,30 @@ int aos_endow_ledger_record(aos_endow_ledger_t *led, uint32_t child_index,
  * endowment loop and rolls back to it on any failure, so the ledger only
  * ever describes children that actually ran.
  *
- * rollback() also restores .dropped, so a failed spawn that overflowed the
- * table does not leave a permanent "entries were lost" claim behind.
+ * The mark captures .dropped as well as .count, and rollback RESTORES the
+ * captured value rather than clearing it. That distinction matters and is
+ * not cosmetic. aos_child_spawn() ignores aos_endow_ledger_record()'s
+ * AOS_ENDOW_LEDGER_ERR_FULL -- running out of ledger space is a reporting
+ * limit, not a reason to refuse a child its authority -- so a spawn that
+ * overflows the table SUCCEEDS, and the child it created runs holding a
+ * capability this record does not list. The non-zero .dropped is the only
+ * thing that says so. If a LATER, unrelated, failed spawn's rollback
+ * cleared that flag, the report would go back to claiming it is a complete
+ * account of a live domain's endowment while silently omitting one of its
+ * capabilities -- a reporting layer overstating its own completeness,
+ * which is worse than one that reports nothing, because the whole point of
+ * feeding T4 is that delegation can be checked against the record.
+ * Restoring the mark's value drops exactly the failed spawn's own
+ * overflows and nothing else.
  */
-uint32_t aos_endow_ledger_mark(const aos_endow_ledger_t *led);
-void     aos_endow_ledger_rollback(aos_endow_ledger_t *led, uint32_t mark);
+typedef struct {
+    uint32_t count;
+    uint32_t dropped;
+} aos_endow_ledger_mark_t;
+
+aos_endow_ledger_mark_t aos_endow_ledger_mark(const aos_endow_ledger_t *led);
+void aos_endow_ledger_rollback(aos_endow_ledger_t *led,
+                               aos_endow_ledger_mark_t mark);
 
 /* Structural check: version and bounds. */
 int aos_endow_ledger_validate(const aos_endow_ledger_t *led);

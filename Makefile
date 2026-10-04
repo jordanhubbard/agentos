@@ -1722,6 +1722,7 @@ test-cap-lending:
 .PHONY: test-child-spawn
 test-child-spawn:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-child-spawn --timeout-secs $(QEMU_TEST_TIMEOUT)
+
 .PHONY: test-authority
 test-authority:
 	$(MAKE) -C tools/agentctl

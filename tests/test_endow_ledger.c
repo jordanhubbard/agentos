@@ -25,8 +25,11 @@ int main(void)
     assert(aos_endow_ledger_record(NULL, 1u, "x", AOS_AUTHORITY_KIND_FRAME, 1u, 7u)
            == AOS_ENDOW_LEDGER_ERR_NULL);
     aos_endow_ledger_init(NULL);
-    aos_endow_ledger_rollback(NULL, 0u);
-    assert(aos_endow_ledger_mark(NULL) == 0u);
+    {
+        aos_endow_ledger_mark_t null_mark = aos_endow_ledger_mark(NULL);
+        assert(null_mark.count == 0u && null_mark.dropped == 0u);
+        aos_endow_ledger_rollback(NULL, null_mark);
+    }
     assert(aos_endow_ledger_validate(NULL) == AOS_ENDOW_LEDGER_ERR_NULL);
 
     /* A version-mismatched ledger is refused on both record and merge. */
@@ -83,8 +86,8 @@ int main(void)
      * property that keeps the report honest -- a child that never started
      * was never endowed, whatever partial mints the kernel accepted. */
     {
-        uint32_t mark = aos_endow_ledger_mark(&led);
-        assert(mark == 3u);
+        aos_endow_ledger_mark_t mark = aos_endow_ledger_mark(&led);
+        assert(mark.count == 3u && mark.dropped == 0u);
         assert(aos_endow_ledger_record(&led, 3u, "doomed_child",
                                        AOS_AUTHORITY_KIND_ENDPOINT, 0x3u, 9u)
                == AOS_ENDOW_LEDGER_OK);
@@ -105,14 +108,17 @@ int main(void)
 
     /* Rollback to a mark beyond the current count is a no-op, not a
      * truncation of live rows into negative territory. */
-    aos_endow_ledger_rollback(&led, led.count + 5u);
-    assert(led.count == 3u);
+    {
+        aos_endow_ledger_mark_t bogus = { led.count + 5u, 0u };
+        aos_endow_ledger_rollback(&led, bogus);
+        assert(led.count == 3u);
+    }
 
     /* Overflow: refused and counted, never silently lost; and a rollback
-     * clears the "entries were lost" claim because nothing was granted. */
+     * of the SAME spawn's own overflows drops exactly those. */
     {
         aos_endow_ledger_t full;
-        uint32_t mark;
+        aos_endow_ledger_mark_t mark;
         aos_endow_ledger_init(&full);
         for (uint32_t i = 0u; i < AOS_ENDOW_LEDGER_MAX_ENTRIES; i++) {
             assert(aos_endow_ledger_record(&full, 1u, "c",
@@ -120,6 +126,7 @@ int main(void)
                    == AOS_ENDOW_LEDGER_OK);
         }
         mark = aos_endow_ledger_mark(&full);
+        assert(mark.count == AOS_ENDOW_LEDGER_MAX_ENTRIES && mark.dropped == 0u);
         assert(aos_endow_ledger_record(&full, 1u, "c",
                                        AOS_AUTHORITY_KIND_FRAME, 0x1u, 1u)
                == AOS_ENDOW_LEDGER_ERR_FULL);
@@ -128,6 +135,86 @@ int main(void)
         aos_endow_ledger_rollback(&full, mark);
         assert(full.dropped == 0u);
         assert(full.count == AOS_ENDOW_LEDGER_MAX_ENTRIES);
+    }
+
+    /*
+     * The sequence the rollback contract exists for: a SUCCESSFUL spawn
+     * overflows the ledger (aos_child_spawn discards ERR_FULL, so the child
+     * runs holding a capability this record does not list -- flagged only by
+     * dropped != 0), and then an unrelated LATER spawn fails and rolls back.
+     * The earlier flag must survive: clearing it would make the report claim
+     * to be a complete account of a live domain's endowment while silently
+     * omitting one of its capabilities.
+     */
+    {
+        aos_endow_ledger_t led2;
+        aos_endow_ledger_mark_t spawn_a, spawn_b;
+        aos_endow_ledger_init(&led2);
+
+        /* Spawn A: fills the table and overflows by two, then SUCCEEDS --
+         * no rollback, because child A really is running. */
+        spawn_a = aos_endow_ledger_mark(&led2);
+        for (uint32_t i = 0u; i < AOS_ENDOW_LEDGER_MAX_ENTRIES + 2u; i++) {
+            (void)aos_endow_ledger_record(&led2, 1u, "child_a",
+                                          AOS_AUTHORITY_KIND_FRAME, 0x1u, 0u);
+        }
+        assert(spawn_a.dropped == 0u);
+        assert(led2.count == AOS_ENDOW_LEDGER_MAX_ENTRIES);
+        assert(led2.dropped == 2u);
+
+        /* Spawn B: records nothing it can fit, overflows once more, FAILS. */
+        spawn_b = aos_endow_ledger_mark(&led2);
+        assert(spawn_b.dropped == 2u);
+        assert(aos_endow_ledger_record(&led2, 2u, "child_b",
+                                       AOS_AUTHORITY_KIND_NOTIFICATION, 0x1u, 0u)
+               == AOS_ENDOW_LEDGER_ERR_FULL);
+        assert(led2.dropped == 3u);
+        aos_endow_ledger_rollback(&led2, spawn_b);
+
+        /* B's own overflow is gone; A's incompleteness flag survives. */
+        assert(led2.count == AOS_ENDOW_LEDGER_MAX_ENTRIES);
+        assert(led2.dropped == 2u);
+
+        /* And the merged report still carries no row for the child that
+         * never started. */
+        aos_authority_init(&snap);
+        assert(aos_endow_ledger_merge(&led2, &snap) == AOS_ENDOW_LEDGER_OK);
+        assert(snap.pd_count == 1u);
+        assert(snap.pds[0].pd_index == 1u);
+    }
+
+    /*
+     * Only badgeable kinds record a badge. seL4 ignores the badge argument
+     * to seL4_CNode_Mint for a frame, so echoing the requested value into a
+     * record whose purpose is accurate self-reporting would be a false
+     * field.
+     */
+    {
+        aos_endow_ledger_t b;
+        aos_endow_ledger_init(&b);
+        assert(aos_endow_ledger_record(&b, 1u, "c",
+                   AOS_AUTHORITY_KIND_NOTIFICATION, 0x1u, 0xC417u)
+               == AOS_ENDOW_LEDGER_OK);
+        assert(aos_endow_ledger_record(&b, 1u, "c",
+                   AOS_AUTHORITY_KIND_ENDPOINT, 0x3u, 0xC417u)
+               == AOS_ENDOW_LEDGER_OK);
+        assert(aos_endow_ledger_record(&b, 1u, "c",
+                   AOS_AUTHORITY_KIND_FRAME, 0x3u, 0xC417u)
+               == AOS_ENDOW_LEDGER_OK);
+        assert(aos_endow_ledger_record(&b, 1u, "c",
+                   AOS_AUTHORITY_KIND_CNODE, 0x3u, 0xC417u)
+               == AOS_ENDOW_LEDGER_OK);
+        /* An unrecognised kind keeps what the caller passed rather than
+         * discarding it on a guess. */
+        assert(aos_endow_ledger_record(&b, 1u, "c", 0xBEEFu, 0x3u, 0xC417u)
+               == AOS_ENDOW_LEDGER_OK);
+        assert(b.entries[0].badge == 0xC417u);  /* notification */
+        assert(b.entries[1].badge == 0xC417u);  /* endpoint */
+        assert(b.entries[2].badge == 0u);       /* frame -- carries none */
+        assert(b.entries[3].badge == 0u);       /* cnode -- carries none */
+        assert(b.entries[4].badge == 0xC417u);  /* unknown kind */
+        /* The rights field is unaffected either way. */
+        assert(b.entries[2].rights == 0x3u);
     }
 
     /* A name longer than the field is truncated and still NUL-terminated. */
