@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-04
+
 Trust and delegation baseline: the corrective actions from the 2026-10-03
 architecture audit. Capabilities now have a lending primitive, a hierarchical
 delegation path, and an image-verification trust model that works on hardware
