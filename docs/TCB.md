@@ -1510,30 +1510,100 @@ is the qualifying evidence under the pin.
 ### Protection-domain image verification
 
 The root task verifies every protection-domain image before spawning it. The
-build emits a manifest of per-PD SHA-256 digests signed once with Ed25519; root
-verifies that signature against a public key fixed at build time, then checks
-each PD's digest immediately before spawn. Verification covers the AArch64 and
-x86_64 targets, which embed their PD images in a signed bundle. On those
-targets it is unconditional: no build flag, environment variable or
-configuration disables it, and an absent or malformed manifest refuses boot
-rather than skipping the check. RISC-V does not embed a PD bundle; PDs load
-there via the seL4 extra-BootInfo path and are **not** verified.
+build emits a manifest of per-PD SHA-256 digests signed once with Ed25519;
+root checks that signature, then checks each PD's digest immediately before
+spawn. Verification covers the AArch64 and x86_64 targets, which embed their
+PD images in a signed bundle. RISC-V does not embed a PD bundle; PDs load
+there via the seL4 extra-BootInfo path and are **not** verified, on any tier.
+A RISC-V boot says so rather than naming a tier it does not run: the boot
+banner reports `unverified (no PD bundle on this target)` and states that no
+digest is computed and no signature checked, and `trust.anchor_tier` in the
+inspect snapshot carries the same sentinel rather than a tier value. Reporting
+any real tier there — `none` included, which would read as "a development
+anchor was chosen" — would be false in the one place an operator looks to find
+out what their machine enforces.
+
+Image verification runs under one of three trust anchors, recorded in the
+image and announced at boot (and visible on a running system via the inspect
+snapshot's `trust.anchor_tier` field — `agentctl inspect`). Under the vendor
+anchor (a public key fixed at build time) and the machine-owner anchor (an
+enrolled key), a manifest or digest mismatch refuses boot. Under the
+development anchor, digests are still computed and mismatches still
+reported, but a digest mismatch does not stop boot — it establishes nothing
+about image integrity and exists so the platform can be iterated on before
+production key storage exists. A structurally absent or invalid manifest is
+refused on **every** tier including development, since there is nothing to
+compute or compare without one; the development anchor only changes what
+happens on a mismatch within an otherwise well-formed, signed manifest. The
+development anchor requires an explicit build opt-in
+(`AGENTOS_TRUST_ANCHOR=none`); a build with no key and no opt-in fails rather
+than producing a non-gating image.
+
+The machine-owner anchor does NOT defend against the machine owner, who can
+sign any image they choose. It constrains remote compromise and third-party
+tampering. The vendor key is **optional** for this tier: a machine owner may
+enrol their own key alone, with no vendor key at all, in which case the
+owner is the sole root of trust on that machine and agentOS's own
+vendor-signed images are refused unless the owner signs or counter-signs
+them — that is the intended meaning of standing alone, not a defect. Only a
+tier that excludes the owner, or that the owner cannot re-key with physical
+access, would exclude the local operator from the trust model, and neither
+tier here does; only a hardware anchor — OTP-fused signed boot or a firmware
+TPM — would change that. `AOS_ANCHOR_HARDWARE` is defined as a key source in
+the contract (`kernel/agentos-root-task/include/contracts/trust_anchor.h`)
+and is **not implemented**; it reports unavailable and makes no claim about
+TPM or measured-boot support. This is not a measured-boot chain and produces
+no attestation.
+
+The machine-owner key is enrolled by setting `AGENTOS_MOK_SIGNING_KEY` to a
+seed file at build time — **build-time-provisioned, not a persistent runtime
+enrolment mechanism.** There is no on-target storage a running system writes
+to when an owner enrols a key with physical presence; see
+`kernel/agentos-root-task/keys/README.md` for what would need to exist
+(writable, attested storage reachable at boot) before this becomes a real
+runtime flow.
+
 `make test-image-verify` boots an unmodified image, a byte-tampered image, and
-an image with its manifest stripped, requiring the latter two to be refused with
-the tampered image named.
+an image with its manifest stripped, under the vendor (gating) anchor;
+requiring the latter two to be refused, with the tampered image named. The
+manifest-stripped case refuses boot on every tier, not just gating ones (see
+above).
+
+`make test-trust-anchor` boots the tier behaviour itself, each probe on its own
+freshly built image: the vendor anchor booting an unmodified image and refusing
+a byte-tampered one by name; the same tamper, applied to a separate build under
+the development anchor, emitting the digest mismatch and naming the same PD,
+**and** completing boot — both asserted, since the completed boot alone
+would equally describe an image that skipped verification; a gating tier
+compiled with its required key absent refusing rather than downgrading; and a
+machine-owner image's inspect snapshot reporting the machine-owner tier, not
+the vendor tier the rest of the inspect suite pins.
+
+Two limits on that, stated rather than implied. **The key-less gating tier
+probe asserts an absence, not a refusal message.** That check runs before the
+UART is mapped, so the refusal cannot print; the probe asserts a loader-stage
+marker and then the sustained absence of every root-task marker. It attributes
+that silence to the anchor state only by running its own control first — the
+identical build without the fault injected, required to boot to completion —
+and by re-reading the generated header to confirm the key-less state was
+compiled in. A positive refusal marker would be better and needs the Step 0
+check re-ordered or given a channel that is live that early. **And a digest
+mismatch under the machine-owner anchor is not covered on target**: that it
+refuses follows from the same `aos_anchor_gates_boot()` decision the vendor
+probe exercises, and is host-tested, but no booted image has been made to
+demonstrate it.
 
 Scope: this constrains every adversary who can modify an image but not replace
-the boot chain. It does NOT establish resistance to the local operator, who is
-untrusted under the platform threat model and has physical access: a public key
-shipped in the image can be replaced along with the image it validates. Only a
-hardware anchor — OTP-fused signed boot or a firmware TPM — would change that,
-and none is confirmed for the target boards. This is not a measured-boot chain
-and produces no attestation.
+the boot chain. Under the vendor and machine-owner tiers it does NOT establish
+resistance to the local operator, who is untrusted under the platform threat
+model and has physical access: a public key shipped in the image can be
+replaced along with the image it validates. Only a hardware anchor would
+change that, and none is confirmed for the target boards.
 
 Qualification boundary: development results were obtained under Microkit SDK
-2.1.0. `make test-image-verify` is additionally run by the CI `os-claim-gate`
-job, which installs the verified SDK artifact; that job's result on a given
-revision is the qualifying evidence under the pin.
+2.1.0. `make test-image-verify` and `make test-trust-anchor` are additionally
+run by the CI `os-claim-gate` job, which installs the verified SDK artifact;
+that job's result on a given revision is the qualifying evidence under the pin.
 
 ### Capability lending (T5)
 

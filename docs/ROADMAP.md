@@ -167,7 +167,10 @@ rather than a conservative virtue.
 Ranked by risk retired per unit of work, which is not the same as dependency
 order. T1 through T4 are mutually independent and may proceed in parallel;
 T1 through T3 are ranked first because they retire more risk per unit of work,
-not because T4 waits on them. T5 onward are ordered by dependency.
+not because T4 waits on them. T5 onward are ordered by dependency. T10 was
+added after T3 shipped: it does not extend the design, it corrects an
+assumption T3 made — that a single compiled-in vendor key is the only trust
+anchor — which no board in hand can satisfy without blocking development.
 
 | Order | MAC task | Corrective action | Proof |
 | --- | --- | --- | --- |
@@ -180,6 +183,7 @@ not because T4 waits on them. T5 onward are ordered by dependency.
 | T7 | to file | `agentos_gui` hardening and a real authority view. Set a restrictive CSP (currently `null`), scope `capabilities/default.json` beyond `core:default`, remove the unused `@tauri-apps/plugin-shell` dependency, and validate the socket path in Rust rather than accepting an arbitrary frontend string. Replace the hardcoded topology graph with the T4 observer feed | GUI tests asserting the command surface is unreachable without the capability grant, and a topology view sourced from observed authority |
 | T8 | to file | Measured boot and remote attestation, built on T2 and T3. Supersedes `boot_integrity.c`, whose Ed25519 key is derived from the data it signs and whose signature is discarded. **Gated on hardware:** without a key store the operator cannot extract, an untrusted operator can attest any state, so this must not ship as a claim until a per-board hardware anchor is confirmed | An attestation a host verifier accepts, and rejects after image substitution — admissible only once the signing key is hardware-anchored |
 | T9 | deferred | Perimeter signing for cross-node authority. Only required if agentOS federates; capabilities do not traverse a network | Deferred — no proof obligation until federation is scoped |
+| T10 | to file | Trust anchor tiers (MOK model), extending T3. T3 verifies PD images against a single compiled-in vendor key, which blocks iteration on hardware that has no key store. Introduce three live tiers — `AOS_ANCHOR_NONE` (development: verifies and reports, does not gate), `AOS_ANCHOR_VENDOR` (today's behaviour), `AOS_ANCHOR_MOK` (a machine-owner key that **stands alone**: it does not require the vendor key, and on a MOK-only machine vendor-signed images do not verify) — plus `AOS_ANCHOR_HARDWARE` as a real enum arm whose key source reports unavailable, so later TPM/OTP work is a new key source rather than a redesign. MOK does not defend against the machine owner, who can sign anything; `docs/TCB.md` must say so and must drop its claim that verification is unconditional | Host tests pinning the tier/gating policy, a boot under each tier showing the anchor named in boot output, and a development-tier boot that still reports a digest mismatch without stopping |
 
 Museum constraint: `docs/TCB.md` forbids extending `cap_broker`, CapStore, and
 the other quarantined components. None of T1 through T9 may be implemented by

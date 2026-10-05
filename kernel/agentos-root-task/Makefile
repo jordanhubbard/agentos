@@ -2,6 +2,15 @@
 # This builds the agentOS personality layer that boots on top of seL4.
 # Image packing uses cargo xtask gen-image (no external Microkit SDK required).
 
+# A failed recipe must not leave a stale target file with a fresh mtime,
+# which `make` would then treat as up to date on the next invocation. This
+# matters most for the PD_BUNDLE/PD_MANIFEST/PD_MANIFEST_PUBKEY_HDR trio
+# (T10 review, task-2-review.md "Disclosed concern (a)"): `xtask
+# gen-pd-bundle` writes the bundle file before it can fail on trust-anchor
+# selection (no key, no opt-in), which would otherwise leave a dangling,
+# unsigned bundle on disk that looked current.
+.DELETE_ON_ERROR:
+
 ifeq ($(strip $(BUILD_DIR)),)
 $(error BUILD_DIR must be specified)
 endif
@@ -143,6 +152,16 @@ ROOT_TASK_OBJS += $(BUILD_DIR)/rt_authority.o
 # used by the legacy monitor PD, so the object is shared/deduped rather than
 # duplicated under an rt_ prefix.
 ROOT_TASK_OBJS += $(BUILD_DIR)/sha256_mini.o $(BUILD_DIR)/ed25519_verify.o $(BUILD_DIR)/monocypher.o
+# Trust anchor tier contract and gating policy (T10) -- host-testable, no
+# seL4/key material of its own; see libs/pd-support/trust_anchor.c and
+# kernel/agentos-root-task/include/contracts/trust_anchor.h.
+#
+# platform/inspect/inspect_snapshot.c calls aos_anchor_tier_name() directly
+# (the single source of tier -> name strings, see its own comment) rather
+# than hand-syncing a second copy, so every binary that links
+# inspect_snapshot.c -- or its inspect_snapshot.pd.o twin, see cc_pd.elf
+# and operator_session.elf below -- must also link trust_anchor.o.
+ROOT_TASK_OBJS += $(BUILD_DIR)/trust_anchor.o
 ifeq ($(ARCH),x86_64)
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
 endif
@@ -586,6 +605,117 @@ PD_MANIFEST_PUBKEY_HDR := $(BUILD_DIR)/boot_manifest_pubkey.h
 # Deferred reference: SYSTEM_TOML is set later in this Makefile.
 SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
 
+# Trust anchor tier selection (T10) for `xtask gen-pd-bundle`: strictest-first
+# on AGENTOS_BUNDLE_SIGNING_KEY / AGENTOS_MOK_SIGNING_KEY / AGENTOS_TRUST_ANCHOR
+# -- see xtask/src/boot_manifest.rs::select_anchor. A build with NEITHER a
+# signing key NOR an explicit AGENTOS_TRUST_ANCHOR=none opt-in is a build
+# ERROR by design (the one outcome this whole feature must not produce is a
+# silently non-gating image). This Makefile default exists so `make build`/
+# `make test` with no special environment keep working exactly as they did
+# before this task -- by EXPLICITLY exporting AGENTOS_BUNDLE_SIGNING_KEY at
+# the dev seed path (committed in-tree, not a secret) rather than relying on
+# any implicit fallback inside xtask. That still selects AOS_ANCHOR_VENDOR
+# (gating) with the dev-signed indicator set, identical to today's behavior;
+# it is not the non-gating AOS_ANCHOR_NONE tier. `?=` lets a real
+# AGENTOS_BUNDLE_SIGNING_KEY (or AGENTOS_MOK_SIGNING_KEY / AGENTOS_TRUST_ANCHOR
+# opt-in) from the caller's environment take priority untouched, and a
+# caller deliberately exercising AOS_ANCHOR_NONE or a MOK-only build is not
+# second-guessed by this default forcing a vendor key back in.
+ifeq ($(AGENTOS_TRUST_ANCHOR),none)
+# Explicit opt-in to the non-gating development anchor: leave it alone.
+else ifdef AGENTOS_MOK_SIGNING_KEY
+# MOK-only (or MOK + vendor, if the caller also sets the vendor var) build
+# requested explicitly: do not force a vendor key into it.
+else
+AGENTOS_BUNDLE_SIGNING_KEY ?= $(REPO_ROOT_MK)/kernel/agentos-root-task/keys/dev_signing_key.seed
+endif
+
+# Export all three unconditionally. `xtask gen-pd-bundle` reads them from its
+# own environment, make's own view of them is what the stamp below records, and
+# those two views MUST be the same view -- a build whose stamp says "vendor key
+# configured" while gen-pd-bundle saw no key is the silent-downgrade shape this
+# whole feature exists to prevent.
+#
+# Only AGENTOS_BUNDLE_SIGNING_KEY was exported before, and only in the `else`
+# branch above, which left the equality resting on an implementation detail:
+# GNU make automatically marks command-line variables for export, so
+# `make build AGENTOS_BUNDLE_SIGNING_KEY=...` happens to reach the recipe even
+# in the branches that never say `export`. (Measured on GNU Make 3.81: all
+# three command-line forms select the intended tier today.) That is true, but
+# it is not something this invariant should depend on knowing. Exporting
+# unconditionally makes make's view and gen-pd-bundle's view the same by
+# construction, and the --anchor-selection-stamp cross-check passed to
+# gen-pd-bundle below turns any future divergence into a hard build error
+# rather than a quietly mis-tiered image.
+#
+# NOTE on the empty case: `export` on an UNDEFINED variable still puts
+# `NAME=` (empty) into the recipe environment. load_env_seed_key() in
+# xtask/src/boot_manifest.rs therefore treats an empty value as "not set",
+# which is both what make means here and fail-closed -- no key, so
+# select_anchor() takes its no-key path and errors without an explicit opt-in.
+export AGENTOS_BUNDLE_SIGNING_KEY
+export AGENTOS_MOK_SIGNING_KEY
+export AGENTOS_TRUST_ANCHOR
+
+# Trust anchor selection stamp (T10 Task 3). `xtask gen-pd-bundle` reads the
+# three anchor env vars above out of its OWN environment, so none of them is
+# visible to make's dependency graph: without this stamp, PD_BUNDLE /
+# PD_MANIFEST / PD_MANIFEST_PUBKEY_HDR depend only on the PD ELFs, the system
+# TOML and GUEST_CONFIG_STAMP, and a build that changes ONLY the anchor
+# selection regenerates nothing.
+#
+# What saves it today is an ACCIDENT, not a dependency: guest_vmm_primary.elf
+# is in IMAGES and is relinked unconditionally (`: FORCE`) on every build, so
+# it usually lands newer than PD_BUNDLE and drags the whole trio along with it.
+# That is an mtime race, not a guarantee — measured on this tree, a plain
+# `make build` was observed re-running gen-pd-bundle on most invocations and
+# skipping it on one, where the relink and the previous bundle write fell in
+# the same filesystem timestamp tick.
+#
+# Losing that race in the AGENTOS_TRUST_ANCHOR=none -> plain `make build`
+# direction is the one outcome this whole feature exists to prevent: the image
+# left on disk is still the NON-GATING development one, while every signal the
+# operator has — the command they typed, the Makefile default, the absence of
+# any opt-in — says it is a gating vendor image. Recording the selection in a
+# stamp file and depending on it makes the anchor a tracked input, so a changed
+# anchor rebuilds the bundle, the manifest and the compiled-in key header
+# together, deterministically and regardless of what any unrelated PD ELF's
+# mtime happens to be.
+#
+# The signing key FILES are listed as prerequisites too (via $(wildcard ...),
+# so an unset or not-yet-created path is simply no prerequisite rather than a
+# hard error): rotating a key in place, at an unchanged path, must also
+# invalidate the compiled-in public key.
+#
+# Same write-only-if-changed shape as GUEST_CONFIG_STAMP above, so an unchanged
+# selection does not churn mtimes and force a rebuild on every invocation.
+PD_ANCHOR_STAMP := $(BUILD_DIR)/trust_anchor_selection.stamp
+PD_ANCHOR_KEY_FILES := $(wildcard $(AGENTOS_BUNDLE_SIGNING_KEY)) $(wildcard $(AGENTOS_MOK_SIGNING_KEY))
+
+# TEST-ONLY (T10 target proof, probe 4). TRUST_ANCHOR_INCOHERENT_PROBE=1 makes
+# gen-pd-bundle compile in a gating tier with its required key absent, so the
+# root task's Step 0 validation has something to reject; see that flag's doc
+# comment in xtask/src/cmd_gen_pd_bundle.rs for why the state has to be
+# constructed rather than configured, and why it is fail-closed (the only
+# image it can produce is one that refuses to start any PD). Same shape as the
+# other test-only build knobs in this file (INSPECT_WRITE_PROBE,
+# AUTHORITY_WRITE_PROBE, GUEST_GIC_FAILURE_PROBE): off unless named, and
+# recorded in the stamp below so switching it on or off rebuilds the image
+# rather than leaving the previous one in place.
+ifeq ($(TRUST_ANCHOR_INCOHERENT_PROBE),1)
+PD_ANCHOR_PROBE_FLAG := --incoherent-anchor-probe
+else
+PD_ANCHOR_PROBE_FLAG :=
+endif
+
+$(PD_ANCHOR_STAMP): FORCE
+	@mkdir -p $(BUILD_DIR)
+	@tmp="$@.tmp"; \
+	printf 'AGENTOS_TRUST_ANCHOR=%s\nAGENTOS_BUNDLE_SIGNING_KEY=%s\nAGENTOS_MOK_SIGNING_KEY=%s\nPROBE=%s\n' \
+		'$(AGENTOS_TRUST_ANCHOR)' '$(AGENTOS_BUNDLE_SIGNING_KEY)' '$(AGENTOS_MOK_SIGNING_KEY)' \
+		'$(PD_ANCHOR_PROBE_FLAG)' > "$$tmp"; \
+	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
+
 # ─── AArch64: root_task uses custom LD script + embedded PD bundle ───────────
 # On AArch64 the loader (kernel/loader/) loads root_task.elf from DRAM at
 # 0x41000000.  The custom root_task.ld places it there and provides the
@@ -955,7 +1085,7 @@ $(BUILD_DIR)/operator_session.o: $(REPO_ROOT_MK)/platform/operator-session/opera
 $(BUILD_DIR)/operator_protocol.o: $(REPO_ROOT_MK)/platform/operator-session/session.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
-$(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
+$(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o $(BUILD_DIR)/trust_anchor.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
 # SDK paths and compile definitions are part of this stamp. Invalidate all
@@ -1600,7 +1730,7 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 $(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o $(BUILD_DIR)/trust_anchor.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)
@@ -1904,29 +2034,32 @@ ifneq ($(filter $(ARCH),aarch64 x86_64),)
 # `$(PD_MANIFEST_OBJ): $(PD_MANIFEST)` objcopy rule fails on a missing
 # input. Giving each file its own full recipe means deleting any one of
 # the three — individually or together — always regenerates all three.
-$(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+$(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG) \
+		--anchor-selection-stamp $(PD_ANCHOR_STAMP)
 
-$(PD_MANIFEST): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+$(PD_MANIFEST): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG) \
+		--anchor-selection-stamp $(PD_ANCHOR_STAMP)
 
-$(PD_MANIFEST_PUBKEY_HDR): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+$(PD_MANIFEST_PUBKEY_HDR): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG) \
+		--anchor-selection-stamp $(PD_ANCHOR_STAMP)
 
 # Step 3: Turn the binary bundle and manifest into relocatable ELF64 objects.
 #
@@ -1986,11 +2119,27 @@ else
 # main.c's manifest check is gated on the bundle actually being present
 # (bundle_size() > 0), which is never true here, so there is nothing to
 # verify on this path. It still needs *a* pubkey header to satisfy the
-# unconditional #include in main.c; generate a placeholder (never read,
-# since the manifest gate never fires when there is no bundle).
+# unconditional #include in main.c.
+#
+# The placeholder declares NOTHING, deliberately. It used to declare T3's
+# AOS_BOOT_MANIFEST_PUBKEY, and when T10 replaced that single symbol with a
+# tier and two key slots, this recipe was not updated and the RISC-V root
+# task stopped compiling — seven undeclared-identifier errors in rt_main.o.
+# The fix is NOT to paste the new macros in here with plausible values: a
+# tier macro would make boot_announce_trust_anchor() print an authoritative
+# trust anchor on a target that verifies nothing, turning a compile error
+# (fail-closed) into a lying boot banner (the exact overclaim this feature
+# exists to prevent). Instead main.c compiles every consumer of those macros
+# out on !AGENTOS_HAS_PD_BUNDLE and reports AOS_ANCHOR_UNVERIFIED, so there
+# is nothing left here to declare.
+#
+# Which means this file is now a tripwire as well as a placeholder: if a
+# future change makes main.c reference a generated anchor macro outside the
+# AGENTOS_HAS_PD_BUNDLE guard, RISC-V fails to compile again rather than
+# silently reporting a tier it does not run.
 $(PD_MANIFEST_PUBKEY_HDR):
 	@mkdir -p $(BUILD_DIR)
-	@printf '#pragma once\n#include <stdint.h>\n/* RISC-V: no PD bundle on this target; see tools/ld/agentos.ld. Never read. */\nstatic const uint8_t AOS_BOOT_MANIFEST_PUBKEY[32] = { 0 };\n' > $@
+	@printf '#pragma once\n/* No PD bundle on this target (see tools/ld/agentos.ld), so no trust\n * anchor is selected and no key is compiled in. Declares nothing on\n * purpose: main.c guards every consumer on AGENTOS_HAS_PD_BUNDLE and\n * reports AOS_ANCHOR_UNVERIFIED here. See the recipe in\n * kernel/agentos-root-task/Makefile. */\n' > $@
 endif
 
 $(BUILD_DIR)/rt_main.o: $(PD_MANIFEST_PUBKEY_HDR)

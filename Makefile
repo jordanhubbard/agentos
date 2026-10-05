@@ -867,7 +867,8 @@ gate-guest-io:
 # single line and add new proofs to it.
 gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io \
       test-cc-envelope test-authority test-inspect test-image-verify \
-      test-entropy-unavailable test-cap-lending test-child-spawn
+      test-entropy-unavailable test-cap-lending test-child-spawn \
+      test-trust-anchor
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
@@ -933,6 +934,7 @@ test-host: test-cc-envelope-dispatch-host
 test-host: test-cc-session-reap-host
 test-host: test-boot-manifest-host
 test-host: test-entropy-host
+test-host: test-trust-anchor-host
 
 .PHONY: test-entropy-host
 test-entropy-host:
@@ -988,6 +990,15 @@ test-remoteos-client-host:
 		tests/test_remoteos_client.c kernel/agentos-root-task/src/remoteos_client.c \
 		-o $(BUILD_TMP_DIR)/test_remoteos_client
 	$(BUILD_TMP_DIR)/test_remoteos_client
+
+.PHONY: test-trust-anchor-host
+test-trust-anchor-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_trust_anchor.c libs/pd-support/trust_anchor.c \
+		-o $(BUILD_TMP_DIR)/test_trust_anchor
+	$(BUILD_TMP_DIR)/test_trust_anchor
 
 .PHONY: test-endowment-host
 test-endowment-host:
@@ -1611,7 +1622,7 @@ test-input-host:
 	$(ROOT_DIR)_build/tmp/test_input_queue
 	$(CC) -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter -I tests/platform/mmio-stubs -I platform/include -I libvmm/include tests/platform/test_virtio_input.c libvmm/src/virtio/input.c libvmm/src/virtio/mmio.c libvmm/src/arch/aarch64/virtio_mmio.c libvmm/src/virtio/gpa.c platform/input-virt/service.c -o $(BUILD_TMP_DIR)/test_virtio_input
 	$(BUILD_TMP_DIR)/test_virtio_input
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c -o $(BUILD_TMP_DIR)/test_agentctl_input
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_input.c platform/input-virt/service.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c libs/pd-support/trust_anchor.c -o $(BUILD_TMP_DIR)/test_agentctl_input
 	$(BUILD_TMP_DIR)/test_agentctl_input
 ifeq ($(UNAME_S),Linux)
 	$(CC) -std=c11 -Wall -Wextra -Werror tests/platform/test_guest_input_probe.c -o $(BUILD_TMP_DIR)/test_guest_input_probe
@@ -1640,13 +1651,13 @@ host-frame-pattern:
 .PHONY: test-agentctl-console-host
 test-agentctl-console-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c -o $(BUILD_TMP_DIR)/test_agentctl_console
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_console.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c libs/pd-support/trust_anchor.c -o $(BUILD_TMP_DIR)/test_agentctl_console
 	$(BUILD_TMP_DIR)/test_agentctl_console
 
 .PHONY: test-agentctl-frame-host
 test-agentctl-frame-host:
 	@mkdir -p $(ROOT_DIR)_build/tmp
-	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c -o $(ROOT_DIR)_build/tmp/test_agentctl_frame_capture
+	$(CC) -std=c11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_agentctl_frame_capture.c platform/framebuffer/observer.c platform/inspect/inspect_snapshot.c platform/inspect/authority.c libs/pd-support/trust_anchor.c -o $(ROOT_DIR)_build/tmp/test_agentctl_frame_capture
 	$(ROOT_DIR)_build/tmp/test_agentctl_frame_capture
 
 test-framebuffer-host:
@@ -1693,7 +1704,7 @@ test-log-isolation:
 .PHONY: test-operator-host test-operator-session
 test-operator-host:
 	@mkdir -p $(BUILD_TMP_DIR)
-	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include tests/platform/test_operator_session.c platform/operator-session/session.c platform/inspect/inspect_snapshot.c platform/serial-virt/pump.c -o $(BUILD_TMP_DIR)/test_operator_session
+	$(CC) -std=c11 -Wall -Wextra -Werror -I platform/include -iquote kernel/agentos-root-task/include tests/platform/test_operator_session.c platform/operator-session/session.c platform/inspect/inspect_snapshot.c platform/serial-virt/pump.c libs/pd-support/trust_anchor.c -o $(BUILD_TMP_DIR)/test_operator_session
 	$(BUILD_TMP_DIR)/test_operator_session
 test-operator-session:
 	$(MAKE) -C tools/agentctl
@@ -1754,6 +1765,58 @@ test-image-verify:
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 1
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 2
 	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 3
+# test-trust-anchor — T10 target proof: image verification runs under a named
+# trust anchor tier, the tier decides whether a mismatch stops boot, and the
+# tier a running system reports is the one its image was built with
+# (contracts/trust_anchor.h, docs/TCB.md "Protection-domain image
+# verification"). Each probe performs its own fresh build under an explicitly
+# named anchor environment — xtask sets the anchor variables it wants and
+# REMOVES the rest, so a variable exported in the caller's shell cannot
+# redirect a probe to a tier it did not mean to test.
+#   1. vendor control  — an unmodified vendor-signed image boots to completion
+#                         and the banner names vendor as gating.
+#   2. vendor gates     — one tampered byte refuses the whole boot and names
+#                         the PD; agentOS boot complete never appears. (1+2
+#                         together are T3's behaviour re-proven through the
+#                         tier machinery rather than an unconditional check.)
+#   3. THE PROBE        — the SAME TAMPER, applied to a separate build under
+#                         the development anchor (each probe builds its own
+#                         image; these are two image files, not one), emits
+#                         the digest mismatch naming the SAME PD and boots to
+#                         completion. Both assertions, not either: completion
+#                         alone would also pass against an
+#                         image that skipped verification entirely (the
+#                         quarantined VIBE_VERIFY_MODE shape in
+#                         services/legacy-pds/verify.c), and the mismatch
+#                         alone would not show that development stops gating.
+#   4. no silent downgrade — a gating tier compiled in with its required key
+#                         absent refuses at the root task's first step. The
+#                         refusal is SILENT on this board (Step 0 runs before
+#                         the UART is mapped — see boot_init_trust_anchor()),
+#                         so there is no positive marker: the probe asserts a
+#                         loader-stage marker plus the sustained ABSENCE of
+#                         every root-task marker. That absence is attributable
+#                         to the anchor state only because the probe runs its
+#                         own control first — the identical build without the
+#                         flag, required to boot to completion — and because
+#                         it re-reads the generated header to confirm the
+#                         incoherent state was compiled in. Read the probe-4
+#                         comment in xtask/src/cmd_test.rs before relying on
+#                         this one; it is the weakest of the five.
+#   5. visible at runtime — a machine-owner image's inspect snapshot reports
+#                         tier 2 / machine-owner, deliberately NOT the vendor
+#                         tier test-inspect already pins, so the field is
+#                         shown tracking the build rather than matching a
+#                         constant.
+.PHONY: test-trust-anchor
+test-trust-anchor:
+	$(MAKE) -C tools/agentctl
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 1
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 2
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 3
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 4
+	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 5
+
 # test-entropy-unavailable: entropy_pd is reachable and degrades safely on
 # QEMU virt, where no virtio-mmio slot remains to wire a real virtio-rng
 # device to it (docs/TCB.md). This is NOT a working-entropy proof -- it
@@ -2231,9 +2294,10 @@ test-integration:
 	    echo "FAIL: tests/platform/test_net_host_fanout.c"; \
 	    status=1; \
 	fi; \
-	if gcc -I platform/include \
+	if gcc -I platform/include -iquote kernel/agentos-root-task/include \
 	        tests/platform/test_inspect_snapshot.c \
 	        platform/inspect/inspect_snapshot.c \
+	        libs/pd-support/trust_anchor.c \
 	        -o $(BUILD_TMP_DIR)/test_inspect_snapshot 2>&1 \
 	    && $(BUILD_TMP_DIR)/test_inspect_snapshot; then \
 	    echo "PASS: tests/platform/test_inspect_snapshot.c"; \
