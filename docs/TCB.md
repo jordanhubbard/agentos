@@ -1534,8 +1534,6 @@ Qualification boundary: development results were obtained under Microkit SDK
 2.1.0. `make test-image-verify` is additionally run by the CI `os-claim-gate`
 job, which installs the verified SDK artifact; that job's result on a given
 revision is the qualifying evidence under the pin.
-Qualification boundary: obtained under Microkit SDK 2.1.0, not the pin in
-`tools/sdk/default-version`; release qualification must re-run it.
 
 ### Capability lending (T5)
 
