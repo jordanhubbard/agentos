@@ -860,6 +860,11 @@ gate-guest-io:
 	@$(MAKE) test-guest-blk BOARD=qemu_virt_aarch64
 	@$(MAKE) test-guest-console BOARD=qemu_virt_aarch64
 
+# One rule, one list.  This was briefly two `gate:` lines with different
+# prerequisite sets; GNU make unions prerequisites across rules, so nothing
+# was dropped at the time, but editing one line and not the other would have
+# silently removed a proof from the gate with no error.  Keep this as a
+# single line and add new proofs to it.
 gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io \
       test-cc-envelope test-authority test-inspect test-image-verify \
       test-entropy-unavailable test-cap-lending test-trust-anchor
