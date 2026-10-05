@@ -5,6 +5,90 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-04
+
+Trust and delegation baseline: the corrective actions from the 2026-10-03
+architecture audit. Capabilities now have a lending primitive, a hierarchical
+delegation path, and an image-verification trust model that works on hardware
+with no key store.
+
+### Added
+
+- Hierarchical delegation (T6). A protection domain may create a child domain
+  at run time and endow it from its own authority: the parent retypes the
+  child's CNode, VSpace and TCB from an untyped pool root granted it at boot,
+  mints rights-reduced derivatives of capabilities it already holds, and starts
+  the child only after every endowment succeeded. `make test-child-spawn`
+  proves on target that the child reads an exact byte pattern from an endowed
+  frame (cross-checked by physical address against the parent's own
+  capability), faults on authority the parent withheld (asserted on exact
+  badge, address, direction and fault type), does not start at all when an
+  endowment fails, and is reported in the parent's endowment ledger with
+  matching counts.
+
+  Endowment is deliberately **not** capability lending. Lending revokes the
+  lender's own original and so destroys every derivative system-wide, which is
+  correct for a loan and catastrophic in spawn teardown; a failed spawn of one
+  child would have stripped a running sibling of its authority. Endowment is a
+  lifetime grant: it mints directly, and teardown deletes the child's CNode.
+
+- Trust anchor tiers (T10), extending protection-domain image verification from
+  a single compiled-in vendor key to four tiers on the Linux shim/MOK model:
+  `AOS_ANCHOR_NONE` (development — verifies and reports, does not gate),
+  `AOS_ANCHOR_VENDOR` (the previous behaviour), `AOS_ANCHOR_MOK` (a
+  machine-owner key), and `AOS_ANCHOR_HARDWARE` (a defined key source that is
+  **not implemented** and reports unavailable). The tier is compiled into the
+  image, announced at boot, and exposed through inspect.
+
+  Development mode does not skip verification — it verifies and reports without
+  gating. `boot_verify_pd_digest()` takes no tier argument and has no tier
+  branch: digests are always computed and compared, and the tier is consulted
+  only afterwards. This is mutation-tested — short-circuiting the comparison
+  makes the proof fail in exactly the shape of the anti-pattern it guards
+  against. An ordinary `make build` produces a gating vendor image, and that is
+  asserted by `make test-inspect`, not merely argued.
+
+  Anchor selection is now a tracked build input. It previously was not: what
+  regenerated the bundle on an anchor change was an unrelated relink winning an
+  mtime race, which could leave a non-gating image on disk while every
+  operator-visible signal said vendor.
+
+### Fixed
+
+- Collapse a duplicated `gate:` rule into one prerequisite list. GNU make
+  unions prerequisites across rules, so no proof was being skipped, but editing
+  one of the two lines would have silently removed a proof from the release
+  gate with no error.
+- Remove a contradictory `Qualification boundary` paragraph in `docs/TCB.md`
+  that asserted both that CI's `os-claim-gate` result is the qualifying
+  evidence under the pinned SDK and that the results were not qualified under
+  it.
+
+### Limits
+
+Stated here because the project treats overclaiming as the primary defect:
+
+- The machine-owner anchor **stands alone**: it requires an owner key and
+  treats the vendor key as optional. On a MOK-only machine, vendor-signed
+  images — including agentOS's own release artifacts — do not verify until the
+  owner signs or counter-signs them.
+- MOK does **not** defend against the machine owner, and no anchor available
+  today does: an owner with physical access can replace the boot chain. MOK
+  enrolment is build-time-provisioned; there is no runtime physical-presence
+  enrolment flow.
+- `AOS_ANCHOR_HARDWARE` claims nothing about TPM or measured boot. There is no
+  attestation and this is not a measured-boot chain.
+- The endowment ledger is **PD-local** and reports rather than proves. seL4
+  exposes no capability-enumeration syscall, so nothing here verifies the
+  subsetting invariant — the kernel enforces that independently. A
+  runtime-created child does not appear in `agentctl authority` output.
+- The fault-probe oracle asserts the shape of a fault IPC, not its provenance.
+- A digest mismatch under the machine-owner anchor is not target-proven, and
+  the gating-tier-with-no-key probe asserts an absence bounded by a
+  loader-stage marker rather than a positive refusal marker.
+- `riscv64` architecture parity is **not** in this release; it is open as a
+  pull request.
+
 ## [0.5.1] - 2026-09-27
 
 ### Documentation
