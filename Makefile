@@ -867,7 +867,8 @@ gate-guest-io:
 # single line and add new proofs to it.
 gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io \
       test-cc-envelope test-authority test-inspect test-image-verify \
-      test-entropy-unavailable test-cap-lending test-trust-anchor
+      test-entropy-unavailable test-cap-lending test-child-spawn \
+      test-trust-anchor
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
@@ -924,6 +925,8 @@ test-host: test-x86-cpu-host
 test-host: test-x86-composition-host
 test-host: test-vm-manager-identity-host
 test-host: test-remoteos-client-host
+test-host: test-endowment-host
+test-host: test-endow-ledger-host
 test-host: test-authority-host
 test-host: test-authority-kindmap-host
 test-host: test-cc-envelope-host
@@ -997,6 +1000,15 @@ test-trust-anchor-host:
 		-o $(BUILD_TMP_DIR)/test_trust_anchor
 	$(BUILD_TMP_DIR)/test_trust_anchor
 
+.PHONY: test-endowment-host
+test-endowment-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I kernel/agentos-root-task/include \
+		tests/test_endowment.c libs/pd-support/endowment.c \
+		-o $(BUILD_TMP_DIR)/test_endowment
+	$(BUILD_TMP_DIR)/test_endowment
+
 .PHONY: test-boot-manifest-host
 test-boot-manifest-host:
 	@mkdir -p $(BUILD_TMP_DIR)
@@ -1005,6 +1017,16 @@ test-boot-manifest-host:
 		tests/test_boot_manifest.c kernel/agentos-root-task/src/boot_manifest.c \
 		-o $(BUILD_TMP_DIR)/test_boot_manifest
 	$(BUILD_TMP_DIR)/test_boot_manifest
+
+.PHONY: test-endow-ledger-host
+test-endow-ledger-host:
+	@mkdir -p $(BUILD_TMP_DIR)
+	$(CC) -std=gnu11 -Wall -Wextra -Werror -DAGENTOS_TEST_HOST \
+		-I platform/include \
+		tests/test_endow_ledger.c platform/inspect/endow_ledger.c \
+		platform/inspect/authority.c \
+		-o $(BUILD_TMP_DIR)/test_endow_ledger
+	$(BUILD_TMP_DIR)/test_endow_ledger
 
 .PHONY: test-authority-host
 test-authority-host:
@@ -1713,6 +1735,10 @@ test-inspect-readonly:
 .PHONY: test-cap-lending
 test-cap-lending:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-cap-lending --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+.PHONY: test-child-spawn
+test-child-spawn:
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-child-spawn --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: test-authority
 test-authority:

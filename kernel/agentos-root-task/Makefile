@@ -102,6 +102,11 @@ else
   OBJCOPY ?= llvm-objcopy
 endif
 
+# llvm-nm, resolved alongside the llvm-objcopy found above. Used only by the
+# child-spawn test image, to check the run-time-created child ELF fits the
+# single page its parent maps for it.
+CHILD_SPAWN_NM := $(subst objcopy,nm,$(OBJCOPY))
+
 # ─── Root task seL4 boot binary ──────────────────────────────────────────────
 # main.c is the seL4 root task entry point and boot sequence orchestrator.
 # It is NOT a Microkit PD — it links without libmicrokit and uses its own
@@ -567,6 +572,10 @@ $(BUILD_DIR)/authority.pd.o: $(REPO_ROOT_MK)/platform/inspect/authority.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/endow_ledger.pd.o: $(REPO_ROOT_MK)/platform/inspect/endow_ledger.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # Compile root task objects with rt_ prefix to avoid colliding with PD objects
 $(BUILD_DIR)/rt_%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
@@ -928,7 +937,7 @@ ifdef GUEST_INPUT
   else ifneq ($(ARCH),aarch64)
     $(error GUEST_INPUT requires aarch64 or x86_64 firmware mode)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
     $(error GUEST_INPUT cannot be combined with focused test images)
   endif
   ifeq ($(ARCH),x86_64)
@@ -951,7 +960,7 @@ ifdef GUEST_GRAPHICS
   else ifneq ($(ARCH),aarch64)
     $(error GUEST_GRAPHICS requires aarch64 or x86_64 firmware mode)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
     $(error GUEST_GRAPHICS cannot be combined with focused test images)
   endif
   ifeq ($(ARCH),x86_64)
@@ -970,7 +979,7 @@ ifdef FRAMEBUFFER_TEST
   ifneq ($(ARCH),aarch64)
     $(error FRAMEBUFFER_TEST requires aarch64)
   endif
-  ifneq ($(strip $(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+  ifneq ($(strip $(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
     $(error FRAMEBUFFER_TEST is a separate image variant)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_FRAMEBUFFER_TEST=1
@@ -998,8 +1007,8 @@ ifdef NATIVE_RUST_TEST
   ifneq ($(ARCH),aarch64)
     $(error NATIVE_RUST_TEST currently requires aarch64)
   endif
-  ifneq ($(strip $(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
-    $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE/CAP_LEND_TEST are separate image variants)
+  ifneq ($(strip $(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
+    $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE/CAP_LEND_TEST/CHILD_SPAWN_TEST are separate image variants)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_NATIVE_RUST_TEST=1
   CFLAGS += -DAGENTOS_NATIVE_RUST_TEST=1
@@ -1018,12 +1027,34 @@ ifdef CAP_LEND_TEST
   ifneq ($(ARCH),aarch64)
     $(error CAP_LEND_TEST currently requires aarch64)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CHILD_SPAWN_TEST)),)
     $(error CAP_LEND_TEST is a separate image variant)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_CAP_LEND_TEST=1
   CFLAGS += -DAGENTOS_CAP_LEND_TEST=1
   IMAGES += cap_lend_lender.elf cap_lend_borrower.elf
+endif
+
+# T6: run-time child-domain-creation demonstration (test image only). See
+# tests/child-spawn/{parent,child}_pd.c, child_spawn.h/.c, and
+# docs/superpowers/plans/2026-10-04-t6-hierarchical-delegation.md. Absent
+# from the default image and from every other focused test-image variant.
+# Unlike every other pair above, child_spawn_child is NOT a system_desc row
+# and is never loaded by the root task's normal per-PD boot loop -- it is
+# linked as a raw binary blob directly into child_spawn_parent's own ELF
+# (see the objcopy rules below) so its bytes are covered by the SAME T3
+# verification that covers the rest of the parent's binary, with no new
+# PD-loading path. Only child_spawn_parent.elf is added to IMAGES.
+ifdef CHILD_SPAWN_TEST
+  ifneq ($(ARCH),aarch64)
+    $(error CHILD_SPAWN_TEST currently requires aarch64)
+  endif
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+    $(error CHILD_SPAWN_TEST is a separate image variant)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_CHILD_SPAWN_TEST=1
+  CFLAGS += -DAGENTOS_CHILD_SPAWN_TEST=1
+  IMAGES += child_spawn_parent.elf
 endif
 
 ifdef BLK_ISOLATION_PROBE
@@ -1428,6 +1459,99 @@ $(BUILD_DIR)/cap_lend_lender.elf: $(BUILD_DIR)/cap_lend_lender.o $(BUILD_DIR)/ca
 $(BUILD_DIR)/cap_lend_borrower.elf: $(BUILD_DIR)/cap_lend_borrower.o $(BUILD_DIR)/cap_lend.o $(BUILD_DIR)/cap_lease.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+# T6: run-time child-domain-creation demonstration pair. child_spawn.o/
+# endowment.o build through the generic libs/pd-support pattern rule above
+# (line ~1171). Endowment mints directly (seL4_CNode_Mint), not through
+# T5's cap_lend.c, so this pair does not link cap_lend.o/cap_lease.o at
+# all -- see child_spawn.h's "Endowment: a MINT, not a loan".
+#
+# child_spawn_child.elf uses the same _start convention and the same
+# tools/ld/agentos.ld link address as any other service PD, but NOT the
+# same link line -- see the three deliberate differences at its own rule
+# below (own pd_entry object without AGENTOS_LOG_RINGS, no
+# rust_pd_memory.o, --nmagic) and the long comment at the top of
+# tests/child-spawn/child_pd.c. It is NOT
+# added to IMAGES and is NOT a system_desc_aarch64.c row -- it is never
+# loaded by the root task's per-PD boot loop. Instead its loadable bytes
+# are extracted (objcopy -O binary) and linked directly into
+# child_spawn_parent.elf as a read-only blob (see child_spawn.h's file
+# header on why: this keeps the child's "ELF" inside the SAME T3-verified
+# bundle entry as the parent, with no new image-loading path). The
+# objcopy-to-.o step mirrors the existing $(PD_BUNDLE_OBJ) /
+# $(PD_MANIFEST_OBJ) rules above exactly (same --input-target=binary,
+# same cd-into-BUILD_DIR-for-predictable-symbol-names trick).
+$(BUILD_DIR)/child_spawn_child.o: $(REPO_ROOT)/tests/child-spawn/child_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+# The child gets its OWN pd_entry object, built WITHOUT AGENTOS_LOG_RINGS.
+# Every other PD is created by the root task, which maps the log-config page
+# at AOS_LOG_CONFIG_VA into it. Under -DAGENTOS_LOG_RINGS, _start()
+# UNCONDITIONALLY dereferences that page (`logs->magic`) before it can decide
+# whether log rings are present at all -- that read is the fatal one. The
+# subsequent write to log_drain_rings_vaddr is guarded by the magic/version
+# compare and so is never reached; it is a second, latent problem only
+# because the linker places that word in .bss past the end of the single
+# content page.
+#
+# This child holds neither page: it has exactly what its parent endowed it,
+# and log rings are not on that list. Linking the shared pd_entry.o into it
+# makes it fault inside _start(), before pd_main() -- which is precisely the
+# bug "the child is endowed exactly this and nothing more" is supposed to
+# surface, so the fix is to stop linking authority-assuming startup code into
+# it, not to widen the endowment.
+$(BUILD_DIR)/child_spawn_pd_entry.o: $(REPO_ROOT_MK)/libs/pd-support/pd_entry.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(filter-out -DAGENTOS_LOG_RINGS=1,$(CFLAGS)) $< -o $@
+# Two deliberate omissions from this link, both forced by the one-page budget
+# above and both correct on their own terms:
+#   - rust_pd_memory.o (memcpy/memmove/memset/memcmp/strlen, ~3 KiB of .text).
+#     This child copies nothing and formats nothing; it reads two words,
+#     writes four, and makes three syscalls.
+#   - page alignment between output sections (--nmagic). sel4_crt.c's unused
+#     1 KiB IPC-buffer placeholder lands in .bss, and the default 4 KiB
+#     segment alignment would push it past the mapped page on its own.
+#     pd_entry.c's _start repoints __sel4_ipc_buffer at the real mapped
+#     buffer before any IPC, so that placeholder is never touched -- but
+#     "never touched" is not something to rely on silently, which is why the
+#     check below covers .bss too.
+$(BUILD_DIR)/child_spawn_child.elf: $(BUILD_DIR)/child_spawn_child.o $(BUILD_DIR)/child_spawn_pd_entry.o $(BUILD_DIR)/sel4_crt.o
+	$(LD) $(LDFLAGS) --nmagic $^ $(LIBS) -o $@
+	@# The parent maps exactly ONE page for this image, so every allocated
+	@# section -- including .bss, which the payload blob below does not even
+	@# contain -- must fit inside [AOS_CHILD_SPAWN_CONTENT_VA, +4096). A
+	@# section landing above that is unmapped memory the child touches with
+	@# no diagnostic beyond a fault at a surprising address, so fail the
+	@# build instead.
+	@set -eu; \
+	command -v $(CHILD_SPAWN_NM) >/dev/null 2>&1 || { \
+		echo "ERROR: $(CHILD_SPAWN_NM) not found on PATH; it is needed to check that"; \
+		echo "       child_spawn_child.elf fits the single page its parent maps for it."; \
+		exit 1; }; \
+	end=$$($(CHILD_SPAWN_NM) $@ | awk '$$3 == "_end" { print $$1 }'); \
+	test -n "$$end" || { echo "ERROR: child_spawn_child.elf has no _end symbol (tools/ld/agentos.ld should define it)"; exit 1; }; \
+	if [ "$$(printf '%d' 0x$$end)" -gt "$$(printf '%d' 0x401000)" ]; then \
+		echo "ERROR: child_spawn_child.elf spans past the single page its parent maps for it (_end=0x$$end, limit 0x401000); shrink tests/child-spawn/child_pd.c or map a second page"; \
+		exit 1; \
+	fi
+$(BUILD_DIR)/child_spawn_payload.bin: $(BUILD_DIR)/child_spawn_child.elf
+	$(OBJCOPY) -O binary $< $@
+$(BUILD_DIR)/child_spawn_payload.o: $(BUILD_DIR)/child_spawn_payload.bin
+	cd $(BUILD_DIR) && $(OBJCOPY) \
+		--input-target=binary \
+		--output-target=elf64-littleaarch64 \
+		--binary-architecture=aarch64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		--redefine-sym _binary_child_spawn_payload_bin_start=__child_spawn_payload_start \
+		--redefine-sym _binary_child_spawn_payload_bin_end=__child_spawn_payload_end \
+		--redefine-sym _binary_child_spawn_payload_bin_size=__child_spawn_payload_size \
+		child_spawn_payload.bin child_spawn_payload.o
+
+$(BUILD_DIR)/child_spawn_parent.o: $(REPO_ROOT)/tests/child-spawn/parent_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/child_spawn_parent.elf: $(BUILD_DIR)/child_spawn_parent.o $(BUILD_DIR)/child_spawn.o $(BUILD_DIR)/endowment.o $(BUILD_DIR)/endow_ledger.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/child_spawn_payload.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 # Swap slot sources need wasm3 headers + bare-metal shim
 $(BUILD_DIR)/swap_slot.o: $(REPO_ROOT_MK)/services/legacy-pds/swap_slot.c
 	@mkdir -p $(BUILD_DIR)
@@ -1802,6 +1926,11 @@ SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-cap-lend-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
 	{ cat $<; printf '\n[[pd]]\nname = "cap_lend_lender"\npriority = 200\n'; printf '\n[[pd]]\nname = "cap_lend_borrower"\npriority = 199\n'; } > $@
+else ifdef CHILD_SPAWN_TEST
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-child-spawn-test.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "child_spawn_parent"\npriority = 150\n'; } > $@
 else ifdef SEL4_TEST_IMAGE
 # agentos-8f5: test images (with no guest profiles) append the contract-runner PD
 # so gen-pd-bundle embeds test_runner.elf and the root task can spawn it, plus
