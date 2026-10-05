@@ -925,7 +925,8 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             || args.cc_envelope_probe.is_some()
             || args.authority_probe.is_some()
             || args.assert_entropy_unavailable
-            || args.assert_cap_lending)
+            || args.assert_cap_lending
+            || args.assert_child_spawn)
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
         "inspect qualification requires AArch64 with guest-os none"
     );
@@ -1217,6 +1218,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         if args.assert_cap_lending {
             make_args.push(String::from("CAP_LEND_TEST=1"));
+        }
+        if args.assert_child_spawn {
+            make_args.push(String::from("CHILD_SPAWN_TEST=1"));
         }
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
@@ -1810,6 +1814,49 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "[cap-lend-lender] OK: revoked original",
                 "[cap-lend-borrower] OK: sub-delegated copy dead after revoke",
                 "[cap-lend-probe] OK: borrower access faulted after revoke",
+            ],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.assert_child_spawn {
+        // T6 run-time child domain creation
+        // (tests/child-spawn/{parent,child}_pd.c). Four probes, in the
+        // order the parent runs them:
+        //
+        //   Probe 3 -- the deliberately doomed spawn (its endowment names
+        //     an empty slot) is refused at the endowment step, leaves
+        //     nothing staged, never signals, and records nothing.
+        //   Probe 1 -- the real child reads the exact pattern from the
+        //     endowed frame, invokes its endowed FRAME CAPABILITY
+        //     (seL4_ARM_Page_GetAddress) and reports a physical address
+        //     the parent independently confirms, then signals through its
+        //     endowed Signal-only Notification.
+        //   Probe 2 -- the child's next access, at a page the parent
+        //     deliberately withheld, faults. The marker is emitted by the
+        //     ROOT TASK's fault oracle (main.c's AGENTOS_CHILD_SPAWN_TEST
+        //     ROOT_PROBE_* block) after matching the exact badge, address
+        //     and direction, so neither a timeout nor an unrelated fault
+        //     can satisfy it. (The oracle asserts the exact shape of a
+        //     fault IPC, not that the kernel produced it -- the parent
+        //     holds send rights on that badged endpoint. It is trusted
+        //     test code that does not send; see the oracle comment in
+        //     main.c.) Step 5 of the task brief (endow the withheld page
+        //     too, rebuild, watch this command FAIL on exactly this
+        //     marker) is what establishes that it is not vacuous.
+        //   Probe 4 -- the endowment-delta ledger, rendered through T4's
+        //     own authority formatter. The pd= line is asserted verbatim:
+        //     a row for the child with exactly one notification and one
+        //     frame and nothing else. It is a report, not a proof --
+        //     see platform/endow_ledger.h.
+        wait_for_all_markers(
+            &log_path,
+            &[
+                "[child-spawn-parent] OK: endowment failed, child never started, ledger empty",
+                "[child-spawn-parent] OK: child used endowment, response and paddr verified",
+                "[rt] child-spawn: expected withheld-page fault verified",
+                "pd=child_spawn_child index=1 untyped=0 tcb=0 endpoint=0 notification=1 \
+                 cnode=0 frame=1 vspace=0 irq_handler=0 sched_context=0 reply=0 other=0",
+                "[child-spawn-parent] OK: ledger reports 1 child, 2 endowed capabilities",
             ],
             Duration::from_secs(args.timeout_secs),
             &mut qemu,

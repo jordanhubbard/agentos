@@ -516,6 +516,20 @@ jobs:
       - name: GATE — make test-cap-lending
         timeout-minutes: 10
         run: make test-cap-lending
+      # T6 run-time child domain creation: a PD creates a child domain and
+      # endows it from its own authority. The child uses what it was given
+      # (exact pattern plus a physical address the parent independently
+      # confirms), faults on a page the parent withheld (verified by the
+      # root task's own fault oracle: exact badge, address, direction), does
+      # not start at all when an endowment fails, and appears in the
+      # authority report with the endowed kinds. Added here rather than
+      # relying on `make gate`, which no CI job invokes -- this is the ONLY
+      # job that builds the CHILD_SPAWN_TEST image at all, so without it the
+      # entire spawn path (mint loop, teardown unmap, cache maintenance)
+      # would rest on one manual boot.
+      - name: GATE — make test-child-spawn
+        timeout-minutes: 10
+        run: make test-child-spawn
 
       - name: Boot gate summary
         run: |
@@ -527,6 +541,8 @@ jobs:
           echo "   - entropy_pd reachable; reports UNAVAILABLE (no device wired"
           echo "     on QEMU virt) and validates over-length requests"
           echo "   - T5 capability lending (loan used, revoked, sub-delegate dies too)"
+          echo "   - T6 hierarchical delegation (child uses its endowment, faults on a"
+          echo "     withheld page, never starts when an endowment fails, delegator reports it)"
           echo "GUEST_OS=none is a stub VMM: this proves PD load and root-task"
           echo "parking only. Guest I/O is proven by the guest proof jobs; the"
           echo "os-claim-summary job combines them."

@@ -54,6 +54,7 @@
 #include "system_desc.h"
 #include "contracts/native_rust_probe.h"
 #include "contracts/cap_lend_test.h"
+#include "contracts/child_spawn_contract.h"
 #include <platform/guest_memory_layout.h>
 #ifdef AGENTOS_GUEST_INPUT
 #define AOS_INPUT_PD_EXTRA 1u
@@ -81,6 +82,14 @@
  * tests/cap-lend/{lender,borrower}_pd.c and cap_lend_test.h). The default
  * booted PD set is unchanged -- this is a separate image variant. */
 #define AOS_TEST_PD_EXTRA (2u + AOS_INPUT_PD_EXTRA)
+#elif defined(AGENTOS_CHILD_SPAWN_TEST)
+/* T6: child_spawn_parent only, test image only (see
+ * tests/child-spawn/{parent,child}_pd.c and child_spawn_contract.h).
+ * child_spawn_child is NOT a row here -- it is linked as a raw binary
+ * blob into child_spawn_parent's own ELF and created at RUN TIME by the
+ * parent via aos_child_spawn(), never by the root task's boot loop. The
+ * default booted PD set is unchanged -- this is a separate image variant. */
+#define AOS_TEST_PD_EXTRA (1u + AOS_INPUT_PD_EXTRA)
 #else
 #define AOS_TEST_PD_EXTRA AOS_INPUT_PD_EXTRA
 #endif
@@ -690,6 +699,31 @@ const system_desc_t system_desc_aarch64 = {
             .init_ep_count = 2u,
             .init_eps = {
                 { SVC_ID_CAP_LEND_XFER, AOS_CAP_LEND_XFER_EP_SLOT },
+                { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
+            },
+        },
+#endif
+
+#ifdef AGENTOS_CHILD_SPAWN_TEST
+        /* T6 run-time child-domain-creation demonstration (test image
+         * only; see child_spawn_contract.h). Only ONE row: child_spawn_
+         * child is never a system_desc row (see child_spawn.h's file
+         * header) -- the root task builds exactly this PD normally at
+         * boot, and this PD creates its own child entirely at run time
+         * from the pool/ASID-pool/SchedControl/self-reference capabilities
+         * main.c's AGENTOS_CHILD_SPAWN_TEST provisioning block grants it
+         * below, the same way every other PD in this tree gets its boot
+         * capabilities -- nothing about how THIS PD itself is created is
+         * different from cap_lend_lender/borrower above. */
+        {
+            .name = "child_spawn_parent",
+            .elf_path = "child_spawn_parent.elf",
+            .stack_size = 0x4000u,
+            .cnode_size_bits = AOS_CHILD_SPAWN_PARENT_CNODE_BITS,
+            .priority = 150u,
+            .self_svc_id = 0u,
+            .init_ep_count = 1u,
+            .init_eps = {
                 { SVC_ID_SERIAL, PD_CNODE_SLOT_SERIAL_EP },
             },
         },

@@ -67,6 +67,31 @@
 static seL4_CPtr g_cap_lend_done_ntfn = seL4_CapNull;
 static seL4_CPtr g_cap_lend_revoked_ntfn = seL4_CapNull;
 #endif
+#ifdef AGENTOS_CHILD_SPAWN_TEST
+#include "contracts/child_spawn_contract.h"
+/*
+ * Tie T6's slot numbering to root's own, which child_spawn_contract.h
+ * cannot do for itself (it is included by the child, which must not pull in
+ * system_desc.h). T6's fixed grants start at 44 and so numerically overlap
+ * PD_CNODE_SLOT_NET_SECONDARY_NOTIFY (44) .. PD_CNODE_SLOT_ENTROPY_PD_EP
+ * (47), and its scratch range runs past PD_IRQHANDLER_SLOT_BASE (64). Both
+ * are safe for one reason only: root populates those slots solely for a PD
+ * of the matching role, and child_spawn_parent is none of them and has
+ * irq_count == 0. T5 relies on the same property for slots 45-54.
+ *
+ * What is NOT safe is a slot root fills for EVERY PD. Those are
+ * PD_CNODE_SLOT_NAMESERVER_EP (0), PD_CNODE_SLOT_SERIAL_EP (1) and
+ * AOS_LOG_NOTIFY_CAP (31); if a future one lands anywhere in 44..79,
+ * child_spawn_parent's untyped pool, ASID pool or fault endpoint is
+ * silently clobbered and the only symptom is a spawn failure in an image
+ * nothing builds by default. Assert the three known ones stay clear, so
+ * that mistake is a compile error rather than a 300-second timeout.
+ */
+_Static_assert(PD_CNODE_SLOT_NAMESERVER_EP < AOS_CHILD_SPAWN_SELF_CNODE_SLOT &&
+               PD_CNODE_SLOT_SERIAL_EP < AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
+               "a slot root fills for every PD must not land inside "
+               "child_spawn_parent's T6 slot range");
+#endif
 #include <platform/serial_uart.h>
 #include "boot_manifest.h"   /* aos_boot_manifest_validate/_find (T3 image verification) */
 #include "ed25519_verify.h"  /* ed25519_verify — manifest signature check                */
@@ -116,6 +141,14 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
                PD_CNODE_SLOT_FB_PEER_NOTIFY > AOS_LOG_NOTIFY_CAP &&
                PD_CNODE_SLOT_FB_PEER_NOTIFY + FB_PEERS <= PD_IRQHANDLER_SLOT_BASE,
                "framebuffer caps must not overlap logs or IRQ handlers");
+#endif
+#ifdef AGENTOS_CHILD_SPAWN_TEST
+/* The third "every PD" slot, completing the block near the
+ * child_spawn_contract.h include above -- asserted here because
+ * AOS_LOG_NOTIFY_CAP only becomes visible with this header. */
+_Static_assert(AOS_LOG_NOTIFY_CAP < AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
+               "the per-PD log notification slot must not land inside "
+               "child_spawn_parent's T6 slot range");
 #endif
 #endif
 #include <contracts/virtualizer_authority.h>
@@ -190,6 +223,44 @@ _Static_assert(PD_CNODE_SLOT_FB_WAIT != AOS_LOG_NOTIFY_CAP &&
 #define ROOT_PROBE_ADDRESS AOS_CAP_LEND_FRAME_VA
 #define ROOT_PROBE_WRITE 0u
 #define ROOT_PROBE_MESSAGE AOS_CAP_LEND_MARKER_ROOT_FAULT_VERIFIED
+#elif defined(AGENTOS_CHILD_SPAWN_TEST)
+/* T6 Task 3 target proof, Probe 2: the child domain child_spawn_parent
+ * created at run time reads AOS_CHILD_SPAWN_WITHHELD_VA -- a page its
+ * parent deliberately never mapped and never endowed -- and must fault. A
+ * plain read, so WRITE=0. The marker is emitted by the ROOT TASK -- not by
+ * the child, which never returns control after this fault and has no
+ * serial capability with which to say anything in any case, and not by the
+ * parent, whose own report would be worth nothing.
+ *
+ * The badge comes from the fault endpoint root mints into the PARENT's
+ * CNode at AOS_CHILD_SPAWN_FAULT_EP_SLOT, which the parent then installs
+ * on its child's TCB via aos_child_spawn_req_t.fault_ep. ROOT_PROBE_NATIVE
+ * deliberately matches no PD in the pd_fault_ep selection block below:
+ * child_spawn_parent itself keeps the ordinary unbadged fault endpoint, so
+ * a fault by the PARENT can never be mistaken for the child's.
+ *
+ * What this oracle actually asserts -- and what it does not. It asserts
+ * the exact SHAPE of the event: badge, seL4_Fault_VMFault label, faulting
+ * address, PrefetchFault clear and FSR WnR direction. It does NOT assert
+ * that the kernel produced it. Root mints the fault endpoint with
+ * seL4_AllRights, so the parent holds send rights, and the loop below is a
+ * plain seL4_Wait that cannot tell a kernel fault IPC from a user-mode
+ * seL4_Send carrying the same label and the same message registers. The
+ * probe is sound because child_spawn_parent is the test's own code and
+ * does not send on this endpoint, and because Step 5's non-vacuity run
+ * showed the marker vanish the moment the child stopped faulting -- not
+ * because forgery is prevented. The same structural property already holds
+ * for AGENTOS_CAP_LEND_TEST's ROOT_PROBE_NATIVE 5 above. Making it
+ * genuinely unforgeable would mean root minting the fault endpoint without
+ * send rights for the parent -- a change to how fault endpoints are
+ * delegated, not a change to this probe. */
+#define ROOT_FAULT_PROBE 1
+#define ROOT_PROBE_NATIVE 6
+#define ROOT_PROBE_CLIENT 0u
+#define ROOT_PROBE_BADGE AOS_CHILD_SPAWN_PROBE_BADGE
+#define ROOT_PROBE_ADDRESS AOS_CHILD_SPAWN_WITHHELD_VA
+#define ROOT_PROBE_WRITE 0u
+#define ROOT_PROBE_MESSAGE AOS_CHILD_SPAWN_MARKER_ROOT_FAULT_VERIFIED
 #endif
 #if defined(ROOT_FAULT_PROBE) || defined(__aarch64__)
 #include "serial_log.h"
@@ -3741,6 +3812,107 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 #endif
 
+#ifdef AGENTOS_CHILD_SPAWN_TEST
+        /*
+         * T6 run-time child-domain-creation demonstration (test image
+         * only; see tests/child-spawn/parent_pd.c and
+         * child_spawn_contract.h). child_spawn_parent is granted exactly
+         * what the T6 plan's Scope section calls for and nothing else:
+         *
+         *   - self-references to its own CNode/VSpace/TCB (same pattern
+         *     as the cap-lend pair above) so it can retype into and
+         *     operate on its own CSpace and use its own TCB (mcp=255,
+         *     set by root for every PD -- see pd_tcb.c) as the
+         *     SetSchedParams authority for its child;
+         *   - ONE untyped pool, which is the ONLY source
+         *     aos_child_spawn() retypes the child's CNode, VSpace, page
+         *     tables, frames, TCB and (MCS) SchedContext from;
+         *   - an ASID-pool slice and (MCS only) a SchedControl
+         *     capability -- the two things a child domain needs that are
+         *     NOT Untyped-derived, so a retype from the pool alone could
+         *     never produce them (see child_spawn.h's file header).
+         *
+         * No guest, device, or queue-service authority. This PD's only
+         * interesting capability is the single untyped pool below.
+         */
+        if (name_eq(pd->name, "child_spawn_parent")) {
+            if (pd->cnode_size_bits != AOS_CHILD_SPAWN_PARENT_CNODE_BITS ||
+                seL4_CNode_Copy(pd_cnode, AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, pd_cnode,
+                    64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_CHILD_SPAWN_SELF_VSPACE_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, vspace,
+                    64u, seL4_AllRights) != seL4_NoError ||
+                seL4_CNode_Copy(pd_cnode, AOS_CHILD_SPAWN_SELF_TCB_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode, tr.tcb_cap,
+                    64u, seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn self-reference grant failed; refusing PD start\n");
+                continue;
+            }
+
+            seL4_CPtr child_spawn_pool = seL4_CapNull;
+            seL4_CPtr child_spawn_asid_pool = seL4_CapNull;
+            if (ut_alloc_cap(seL4_UntypedObject, AOS_CHILD_SPAWN_POOL_BITS,
+                    &child_spawn_pool) != seL4_NoError ||
+                create_guest_asid_pool(&child_spawn_asid_pool) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn pool/ASID allocation failed; refusing PD start\n");
+                continue;
+            }
+            if (seL4_CNode_Move(pd_cnode, AOS_CHILD_SPAWN_POOL_SLOT, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, child_spawn_pool, 64u) != seL4_NoError ||
+                seL4_CNode_Move(pd_cnode, AOS_CHILD_SPAWN_ASID_POOL_SLOT, pd->cnode_size_bits,
+                    seL4_CapInitThreadCNode, child_spawn_asid_pool, 64u) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn pool/ASID delegation failed; refusing PD start\n");
+                continue;
+            }
+#ifdef CONFIG_KERNEL_MCS
+            if (seL4_CNode_Copy(pd_cnode, AOS_CHILD_SPAWN_SCHEDCONTROL_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    schedcontrol_for_node(bi, sched_node_for_pd(pd)), 64u,
+                    seL4_AllRights) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn SchedControl grant failed; refusing PD start\n");
+                continue;
+            }
+#endif
+
+            /*
+             * Badged copy of root's own fault endpoint, for the parent to
+             * install as its CHILD's fault handler (Probe 2). Root mints
+             * the badge, not the parent: AOS_CHILD_SPAWN_PROBE_BADGE is
+             * what the fault oracle above matches on, so the parent cannot
+             * substitute an endpoint of its OWN and manufacture the
+             * marker. Minting from seL4_CapInitThreadCNode into a root
+             * scratch slot and then moving it is the same two-step pattern
+             * the pd_fault_ep block above uses.
+             *
+             * What this DOES grant the parent is the ability to send on
+             * this endpoint itself. The oracle is a plain seL4_Wait that
+             * matches on badge, label and message registers, so it asserts
+             * the SHAPE of a fault IPC, not that the kernel produced it --
+             * the parent holds send rights and could put a fault-shaped
+             * message into root's fault loop. The probe is sound because
+             * the parent is trusted test code that does not do so, and
+             * because Step 5's non-vacuity run shows the marker following
+             * the withheld mapping rather than the parent's behaviour. It
+             * is also the ONLY capability granted here that the parent
+             * passes to aos_child_spawn() without endowing -- it goes into
+             * the child's TCB, never into the child's CSpace.
+             */
+            seL4_CPtr child_spawn_fault_ep = ut_alloc_slot();
+            if (child_spawn_fault_ep == seL4_CapNull ||
+                g_fault_ep == seL4_CapNull ||
+                seL4_CNode_Mint(seL4_CapInitThreadCNode, child_spawn_fault_ep, 64u,
+                    seL4_CapInitThreadCNode, g_fault_ep, 64u, seL4_AllRights,
+                    AOS_CHILD_SPAWN_PROBE_BADGE) != seL4_NoError ||
+                seL4_CNode_Move(pd_cnode, AOS_CHILD_SPAWN_FAULT_EP_SLOT,
+                    pd->cnode_size_bits, seL4_CapInitThreadCNode,
+                    child_spawn_fault_ep, 64u) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn fault endpoint grant failed; refusing PD start\n");
+                continue;
+            }
+        }
+#endif
+
         /* ── 4g.4: Distribute device MMIO frame caps ────────────────────────
          * For each device_frame_desc_t, find the device untyped covering its
          * physical address, retype it as a 4K page frame, and install the cap
@@ -3862,6 +4034,7 @@ void root_task_main(const seL4_BootInfo *bi)
              name_eq(pd->name, "native_rust_client") ||
              name_eq(pd->name, "cap_lend_lender") ||
              name_eq(pd->name, "cap_lend_borrower") ||
+             name_eq(pd->name, "child_spawn_parent") ||
              name_eq(pd->name, "framebuffer_client0") ||
              name_eq(pd->name, "framebuffer_client1") ||
              name_eq(pd->name, "display_ramfb") ||

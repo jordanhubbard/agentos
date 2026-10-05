@@ -85,6 +85,14 @@ pub struct TestArgs {
     /// and a sub-delegated copy dies too (test image only).
     #[arg(long, conflicts_with_all = ["assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "assert_native_rust", "assert_native_guest", "assert_framebuffer", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "cc_envelope_probe", "authority_probe"])]
     pub assert_cap_lending: bool,
+    /// T6 run-time child domain creation: the child uses an endowed
+    /// capability, faults on one the parent withheld, never starts when an
+    /// endowment fails, and is named with the endowed kinds in the parent's
+    /// own endowment-delta ledger, printed to serial. That ledger is
+    /// PD-local -- it is not the root-published authority page
+    /// --authority-probe reads over CC (test image only).
+    #[arg(long, conflicts_with_all = ["assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "assert_native_rust", "assert_native_guest", "assert_framebuffer", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "cc_envelope_probe", "authority_probe", "assert_cap_lending"])]
+    pub assert_child_spawn: bool,
     /// Qualify framebuffer queue transactions from two isolated native clients.
     #[arg(long, conflicts_with_all = ["assert_native_rust", "assert_native_guest", "assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "assert_vmx_exit"])]
     pub assert_framebuffer: bool,

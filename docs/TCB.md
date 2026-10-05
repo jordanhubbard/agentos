@@ -1550,3 +1550,50 @@ while holding the capability and does not recover data the borrower copied --
 lending bounds authority in time, it is not confinement. The bound is operation
 completion, not elapsed time: agentOS has no timer service. The lender/borrower
 pair exists only in the test image; no default-image PD lends anything yet.
+
+### Hierarchical delegation (T6)
+
+A protection domain may create a child domain at run time and endow it from its
+own authority. The parent retypes the child's CNode, VSpace and TCB from an
+untyped pool root granted it at boot, mints rights-reduced derivatives of
+capabilities it already holds into the child's CSpace, and starts it only after
+every endowment succeeded. `make test-child-spawn` verifies on target that the
+child uses an endowed capability, faults on one the parent withheld, does not
+start at all when an endowment fails, and is named with the endowed kinds in the
+delegating domain's own endowment report.
+
+That report is delegator-side, not root-side. The parent keeps an
+endowment-delta ledger in its own memory (`platform/endow_ledger.h`), appends to
+it on each successful mint, renders it with T4's authority formatter and writes
+it to the serial log; the probe asserts that log line. It is **not** an entry in
+the root-published authority page that `MSG_CC_AUTHORITY` and `make
+test-authority` read. No channel exists from a protection domain into that page,
+and none should: it is published read-only precisely so no domain can write its
+own claims into root's accounting (`make test-inspect` proves the read-only
+property). A runtime-created child therefore does not appear in `agentctl
+authority` output. The consequence is that a delegator's report is only as
+available as the delegator chooses to make it — visibility here depends on the
+delegating domain, which is the honest position given that seL4 offers root no
+way to enumerate what a domain holds.
+
+Endowment is a mint, not a loan. It does not reuse the T5 lending path above:
+`aos_cap_lend_revoke()` revokes the lender's own original, which would strip
+every other child endowed from the same capability if one spawn failed. The two
+lifetimes are separate and share no teardown. A failed spawn instead deletes the
+child's CNode, which destroys every mint already placed in it, and never resumes
+the thread.
+
+Scope and limits. This creates a domain at run time; it does not load code at
+run time. The child's ELF comes from the bundle verified at boot, so image
+verification is unaffected. The subsetting invariant -- no domain holds authority
+its parent did not hold -- is enforced by seL4 itself, since a parent cannot mint
+from a capability it does not possess. The delegator's ledger *reports* the
+endowment but cannot verify it, because seL4 exposes no capability-enumeration
+syscall: it records what the parent says it granted and cannot read kernel state
+back. It uses T4's `aos_authority_snapshot_t` shape and formatter -- that is a
+reuse of the reporting vocabulary `platform/authority.h` defines, not an entry
+in the page root publishes, and nothing verifies a delegator's claim against the
+kernel. A parent can create
+children only from the pool it was granted; exhaustion is a resource limit, not
+an authority boundary. The parent/child pair exists only in the test image; no
+default-image PD creates children.
