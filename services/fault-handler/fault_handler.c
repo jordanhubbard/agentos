@@ -17,7 +17,9 @@
  *   OP_FAULT_POLICY_SET  (0xE0) — update per-slot restart policy
  *
  * Memory:
- *   fault_ring (256KB shared MR): ring buffer for fault log entries
+ *   fault_ring (256KB): ring buffer for fault log entries, living in the
+ *   private 2 MiB region the root task maps at AOS_FAULT_RING_VA
+ *   (platform/fault_ring.h). No other PD maps it.
  *
  * E5-S8: migrated from Microkit to raw seL4 IPC.
  *
@@ -29,6 +31,7 @@
 #include "agentos.h"
 #include "sel4_server.h"
 #include "contracts/fault_handler_contract.h"
+#include <platform/fault_ring.h>
 
 /* ── Opcodes ──────────────────────────────────────────────────────────────── */
 #define OP_FAULT_STATUS      0x60
@@ -68,7 +71,21 @@ typedef struct __attribute__((packed)) {
 
 #define FAULT_RING_MAGIC  0xFA17DEAD
 
-/* ── Shared memory ────────────────────────────────────────────────────────── */
+/* ── Fault ring region ────────────────────────────────────────────────────
+ *
+ * The root task allocates one 2 MiB frame and maps it into this PD's VSpace
+ * at AOS_FAULT_RING_VA before starting the thread (see
+ * provision_fault_ring() in kernel/agentos-root-task/src/main.c). This global
+ * is assigned from that constant in fault_handler_init() and nowhere else on
+ * target; it is left as a writable global rather than a constant so a host
+ * test can point the same code at a plain buffer.
+ *
+ * It stayed zero for the whole life of this file before that provisioning
+ * existed, which made every FAULT_HDR store below a store through NULL: the
+ * PD died on its first instruction after entry, on every architecture, and
+ * nothing asserted otherwise. fault_ring_selfcheck() below is why that cannot
+ * happen silently again.
+ */
 uintptr_t fault_ring_vaddr;
 
 #define FAULT_HDR     ((volatile fault_ring_header_t *)fault_ring_vaddr)
@@ -120,19 +137,120 @@ static void handle_fault_policy(uint32_t pd_slot) {
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */
+
+_Static_assert(AOS_FAULT_RING_BYTES <= AOS_FAULT_RING_REGION,
+               "fault ring must fit inside the region root maps for it");
+_Static_assert(AOS_FAULT_RING_BYTES > sizeof(fault_ring_header_t) +
+                                      sizeof(fault_entry_t),
+               "fault ring must hold a header and at least one entry");
+
+#define FAULT_RING_CAPACITY \
+    ((AOS_FAULT_RING_BYTES - sizeof(fault_ring_header_t)) / sizeof(fault_entry_t))
+
 static void fault_handler_init(void) {
+    /* The ONLY assignment of this symbol on target. Must precede every
+     * FAULT_HDR / FAULT_ENTRIES use, including the first store below. */
+    fault_ring_vaddr = (uintptr_t)AOS_FAULT_RING_VA;
+
     volatile fault_ring_header_t *hdr = FAULT_HDR;
-    uint64_t region_size = 0x40000;
-    uint64_t entry_space = region_size - sizeof(fault_ring_header_t);
-    uint64_t cap = entry_space / sizeof(fault_entry_t);
     hdr->magic    = FAULT_RING_MAGIC;
     hdr->version  = 1;
-    hdr->capacity = cap;
+    hdr->capacity = FAULT_RING_CAPACITY;
     hdr->head     = 0;
     hdr->count    = 0;
     hdr->drops    = 0;
     fault_policy_init();
     log_drain_write(13, 13, "[fault_handler] Initialized. capacity=5000+ fault entries, 48B each\n");
+}
+
+/* ── Boot self-check: the ring is real, writable memory ──────────────────── */
+
+/* Every ring access below is through a volatile pointer, so the compiler may
+ * not reorder or elide them; this barrier only stops the surrounding stores
+ * and loads from being shuffled across a checkpoint. */
+#define FAULT_BARRIER() __asm__ volatile ("" ::: "memory")
+
+#define FAULT_LINE_MAX 192u
+
+static uint32_t fault_put_str(char *out, uint32_t n, const char *s) {
+    while (*s && n + 1u < FAULT_LINE_MAX) out[n++] = *s++;
+    return n;
+}
+
+/* Fixed-width 16 lowercase hex digits: a stable field width keeps the emitted
+ * marker byte-identical from boot to boot, so the harness can assert the exact
+ * line rather than a prefix. */
+static uint32_t fault_put_hex64(char *out, uint32_t n, uint64_t v) {
+    static const char digits[] = "0123456789abcdef";
+    for (int i = 15; i >= 0 && n + 1u < FAULT_LINE_MAX; i--)
+        out[n++] = digits[(v >> (i * 4)) & 0xFu];
+    return n;
+}
+
+/*
+ * fault_ring_selfcheck — prove at boot that the mapping root installed is
+ * backed by writable memory across the whole ring, not just at offset 0.
+ *
+ * This is deliberately more than "the header readback matched": with the
+ * region unmapped the PD faults at the first store and never reaches here at
+ * all, so reaching here AND round-tripping both the first entry slot and the
+ * final byte of the ring is what makes the emitted marker non-vacuous. Every
+ * sentinel is cleared and the header re-verified before returning, so a real
+ * fault arriving afterwards sees a clean ring.
+ *
+ * Returns 1 on success, 0 on any mismatch.
+ */
+static int fault_ring_selfcheck(void) {
+    volatile fault_ring_header_t *hdr     = FAULT_HDR;
+    volatile fault_entry_t       *entries = FAULT_ENTRIES;
+
+    if (hdr->magic != FAULT_RING_MAGIC) return 0;
+    if (hdr->version != 1u) return 0;
+    if (hdr->capacity != FAULT_RING_CAPACITY) return 0;
+    if (hdr->head != 0u || hdr->count != 0u || hdr->drops != 0u) return 0;
+
+    /* First and last entry slot of the ring. */
+    const uint64_t last = (uint64_t)FAULT_RING_CAPACITY - 1u;
+    entries[0].seq    = UINT64_C(0x0123456789abcdef);
+    entries[last].seq = UINT64_C(0xfedcba9876543210);
+    FAULT_BARRIER();
+    if (entries[0].seq    != UINT64_C(0x0123456789abcdef)) return 0;
+    if (entries[last].seq != UINT64_C(0xfedcba9876543210)) return 0;
+
+    /* Final addressable byte of the ring -- the last padding byte of the last
+     * entry. A byte-granular probe at the exact end of the claimed region, so
+     * a mapping that is whole pages short still fails here even if the last
+     * entry's first word happened to land inside the mapping. */
+    volatile uint8_t *span =
+        (volatile uint8_t *)fault_ring_vaddr + (AOS_FAULT_RING_BYTES - 1u);
+    *span = 0xA5u;
+    FAULT_BARRIER();
+    if (*span != 0xA5u) return 0;
+    *span = 0u;
+
+    entries[0].seq    = 0u;
+    entries[last].seq = 0u;
+    FAULT_BARRIER();
+
+    /* Writing through the ring must not have disturbed the header. */
+    if (hdr->magic != FAULT_RING_MAGIC) return 0;
+    if (hdr->capacity != FAULT_RING_CAPACITY) return 0;
+    if (hdr->head != 0u || hdr->count != 0u || hdr->drops != 0u) return 0;
+
+    static char line[FAULT_LINE_MAX];
+    uint32_t n = 0;
+    n = fault_put_str(line, n, "[fault_handler] ring self-check: PASS va=0x");
+    n = fault_put_hex64(line, n, (uint64_t)fault_ring_vaddr);
+    n = fault_put_str(line, n, " magic=0x");
+    n = fault_put_hex64(line, n, (uint64_t)hdr->magic);
+    n = fault_put_str(line, n, " capacity=0x");
+    n = fault_put_hex64(line, n, (uint64_t)hdr->capacity);
+    n = fault_put_str(line, n, " span=0x");
+    n = fault_put_hex64(line, n, AOS_FAULT_RING_BYTES - 1u);
+    n = fault_put_str(line, n, "\n");
+    line[n] = '\0';
+    log_drain_write(13, 13, line);
+    return 1;
 }
 
 /* ── Append fault entry to ring ───────────────────────────────────────────── */
@@ -281,6 +399,14 @@ void fault_handler_main(seL4_CPtr my_ep, seL4_CPtr ns_ep)
 {
     (void)ns_ep;
     fault_handler_init();
+    if (!fault_ring_selfcheck()) {
+        /* The region is mapped (we got here at all) but does not behave like
+         * memory. Say so and refuse to advertise readiness: a fault handler
+         * whose log silently discards entries is worse than an absent one. */
+        log_drain_write(13, 13,
+            "[fault_handler] ring self-check: FAIL — fault ring is not usable memory\n");
+        for (;;) { __asm__ volatile ("" ::: "memory"); }
+    }
     log_drain_write(13, 13, "[fault_handler] Ready — priority 250, passive, monitoring all PD faults\n");
 
     static sel4_server_t srv;

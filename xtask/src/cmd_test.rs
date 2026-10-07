@@ -999,6 +999,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         "inspect qualification requires AArch64 with guest-os none"
     );
     anyhow::ensure!(
+        !args.assert_fault_handler
+            || (args.board == "qemu_virt_aarch64" && args.guest_os == "none" && !args.no_build),
+        "fault_handler qualification requires a fresh AArch64 GUEST_OS=none image \
+         (fault_handler is a row in system_desc_aarch64.c only; the x86_64 \
+          descriptor has no such PD)"
+    );
+    anyhow::ensure!(
         !args.assert_native_guest
             || (args.board == "qemu_virt_aarch64"
                 && args.guest_os == "ubuntu-live"
@@ -2591,6 +2598,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
     if result.is_ok() && args.assert_inspect {
         result = verify_inspect(&cc_sock, &repo_root);
+    }
+    if result.is_ok() && args.assert_fault_handler {
+        result = verify_fault_handler(&log_path, Duration::from_secs(30), &mut qemu);
     }
     if result.is_ok() && args.trust_anchor_probe == Some(5) {
         // AOS_ANCHOR_MOK == 2 in contracts/trust_anchor.h; "machine-owner" is
@@ -6000,6 +6010,69 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
     Ok("root boot observations returned by CC and agentctl; invalid requests rejected; repeat stable".into())
 }
 
+/*
+ * verify_fault_handler() — the fault_handler TCB PD is alive and its fault
+ * ring is usable memory.
+ *
+ * WHY THIS TEST EXISTS. fault_handler is the only PD in the default AArch64
+ * image with neither a service endpoint nor a device: nothing calls it at
+ * boot, nothing waits on it, and no other assertion in this file moves if it
+ * never starts. It shipped dead on every architecture from the commit that
+ * introduced it -- its `fault_ring_vaddr` global was declared in .bss and
+ * assigned nowhere in the tree, so `fault_handler_init()` stored the ring
+ * header through NULL and the thread died at its first store, before any log
+ * call. On AArch64 and x86_64 that was additionally invisible because
+ * serial_pd owns the UART by then, so the kernel's fault report never
+ * reached the console. Every boot test still passed.
+ *
+ * WHAT IT PROVES, and what it does not. These markers come from the PD's own
+ * boot path running on target through log_drain and serial_pd -- the PD had
+ * to start, map its ring, and complete fault_ring_selfcheck()'s round trips
+ * at ring offset 0, at the final entry slot, and at the last byte of the ring
+ * before any of them can print. The exact self-check line is matched in full,
+ * including the mapped VA and the span, so a ring mapped short, mapped at the
+ * wrong address, or backed by a read-only or aliased frame cannot satisfy it.
+ * It does NOT prove fault delivery: no PD is made to fault here and no entry
+ * reaches the ring through a real seL4 fault IPC. It proves the handler is
+ * alive with working storage, which is the precondition that was missing.
+ */
+fn verify_fault_handler(
+    log_path: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    // Byte-exact, including the fixed-width hex fields: AOS_FAULT_RING_VA and
+    // AOS_FAULT_RING_BYTES in platform/include/platform/fault_ring.h, the
+    // FAULT_RING_MAGIC and derived capacity in
+    // services/fault-handler/fault_handler.c. A change to any of them must be
+    // restated here deliberately rather than passing by accident.
+    const SELF_CHECK: &str = "[fault_handler] ring self-check: PASS \
+         va=0x0000000032000000 magic=0x00000000fa17dead \
+         capacity=0x00000000000013b0 span=0x000000000003ffff";
+    const READY: &str = "[fault_handler] Ready \u{2014} priority 250, passive, \
+         monitoring all PD faults";
+
+    let log = wait_for_all_markers(log_path, &[SELF_CHECK, READY], timeout, qemu).context(
+        "fault_handler did not report a live PD with a usable fault ring; a silent \
+             fault_handler is exactly the failure this assertion exists to catch -- \
+             check that the root task mapped AOS_FAULT_RING_VA into its VSpace",
+    )?;
+
+    // The PD parks forever rather than serving with a broken ring, so this
+    // line and the two above are mutually exclusive; assert it anyway, since
+    // a future edit could make the failure path fall through.
+    anyhow::ensure!(
+        !log.contains("[fault_handler] ring self-check: FAIL"),
+        "fault_handler reported its fault ring is not usable memory"
+    );
+
+    Ok(
+        "fault_handler reached its IPC loop and round-tripped its fault ring at \
+        offset 0, at the last entry slot and at the final byte of the 256 KiB ring"
+            .into(),
+    )
+}
+
 fn rd16(src: &[u8], off: usize) -> u16 {
     u16::from_le_bytes(src[off..off + 2].try_into().unwrap())
 }
@@ -6013,6 +6086,7 @@ fn rd16(src: &[u8], off: usize) -> u16 {
 const AOS_AUTHORITY_VERSION: u32 = 1;
 const AOS_AUTHORITY_ROW_OFFSET: usize = 24;
 const AOS_AUTHORITY_ROW_STRIDE: usize = 60;
+const AOS_AUTHORITY_KIND_FRAME: usize = 5;
 const AOS_AUTHORITY_KIND_IRQ_HANDLER: usize = 7;
 
 fn authority_row(shmem: &[u8], pd_count: u32, pd_index: u32) -> Option<usize> {
@@ -6024,14 +6098,15 @@ fn authority_row(shmem: &[u8], pd_count: u32, pd_index: u32) -> Option<usize> {
     })
 }
 
-fn authority_irq_count(shmem: &[u8], row: usize) -> u16 {
+fn authority_kind_count(shmem: &[u8], row: usize, kind: usize) -> u16 {
     rd16(
         shmem,
-        AOS_AUTHORITY_ROW_OFFSET
-            + row * AOS_AUTHORITY_ROW_STRIDE
-            + 36
-            + AOS_AUTHORITY_KIND_IRQ_HANDLER * 2,
+        AOS_AUTHORITY_ROW_OFFSET + row * AOS_AUTHORITY_ROW_STRIDE + 36 + kind * 2,
     )
+}
+
+fn authority_irq_count(shmem: &[u8], row: usize) -> u16 {
+    authority_kind_count(shmem, row, AOS_AUTHORITY_KIND_IRQ_HANDLER)
 }
 
 /* Probe 1: the published boot authority page agrees with the compiled
@@ -6108,6 +6183,40 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
                  (TCB invariant 2: the virtualizer owns no device frame and no IRQ)"
             );
         }
+
+        /* fault_handler (pd_index 14) is the only PD in the default image
+         * that holds TWO frame capabilities: its IPC buffer, like everyone
+         * else, plus the single 2 MiB frame backing its fault ring
+         * (platform/fault_ring.h, provision_fault_ring() in the root task).
+         * Before that region existed the PD's `fault_ring_vaddr` global was
+         * never assigned, so it stored its ring header through NULL and died
+         * on entry on every architecture. Asserting the exact count here is
+         * what makes "root really granted the ring" a published, checkable
+         * fact rather than something only the PD's own log claims.
+         *
+         * NOTE on the baseline: every other row reports frame=1 because the
+         * ledger records only the IPC buffer -- the per-PD log config/client
+         * pages are mapped by log_map_copy() without a cap_acct_record call.
+         * That under-recording predates this assertion and is not what the
+         * +1 here measures; this counts the fault ring specifically. */
+        {
+            let row = authority_row(&first.shmem, pd_count, 14)
+                .context("authority: no published row for pd_index 14 (fault_handler)")?;
+            let frames = authority_kind_count(&first.shmem, row, AOS_AUTHORITY_KIND_FRAME);
+            anyhow::ensure!(
+                frames == 2,
+                "fault_handler (pd_index 14) reports {frames} frame capabilities, \
+                 expected 2 (IPC buffer + the 2 MiB fault-ring region). If this \
+                 moved, say which frame was added or removed and why -- do not \
+                 retune the number to make the test pass"
+            );
+            let irq = authority_irq_count(&first.shmem, row);
+            anyhow::ensure!(
+                irq == 0,
+                "fault_handler (pd_index 14) reports {irq} IRQ handlers, expected 0 \
+                 (it is reached through TCB fault endpoints, owns no device)"
+            );
+        }
     }
 
     let out = std::process::Command::new(root.join("_build/tools/agentctl/agentctl"))
@@ -6128,6 +6237,8 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
         "pd=net_virt",
         "pd=blk_virt",
         "pd=serial_virt",
+        "pd=fault_handler index=14 untyped=0 tcb=1 endpoint=2 notification=0 cnode=1 \
+         frame=2 vspace=1 irq_handler=0 sched_context=0 reply=0 other=0",
         "truncated_adds=0\n",
         "saturated=0\n",
     ] {
@@ -6147,8 +6258,9 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
 
     Ok(
         "boot authority counts matched the compiled descriptor (serial_pd/cc_pd each \
-        own their one IRQ handler; net_virt/blk_virt/serial_virt own none); CC and \
-        agentctl agree; repeat stable"
+        own their one IRQ handler; net_virt/blk_virt/serial_virt own none; \
+        fault_handler holds its IPC buffer plus exactly one fault-ring frame and \
+        no IRQ); CC and agentctl agree; repeat stable"
             .into(),
     )
 }
