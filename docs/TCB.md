@@ -38,6 +38,24 @@ Those receipts do not establish target peer-input mapping isolation.
 
 ## Privilege
 
+`fault_handler` now receives a private fault-ring region. Root allocates one
+2 MiB frame and maps it into that PD's VSpace at `AOS_FAULT_RING_VA`
+(`platform/include/platform/fault_ring.h`) before starting its thread, and
+refuses the boot if the mapping fails. No other domain maps that frame, and it
+conveys no device, IRQ or guest authority; reading the ring remains an IPC
+operation on `fault_handler`'s own endpoint. The grant is recorded in the
+capability ledger, so the published authority page reports `fault_handler` with
+two frames — its IPC buffer and the ring — rather than silently omitting it.
+Until this existed the PD's `fault_ring_vaddr` symbol was never assigned on any
+architecture, so it stored its ring header through NULL and died at its first
+instruction after entry while every boot test still passed; `serial_pd` owned
+the UART by then, so the kernel's fault report never reached the console.
+`make test-fault-handler` now requires the PD to reach its IPC loop and to
+round-trip writes at ring offset 0, at the last entry slot, and at the final
+byte of the 256 KiB ring. That is a liveness and usable-storage proof only: no
+domain is made to fault in that test, so fault delivery into the ring and the
+restart-policy path remain unqualified.
+
 VM manager now binds the guest ID returned by a successful coordinator CREATE
 reply to that dedicated slot and endpoint. Later lifecycle, input and console
 requests use that binding, rather than assuming guest ID zero. A malformed
