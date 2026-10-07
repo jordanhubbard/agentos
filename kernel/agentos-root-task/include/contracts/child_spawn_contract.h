@@ -33,7 +33,12 @@
  *     -- not the parent, not the child -- verifies the exact badge,
  *     address and direction through its own fault-probe oracle (main.c's
  *     ROOT_PROBE_* block). A timeout or an unrelated fault cannot satisfy
- *     it.
+ *     it. The badged fault endpoint the oracle keys on is installed on
+ *     the child's TCB by ROOT, from root's own CSpace (see
+ *     AOS_CHILD_SPAWN_INSTALL_EP_SLOT below): the parent holds no
+ *     capability to root's fault endpoint at all, so the marker cannot
+ *     be produced by any message a PD composes -- only by a real kernel
+ *     fault.
  *
  *   Probe 3 -- a failed endowment leaves nothing running. The parent
  *     performs a FIRST, deliberately doomed spawn whose endowment names
@@ -130,36 +135,53 @@
  * retypes or deletes it. */
 #define AOS_CHILD_SPAWN_CONTENT_FRAME_SLOT    51u
 
-/* Badged copy of the root task's fault endpoint, granted to the parent so
- * it can install it as its CHILD's fault handler (aos_child_spawn_req_t.
- * fault_ep). Without this the child's Probe 2 fault would be unhandled
- * and invisible: seL4 would simply leave the thread faulted, and the
- * root task -- the independent observer the proof relies on -- would
- * never see it.
+/* Send+Grant capability on the root task's CHILD-SPAWN FAULT-HANDLER
+ * INSTALLER endpoint -- a DISTINCT endpoint object from the root task's
+ * fault endpoint, which this PD holds no capability to at all.
  *
- * What the badge does and does NOT buy. Root, not the parent, chooses
- * AOS_CHILD_SPAWN_PROBE_BADGE, and the badge is what the oracle matches
- * on, so the parent cannot substitute an endpoint of its own making and
- * still produce the marker, and an ordinary unbadged fault (including one
- * by child_spawn_parent itself, which keeps the plain fault endpoint --
- * ROOT_PROBE_NATIVE 6 matches no PD in main.c's selection block) can never
- * be mistaken for the child's.
+ * Why this is not simply a copy of the fault endpoint. Probe 2's marker
+ * is emitted by root when a message bearing AOS_CHILD_SPAWN_PROBE_BADGE,
+ * the seL4_Fault_VMFault label and the right MRs arrives on root's fault
+ * endpoint. Until v0.6.0 root minted that badged fault endpoint straight
+ * into this slot, which handed the parent SEND rights on the very
+ * endpoint the oracle listens to: the parent could have produced the
+ * marker with a hand-built seL4_Send. Stripping send rights from that
+ * mint is not an option -- seL4's MCS validFaultHandler() requires a
+ * fault-handler capability to carry Send plus Grant or GrantReply, and a
+ * no-send mint makes seL4_TCB_SetSchedParams fail with
+ * seL4_InvalidCapability (measured; see the PR for the boot output).
  *
- * It does NOT make the marker unforgeable. Root mints this capability with
- * seL4_AllRights, so the parent holds SEND rights on it, and main.c's
- * oracle is a plain seL4_Wait comparing badge, message label and message
- * registers -- which cannot distinguish a kernel-generated fault IPC from
- * a user-mode seL4_Send carrying the same label and the same MRs. The
- * oracle asserts the exact SHAPE of a VM fault at a specific address in a
- * specific direction; it does not assert the kernel produced it. What
- * makes the probe sound is that child_spawn_parent is the test's own code
- * and demonstrably does not send on this endpoint, plus Step 5's
- * non-vacuity run, in which the marker disappeared the moment the child
- * stopped faulting. (T5's ROOT_PROBE_NATIVE 5 wiring has the same
- * structural property -- the borrower holds its own badged endpoint -- so
- * this is a pre-existing pattern, not a new gap.) A reader must not treat
- * the badge as proof of provenance. */
-#define AOS_CHILD_SPAWN_FAULT_EP_SLOT         52u
+ * So the badged fault endpoint never leaves root's own CSpace. Instead
+ * the parent CALLS root here, handing over its freshly created child's
+ * TCB capability, and ROOT performs the seL4_TCB_SetSchedParams that
+ * installs the badged fault handler on that TCB. seL4 writes a fault
+ * handler into the TCB object, not into any CSpace, so after the call
+ * neither the parent nor the child can name it.
+ *
+ * What this still permits, stated plainly: the parent chooses WHICH TCB
+ * it presents. Root cannot tell one of the parent's threads from
+ * another, so a malicious PD in this position could present a thread of
+ * its own and have it take a genuine read fault at
+ * AOS_CHILD_SPAWN_WITHHELD_VA. The marker therefore proves "a thread
+ * created by this PD really took an unmapped-read fault at that exact
+ * address, as reported by the kernel" -- it no longer proves anything
+ * about a message this PD composed. Fabricating the event without a real
+ * fault is now impossible; choosing which real faulting thread carries
+ * the badge is not. */
+#define AOS_CHILD_SPAWN_INSTALL_EP_SLOT       52u
+
+/* Badge root mints AOS_CHILD_SPAWN_INSTALL_EP_SLOT with. Root's installer
+ * service accepts only this badge, so an unbadged or differently badged
+ * sender cannot drive it. It is NOT the probe badge: the installer
+ * endpoint is a different object from the fault endpoint, and no badge on
+ * it can ever appear in root's fault loop. */
+#define AOS_CHILD_SPAWN_INSTALL_BADGE      0xC419u
+
+/* Message label for the one request the installer endpoint understands:
+ * "install your badged fault handler on the TCB in capability slot 0 of
+ * this message". Root replies with label 0 on success and label 1 on
+ * failure. */
+#define AOS_CHILD_SPAWN_INSTALL_LABEL      0xC41Au
 
 /* The parent's ORIGINAL capability to the frame it endows the child with
  * (Probe 1). The parent keeps this one so that, after the child has
@@ -243,9 +265,9 @@ _Static_assert(AOS_CHILD_SPAWN_SELF_VSPACE_SLOT > AOS_CHILD_SPAWN_PARENT_NTFN_SL
                "child-spawn fixed slots must be strictly ordered");
 _Static_assert(AOS_CHILD_SPAWN_CONTENT_FRAME_SLOT > AOS_CHILD_SPAWN_SELF_VSPACE_SLOT,
                "child-spawn fixed slots must be strictly ordered");
-_Static_assert(AOS_CHILD_SPAWN_FAULT_EP_SLOT > AOS_CHILD_SPAWN_CONTENT_FRAME_SLOT,
+_Static_assert(AOS_CHILD_SPAWN_INSTALL_EP_SLOT > AOS_CHILD_SPAWN_CONTENT_FRAME_SLOT,
                "child-spawn fixed slots must be strictly ordered");
-_Static_assert(AOS_CHILD_SPAWN_GIFT_FRAME_SLOT > AOS_CHILD_SPAWN_FAULT_EP_SLOT,
+_Static_assert(AOS_CHILD_SPAWN_GIFT_FRAME_SLOT > AOS_CHILD_SPAWN_INSTALL_EP_SLOT,
                "child-spawn fixed slots must be strictly ordered");
 _Static_assert(AOS_CHILD_SPAWN_GIFT_COPY_SLOT > AOS_CHILD_SPAWN_GIFT_FRAME_SLOT,
                "child-spawn fixed slots must be strictly ordered");
@@ -347,15 +369,22 @@ _Static_assert(AOS_CHILD_SPAWN_GIFT_VA != AOS_CHILD_SPAWN_WITHHELD_VA &&
 /* Badge the parent mints the child's endowed capabilities with. */
 #define AOS_CHILD_SPAWN_BADGE              0xC417u
 
-/* Badge root mints AOS_CHILD_SPAWN_FAULT_EP_SLOT with, and the only badge
- * main.c's fault oracle accepts for this probe. Distinct from
+/* Badge on the fault-endpoint capability root installs -- itself, from
+ * its OWN CSpace -- on the child's TCB, and the only badge main.c's fault
+ * oracle accepts for this probe. No PD holds a capability bearing it, or
+ * indeed any capability to root's fault endpoint, so no PD can place this
+ * badge on root's fault loop; only the kernel can, by delivering a fault
+ * from the thread whose TCB carries the handler. Distinct from
  * AOS_CHILD_SPAWN_BADGE so a fault arriving on the wrong endpoint cannot
- * be confused with the child's own endowment badge. */
+ * be confused with the child's own endowment badge, and from
+ * AOS_CHILD_SPAWN_INSTALL_BADGE, which rides a different endpoint object
+ * entirely. */
 #define AOS_CHILD_SPAWN_PROBE_BADGE        0xC418u
 
-_Static_assert(AOS_CHILD_SPAWN_PROBE_BADGE != AOS_CHILD_SPAWN_BADGE,
+_Static_assert(AOS_CHILD_SPAWN_PROBE_BADGE != AOS_CHILD_SPAWN_BADGE &&
+               AOS_CHILD_SPAWN_PROBE_BADGE != AOS_CHILD_SPAWN_INSTALL_BADGE,
                "the fault-probe badge must be distinguishable from the "
-               "endowment badge");
+               "endowment badge and from the installer badge");
 
 /* ── Probe 1 payload ────────────────────────────────────────────────────
  *
@@ -431,7 +460,21 @@ _Static_assert(AOS_CHILD_SPAWN_RESP_OFF >= 16u &&
 
 /* Probe 2's marker is emitted by the ROOT TASK's fault oracle, never by
  * the parent or the child (main.c's AGENTOS_CHILD_SPAWN_TEST ROOT_PROBE_*
- * block): the child cannot report its own fault, and the parent must not
- * be able to claim one happened. */
+ * block): the child cannot report its own fault, and the parent CANNOT
+ * claim one happened -- it holds no capability to root's fault endpoint,
+ * so the only way this badge reaches root's fault loop is a kernel fault
+ * IPC from a thread whose TCB root itself configured. What the parent
+ * still controls is WHICH of its threads that is; see
+ * AOS_CHILD_SPAWN_INSTALL_EP_SLOT. */
 #define AOS_CHILD_SPAWN_MARKER_ROOT_FAULT_VERIFIED \
     "[rt] child-spawn: expected withheld-page fault verified\n"
+
+/* Emitted by the ROOT TASK when it has installed its own badged fault
+ * endpoint on the TCB the parent handed it over
+ * AOS_CHILD_SPAWN_INSTALL_EP_SLOT. Asserted by the test so that the
+ * delegated-install path is demonstrably the one that ran: if root ever
+ * fell back to handing the parent a sendable copy, this line would be
+ * absent and the test would fail even though Probe 2's own marker still
+ * appeared. */
+#define AOS_CHILD_SPAWN_MARKER_ROOT_FAULT_EP_INSTALLED \
+    "[rt] child-spawn: root installed child fault handler\n"
