@@ -7,12 +7,16 @@
  * libs/pd-support/child_spawn.c end-to-end against a real seL4 target, and
  * is the PD that emits three of T6 Task 3's four probe markers. The
  * fourth, Probe 2, is emitted by the ROOT TASK instead, because a PD
- * reporting that its own child faulted is not evidence of anything. Note
- * that this is a separation of roles, not an enforced one: root mints this
- * PD's fault endpoint with send rights, so nothing in the kernel stops a
- * PD in this position from fabricating the message -- see the oracle
- * comment in main.c's AGENTOS_CHILD_SPAWN_TEST ROOT_PROBE_* block. This
- * file simply does not do it.
+ * reporting that its own child faulted is not evidence of anything. That
+ * separation is now enforced by the kernel, not just by convention: this
+ * PD holds no capability to root's fault endpoint at all. It hands its
+ * child's TCB to root over a separate installer endpoint
+ * (AOS_CHILD_SPAWN_INSTALL_EP_SLOT) and root installs its own badged
+ * fault-handler capability on that TCB, so the Probe 2 marker can only be
+ * produced by a real kernel fault IPC. What this PD still chooses is
+ * WHICH of its threads carries that handler -- see the oracle comment in
+ * main.c's AGENTOS_CHILD_SPAWN_TEST ROOT_PROBE_* block for the residual
+ * that leaves.
  *
  *   1. Retype, from the pool root granted this PD at boot
  *      (AOS_CHILD_SPAWN_POOL_SLOT), the two objects this demo endows: a
@@ -319,7 +323,12 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
             .content_va         = AOS_CHILD_SPAWN_CONTENT_VA,
             .extra_maps         = NULL,
             .extra_map_count    = 0u,
-            .fault_ep           = AOS_CHILD_SPAWN_FAULT_EP_SLOT,
+            /* No fault handler: this spawn is expected to fail at the
+             * endowment step and its TCB is never resumed, so there is
+             * nothing to report. Asking root to install one would also
+             * burn the single-shot installer request below. */
+            .fault_ep           = seL4_CapNull,
+            .fault_install_ep   = seL4_CapNull,
             .entry_point        = AOS_CHILD_SPAWN_ENTRY_VA,
             .stack_va_top       = AOS_CHILD_SPAWN_STACK_VA_TOP,
             .ipc_buf_va         = AOS_CHILD_SPAWN_IPC_BUF_VA,
@@ -441,10 +450,15 @@ void pd_main(seL4_CPtr endpoint, seL4_CPtr nameserver)
         .content_va         = AOS_CHILD_SPAWN_CONTENT_VA,
         .extra_maps         = extra_maps,
         .extra_map_count    = 1u,
-        /* Root minted this badged copy of its own fault endpoint for this
-         * PD; it goes into the CHILD's TCB, never into the child's CSpace.
-         * Without it the child's Probe 2 fault would be invisible. */
-        .fault_ep           = AOS_CHILD_SPAWN_FAULT_EP_SLOT,
+        /* This PD holds NO capability to root's fault endpoint. Instead it
+         * calls root's installer endpoint, handing over the child's TCB,
+         * and root installs its own badged fault-handler capability on
+         * that TCB from root's own CSpace. Without it the child's Probe 2
+         * fault would be invisible; with it, the Probe 2 marker cannot be
+         * produced by any message this PD is able to send. */
+        .fault_ep            = seL4_CapNull,
+        .fault_install_ep    = AOS_CHILD_SPAWN_INSTALL_EP_SLOT,
+        .fault_install_label = AOS_CHILD_SPAWN_INSTALL_LABEL,
         .entry_point        = AOS_CHILD_SPAWN_ENTRY_VA,
         .stack_va_top       = AOS_CHILD_SPAWN_STACK_VA_TOP,
         .ipc_buf_va         = AOS_CHILD_SPAWN_IPC_BUF_VA,

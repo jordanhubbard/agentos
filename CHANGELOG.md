@@ -36,6 +36,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   two frame capabilities (its IPC buffer plus the one fault-ring frame) and no
   IRQ handler.
 
+### Changed
+
+- The T6 child-spawn fault probe asserts the **provenance** of the fault IPC,
+  not only its shape. Root no longer mints a badged copy of its own fault
+  endpoint into `child_spawn_parent`'s CNode; it keeps that capability in its
+  own CSpace and installs it on the child's TCB itself, over a separate
+  single-shot installer endpoint the parent calls with the child's TCB
+  capability. No protection domain holds a capability to root's fault endpoint
+  or any derivative of it, so `AOS_CHILD_SPAWN_PROBE_BADGE` can only reach
+  root's fault loop in a kernel-generated fault IPC.
+
+  Stripping send rights from the parent's copy was tried first and does not
+  work: seL4's MCS `validFaultHandler()` requires a fault-handler capability to
+  carry Send plus Grant or GrantReply, and `seL4_TCB_SetSchedParams` refuses a
+  rights-stripped copy with `seL4_InvalidCapability`.
+
+- `aos_child_spawn()` gained `fault_install_ep` / `fault_install_label` for
+  this delegated-install shape. When they are used the SchedContext is bound
+  with `seL4_SchedContext_Bind` rather than a second `seL4_TCB_SetSchedParams`,
+  because the latter unconditionally rewrites the fault handler.
+
+- The T5 capability-lending probe needed no change: root already minted the
+  borrower's badged fault endpoint into its own CNode and installed it on the
+  borrower's TCB. Comments claiming T5 shared T6's forgeability gap were
+  wrong and have been corrected.
+
+### Known limitations
+
+- The child-spawn probe's residual: root cannot tell one of the parent's
+  threads from another, so the parent chooses which TCB it presents to the
+  installer. The marker proves that a thread the parent created really took an
+  unmapped read fault at the withheld address, as reported by the kernel; it
+  does not by itself prove that thread was the child.
+
 ## [0.6.0] - 2026-10-04
 
 Trust and delegation baseline: the corrective actions from the 2026-10-03
@@ -114,6 +148,7 @@ Stated here because the project treats overclaiming as the primary defect:
   subsetting invariant — the kernel enforces that independently. A
   runtime-created child does not appear in `agentctl authority` output.
 - The fault-probe oracle asserts the shape of a fault IPC, not its provenance.
+  (Fixed for T6 after this release; see Unreleased. T5 was already sound.)
 - A digest mismatch under the machine-owner anchor is not target-proven, and
   the gating-tier-with-no-key probe asserts an absence bounded by a
   loader-stage marker rather than a positive refusal marker.

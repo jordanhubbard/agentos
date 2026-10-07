@@ -2004,6 +2004,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         // present; absence of the fault-probe marker is exactly what Step
         // 4's non-vacuity demonstration (aos_cap_lend_revoke neutered)
         // exercises as a FAILURE of this same command.
+        //
+        // The last marker is root's own fault oracle. The badged endpoint
+        // it keys on is installed by root on the borrower's TCB from
+        // root's own CSpace and is not addressable from any PD's CSpace,
+        // and no PD holds a capability to root's fault endpoint, so that
+        // marker cannot be produced by a message a PD composes.
         wait_for_all_markers(
             &log_path,
             &[
@@ -2035,13 +2041,21 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         //     ROOT TASK's fault oracle (main.c's AGENTOS_CHILD_SPAWN_TEST
         //     ROOT_PROBE_* block) after matching the exact badge, address
         //     and direction, so neither a timeout nor an unrelated fault
-        //     can satisfy it. (The oracle asserts the exact shape of a
-        //     fault IPC, not that the kernel produced it -- the parent
-        //     holds send rights on that badged endpoint. It is trusted
-        //     test code that does not send; see the oracle comment in
-        //     main.c.) Step 5 of the task brief (endow the withheld page
-        //     too, rebuild, watch this command FAIL on exactly this
-        //     marker) is what establishes that it is not vacuous.
+        //     can satisfy it. The badged endpoint the oracle keys on is
+        //     installed on the CHILD's TCB by root, from root's own
+        //     CSpace: no PD holds a capability to root's fault endpoint,
+        //     so the marker cannot be produced by a message a PD
+        //     composes -- only by a real kernel fault IPC. (Stripping
+        //     send rights from a copy handed to the parent was tried and
+        //     is rejected: MCS validFaultHandler() requires Send plus
+        //     Grant or GrantReply.) The residual is that the parent
+        //     chooses which of its threads it presents to root's
+        //     installer, so the marker proves a real fault by a thread
+        //     the parent created, not specifically by the child; see the
+        //     oracle comment in main.c. Step 5 of the task brief (endow
+        //     the withheld page too, rebuild, watch this command FAIL on
+        //     exactly this marker) is what establishes that it is not
+        //     vacuous.
         //   Probe 4 -- the endowment-delta ledger, rendered through T4's
         //     own authority formatter. The pd= line is asserted verbatim:
         //     a row for the child with exactly one notification and one
@@ -2052,6 +2066,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             &[
                 "[child-spawn-parent] OK: endowment failed, child never started, ledger empty",
                 "[child-spawn-parent] OK: child used endowment, response and paddr verified",
+                "[rt] child-spawn: root installed child fault handler",
                 "[rt] child-spawn: expected withheld-page fault verified",
                 "pd=child_spawn_child index=1 untyped=0 tcb=0 endpoint=0 notification=1 \
                  cnode=0 frame=1 vspace=0 irq_handler=0 sched_context=0 reply=0 other=0",
