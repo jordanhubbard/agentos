@@ -217,7 +217,18 @@ _Static_assert(AOS_LOG_NOTIFY_CAP < AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
  * at the lent VA must fault -- a plain read, so WRITE=0 -- and this is the
  * ONLY event that may emit AOS_CAP_LEND_MARKER_ROOT_FAULT_VERIFIED: exact
  * badge, address and direction, observed by the root task independently of
- * the borrower PD (which never returns control after this fault). */
+ * the borrower PD (which never returns control after this fault).
+ *
+ * Provenance, not just shape. Root mints this badged derivative of
+ * g_fault_ep into a slot in its OWN CNode (the pd_fault_ep block below)
+ * and installs it on cap_lend_borrower's TCB with its own
+ * seL4_TCB_SetSchedParams. The borrower never receives a copy -- a fault
+ * handler lives in the TCB object, not in any CSpace -- and no PD holds a
+ * capability to g_fault_ep either, so AOS_CAP_LEND_PROBE_BADGE cannot
+ * reach root's fault loop except by a kernel-generated fault IPC.
+ * Comments elsewhere in this tree once said T5 shared T6's forgeability
+ * gap; that was wrong, and T6 has since been brought to this same
+ * shape. */
 #define ROOT_FAULT_PROBE 1
 #define ROOT_PROBE_NATIVE 5
 #define ROOT_PROBE_CLIENT 0u
@@ -234,28 +245,44 @@ _Static_assert(AOS_LOG_NOTIFY_CAP < AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
  * serial capability with which to say anything in any case, and not by the
  * parent, whose own report would be worth nothing.
  *
- * The badge comes from the fault endpoint root mints into the PARENT's
- * CNode at AOS_CHILD_SPAWN_FAULT_EP_SLOT, which the parent then installs
- * on its child's TCB via aos_child_spawn_req_t.fault_ep. ROOT_PROBE_NATIVE
- * deliberately matches no PD in the pd_fault_ep selection block below:
- * child_spawn_parent itself keeps the ordinary unbadged fault endpoint, so
- * a fault by the PARENT can never be mistaken for the child's.
+ * The badge comes from the fault endpoint ROOT installs on the CHILD's
+ * TCB itself, from root's own CSpace, in the single-shot installer
+ * service near the end of this file. child_spawn_parent holds no
+ * capability to g_fault_ep or to any derivative of it -- only a
+ * Send+Grant capability on a SEPARATE endpoint object it uses to hand
+ * root the child's TCB. ROOT_PROBE_NATIVE deliberately matches no PD in
+ * the pd_fault_ep selection block below: child_spawn_parent itself keeps
+ * the ordinary unbadged fault endpoint, so a fault by the PARENT can
+ * never be mistaken for the child's.
  *
- * What this oracle actually asserts -- and what it does not. It asserts
- * the exact SHAPE of the event: badge, seL4_Fault_VMFault label, faulting
- * address, PrefetchFault clear and FSR WnR direction. It does NOT assert
- * that the kernel produced it. Root mints the fault endpoint with
- * seL4_AllRights, so the parent holds send rights, and the loop below is a
- * plain seL4_Wait that cannot tell a kernel fault IPC from a user-mode
- * seL4_Send carrying the same label and the same message registers. The
- * probe is sound because child_spawn_parent is the test's own code and
- * does not send on this endpoint, and because Step 5's non-vacuity run
- * showed the marker vanish the moment the child stopped faulting -- not
- * because forgery is prevented. The same structural property already holds
- * for AGENTOS_CAP_LEND_TEST's ROOT_PROBE_NATIVE 5 above. Making it
- * genuinely unforgeable would mean root minting the fault endpoint without
- * send rights for the parent -- a change to how fault endpoints are
- * delegated, not a change to this probe. */
+ * What this oracle asserts -- and what it does not. It asserts the exact
+ * SHAPE of the event: badge, seL4_Fault_VMFault label, faulting address,
+ * PrefetchFault clear and FSR WnR direction. It now ALSO asserts that
+ * the KERNEL produced it: no PD can name g_fault_ep, so
+ * AOS_CHILD_SPAWN_PROBE_BADGE cannot appear on this loop as the result
+ * of any seL4_Send a PD is able to issue. (Stripping send rights from a
+ * copy handed to the parent was tried first and does not work -- seL4's
+ * MCS validFaultHandler() requires Send plus Grant or GrantReply, and
+ * such a copy is refused with seL4_InvalidCapability at
+ * seL4_TCB_SetSchedParams. The fix is to not hand out a copy at all.)
+ *
+ * The residual, stated plainly: root cannot tell one of the parent's
+ * threads from another, so the parent chooses WHICH TCB it presents to
+ * the installer. A PD in this position could present a thread of its own
+ * and have it take a genuine read fault at the probe address. So the
+ * marker now means "a thread created by child_spawn_parent really took
+ * an unmapped read fault at this exact address, as reported by the
+ * kernel"; it does not, by itself, prove that thread was the child. That
+ * it was the child rests on child_spawn_parent being the test's own
+ * code, and on Step 5's non-vacuity run, in which the marker disappeared
+ * the moment the withheld page was mapped.
+ *
+ * AGENTOS_CAP_LEND_TEST's ROOT_PROBE_NATIVE 5 above never had the
+ * forgeability problem in the first place: there root mints the badged
+ * endpoint into a slot in its OWN CNode and installs it on the
+ * borrower's TCB with its own seL4_TCB_SetSchedParams, so the borrower
+ * never held a sendable copy either. Earlier comments in this tree
+ * claimed T5 shared the gap; they were wrong. */
 #define ROOT_FAULT_PROBE 1
 #define ROOT_PROBE_NATIVE 6
 #define ROOT_PROBE_CLIENT 0u
@@ -2917,6 +2944,26 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
     }
 
+#ifdef AGENTOS_CHILD_SPAWN_TEST
+    /*
+     * Child-spawn fault-handler installer (T6 Probe 2 provenance).
+     *
+     * g_child_spawn_fault_ep  — badged derivative of g_fault_ep, bearing
+     *   AOS_CHILD_SPAWN_PROBE_BADGE. It lives ONLY here, in root's own
+     *   CSpace, and is installed by root on the child's TCB. No PD ever
+     *   holds a capability to g_fault_ep or to any derivative of it.
+     * g_child_spawn_install_ep — a SEPARATE endpoint object. The parent
+     *   holds a Send+Grant capability on this one and nothing else; a
+     *   message sent on it can never appear in root's fault loop.
+     * The reply object and receive slot are what let root answer the
+     *   parent's seL4_Call and accept the one transferred capability.
+     */
+    seL4_CPtr g_child_spawn_fault_ep     = seL4_CapNull;
+    seL4_CPtr g_child_spawn_install_ep   = seL4_CapNull;
+    seL4_CPtr g_child_spawn_install_reply = seL4_CapNull;
+    seL4_CPtr g_child_spawn_install_recv = seL4_CapNull;
+#endif
+
     const system_desc_t *sys = SYSTEM_DESC;
 #if defined(__x86_64__) && defined(AGENTOS_X86_FIRMWARE_RESET)
     aos_virtio_pci_layout_t host_net_layout;
@@ -4132,38 +4179,65 @@ void root_task_main(const seL4_BootInfo *bi)
 #endif
 
             /*
-             * Badged copy of root's own fault endpoint, for the parent to
-             * install as its CHILD's fault handler (Probe 2). Root mints
-             * the badge, not the parent: AOS_CHILD_SPAWN_PROBE_BADGE is
-             * what the fault oracle above matches on, so the parent cannot
-             * substitute an endpoint of its OWN and manufacture the
-             * marker. Minting from seL4_CapInitThreadCNode into a root
-             * scratch slot and then moving it is the same two-step pattern
-             * the pd_fault_ep block above uses.
+             * Fault-handler delegation for the child-spawn demo.
              *
-             * What this DOES grant the parent is the ability to send on
-             * this endpoint itself. The oracle is a plain seL4_Wait that
-             * matches on badge, label and message registers, so it asserts
-             * the SHAPE of a fault IPC, not that the kernel produced it --
-             * the parent holds send rights and could put a fault-shaped
-             * message into root's fault loop. The probe is sound because
-             * the parent is trusted test code that does not do so, and
-             * because Step 5's non-vacuity run shows the marker following
-             * the withheld mapping rather than the parent's behaviour. It
-             * is also the ONLY capability granted here that the parent
-             * passes to aos_child_spawn() without endowing -- it goes into
-             * the child's TCB, never into the child's CSpace.
+             * Until v0.6.0 root minted a badged copy of its OWN fault
+             * endpoint into the parent's CNode here, for the parent to
+             * install on its child's TCB. That handed the parent send
+             * rights on the very endpoint root's fault oracle listens on,
+             * so the Probe 2 marker asserted only the SHAPE of a fault
+             * IPC; a seL4_Send with the same badge, label and MRs would
+             * have satisfied it.
+             *
+             * Minting that copy WITHOUT send rights does not work, and
+             * this was measured rather than assumed: seL4's MCS
+             * validFaultHandler() (src/object/tcb.c) requires a
+             * fault-handler capability to carry Send plus Grant or
+             * GrantReply, and with a seL4_CapRights_new(1,1,1,0) mint the
+             * parent's seL4_TCB_SetSchedParams failed with
+             * seL4_InvalidCapability at child_spawn.c's STEP_SCHED_PARAMS.
+             *
+             * So the badged fault endpoint stays in ROOT's CSpace and root
+             * performs the install itself. The parent gets a Send+Grant
+             * capability on a SEPARATE endpoint object -- the installer
+             * endpoint -- over which it hands root its freshly created
+             * child's TCB capability. Root answers that one request, from
+             * its own CSpace, with seL4_TCB_SetSchedParams. See
+             * child_spawn_contract.h's AOS_CHILD_SPAWN_INSTALL_EP_SLOT for
+             * what this does and does not buy.
+             *
+             * The installer endpoint is minted with Grant because the
+             * request carries a capability. Grant on THIS object lets the
+             * parent send caps to root; it conveys nothing at all on
+             * g_fault_ep, which is a different object the parent never
+             * sees.
              */
-            seL4_CPtr child_spawn_fault_ep = ut_alloc_slot();
-            if (child_spawn_fault_ep == seL4_CapNull ||
-                g_fault_ep == seL4_CapNull ||
-                seL4_CNode_Mint(seL4_CapInitThreadCNode, child_spawn_fault_ep, 64u,
+            if (ut_alloc_cap(seL4_EndpointObject, 0u,
+                             &g_child_spawn_install_ep) != seL4_NoError ||
+                ut_alloc_cap(seL4_ReplyObject, 0u,
+                             &g_child_spawn_install_reply) != seL4_NoError ||
+                g_fault_ep == seL4_CapNull) {
+                dbg_puts("[rt] child-spawn installer endpoint allocation failed; refusing PD start\n");
+                continue;
+            }
+            g_child_spawn_fault_ep = ut_alloc_slot();
+            g_child_spawn_install_recv = ut_alloc_slot();
+            seL4_CPtr child_spawn_install_grant = ut_alloc_slot();
+            if (g_child_spawn_fault_ep == seL4_CapNull ||
+                g_child_spawn_install_recv == seL4_CapNull ||
+                child_spawn_install_grant == seL4_CapNull ||
+                seL4_CNode_Mint(seL4_CapInitThreadCNode, g_child_spawn_fault_ep, 64u,
                     seL4_CapInitThreadCNode, g_fault_ep, 64u, seL4_AllRights,
                     AOS_CHILD_SPAWN_PROBE_BADGE) != seL4_NoError ||
-                seL4_CNode_Move(pd_cnode, AOS_CHILD_SPAWN_FAULT_EP_SLOT,
+                seL4_CNode_Mint(seL4_CapInitThreadCNode, child_spawn_install_grant, 64u,
+                    seL4_CapInitThreadCNode, g_child_spawn_install_ep, 64u,
+                    seL4_CapRights_new(1u, 1u, 0u, 1u) /* grant+grantreply+send,
+                                                        * NOT receive */,
+                    AOS_CHILD_SPAWN_INSTALL_BADGE) != seL4_NoError ||
+                seL4_CNode_Move(pd_cnode, AOS_CHILD_SPAWN_INSTALL_EP_SLOT,
                     pd->cnode_size_bits, seL4_CapInitThreadCNode,
-                    child_spawn_fault_ep, 64u) != seL4_NoError) {
-                dbg_puts("[rt] child-spawn fault endpoint grant failed; refusing PD start\n");
+                    child_spawn_install_grant, 64u) != seL4_NoError) {
+                dbg_puts("[rt] child-spawn installer endpoint grant failed; refusing PD start\n");
                 continue;
             }
         }
@@ -5444,19 +5518,99 @@ void root_task_main(const seL4_BootInfo *bi)
      * meaning the root task loses CPU before it can reach seL4_Wait, and may
      * not regain it if its SC budget was consumed during init.
      */
-    if (g_fault_ep != seL4_CapNull) {
 #ifdef ROOT_FAULT_PROBE
-        serial_log_t probe_log = {0};
-        seL4_CPtr probe_serial_frame = ut_alloc_slot();
-        if (probe_serial_frame != seL4_CapNull &&
-            seL4_CNode_Copy(seL4_CapInitThreadCNode, probe_serial_frame, 64u,
-                           seL4_CapInitThreadCNode, g_serial_shmem_frame_cap,
-                           64u, seL4_AllRights) == seL4_NoError &&
-            pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
-                                      probe_serial_frame, AGENTOS_SERIAL_SHMEM_VA) == seL4_NoError) {
-            probe_log.ep = ep_alloc_for_service(SVC_ID_SERIAL);
-        }
+    /* Hoisted above the child-spawn installer below so that root can report
+     * the install over the serial contract: the PL011 was handed to
+     * serial_pd long ago, so dbg_puts is a no-op by this point. */
+    serial_log_t probe_log = {0};
+    seL4_CPtr probe_serial_frame = ut_alloc_slot();
+    if (probe_serial_frame != seL4_CapNull &&
+        seL4_CNode_Copy(seL4_CapInitThreadCNode, probe_serial_frame, 64u,
+                       seL4_CapInitThreadCNode, g_serial_shmem_frame_cap,
+                       64u, seL4_AllRights) == seL4_NoError &&
+        pd_vspace_map_device_frame(seL4_CapInitThreadVSpace,
+                                  probe_serial_frame, AGENTOS_SERIAL_SHMEM_VA) == seL4_NoError) {
+        probe_log.ep = ep_alloc_for_service(SVC_ID_SERIAL);
+    }
 #endif
+
+#ifdef AGENTOS_CHILD_SPAWN_TEST
+    /*
+     * Serve exactly ONE child-spawn fault-handler install request, then
+     * fall through to the ordinary fault loop below.
+     *
+     * child_spawn_parent calls here with its freshly created child's TCB
+     * capability, after writing the child's initial registers and BEFORE
+     * creating the child's SchedContext. Root installs its own badged
+     * fault-handler capability on that TCB. Because the child has no
+     * SchedContext yet, the null SchedContext argument below is a no-op
+     * rather than an unbind (decodeSetSchedParams compares the requested
+     * SC against the one already bound); the parent binds the real one
+     * afterwards with seL4_SchedContext_Bind, which does not touch the
+     * fault handler.
+     *
+     * Single-shot on purpose. The demo performs two spawns and only the
+     * second one -- the one whose child actually runs -- asks for a
+     * handler; the deliberately doomed first spawn passes seL4_CapNull.
+     * If the parent never gets that far, root simply stays blocked here
+     * and no probe marker is printed, which is the correct outcome: the
+     * parent's own FAIL marker is what the test then reports.
+     *
+     * What this does and does not establish. It removes the parent from
+     * the trust path for the MESSAGE: no PD holds a capability to
+     * g_fault_ep or any derivative, so AOS_CHILD_SPAWN_PROBE_BADGE can
+     * only reach the loop below via a kernel-generated fault IPC. It does
+     * not remove the parent from the trust path for WHICH THREAD: root
+     * cannot tell one of the parent's threads from another, so a PD in
+     * this position could present a thread of its own and have it take a
+     * genuine read fault at AOS_CHILD_SPAWN_WITHHELD_VA. The marker
+     * therefore means "a thread this PD created really faulted, as
+     * reported by the kernel, at exactly that address in exactly that
+     * direction" -- not "the message was composed by the kernel" (which
+     * was all it meant before) and not "the faulting thread was the
+     * child" (which root has no way to check).
+     */
+    if (g_child_spawn_install_ep != seL4_CapNull &&
+        g_child_spawn_install_reply != seL4_CapNull &&
+        g_child_spawn_install_recv != seL4_CapNull &&
+        g_child_spawn_fault_ep != seL4_CapNull) {
+        seL4_SetCapReceivePath(seL4_CapInitThreadCNode,
+                               g_child_spawn_install_recv, 64u);
+        seL4_Word install_badge = 0u;
+        seL4_MessageInfo_t install_tag = seL4_Recv(g_child_spawn_install_ep,
+                                                   &install_badge,
+                                                   g_child_spawn_install_reply);
+        seL4_Word install_status = 1u;
+        if (install_badge == AOS_CHILD_SPAWN_INSTALL_BADGE &&
+            seL4_MessageInfo_get_label(install_tag) == AOS_CHILD_SPAWN_INSTALL_LABEL &&
+            seL4_MessageInfo_get_extraCaps(install_tag) == 1u &&
+            seL4_MessageInfo_get_capsUnwrapped(install_tag) == 0u &&
+            seL4_TCB_SetSchedParams(g_child_spawn_install_recv,
+                                     seL4_CapInitThreadTCB,
+                                     255u,
+                                     (seL4_Word)AOS_CHILD_SPAWN_CHILD_PRIORITY,
+                                     seL4_CapNull,
+                                     g_child_spawn_fault_ep) == seL4_NoError) {
+            install_status = 0u;
+        }
+        /* Root keeps no capability to the child's TCB: it was needed for
+         * exactly one invocation. */
+        (void)seL4_CNode_Delete(seL4_CapInitThreadCNode,
+                                g_child_spawn_install_recv, 64u);
+        seL4_SetCapReceivePath(seL4_CapInitThreadCNode, seL4_CapNull, 0u);
+        serial_log_puts(&probe_log, install_status == 0u ?
+            AOS_CHILD_SPAWN_MARKER_ROOT_FAULT_EP_INSTALLED :
+            "[rt] child-spawn: fault-handler install REFUSED\n");
+        seL4_Send(g_child_spawn_install_reply,
+                  /* Masked for the same reason as child_spawn.c's request:
+                   * a non-constant label keeps seL4_MessageInfo_new's
+                   * range assert alive at link time. */
+                  seL4_MessageInfo_new(install_status & 0xfffffffffffffull,
+                                       0u, 0u, 0u));
+    }
+#endif
+
+    if (g_fault_ep != seL4_CapNull) {
         dbg_puts("[rt] parking on fault_ep\n");
         for (;;) {
             seL4_Word badge = 0u;

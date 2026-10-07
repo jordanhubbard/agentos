@@ -58,6 +58,8 @@ enum {
     STEP_SCHED_PARAMS,
     STEP_ENDOW,
     STEP_START,
+    /* Appended, not inserted: existing values must not renumber. */
+    STEP_FAULT_INSTALL,
 };
 
 /* ── aos_pt_scratch_t: shared bounded-retry page-table allocator ───────── */
@@ -444,6 +446,43 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
         goto done_fail;
     }
 
+    /*
+     * Fault-handler provenance. Two shapes, selected by
+     * req->fault_install_ep (see its doc comment in child_spawn.h):
+     *
+     *   Delegated install (fault_install_ep != seL4_CapNull). Hand the
+     *     child's TCB capability to an installer service and let IT write
+     *     its OWN fault-handler capability into the TCB, so this caller
+     *     never holds a capability to the endpoint its child's faults are
+     *     reported on. It has to happen HERE, before the SchedContext
+     *     exists: the installer's seL4_TCB_SetSchedParams necessarily
+     *     passes a null SchedContext capability, and the kernel treats
+     *     that as "no change" only while the TCB has none bound -- after
+     *     a bind, the same null argument would UNBIND it
+     *     (decodeSetSchedParams: `if (tcb->tcbSchedContext != sc)`).
+     *
+     *   Direct install (the default). req->fault_ep is written into the
+     *     TCB by this call's own SetSchedParams below.
+     *
+     * The child's TCB is still Inactive either way: nothing in this block
+     * resumes it.
+     */
+    if (req->fault_install_ep != seL4_CapNull) {
+        seL4_SetCap(0, child_tcb);
+        seL4_MessageInfo_t install_reply = seL4_Call(req->fault_install_ep,
+            /* The mask is not cosmetic: seL4_MessageInfo_new asserts the
+             * label fits in 52 bits, and with a non-constant label that
+             * assert survives into the link as __assert_fail. */
+            seL4_MessageInfo_new(req->fault_install_label & 0xfffffffffffffull,
+                                 0u, 1u, 0u));
+        if (seL4_MessageInfo_get_label(install_reply) != 0u) {
+            out->error = AOS_CHILD_SPAWN_ERR_CONFIGURE;
+            out->failed_step = STEP_FAULT_INSTALL;
+            fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
+            goto done_fail;
+        }
+    }
+
     seL4_CPtr sc;
     if (retype_one(&st, seL4_SchedContextObject, seL4_MinSchedContextBits, &sc) != seL4_NoError) {
         out->error = AOS_CHILD_SPAWN_ERR_RETYPE;
@@ -460,21 +499,38 @@ int aos_child_spawn(const aos_child_spawn_req_t *req, aos_child_spawn_result_t *
         fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
         goto done_fail;
     }
-    /* Binds the SC and sets mcp/priority/fault_ep; does NOT change the
-     * thread's Inactive state -- only WriteRegisters(resume=1) below does
-     * that, and that call is the LAST thing this function does on
-     * success.
-     *
-     * req->fault_ep is the child's fault handler. It is written into the
-     * TCB, never into the child's CSpace, so the child can neither name
-     * nor forge it; a seL4_CapNull here simply means nobody is told when
-     * the child faults (see the field's doc comment). */
-    if (seL4_TCB_SetSchedParams(child_tcb, req->self_tcb, 255u, (seL4_Word)req->priority,
-                                 sc, req->fault_ep) != seL4_NoError) {
-        out->error = AOS_CHILD_SPAWN_ERR_CONFIGURE;
-        out->failed_step = STEP_SCHED_PARAMS;
-        fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
-        goto done_fail;
+    if (req->fault_install_ep != seL4_CapNull) {
+        /* Bind ONLY the SchedContext. seL4_TCB_SetSchedParams would also
+         * rewrite the fault handler -- thread_control_sched_update_fault
+         * is unconditional in decodeSetSchedParams -- and would therefore
+         * clear what the installer just wrote. mcp and priority were set
+         * by the installer. Binding does not make the thread runnable:
+         * it is Inactive until WriteRegisters(resume=1) below. */
+        if (seL4_SchedContext_Bind(sc, child_tcb) != seL4_NoError) {
+            out->error = AOS_CHILD_SPAWN_ERR_CONFIGURE;
+            out->failed_step = STEP_SCHED_PARAMS;
+            fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
+            goto done_fail;
+        }
+    } else {
+        /* Binds the SC and sets mcp/priority/fault_ep; does NOT change the
+         * thread's Inactive state -- only WriteRegisters(resume=1) below
+         * does that, and that call is the LAST thing this function does on
+         * success.
+         *
+         * req->fault_ep is the child's fault handler. It is written into
+         * the TCB, never into the child's CSpace, so the child can neither
+         * name nor forge it -- but the CALLER necessarily holds send rights
+         * on it (see the field's doc comment). A seL4_CapNull here simply
+         * means nobody is told when the child faults. */
+        if (seL4_TCB_SetSchedParams(child_tcb, req->self_tcb, 255u,
+                                     (seL4_Word)req->priority,
+                                     sc, req->fault_ep) != seL4_NoError) {
+            out->error = AOS_CHILD_SPAWN_ERR_CONFIGURE;
+            out->failed_step = STEP_SCHED_PARAMS;
+            fail_teardown(&st, content_mapped, req->content_frame, req->extra_maps, extra_mapped);
+            goto done_fail;
+        }
     }
 
     /*

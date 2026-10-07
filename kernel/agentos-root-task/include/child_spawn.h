@@ -441,8 +441,51 @@ typedef struct {
      * wants a child's faults to be OBSERVABLE -- by the root task, or by
      * itself -- passes a (typically badged) endpoint capability here. The
      * child cannot see or name this capability: it is written into the
-     * TCB, not into the child's CSpace. */
+     * TCB, not into the child's CSpace.
+     *
+     * NOTE what this does NOT buy, and see fault_install_ep below. seL4's
+     * MCS validFaultHandler() requires a fault-handler capability to
+     * carry Send plus Grant or GrantReply -- a rights-stripped copy is
+     * refused with seL4_InvalidCapability at the SetSchedParams above
+     * (measured, not inferred). So any caller that passes a capability
+     * here necessarily HOLDS send rights on the endpoint the handler
+     * reports to, and can therefore compose messages to whoever is
+     * listening on it. That is fine when the listener is the caller
+     * itself; it is not fine when the listener is an independent
+     * observer whose report is meant to be evidence about the caller. */
     seL4_CPtr   fault_ep;
+
+    /* Alternative to fault_ep for the "independent observer" case: a
+     * Send+Grant endpoint capability on a service that will install ITS
+     * OWN fault-handler capability on the child's TCB on the caller's
+     * behalf. When this is not seL4_CapNull, fault_ep is ignored, and
+     * this call instead:
+     *
+     *   1. configures the child's TCB and writes its initial registers
+     *      (resume = 0) exactly as before;
+     *   2. seL4_Call()s fault_install_ep with the child's TCB capability
+     *      as the single transferred capability and
+     *      fault_install_label as the message label, BEFORE the child's
+     *      SchedContext exists. The installer answers with label 0 on
+     *      success. It must perform the TCB_SetSchedParams itself (with
+     *      a null SchedContext capability -- the child has none yet, so
+     *      nothing is unbound) which is what sets the child's priority
+     *      and mcp as well;
+     *   3. binds the SchedContext with seL4_SchedContext_Bind rather
+     *      than a second SetSchedParams, because SetSchedParams ALWAYS
+     *      rewrites the fault handler (thread_control_sched_update_fault
+     *      is unconditional in the kernel) and would immediately undo
+     *      step 2.
+     *
+     * The point is that the caller never holds a capability to the
+     * endpoint the child's faults are reported on. It still chooses
+     * which TCB it presents to the installer -- see the installer's own
+     * documentation for what that leaves open. */
+    seL4_CPtr   fault_install_ep;
+    seL4_Word   fault_install_label; /* message label for the request
+                                       * above; ignored when
+                                       * fault_install_ep is
+                                       * seL4_CapNull. */
     seL4_Word   entry_point;        /* child's initial PC */
     seL4_Word   stack_va_top;       /* child's initial SP (top of a single
                                       * freshly retyped, zeroed stack page) */
