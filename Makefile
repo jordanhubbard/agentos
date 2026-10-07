@@ -868,7 +868,7 @@ gate-guest-io:
 gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-io \
       test-cc-envelope test-authority test-inspect test-image-verify \
       test-entropy-unavailable test-cap-lending test-child-spawn \
-      test-trust-anchor
+      test-trust-anchor test-fault-handler
 
 # Link the real firmware VMM, including its MMIO dispatcher and shared virtio
 # transport. This needs SDK 2.3 VMCS controls, but no guest blobs, and does
@@ -1739,6 +1739,21 @@ test-cap-lending:
 .PHONY: test-child-spawn
 test-child-spawn:
 	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-child-spawn --timeout-secs $(QEMU_TEST_TIMEOUT)
+
+# test-fault-handler — the fault_handler TCB PD is alive and its fault ring is
+# usable memory (services/fault-handler/fault_handler.c, platform/fault_ring.h,
+# provision_fault_ring() in the root task).
+#
+# This PD has no service endpoint and no device, so nothing else in the suite
+# moves if it never starts. It shipped dead on arrival on every architecture --
+# `fault_ring_vaddr` was a .bss global nothing in the tree assigned, so the PD
+# stored its ring header through NULL on entry and every boot test still
+# passed. The assertion matches the PD's own self-check line byte for byte,
+# including the mapped VA and the ring's last-byte offset, so a ring mapped
+# short or at the wrong address fails it too.
+.PHONY: test-fault-handler
+test-fault-handler:
+	cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --assert-fault-handler --timeout-secs $(QEMU_TEST_TIMEOUT)
 
 .PHONY: test-authority
 test-authority:

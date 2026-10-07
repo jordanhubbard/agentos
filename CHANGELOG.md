@@ -5,6 +5,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fault_handler` was dead on arrival on every architecture. Its
+  `fault_ring_vaddr` global was declared in `.bss` and assigned nowhere in the
+  tree — no linker script, no `--defsym`, no generated header, no root-task
+  provisioning — so `fault_handler_init()` stored the ring header through a
+  NULL pointer and the PD died at its first store after entry, before it could
+  log anything. On AArch64 and x86_64 this was additionally invisible because
+  `serial_pd` owns the UART by then, so the kernel's fault report never reached
+  the console; it surfaced only during riscv64 bring-up. The root task now
+  allocates one 2 MiB frame and maps it into the PD's VSpace at
+  `AOS_FAULT_RING_VA` (`platform/include/platform/fault_ring.h`) before the
+  thread starts, failing the boot closed if that mapping fails, and records the
+  grant in the capability ledger so the published authority page stays honest.
+
+### Added
+
+- `make test-fault-handler` (in `gate:` and as an explicit `os-claim-gate` CI
+  step, since no CI job invokes `make gate`). `fault_handler` has no service
+  endpoint and no device, so nothing else in the suite moved when it failed to
+  start. The PD now runs a bounded self-check at boot — it round-trips writes
+  at ring offset 0, at the last entry slot, and at the final byte of the
+  256 KiB ring, then re-verifies the header — and the harness matches the
+  emitted line byte for byte, including the mapped VA and the ring span, so a
+  ring mapped short or at the wrong address fails too. This proves liveness and
+  usable storage; it does **not** prove fault delivery, since no PD is made to
+  fault and no entry reaches the ring through a real seL4 fault IPC.
+- `make test-authority` now asserts `fault_handler`'s published row: exactly
+  two frame capabilities (its IPC buffer plus the one fault-ring frame) and no
+  IRQ handler.
+
 ### Changed
 
 - The T6 child-spawn fault probe asserts the **provenance** of the fault IPC,

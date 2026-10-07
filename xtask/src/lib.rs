@@ -57,6 +57,20 @@ pub struct TestArgs {
     /// Query the root-provisioned boot snapshot through CC and agentctl.
     #[arg(long)]
     pub assert_inspect: bool,
+    /// Require the fault_handler TCB PD to be alive with a usable fault ring.
+    ///
+    /// fault_handler has no service endpoint and no device, so a dead one is
+    /// invisible: it is the one PD in the default AArch64 image that can fail
+    /// to start without any other PD noticing or any existing assertion
+    /// moving. It shipped exactly that way -- `fault_ring_vaddr` was a .bss
+    /// global nothing assigned, so the PD stored its ring header through NULL
+    /// on entry on every architecture. This asserts both halves: the PD
+    /// reached its IPC loop, AND its ring round-tripped writes at offset 0
+    /// and at its last byte (see fault_ring_selfcheck() in
+    /// services/fault-handler/fault_handler.c). A liveness marker alone would
+    /// pass against a ring mapped one page short.
+    #[arg(long)]
+    pub assert_fault_handler: bool,
     /// Verify entropy_pd is reachable, reports AOS_ENTROPY_ERR_UNAVAILABLE
     /// (no virtio-rng device can be wired to it on QEMU virt -- see
     /// docs/TCB.md), and validates an over-length request with

@@ -300,6 +300,7 @@ _Static_assert(AOS_LOG_NOTIFY_CAP < AOS_CHILD_SPAWN_SELF_CNODE_SLOT,
 #include "pd_startup_record.h" /* pd_startup_record_t, PD_STARTUP_RECORD_VA      */
 #include <platform/inspect.h>
 #include <platform/authority.h>
+#include <platform/fault_ring.h> /* fault_handler's private ring region          */
 #include "authority_kindmap.h" /* aos_authority_kind_from_sel4                    */
 #include <stdint.h>
 
@@ -1545,6 +1546,47 @@ static seL4_Error provision_log_config(const pd_desc_t *pd, uint32_t index,
     return log_map_copy(vspace, frame, AOS_LOG_CONFIG_VA, 0);
 }
 #endif
+
+/*
+ * provision_fault_ring — give the fault_handler PD the RAM its fault ring
+ * lives in (platform/fault_ring.h, services/fault-handler/fault_handler.c).
+ *
+ * fault_handler is a TCB PD (docs/TCB.md) that stores the ring header through
+ * `fault_ring_vaddr` as the first thing it does. Nothing in the tree ever
+ * provisioned that region, so the symbol stayed at its .bss zero and the PD
+ * took a store fault at address 0x3 before it could print anything -- on
+ * every architecture, from the first commit that shipped it.
+ *
+ * Exactly one 2 MiB frame, so the published authority row
+ * (platform/authority.h) gains exactly one FRAME and stays assertable. The
+ * grant is recorded in the capability ledger for the same reason every other
+ * per-PD grant is: an unrecorded grant makes the authority page a lie.
+ *
+ * Fails closed. A fault handler with no ring is the state this function
+ * exists to end; refusing the boot is strictly better than booting an image
+ * whose fault reporting is dead and silent.
+ */
+static seL4_Error provision_fault_ring(const pd_desc_t *pd, uint32_t pd_index,
+                                       seL4_CPtr vspace)
+{
+    _Static_assert(AOS_FAULT_RING_REGION == (1UL << seL4_ARCH_LargePageBits),
+                   "fault ring region must be exactly one SDK large page");
+    _Static_assert(AOS_FAULT_RING_BYTES <= AOS_FAULT_RING_REGION,
+                   "fault ring must fit the region root maps for it");
+    _Static_assert((AOS_FAULT_RING_VA & (AOS_FAULT_RING_REGION - 1u)) == 0u,
+                   "fault ring VA must be large-page aligned");
+
+    seL4_CPtr frame = seL4_CapNull;
+    seL4_Error err = ut_alloc_cap((uint32_t)seL4_ARCH_LargePageObject, 0u, &frame);
+    if (err != seL4_NoError) return err;
+    err = pd_vspace_map_device_frame(vspace, frame, (seL4_Word)AOS_FAULT_RING_VA);
+    if (err != seL4_NoError) return err;
+    (void)cap_acct_record(seL4_CapNull, frame,
+                          (uint32_t)seL4_ARCH_LargePageObject,
+                          pd_index, pd->name);
+    return seL4_NoError;
+}
+
 static seL4_CPtr g_host_net_mmio_frame_cap = seL4_CapNull;
 static seL4_CPtr g_net_shared_frame_caps[AOS_NET_SHMEM_FRAMES];
 static seL4_CPtr g_net_dma_frame_cap = seL4_CapNull;
@@ -4861,6 +4903,21 @@ void root_task_main(const seL4_BootInfo *bi)
             dbg_puts("[rt] event_bus ring map err=");
             dbg_hex((seL4_Word)re);
             dbg_puts("\n");
+        }
+
+        /* ── fault_handler's private fault-ring region ────────────────────
+         * Matched by name, like the event_bus ring above: fault_handler has
+         * no self_svc_id (it is reached through TCB fault endpoints, not a
+         * registered service), so there is no service id to match on. */
+        if (name_eq(pd->name, "fault_handler")) {
+            seL4_Error fe = provision_fault_ring(pd, i, vspace);
+            dbg_puts("[rt] fault_handler ring map err=");
+            dbg_hex((seL4_Word)fe);
+            dbg_puts("\n");
+            if (fe != seL4_NoError) {
+                dbg_puts("[rt] fault ring provisioning failed; refusing boot\n");
+                return;
+            }
         }
 
 #ifdef AGENTOS_LOG_RINGS

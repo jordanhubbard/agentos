@@ -542,6 +542,16 @@ jobs:
       - name: GATE — make test-child-spawn
         timeout-minutes: 10
         run: make test-child-spawn
+      # fault_handler liveness and a usable fault ring. This PD has no service
+      # endpoint and no device, so nothing else in this job moves if it never
+      # starts -- and it never started, on any architecture, for the whole life
+      # of the file: `fault_ring_vaddr` was a .bss global nothing in the tree
+      # assigned, so the PD stored its ring header through NULL on entry while
+      # every gate above still passed. Added here explicitly as well as in
+      # `gate:` because no CI job invokes `make gate`.
+      - name: GATE — make test-fault-handler
+        timeout-minutes: 10
+        run: make test-fault-handler
 
       - name: Boot gate summary
         run: |
@@ -560,6 +570,8 @@ jobs:
           echo "   - T5 capability lending (loan used, revoked, sub-delegate dies too)"
           echo "   - T6 hierarchical delegation (child uses its endowment, faults on a"
           echo "     withheld page, never starts when an endowment fails, delegator reports it)"
+          echo "   - fault_handler alive with a usable fault ring (round-trips its"
+          echo "     ring at offset 0, at the last entry slot and at the final byte)"
           echo "GUEST_OS=none is a stub VMM: this proves PD load and root-task"
           echo "parking only. Guest I/O is proven by the guest proof jobs; the"
           echo "os-claim-summary job combines them."
