@@ -164,7 +164,6 @@ static uint8_t ut_object_bits(uint32_t type, uint32_t size_bits)
     case seL4_ARCH_LargePageObject:
         return (uint8_t)seL4_ARCH_LargePageBits;
     case seL4_ARCH_IntermediatePTObject:
-#if !defined(__riscv)
     /*
      * On RISC-V both of these names expand to seL4_RISCV_PageTableObject
      * (include/boot_info.h: the VSpace root and an intermediate page table
@@ -180,7 +179,6 @@ static uint8_t ut_object_bits(uint32_t type, uint32_t size_bits)
      * unnoticed in the first place.
      */
     case seL4_ARM_VSpaceObject:
-#endif
         return (uint8_t)seL4_PageTableBits;
     default:
         return 0u;
