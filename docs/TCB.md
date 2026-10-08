@@ -1839,11 +1839,38 @@ runtime flow.
 an image with its manifest stripped, under the vendor (gating) anchor;
 requiring the latter two to be refused, with the tampered image named. The
 manifest-stripped case refuses boot on every tier, not just gating ones (see
-above). It runs on AArch64 only. On RISC-V the positive half is covered on
-every run instead: `make test-riscv64` requires the manifest signature to
-verify and the exact declared PD count to start, and treats an `ELF digest
-MISMATCH` line as an immediate failure. The RISC-V tampered-image refusal
-quoted above is a manual run, not an automated assertion.
+above).
+
+**It runs all three probes on all three architectures** — aarch64 (15 PDs),
+x86_64 (5 PDs) and riscv64 (9 PDs). Every architecture in this tree embeds and
+verifies a signed PD bundle and a signed `.pd_manifest`, so the refusal path
+is now asserted where it is compiled rather than on AArch64 alone. Three
+things differ per architecture and each one is a measured fact, not a guess:
+the **boot artifact** QEMU is handed (`agentos.img` on aarch64/riscv64,
+`root_task.elf` via multiboot on x86_64 — tampering the other file there would
+pass while proving nothing), the **completion marker** (`agentOS boot complete`
+is a `cc_pd` string and `cc_pd` is in neither the x86_64 nor the riscv64 PD
+set, so those use the root task's own `[rt] boot complete`), and the **PD
+count** each manifest declares. Every PASS line names its board.
+
+The signed blobs are located by **ELF section header** (`.pd_bundle`,
+`.pd_manifest`), never by scanning for their magic values: both magics are
+compile-time constants that also appear verbatim inside root-task `.text` on
+x86_64 and riscv64, hundreds of kilobytes before the real section, so a
+first-match scan would have doctored code bytes and left the signed data
+intact. A located blob whose header fields do not corroborate the section is a
+hard failure of the probe, never a silent tamper elsewhere.
+
+riscv64 **loud-skips** when the installed SDK carries no `qemu_virt_riscv64`
+board, exactly as `make test-riscv64` and `make test-trust-anchor` do, and for
+the same reason: the published 2.3.1 asset predates `tools/sdk/candidate.mk`
+listing the board. In CI the probes RUN, because `os-claim-gate` installs the
+artifact the same workflow run built.
+
+On every riscv64 run the positive half is additionally covered:
+`make test-riscv64` requires the manifest signature to verify and the exact
+declared PD count to start, and treats an `ELF digest MISMATCH` line as an
+immediate failure.
 
 The riscv64 positive result **is** a CI gate. The `os-claim-gate` job installs
 the SDK artifact the same workflow run just built, and that artifact now

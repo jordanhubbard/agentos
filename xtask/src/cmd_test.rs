@@ -707,9 +707,191 @@ fn root_task_region(img: &[u8]) -> anyhow::Result<(usize, usize)> {
     Ok((root_off, root_len))
 }
 
-/// Find the first occurrence of an 8-byte magic value inside `haystack`.
-fn find_magic(haystack: &[u8], magic: &[u8; 8]) -> Option<usize> {
-    haystack.windows(8).position(|w| w == magic)
+fn read_u16_le(buf: &[u8], off: usize) -> anyhow::Result<u16> {
+    let bytes: [u8; 2] = buf
+        .get(off..off + 2)
+        .context("read_u16_le: offset out of range")?
+        .try_into()
+        .unwrap();
+    Ok(u16::from_le_bytes(bytes))
+}
+
+fn read_u64_le(buf: &[u8], off: usize) -> anyhow::Result<u64> {
+    let bytes: [u8; 8] = buf
+        .get(off..off + 8)
+        .context("read_u64_le: offset out of range")?
+        .try_into()
+        .unwrap();
+    Ok(u64::from_le_bytes(bytes))
+}
+
+/// Locate a named section inside the ELF64 object that begins at
+/// `window.start`, returning its absolute byte range within `buf`.
+///
+/// THIS REPLACES MAGIC SCANNING, AND THAT IS THE WHOLE POINT. A tamper
+/// probe that finds its target by searching for an 8-byte constant finds
+/// the FIRST byte sequence that happens to equal that constant, which is
+/// not the same thing as finding the section. The magics here are
+/// compile-time constants the root task compares against, so on any
+/// architecture whose compiler materialises a 64-bit immediate as eight
+/// contiguous bytes they appear verbatim in `.text` BEFORE the real
+/// section. Measured on this tree:
+///
+///   root_task.elf          .pd_bundle magic     .pd_manifest magic
+///   ---------------------  -------------------  -----------------------
+///   qemu_virt_aarch64      393216 (real)        3198976 (real)
+///   x86_64_generic         15340, 15866,        63370, 63490,
+///                          282624 (real)        827112 (real)
+///   qemu_virt_riscv64      95728,               95752,
+///                          147456 (real)        2637824 (real)
+///
+/// On AArch64 the constants are built with movz/movk chains and never
+/// appear as eight contiguous bytes, which is the only reason first-match
+/// scanning was ever correct — and only there. On x86_64 and riscv64 a
+/// first-match scan lands in ROOT TASK CODE, several hundred kilobytes
+/// early.
+///
+/// A section lookup cannot do that. The section header table says where
+/// `.pd_manifest` is; there is no second candidate to pick wrongly from.
+/// And when the lookup cannot be done at all — not an ELF, wrong class or
+/// endianness, section headers stripped, name absent — this function
+/// BAILS with the reason instead of falling back to a scan. Failing the
+/// probe is the correct outcome: a probe that cannot locate what it means
+/// to tamper has nothing to say, and silently tampering unrelated bytes is
+/// exactly the failure mode being removed.
+fn elf_section_range(
+    buf: &[u8],
+    window: &std::ops::Range<usize>,
+    want: &str,
+) -> anyhow::Result<std::ops::Range<usize>> {
+    let base = window.start;
+    anyhow::ensure!(
+        window.end <= buf.len() && base < window.end,
+        "ELF search window [{base}, {}) is not inside a {}-byte artifact",
+        window.end,
+        buf.len()
+    );
+    let elf = &buf[base..window.end];
+
+    anyhow::ensure!(
+        elf.len() >= 64,
+        "object at {base} is only {} bytes, too small for an ELF64 header",
+        elf.len()
+    );
+    anyhow::ensure!(
+        &elf[0..4] == b"\x7fELF",
+        "object at {base} does not start with the ELF magic, so there is no \
+         section header table to look {want} up in"
+    );
+    anyhow::ensure!(
+        elf[4] == 2,
+        "object at {base} is not ELF64 (EI_CLASS={}); this locator reads 64-bit \
+         section headers only",
+        elf[4]
+    );
+    anyhow::ensure!(
+        elf[5] == 1,
+        "object at {base} is not little-endian (EI_DATA={}); every board in this \
+         tree is LSB and this locator reads LSB fields only",
+        elf[5]
+    );
+
+    let e_shoff = read_u64_le(elf, 0x28)? as usize;
+    let e_shentsize = read_u16_le(elf, 0x3a)? as usize;
+    let e_shnum = read_u16_le(elf, 0x3c)? as usize;
+    let e_shstrndx = read_u16_le(elf, 0x3e)? as usize;
+
+    anyhow::ensure!(
+        e_shoff != 0 && e_shnum != 0,
+        "object at {base} carries no section header table (e_shoff={e_shoff}, \
+         e_shnum={e_shnum}) -- it was stripped, so {want} cannot be located \
+         structurally. REFUSING to fall back to a magic scan: see this \
+         function's comment for what that scan gets wrong."
+    );
+    anyhow::ensure!(
+        e_shentsize >= 64,
+        "object at {base} has e_shentsize={e_shentsize}, smaller than an ELF64 \
+         section header"
+    );
+    anyhow::ensure!(
+        e_shstrndx < e_shnum,
+        "object at {base} has e_shstrndx={e_shstrndx} outside e_shnum={e_shnum}"
+    );
+    let table_end = e_shoff
+        .checked_add(e_shnum.saturating_mul(e_shentsize))
+        .context("ELF section header table size overflowed")?;
+    anyhow::ensure!(
+        table_end <= elf.len(),
+        "ELF section header table [{e_shoff}, {table_end}) escapes the \
+         {}-byte object at {base}",
+        elf.len()
+    );
+
+    // The section-name string table, read through its own section header.
+    let strtab_hdr = e_shoff + e_shstrndx * e_shentsize;
+    let strtab_off = read_u64_le(elf, strtab_hdr + 0x18)? as usize;
+    let strtab_len = read_u64_le(elf, strtab_hdr + 0x20)? as usize;
+    anyhow::ensure!(
+        strtab_off
+            .checked_add(strtab_len)
+            .is_some_and(|end| end <= elf.len()),
+        "ELF .shstrtab [{strtab_off}, +{strtab_len}) escapes the {}-byte object \
+         at {base}",
+        elf.len()
+    );
+    let strtab = &elf[strtab_off..strtab_off + strtab_len];
+
+    let mut names: Vec<String> = Vec::new();
+    for i in 0..e_shnum {
+        let hdr = e_shoff + i * e_shentsize;
+        let sh_name = read_u32_le(elf, hdr)? as usize;
+        let Some(tail) = strtab.get(sh_name..) else {
+            continue;
+        };
+        let name_len = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+        let name = String::from_utf8_lossy(&tail[..name_len]).into_owned();
+        if name != want {
+            if !name.is_empty() {
+                names.push(name);
+            }
+            continue;
+        }
+        // SHT_NOBITS (8) occupies no file bytes, so its sh_offset points at
+        // whatever follows it. Tampering there would hit unrelated data.
+        let sh_type = read_u32_le(elf, hdr + 4)?;
+        anyhow::ensure!(
+            sh_type != 8,
+            "section {want} in the object at {base} is SHT_NOBITS: it has no \
+             bytes in the file to tamper"
+        );
+        let sh_offset = read_u64_le(elf, hdr + 0x18)? as usize;
+        let sh_size = read_u64_le(elf, hdr + 0x20)? as usize;
+        anyhow::ensure!(
+            sh_size > 0,
+            "section {want} in the object at {base} is zero-length, so this \
+             artifact carries nothing for the probe to tamper"
+        );
+        let start = base
+            .checked_add(sh_offset)
+            .context("section offset overflowed")?;
+        let end = start
+            .checked_add(sh_size)
+            .context("section size overflowed")?;
+        anyhow::ensure!(
+            end <= window.end,
+            "section {want} [{start}, {end}) escapes the search window \
+             [{base}, {})",
+            window.end
+        );
+        return Ok(start..end);
+    }
+    anyhow::bail!(
+        "no section named {want} in the object at {base}. Sections present: \
+         [{}]. Either this is not the artifact that carries the signed blob \
+         (check boot_artifact_for_tamper picked the file QEMU loads) or the \
+         linker scripts under tools/ld/ stopped emitting it.",
+        names.join(", ")
+    )
 }
 
 /// Which file QEMU actually loads for `board`, and therefore the ONLY file
@@ -765,66 +947,54 @@ fn boot_artifact_for_tamper(
 }
 
 /// Locate the embedded `.pd_bundle` header within `window` of `buf` by
-/// scanning for BUNDLE_MAGIC_LE and returning the first candidate whose
-/// HEADER FIELDS ARE STRUCTURALLY COHERENT.
+/// reading the ELF SECTION HEADER TABLE, then confirming the bytes it
+/// points at really are a bundle header.
 ///
-/// The validation is load-bearing, not belt-and-braces. The magic is an
-/// 8-byte constant the root task compares against at boot, so on any
-/// architecture whose compiler materialises a 64-bit immediate as eight
-/// contiguous bytes it appears verbatim in `.text` BEFORE the real section.
-/// Measured on this tree at 5c501fec:
+/// `elf_section_range` is the locator; see its comment for why scanning
+/// for BUNDLE_MAGIC_LE was never a sound way to find this. Short form: the
+/// magic is an 8-byte compile-time constant, so on x86_64 and riscv64 it
+/// also appears verbatim inside root-task `.text`, hundreds of kilobytes
+/// before the real section. Measured on this tree, `.pd_bundle` magic
+/// occurs in `_build/x86_64_generic/root_task.elf` at 15340, 15866 and
+/// 282624 (only the last is the section) and in
+/// `_build/qemu_virt_riscv64/root_task.elf` at 95728 and 147456 (only the
+/// last is the section). The section header table names exactly one
+/// `.pd_bundle`, at 282624 and 147456 respectively, so there is no
+/// candidate to choose wrongly between.
 ///
-///   - `_build/x86_64_generic/root_task.elf`: magic at 15305, 15833 (both
-///     x86 `cmp`/`mov` immediates) and 282624 (the real bundle).
-///   - `_build/qemu_virt_riscv64/agentos.img`: within the root_task.elf
-///     range, magic at 170632 (code) and 222352 (the real bundle).
-///
-/// The previous first-match-wins code happened to be correct only on
-/// AArch64, where the magic is built with a movz/movk chain and never
-/// appears as eight contiguous bytes. Ported unchanged it would have
-/// flipped a byte of ROOT TASK CODE on the other two boards: on x86_64 the
-/// digest covers only the PD ELFs in the bundle, so no mismatch would be
-/// reported and probes 2 and 3 would both fail confusingly; on riscv64 the
-/// same. Either way the probe would not have been testing what it claims.
-///
-/// A candidate is accepted only if version is 1, num_pds is in 1..=64, the
-/// PD table starts at the fixed header size, the whole table lies inside
-/// the window, and the first entry carries a non-empty printable name and
-/// an in-window ELF region. That is enough structure that `.text` cannot
-/// fake it, and all of it comes from the on-disk headers rather than any
-/// hardcoded offset.
+/// The field validation below is kept and is still load-bearing, but its
+/// job has changed: it is no longer how the right candidate is picked out
+/// of several, it is a cross-check that the section the linker labelled
+/// `.pd_bundle` has the layout this probe is about to index into. A
+/// mismatch is a loud failure, never a silent tamper somewhere else: the
+/// header must carry the bundle magic, version 1, num_pds in 1..=64, a PD
+/// table starting at the fixed header size and lying wholly inside the
+/// window, and a first entry with a non-empty printable name and an
+/// in-window ELF region.
 fn find_bundle_header(buf: &[u8], window: std::ops::Range<usize>) -> anyhow::Result<usize> {
     const HEADER_SIZE: usize = 64;
     const PD_ENTRY_SIZE: usize = 64;
     const MAX_PDS: u32 = 64;
 
+    let section = elf_section_range(buf, &window, ".pd_bundle")
+        .context("locating the .pd_bundle section of the boot artifact")?;
+    let off = section.start;
     anyhow::ensure!(
-        window.end <= buf.len() && window.start < window.end,
-        "bundle search window [{}, {}) is not inside a {}-byte artifact",
-        window.start,
-        window.end,
-        buf.len()
+        buf.get(off..off + 8) == Some(&BUNDLE_MAGIC_LE[..]),
+        "the .pd_bundle section at {off} (length {}) does not begin with the \
+         bundle magic. The linker emitted a section by that name whose first \
+         bytes are not a bundle header, so this probe does NOT know where the \
+         verified PD table is and refuses to tamper anything.",
+        section.len()
     );
-
-    let mut rejected: Vec<String> = Vec::new();
-    let mut cursor = window.start;
-    while let Some(rel) = find_magic(&buf[cursor..window.end], &BUNDLE_MAGIC_LE) {
-        let off = cursor + rel;
-        cursor = off + 1;
-        match validate_bundle_header(buf, off, &window) {
-            Ok(()) => return Ok(off),
-            Err(why) => rejected.push(format!("{off}: {why}")),
-        }
-    }
-    anyhow::bail!(
-        "no structurally valid .pd_bundle header found in [{}, {}); \
-         rejected candidates: [{}]. Either the bundle is absent from this \
-         artifact (check boot_artifact_for_tamper picked the file QEMU loads) \
-         or the header layout changed and this validator needs updating.",
-        window.start,
-        window.end,
-        rejected.join("; ")
-    );
+    validate_bundle_header(buf, off, &window).with_context(|| {
+        format!(
+            "the .pd_bundle section at {off} carries the bundle magic but not a \
+             coherent header; refusing to tamper bytes this probe cannot account \
+             for"
+        )
+    })?;
+    return Ok(off);
 
     fn validate_bundle_header(
         buf: &[u8],
@@ -876,6 +1046,51 @@ fn find_bundle_header(buf: &[u8], window: std::ops::Range<usize>) -> anyhow::Res
     }
 }
 
+/// Deletes a tampered boot artifact when it goes out of scope.
+///
+/// A tamper probe writes doctored bytes over a file that is ALSO a make
+/// target, which gives it a modification time newer than every prerequisite
+/// make would rebuild it from. The next `make build` therefore considers it
+/// up to date and relinks NOTHING, so the doctored bytes survive into the
+/// following probe's "fresh build".
+///
+/// That is not hypothetical. With the probes ported to x86_64, where the
+/// boot artifact is `root_task.elf` (a plain link target), image-verify
+/// probe 3 zeroed its `.pd_manifest` and the very next probe-1 run — a
+/// control, on an image that was supposed to be untouched — booted the same
+/// zeroed manifest and printed `boot manifest INVALID (structural) err=2`.
+/// It failed loudly, which is the good case; the bad case is a LATER
+/// absence-shaped probe inheriting a refusal it did not cause and recording
+/// it as its own success. On AArch64 this never showed up because the
+/// artifact there is `agentos.img`, which the image generator rewrites every
+/// time.
+///
+/// So the tamper is undone the moment it is no longer needed: on Drop, which
+/// covers the error paths and early returns too. `make` then has no choice
+/// but to regenerate the artifact. The belt-and-braces half is in the build
+/// step, which deletes both candidate artifacts before building whenever a
+/// tamper probe is selected — that is what survives a SIGKILL between the
+/// tamper and the drop.
+struct TamperedArtifact(PathBuf);
+
+impl Drop for TamperedArtifact {
+    fn drop(&mut self) {
+        match std::fs::remove_file(&self.0) {
+            Ok(()) => println!(
+                "[xtask:test] removed the tampered artifact {} so no later build can \
+                 mistake it for up to date",
+                self.0.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!(
+                "[xtask:test] WARNING: could not remove the tampered artifact {}: \
+                 {error}. DELETE IT BY HAND before running another target against \
+                 this board -- make will treat it as up to date and build nothing.",
+                self.0.display()
+            ),
+        }
+    }
+}
 /// Flip one byte inside a PD's ELF region of the embedded, SIGNATURE-
 /// VERIFIED `.pd_bundle` section nested inside root_task.elf — not the
 /// separate, unverified top-level PD copy that cmd_gen_image.rs also
@@ -883,9 +1098,10 @@ fn find_bundle_header(buf: &[u8], window: std::ops::Range<usize>) -> anyhow::Res
 /// bundle copy first; per boot_elf_in_verified_bundle(), the root task
 /// refuses to spawn from anywhere else). The byte offset is derived at
 /// boot-artifact-read time from the on-disk headers — the board's boot
-/// artifact (see boot_artifact_for_tamper), then a validated magic-anchored
-/// search within it for the nested bundle header (see find_bundle_header),
-/// then that header's own pd_table_off/elf_off fields — so a layout change
+/// artifact (see boot_artifact_for_tamper), then the ELF SECTION HEADER
+/// for `.pd_bundle` within it, cross-checked against the bundle magic and
+/// header fields (see find_bundle_header), then that header's own
+/// pd_table_off/elf_off fields — so a layout change
 /// shifts the computed offset instead of silently leaving this probe
 /// testing stale bytes.
 ///
@@ -897,7 +1113,10 @@ fn find_bundle_header(buf: &[u8], window: std::ops::Range<usize>) -> anyhow::Res
 /// Returns the tampered PD's name (bytes up to the first NUL, or all 48
 /// bytes if unterminated, exactly as the root task's own name comparison
 /// treats the field).
-fn tamper_bundle_pd_byte(repo_root: &Path, board: &str) -> anyhow::Result<String> {
+fn tamper_bundle_pd_byte(
+    repo_root: &Path,
+    board: &str,
+) -> anyhow::Result<(String, TamperedArtifact)> {
     let (path, mut buf, window) = boot_artifact_for_tamper(repo_root, board)?;
     let bundle_off = find_bundle_header(&buf, window.clone())?;
 
@@ -928,54 +1147,105 @@ fn tamper_bundle_pd_byte(repo_root: &Path, board: &str) -> anyhow::Result<String
          bundle+{elf_off}, bundle header at {bundle_off}) in {}",
         path.display()
     );
-    Ok(pd_name)
+    Ok((pd_name, TamperedArtifact(path)))
 }
 
-/// Zero the embedded, signed `.pd_manifest` section in a built
-/// `agentos.img` (located the same magic-anchored way as the bundle
-/// above), pinning the "absent/malformed manifest must refuse boot, not
-/// skip verification" case (T3 plan Review Focus item 2). The section's
-/// own size (header.count) is read first so exactly the manifest bytes —
-/// header + entries + trailing Ed25519 signature — are zeroed, nothing
-/// more and nothing less.
-fn tamper_zero_manifest(image_path: &Path) -> anyhow::Result<()> {
-    let mut img = std::fs::read(image_path).with_context(|| {
-        format!(
-            "failed to read built image for tampering: {}",
-            image_path.display()
-        )
-    })?;
+/// Zero the embedded, signed `.pd_manifest` blob in the board's BOOT
+/// ARTIFACT, pinning the "absent/malformed manifest must refuse boot, not
+/// skip verification" case (T3 plan Review Focus item 2).
+///
+/// Two things here used to be wrong and are the reason this function takes
+/// `board` rather than a path:
+///
+///   1. IT ALWAYS TAMPERED `agentos.img`. That is the file QEMU loads on
+///      qemu_virt_aarch64 and qemu_virt_riscv64, but NOT on x86_64_generic,
+///      which is handed `root_task.elf` through multiboot `-initrd` and
+///      never reads agentos.img at all. It now goes through
+///      `boot_artifact_for_tamper`, exactly as the bundle tamper does.
+///   2. IT LOCATED THE MANIFEST BY FIRST MAGIC MATCH inside the root-task
+///      region. AOS_BOOT_MANIFEST_MAGIC is the ASCII constant "AOSBMAN1"
+///      that main.c compares against, so it is also present in root-task
+///      `.text` wherever the compiler materialised that comparison as
+///      eight contiguous bytes. Measured on this tree:
+///      ```text
+///        _build/x86_64_generic/root_task.elf  — 63370, 63490, 827112
+///        _build/qemu_virt_riscv64/root_task.elf — 95752, 2637824
+///        _build/qemu_virt_aarch64/root_task.elf — 3198976
+///      ```
+///      Only the LAST offset in each list is the real `.pd_manifest`
+///      section. AArch64 has a single match, which is the only reason
+///      first-match was ever right — and it is right there by luck, not by
+///      construction. On the other two, first-match would have zeroed ~496
+///      bytes of root-task CODE starting in the middle of an instruction
+///      stream, left the real signed manifest untouched, and then asserted
+///      a refusal message that would have had nothing to do with the
+///      manifest. That is a probe that tests nothing while looking green.
+///
+/// Both are fixed structurally: `elf_section_range` reads the ELF section
+/// header table and returns the one range the linker labelled
+/// `.pd_manifest`. There is no "first" to get wrong. Everything after that
+/// is a cross-check with a loud failure, never a fallback: the section must
+/// begin with AOS_BOOT_MANIFEST_MAGIC, declare version 1 and a count in
+/// 1..=AOS_BOOT_MANIFEST_MAX_PDS, and its computed blob size — header(32) +
+/// count * entry(80) + signature(64), per boot_manifest.h — must fit inside
+/// the section. If any of that does not hold, this bails and the probe
+/// FAILS rather than zeroing bytes it cannot account for.
+fn tamper_zero_manifest(repo_root: &Path, board: &str) -> anyhow::Result<TamperedArtifact> {
+    const HDR_SIZE: usize = 32;
+    const ENTRY_SIZE: usize = 80;
+    const SIG_LEN: usize = 64;
+    const MAX_PDS: u32 = 32; // AOS_BOOT_MANIFEST_MAX_PDS
 
-    let (root_off, root_len) = root_task_region(&img)?;
-    let manifest_rel = find_magic(&img[root_off..root_off + root_len], &MANIFEST_MAGIC_LE)
-        .context("embedded .pd_manifest header not found inside the root_task.elf region")?;
-    let manifest_off = root_off + manifest_rel;
+    let (path, mut buf, window) = boot_artifact_for_tamper(repo_root, board)?;
+    let section = elf_section_range(&buf, &window, ".pd_manifest")
+        .context("locating the .pd_manifest section of the boot artifact")?;
+    let off = section.start;
 
     anyhow::ensure!(
-        img.len() >= manifest_off + 16,
-        "manifest header at {manifest_off} is truncated by image length {}",
-        img.len()
+        buf.get(off..off + 8) == Some(&MANIFEST_MAGIC_LE[..]),
+        "the .pd_manifest section at {off} (length {}) does not begin with \
+         AOS_BOOT_MANIFEST_MAGIC. The linker emitted a section by that name \
+         whose first bytes are not a manifest header, so this probe does NOT \
+         know where the signed manifest is and refuses to zero anything.",
+        section.len()
     );
-    let count = read_u32_le(&img, manifest_off + 12)? as usize;
-    // header(32) + count * entry(80) + signature(64), per boot_manifest.h.
-    let total = 32usize
-        .checked_add(count.saturating_mul(80))
-        .and_then(|v| v.checked_add(64))
+    let version = read_u32_le(&buf, off + 8)?;
+    anyhow::ensure!(
+        version == 1,
+        "the .pd_manifest section at {off} declares version {version}, not 1 \
+         (AOS_BOOT_MANIFEST_VERSION); refusing to zero a blob this probe does \
+         not understand"
+    );
+    let count = read_u32_le(&buf, off + 12)?;
+    anyhow::ensure!(
+        (1..=MAX_PDS).contains(&count),
+        "the .pd_manifest section at {off} declares count={count}, outside \
+         1..={MAX_PDS}; refusing to zero a blob this probe does not understand"
+    );
+    let total = HDR_SIZE
+        .checked_add((count as usize).saturating_mul(ENTRY_SIZE))
+        .and_then(|v| v.checked_add(SIG_LEN))
         .context("manifest size computation overflowed")?;
     anyhow::ensure!(
-        img.len() >= manifest_off + total,
-        "manifest blob [{manifest_off}, {}) exceeds image length {}",
-        manifest_off + total,
-        img.len()
+        total <= section.len(),
+        "a {count}-entry manifest is {total} bytes but the .pd_manifest section \
+         at {off} is only {} bytes long, so the section and its header disagree \
+         about what is in it; refusing to zero it",
+        section.len()
     );
 
-    for b in &mut img[manifest_off..manifest_off + total] {
+    for b in &mut buf[off..off + total] {
         *b = 0;
     }
 
-    std::fs::write(image_path, &img)
-        .with_context(|| format!("failed to write tampered image: {}", image_path.display()))?;
-    Ok(())
+    std::fs::write(&path, &buf)
+        .with_context(|| format!("failed to write tampered artifact: {}", path.display()))?;
+    println!(
+        "[xtask:test] zeroed the {total}-byte signed manifest ({count} entries) at \
+         the .pd_manifest section offset {off} of {}",
+        path.display()
+    );
+    Ok(TamperedArtifact(path))
 }
 
 // ─── T10 trust anchor tiers: target-proof build/boot helpers ──────────────
@@ -1003,7 +1273,25 @@ fn tamper_zero_manifest(image_path: &Path) -> anyhow::Result<()> {
 /// on the other two was carried by nothing.
 const TRUST_ANCHOR_BOARDS: [&str; 3] = ["qemu_virt_aarch64", "x86_64_generic", "qemu_virt_riscv64"];
 
-/// Per-board boot-log vocabulary for the trust-anchor probes.
+/// The boards `--image-verify-probe` runs on.
+///
+/// The same three, and for the same reason: AGENTOS_HAS_PD_BUNDLE is 1 for
+/// aarch64, x86_64 and riscv64, so all three embed a signed PD bundle and a
+/// signed `.pd_manifest`, and all three run the root task's verification
+/// before spawning anything. Until this list existed, T3 — the proof that
+/// the root task verifies PD images at all — was asserted on AArch64 only,
+/// and the identical verification path on the other two was carried by
+/// nothing.
+///
+/// Kept separate from TRUST_ANCHOR_BOARDS rather than aliased: these are two
+/// different claims that happen to be provable on the same boards today, and
+/// a board could gain one before the other.
+const IMAGE_VERIFY_BOARDS: [&str; 3] = ["qemu_virt_aarch64", "x86_64_generic", "qemu_virt_riscv64"];
+
+/// Per-board boot-log vocabulary for the T3 image-verify and T10
+/// trust-anchor probes. Both families run on the same three boards and need
+/// the same per-board strings, so there is ONE table; a board added to one
+/// family is a board the other already has markers for.
 ///
 /// The three boards do not print the same things, and every difference
 /// below is a measured fact about a boot log in this tree, not a guess:
@@ -1032,7 +1320,7 @@ const TRUST_ANCHOR_BOARDS: [&str; 3] = ["qemu_virt_aarch64", "x86_64_generic", "
 ///     AArch64/RISC-V cannot print before the UART mapping, so it is
 ///     "[rt] UART mapped"; x86_64 can print from Step 0a onward, so it is
 ///     the "[rt] root_task_main:" banner that immediately follows Step 0b.
-struct TrustAnchorMarkers {
+struct BootLogMarkers {
     completion: &'static str,
     loader: Option<&'static str>,
     refusal: Option<&'static str>,
@@ -1042,23 +1330,23 @@ struct TrustAnchorMarkers {
     has_cc_pd: bool,
 }
 
-fn trust_anchor_markers(board: &str) -> anyhow::Result<TrustAnchorMarkers> {
+fn boot_log_markers(board: &str) -> anyhow::Result<BootLogMarkers> {
     Ok(match board {
-        "qemu_virt_aarch64" => TrustAnchorMarkers {
+        "qemu_virt_aarch64" => BootLogMarkers {
             completion: "agentOS boot complete",
             loader: Some("MMU enabled, jumping to seL4..."),
             refusal: None,
             first_rt_output: "[rt] UART mapped",
             has_cc_pd: true,
         },
-        "qemu_virt_riscv64" => TrustAnchorMarkers {
+        "qemu_virt_riscv64" => BootLogMarkers {
             completion: "[rt] boot complete",
             loader: Some("paging enabled, jumping to seL4..."),
             refusal: None,
             first_rt_output: "[rt] UART mapped",
             has_cc_pd: false,
         },
-        "x86_64_generic" => TrustAnchorMarkers {
+        "x86_64_generic" => BootLogMarkers {
             completion: "[rt] boot complete",
             loader: None,
             refusal: Some("[rt] trust anchor state INVALID"),
@@ -1184,13 +1472,13 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     );
     anyhow::ensure!(
         args.image_verify_probe.is_none()
-            || (args.board == "qemu_virt_aarch64"
+            || (IMAGE_VERIFY_BOARDS.contains(&args.board.as_str())
                 && args.guest_os == "none"
                 && !args.no_build
                 && !args.keep_running),
-        "image verification qualification requires a fresh AArch64 GUEST_OS=none image \
-         (tampering happens in-process right after the build, before QEMU launch, so a \
-         rebuild can never clobber it)"
+        "image verification qualification requires a fresh GUEST_OS=none image on one of \
+         {IMAGE_VERIFY_BOARDS:?} (tampering happens in-process right after the build, before \
+         QEMU launch, so a rebuild can never clobber it)"
     );
     anyhow::ensure!(
         args.trust_anchor_probe.is_none()
@@ -1494,6 +1782,34 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     }
 
     if !args.no_build {
+        // A tamper probe writes over a file that is also a make target, so a
+        // doctored artifact left behind by an earlier probe (or by a killed
+        // run) is NEWER than everything make would rebuild it from, and the
+        // "fresh build" below would relink nothing and boot the doctored
+        // bytes. TamperedArtifact's Drop normally removes it; this covers the
+        // case where that drop never ran. Both candidate artifacts are
+        // removed because which one is the boot artifact is per-board (see
+        // boot_artifact_for_tamper) and removing the other costs one relink.
+        if args.image_verify_probe.is_some() || args.trust_anchor_probe.is_some() {
+            let build_dir = repo_root.join("_build").join(&args.board);
+            for name in ["root_task.elf", "agentos.img"] {
+                let path = build_dir.join(name);
+                match std::fs::remove_file(&path) {
+                    Ok(()) => println!(
+                        "[xtask:test] removed a pre-existing {name} so this probe's build \
+                         cannot inherit an earlier probe's tamper"
+                    ),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => anyhow::bail!(
+                        "failed to remove {} before a tamper probe's build: {error}. \
+                         Refusing to continue: if this file is a leftover tamper, make \
+                         will treat it as up to date and this probe would boot bytes it \
+                         did not produce.",
+                        path.display()
+                    ),
+                }
+            }
+        }
         println!(
             "[xtask:test] Building BOARD={} selection={}...",
             args.board, args.guest_os
@@ -1692,32 +2008,36 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
     }
 
-    // T3 image verification (probes 2/3): mutate the just-built image file
+    // T3 image verification (probes 2/3): mutate the just-built boot artifact
     // in place, in this same process, strictly after the build step above
     // and strictly before QEMU is spawned below. No further build or make
     // step runs between tampering and boot, so a rebuild can never clobber
     // the tamper — see docs/superpowers/plans/2026-10-03-t3-image-verification.md.
+    //
+    // `_tampered` is held for the rest of this function on purpose: dropping
+    // it deletes the doctored artifact, and doing that any earlier would
+    // delete the file QEMU is about to boot. See TamperedArtifact for why it
+    // must be deleted at all.
     let mut image_verify_tampered_pd: Option<String> = None;
+    let mut _tampered: Option<TamperedArtifact> = None;
     if let Some(probe) = args.image_verify_probe {
-        let image_path = repo_root
-            .join("_build")
-            .join(&args.board)
-            .join("agentos.img");
         match probe {
             2 => {
-                let pd_name = tamper_bundle_pd_byte(&repo_root, &args.board).context(
+                let (pd_name, guard) = tamper_bundle_pd_byte(&repo_root, &args.board).context(
                     "image-verify probe 2: failed to flip a byte in a PD's bundle ELF region",
                 )?;
                 println!("[xtask:test] image-verify probe 2: tampered PD '{pd_name}'");
                 image_verify_tampered_pd = Some(pd_name);
+                _tampered = Some(guard);
             }
             3 => {
-                tamper_zero_manifest(&image_path)
-                    .context("image-verify probe 3: failed to zero the embedded boot manifest")?;
-                println!(
-                    "[xtask:test] image-verify probe 3: zeroed .pd_manifest in {}",
-                    image_path.display()
-                );
+                // Both the file and the offset come from the board, not from
+                // a hardcoded agentos.img path plus a magic scan. See
+                // tamper_zero_manifest and boot_artifact_for_tamper.
+                _tampered =
+                    Some(tamper_zero_manifest(&repo_root, &args.board).context(
+                        "image-verify probe 3: failed to zero the embedded boot manifest",
+                    )?);
             }
             _ => {}
         }
@@ -1731,17 +2051,19 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     // under development.
     let mut trust_anchor_tampered_pd: Option<String> = None;
     if matches!(args.trust_anchor_probe, Some(2) | Some(3)) {
-        let pd_name = tamper_bundle_pd_byte(&repo_root, &args.board).with_context(|| {
-            format!(
-                "trust-anchor probe {}: failed to flip a byte in a PD's bundle ELF region",
-                args.trust_anchor_probe.unwrap_or(0)
-            )
-        })?;
+        let (pd_name, guard) =
+            tamper_bundle_pd_byte(&repo_root, &args.board).with_context(|| {
+                format!(
+                    "trust-anchor probe {}: failed to flip a byte in a PD's bundle ELF region",
+                    args.trust_anchor_probe.unwrap_or(0)
+                )
+            })?;
         println!(
             "[xtask:test] trust-anchor probe {}: tampered PD '{pd_name}'",
             args.trust_anchor_probe.unwrap_or(0),
         );
         trust_anchor_tampered_pd = Some(pd_name);
+        _tampered = Some(guard);
     }
 
     let seeded_plan = format!("{profile_plan:#?}\n");
@@ -2142,60 +2464,15 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
         )
-    } else if args.image_verify_probe == Some(1) {
-        // Control: an unmodified image boots and completes verification.
-        wait_for_all_markers(
+    } else if let Some(probe) = args.image_verify_probe {
+        verify_image_verify_probe(
+            probe,
+            &args.board,
             &log_path,
-            &[
-                "[rt] boot manifest OK: signature verified",
-                "agentOS boot complete",
-            ],
+            image_verify_tampered_pd.as_deref(),
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
         )
-    } else if args.image_verify_probe == Some(2) {
-        // Proof: a single tampered byte inside one PD's verified bundle ELF
-        // region refuses the ENTIRE boot, names the tampered PD, and never
-        // reaches agentOS boot complete.
-        let pd_name = image_verify_tampered_pd
-            .as_deref()
-            .context("image-verify probe 2 requires a tampered PD name from the build step")?;
-        let digest_marker = format!(
-            "[rt] pd {pd_name}: ELF digest MISMATCH against signed manifest; refusing boot"
-        );
-        wait_for_all_markers(
-            &log_path,
-            &[digest_marker.as_str()],
-            Duration::from_secs(args.timeout_secs),
-            &mut qemu,
-        )
-        .and_then(|proof| {
-            std::thread::sleep(Duration::from_millis(500));
-            let text = std::fs::read_to_string(&log_path)?;
-            anyhow::ensure!(
-                !text.contains("agentOS boot complete"),
-                "root continued boot after a tampered PD digest mismatch"
-            );
-            Ok(format!("{proof}; agentOS boot complete absent"))
-        })
-    } else if args.image_verify_probe == Some(3) {
-        // Pins the fail-open case: an absent/zeroed manifest refuses boot
-        // rather than being treated as "nothing to verify".
-        wait_for_all_markers(
-            &log_path,
-            &["[rt] refusing boot: PD image manifest failed verification"],
-            Duration::from_secs(args.timeout_secs),
-            &mut qemu,
-        )
-        .and_then(|proof| {
-            std::thread::sleep(Duration::from_millis(500));
-            let text = std::fs::read_to_string(&log_path)?;
-            anyhow::ensure!(
-                !text.contains("agentOS boot complete"),
-                "root continued boot after a zeroed boot manifest"
-            );
-            Ok(format!("{proof}; agentOS boot complete absent"))
-        })
     } else if args.log_isolation_probe.is_some() {
         wait_for_all_markers(
             &log_path,
@@ -2851,7 +3128,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         // have no cc_pd in their PD sets and adding one would change a PD
         // count three tests assert exactly. Those boards get the boot-banner
         // half, which verify_trust_anchor_probe() already asserted above.
-        && trust_anchor_markers(&args.board)?.has_cc_pd
+        && boot_log_markers(&args.board)?.has_cc_pd
     {
         // AOS_ANCHOR_MOK == 2 in contracts/trust_anchor.h; "machine-owner" is
         // aos_anchor_tier_name()'s string for it — the single source for tier
@@ -2880,7 +3157,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if result.is_ok()
         && args.board == "qemu_virt_aarch64"
         && args.guest_gic_failure_probe.is_none()
-        && args.image_verify_probe.is_none()
+        // Image-verify probes 2 and 3 refuse the boot on purpose, so no PD —
+        // log_drain included — ever starts. Probe 1 completes a boot and is
+        // held to the same driver-backed output requirement as every other
+        // AArch64 run; it used to be exempted along with 2 and 3, which threw
+        // away a free control on the one image-verify probe that boots.
+        && !matches!(args.image_verify_probe, Some(2) | Some(3))
         // Trust-anchor probes 2 and 4 refuse the boot on purpose, so no PD —
         // log_drain included — ever starts. Probes 1, 3 and 5 all complete a
         // boot and are held to the same driver-backed output requirement as
@@ -5682,6 +5964,178 @@ pub fn wait_for_markers(
     }
 }
 
+// ─── shared boot-log absence assertion ────────────────────────────────────
+
+/// Assert that none of `forbidden` appears in the log at any point during
+/// `window`, re-reading throughout rather than sampling once after a fixed
+/// sleep.
+///
+/// These probes assert ABSENCES, and an absence assertion fails OPEN if it
+/// is really "that had not been printed yet". Both failure modes it guards
+/// against are things that would appear LATE: a root task that continues
+/// past the refusal, or a boot that completes after the marker that was
+/// waited for. A single sample after 500 ms on a loaded CI runner can miss
+/// either. Polling across a window turns "was not there at one instant"
+/// into "was not there for the whole window".
+///
+/// **It also requires QEMU to stay alive for the whole window.** This is
+/// the assertion that matters most here, not the polling. A dead machine
+/// prints nothing, so a QEMU that died — crashed, was killed, hit the
+/// harness timeout — satisfies every absence VACUOUSLY. Without this check
+/// probe 4 would report a successful refusal for a run in which the root
+/// task never got the chance to speak: a pass for the wrong reason, in the
+/// weakest of the five probes. Silence is only evidence if the thing that
+/// would have spoken was still running.
+///
+/// Cost, stated plainly: this burns the full window on the PASSING path —
+/// it cannot return early, because "nothing yet" is exactly what it is
+/// trying to distinguish from "nothing ever". At `ABSENCE_WINDOW` that is
+/// ~10 s per use: trust-anchor probes 2 and 4, and image-verify probes 2
+/// and 3, so ~20 s added to each of `make test-trust-anchor` and
+/// `make test-image-verify` per board. That is the price of the absence
+/// assertions not failing open, and it is worth paying here; do not copy
+/// the pattern to probes that have a positive marker to wait for.
+///
+/// Image-verify probes 2 and 3 used to do this with a single 500 ms sleep
+/// and one read. That is the fail-open shape this function exists to
+/// replace: on a loaded runner a boot that completes at 700 ms would have
+/// been recorded as a boot that never completed, i.e. as a successful
+/// refusal. They now share this.
+///
+/// Scale: a healthy AArch64 GUEST_OS=none boot reaches `[rt] UART mapped`
+/// in tens of milliseconds and `agentOS boot complete` in a couple of
+/// seconds, so the window below is roughly an order of magnitude of margin
+/// over the slowest thing it needs to outlast.
+fn assert_absent_throughout(
+    log_path: &Path,
+    forbidden: &[&str],
+    window: Duration,
+    qemu: &mut Child,
+    context: &str,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + window;
+    loop {
+        if let Some(status) = qemu
+            .try_wait()
+            .context("failed to poll the QEMU process during an absence assertion")?
+        {
+            // Deliberately NOT prefixed with `context`: that string
+            // describes the marker-appeared failure ("the root task
+            // continued past Step 0"), which is the opposite of what
+            // happened here and would read as a contradiction.
+            anyhow::bail!(
+                "QEMU EXITED ({status}) during the absence window, so this run \
+                 establishes NOTHING -- it is neither a pass nor the failure the \
+                 probe was looking for. A dead machine prints nothing, so the \
+                 silence observed is QEMU's, not the root task's; treating it as a \
+                 successful refusal would be a pass for the wrong reason. Was \
+                 asserting the absence of {forbidden:?}. Investigate why QEMU exited \
+                 and re-run."
+            );
+        }
+        let text = std::fs::read_to_string(log_path).unwrap_or_default();
+        for marker in forbidden {
+            anyhow::ensure!(
+                !text.contains(marker),
+                "{context}: {marker:?} appeared in the boot log"
+            );
+        }
+        if Instant::now() >= deadline {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// How long the absence assertions keep watching. See
+/// `assert_absent_throughout` for why this is a window and not a sample.
+const ABSENCE_WINDOW: Duration = Duration::from_secs(10);
+
+/// The three T3 image-verification probes, for any board in
+/// `IMAGE_VERIFY_BOARDS`.
+///
+/// Everything board-specific comes from `boot_log_markers(board)`, which is
+/// why this is one function rather than three boards' worth of copied
+/// assertions. The one difference that matters is the COMPLETION MARKER:
+/// "agentOS boot complete" is printed by cc_pd
+/// (services/command-console/cc_pd.c), which is in the AArch64 PD set and in
+/// neither the x86_64_generic (5 PDs) nor the qemu_virt_riscv64 (9 PDs) set.
+/// Those two use the root task's own "[rt] boot complete".
+///
+/// Getting that wrong would not have failed loudly — it would have made
+/// probe 1 time out and made probes 2 and 3 pass VACUOUSLY, since both of
+/// them assert that the completion marker is ABSENT and a marker no healthy
+/// boot prints is absent on every boot. That is precisely the defect shape
+/// PR #306 fixed in the trust-anchor probes, so it is pulled from the same
+/// single table here rather than written out again.
+///
+/// Every returned proof string names the board, so a PASS line in a build
+/// log cannot be read as covering an architecture it did not run on.
+fn verify_image_verify_probe(
+    probe: u8,
+    board: &str,
+    log_path: &Path,
+    tampered_pd: Option<&str>,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let completion = boot_log_markers(board)?.completion;
+    match probe {
+        // Control: an unmodified image boots and completes verification.
+        // This is also what makes probes 2 and 3's absence assertions
+        // attributable: it is the same build, on the same board, required to
+        // reach the very marker they then require to stay away.
+        1 => wait_for_all_markers(
+            log_path,
+            &["[rt] boot manifest OK: signature verified", completion],
+            timeout,
+            qemu,
+        )
+        .map(|proof| format!("{proof} (unmodified image, board {board})")),
+
+        // Proof: a single tampered byte inside one PD's verified bundle ELF
+        // region refuses the ENTIRE boot, names the tampered PD, and never
+        // reaches the completion marker.
+        2 => {
+            let pd_name = tampered_pd
+                .context("image-verify probe 2 requires a tampered PD name from the build step")?;
+            let digest_marker = format!(
+                "[rt] pd {pd_name}: ELF digest MISMATCH against signed manifest; refusing boot"
+            );
+            let proof = wait_for_all_markers(log_path, &[digest_marker.as_str()], timeout, qemu)?;
+            assert_absent_throughout(
+                log_path,
+                &[completion],
+                ABSENCE_WINDOW,
+                qemu,
+                "root continued boot after a tampered PD digest mismatch",
+            )?;
+            Ok(format!("{proof}; {completion:?} absent (board {board})"))
+        }
+
+        // Pins the fail-open case: an absent/zeroed manifest refuses boot
+        // rather than being treated as "nothing to verify".
+        3 => {
+            let proof = wait_for_all_markers(
+                log_path,
+                &["[rt] refusing boot: PD image manifest failed verification"],
+                timeout,
+                qemu,
+            )?;
+            assert_absent_throughout(
+                log_path,
+                &[completion],
+                ABSENCE_WINDOW,
+                qemu,
+                "root continued boot after a zeroed boot manifest",
+            )?;
+            Ok(format!("{proof}; {completion:?} absent (board {board})"))
+        }
+
+        other => anyhow::bail!("unknown --image-verify-probe {other}"),
+    }
+}
+
 /// Boot-log side of `--trust-anchor-probe`. The image has already been built
 /// under this probe's named anchor (and, for probes 2 and 3, tampered) by the
 /// time this runs; all that is left is to read what the running system said.
@@ -5699,91 +6153,13 @@ fn verify_trust_anchor_probe(
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
-    let markers = trust_anchor_markers(board)?;
+    let markers = boot_log_markers(board)?;
     let completion = markers.completion;
     const VENDOR_GATING: &str =
         "[rt] TRUST ANCHOR: vendor -- gates boot on a manifest/digest mismatch";
     const MOK_GATING: &str =
         "[rt] TRUST ANCHOR: machine-owner -- gates boot on a manifest/digest mismatch";
     const DEV_NOT_GATING: &str = "[rt] TRUST ANCHOR: none (development, not gating) -- does NOT gate boot on a manifest/digest MISMATCH";
-
-    /// Assert that none of `forbidden` appears in the log at any point during
-    /// `window`, re-reading throughout rather than sampling once after a fixed
-    /// sleep.
-    ///
-    /// These probes assert ABSENCES, and an absence assertion fails OPEN if it
-    /// is really "that had not been printed yet". Both failure modes it guards
-    /// against are things that would appear LATE: a root task that continues
-    /// past the refusal, or a boot that completes after the marker that was
-    /// waited for. A single sample after 500 ms on a loaded CI runner can miss
-    /// either. Polling across a window turns "was not there at one instant"
-    /// into "was not there for the whole window".
-    ///
-    /// **It also requires QEMU to stay alive for the whole window.** This is
-    /// the assertion that matters most here, not the polling. A dead machine
-    /// prints nothing, so a QEMU that died — crashed, was killed, hit the
-    /// harness timeout — satisfies every absence VACUOUSLY. Without this check
-    /// probe 4 would report a successful refusal for a run in which the root
-    /// task never got the chance to speak: a pass for the wrong reason, in the
-    /// weakest of the five probes. Silence is only evidence if the thing that
-    /// would have spoken was still running.
-    ///
-    /// Cost, stated plainly: this burns the full window on the PASSING path —
-    /// it cannot return early, because "nothing yet" is exactly what it is
-    /// trying to distinguish from "nothing ever". At `ABSENCE_WINDOW`, that is
-    /// ~10 s each for probes 2 and 4, so ~20 s added to a
-    /// `make test-trust-anchor` run. That is the price of the absence
-    /// assertions not failing open, and it is worth paying here; do not copy
-    /// the pattern to probes that have a positive marker to wait for.
-    ///
-    /// Scale: a healthy AArch64 GUEST_OS=none boot reaches `[rt] UART mapped`
-    /// in tens of milliseconds and `agentOS boot complete` in a couple of
-    /// seconds, so the window below is roughly an order of magnitude of margin
-    /// over the slowest thing it needs to outlast.
-    fn assert_absent_throughout(
-        log_path: &Path,
-        forbidden: &[&str],
-        window: Duration,
-        qemu: &mut Child,
-        context: &str,
-    ) -> anyhow::Result<()> {
-        let deadline = Instant::now() + window;
-        loop {
-            if let Some(status) = qemu
-                .try_wait()
-                .context("failed to poll the QEMU process during an absence assertion")?
-            {
-                // Deliberately NOT prefixed with `context`: that string
-                // describes the marker-appeared failure ("the root task
-                // continued past Step 0"), which is the opposite of what
-                // happened here and would read as a contradiction.
-                anyhow::bail!(
-                    "QEMU EXITED ({status}) during the absence window, so this run \
-                     establishes NOTHING -- it is neither a pass nor the failure the \
-                     probe was looking for. A dead machine prints nothing, so the \
-                     silence observed is QEMU's, not the root task's; treating it as a \
-                     successful refusal would be a pass for the wrong reason. Was \
-                     asserting the absence of {forbidden:?}. Investigate why QEMU exited \
-                     and re-run."
-                );
-            }
-            let text = std::fs::read_to_string(log_path).unwrap_or_default();
-            for marker in forbidden {
-                anyhow::ensure!(
-                    !text.contains(marker),
-                    "{context}: {marker:?} appeared in the boot log"
-                );
-            }
-            if Instant::now() >= deadline {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-    }
-
-    /// How long the absence assertions keep watching. See
-    /// `assert_absent_throughout` for why this is a window and not a sample.
-    const ABSENCE_WINDOW: Duration = Duration::from_secs(10);
 
     match probe {
         // Probe 1 (brief Probe 1, control half): the vendor tier still boots
@@ -5931,7 +6307,7 @@ fn verify_trust_anchor_probe(
                     "board {board} has neither a Step 0b refusal marker nor a loader \
                      marker, so probe 4 would assert an absence with no positive \
                      anchor at all -- that is not a probe. Add one to \
-                     trust_anchor_markers() before enabling probe 4 here."
+                     boot_log_markers() before enabling probe 4 here."
                 ),
             };
             let proof = wait_for_all_markers(log_path, &positive, timeout, qemu)?;
