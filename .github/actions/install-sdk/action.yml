@@ -12,5 +12,24 @@ runs:
       env:
         SDK_ARTIFACT_DIR: ${{ runner.temp }}/agentos-sdk-artifact
       run: |
+        set -euo pipefail
+        # This installs the archive THIS RUN's sdk-candidate job just built and
+        # uploaded -- not the published release asset. So the digest to check it
+        # against is its own, computed here; SDK_CANDIDATE_ARCHIVE_SHA256 names
+        # the published asset, which necessarily differs from a build whose
+        # board set has changed, and comparing the two here would fail every job
+        # in the workflow for a build that is behaving correctly. The
+        # published-vs-built comparison is made once, explicitly, by
+        # sdk-candidate-package, which emits a ::warning:: with both digests.
+        #
+        # Nothing is weakened by this. An archive digest is a transport check on
+        # a file that came from the same workflow run; the real content check is
+        # `make sdk`'s trailing sdk-check -> sdk-candidate-check, which verifies
+        # the SDK VERSION, every board kernel's SHA-256 against
+        # tools/sdk/cr2-kernels.sha256, that no present board is unhashed, and
+        # that the required libsel4 headers exist.
+        built_sha="$(sha256sum "$SDK_ARTIFACT_DIR/agentos-sdk-targets.tar.gz" | cut -d' ' -f1)"
+        echo "Installing locally built SDK archive $built_sha"
         make sdk GUEST_OS=none \
+          SDK_CANDIDATE_ARCHIVE_SHA256="$built_sha" \
           MICROKIT_SDK_URL="file://$SDK_ARTIFACT_DIR/agentos-sdk-targets.tar.gz"

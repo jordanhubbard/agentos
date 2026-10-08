@@ -12,10 +12,40 @@
 #include <stdbool.h>
 
 #define AGENTOS_HOST_BLK_MMIO_PA         0x0A001000UL
+/*
+ * Same device class, different machine. QEMU virt RISC-V puts its eight
+ * virtio-mmio transports at 0x10001000 + N*0x1000 (one 4 KiB page each,
+ * PLIC IRQ 1+N) instead of AArch64 virt's 0x0A000000 + N*0x200 aperture, so
+ * the host block transport has its own physical address there:
+ * virtio-mmio-bus.2, one above the host NIC on bus.1 (bus.0 is left
+ * unattached on every machine -- TCB invariant 5). The driver VA below is
+ * shared: virtio_blk reads AGENTOS_HOST_BLK_MMIO_VA on every architecture
+ * and never sees the physical address. Only the root task
+ * (kernel/agentos-root-task/src/main.c) picks between these two.
+ */
+#define AGENTOS_HOST_BLK_MMIO_PA_RISCV   0x10003000UL
 #define AGENTOS_HOST_BLK_MMIO_VA         0x06000000UL
 #define AGENTOS_HOST_SECONDARY_BLK_PAGE_PA 0x0A003000UL
 #define AGENTOS_HOST_SECONDARY_BLK_PAGE_VA 0x06001000UL
 #define AGENTOS_HOST_SECONDARY_BLK_PAGE_OFF 0x00000E00UL
+
+/*
+ * Does this machine expose a second host block transport in the MMIO (that
+ * is, non-PCI) layout?
+ *
+ * AArch64 virt packs 32 virtio-mmio transports 0x200 apart, so slots 24-31
+ * share one 4 KiB page and the second medium's register file sits at
+ * AGENTOS_HOST_SECONDARY_BLK_PAGE_OFF inside it.  QEMU virt RISC-V gives each
+ * of its eight transports a whole 4 KiB page and decodes only the first 0x200
+ * bytes, so that offset is not a register file there at all -- reading it
+ * raises a RISC-V load access fault, which is precisely what an unconditional
+ * probe did.  riscv64 is wired with a single host block medium.
+ */
+#if defined(__riscv)
+#define AGENTOS_HOST_SECONDARY_BLK_PAGE_PRESENT 0
+#else
+#define AGENTOS_HOST_SECONDARY_BLK_PAGE_PRESENT 1
+#endif
 
 #define AGENTOS_BLK_SHARED_VA            0x22000000UL
 #define AGENTOS_BLK_SHARED_SIZE          0x00200000UL

@@ -1,0 +1,77 @@
+# agentOS system descriptor (TOML) — QEMU RISC-V 64 board override
+#
+# Consumed by: cargo xtask gen-pd-bundle / gen-image, selected by
+# kernel/agentos-root-task/Makefile's `_BOARD_TOML` rule because this file
+# exists and is non-empty.
+#
+# Why this file exists
+# --------------------
+# riscv64 has an embedded, signed PD bundle (AGENTOS_HAS_PD_BUNDLE).  The
+# bundle's contents come from this TOML; the PDs the root task actually
+# spawns come from src/system_desc_riscv64.c.  A PD named by the descriptor
+# but absent from the bundle prints "[rt] pd elf <name> NOT FOUND" and
+# refuses boot, so the two lists must agree exactly.  The repository default
+# (kernel/agentos-root-task/agentos.toml) is the *aarch64* PD set and does
+# not match this architecture's descriptor, hence this override.
+#
+# ***  REWRITE THIS FILE AND src/system_desc_riscv64.c IN LOCKSTEP.  ***
+#
+# This is the list the riscv64 descriptor declares, in descriptor order,
+# with the descriptor's own priorities.  Priorities here are documentation
+# only — the root task enforces the descriptor's values.
+#
+# Not here, deliberately (see the descriptor's header comment for the full
+# reasoning): serial_pd / serial_virt / operator_session (serial_pd is a
+# PL011 driver; QEMU virt RISC-V has an NS16550A, which the root task owns),
+# and cc_pd / vm_manager / guest_vmm_* (riscv64 runs no guest operating
+# system — upstream seL4 has no RISC-V hypervisor extension; docs/TCB.md).
+# The pre-virtualizer and HURD-era PDs this file used to carry — event_bus,
+# irq_pd, timer_pd, controller, init_agent, agentfs, vibe_engine,
+# vfs_server, net_server, framebuffer_pd — are museum PDs (docs/TCB.md) and
+# are gone.
+
+# ── Foundation ───────────────────────────────────────────────────────────────
+
+[[pd]]
+name = "nameserver"
+priority = 245
+
+[[pd]]
+name = "log_drain"
+priority = 235
+
+# ── Block: one driver, one virtualizer ───────────────────────────────────────
+
+[[pd]]
+name = "virtio_blk"
+priority = 215
+
+[[pd]]
+name = "block_pd"
+priority = 213
+
+[[pd]]
+name = "blk_virt"
+priority = 210
+
+# ── Network: one driver, one virtualizer ─────────────────────────────────────
+
+[[pd]]
+name = "net_pd"
+priority = 207
+
+[[pd]]
+name = "net_virt"
+priority = 205
+
+# ── Entropy (no device attached on this machine) ─────────────────────────────
+
+[[pd]]
+name = "entropy_pd"
+priority = 166
+
+# ── Fault handling ───────────────────────────────────────────────────────────
+
+[[pd]]
+name = "fault_handler"
+priority = 255

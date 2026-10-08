@@ -49,7 +49,10 @@ two frames — its IPC buffer and the ring — rather than silently omitting it.
 Until this existed the PD's `fault_ring_vaddr` symbol was never assigned on any
 architecture, so it stored its ring header through NULL and died at its first
 instruction after entry while every boot test still passed; `serial_pd` owned
-the UART by then, so the kernel's fault report never reached the console.
+the UART by then, so the kernel's fault report never reached the console. It
+did reach the console on riscv64, where the root task keeps the UART — that is
+how `make test-riscv64` came to assert one known fault, and why it now asserts
+none.
 `make test-fault-handler` now requires the PD to reach its IPC loop and to
 round-trip writes at ring offset 0, at the last entry slot, and at the final
 byte of the 256 KiB ring. That is a liveness and usable-storage proof only: no
@@ -1091,6 +1094,134 @@ protection-domain CPU authority.
 5. **No guest host-device passthrough.** A VMM must translate guest GPA and
    relay through the canonical driver/virtualizer path. Held today.
 
+## RISC-V and guest operating systems
+
+**riscv64 boots the platform and runs native protection domains. It does not
+run guest operating systems, and nothing in this repository will change that.**
+
+The three-architecture claim is therefore: *three architectures boot the
+platform; aarch64 and x86_64 run guests.* Anything stronger about riscv64 is
+false.
+
+### Why
+
+Upstream seL4 has no RISC-V hypervisor extension. Not "incomplete" — absent.
+Verified by reading the tree, not release notes
+(`.sdd/riscv-guest-feasibility.md` cites every source):
+
+- `libsel4/arch_include/riscv/sel4/arch/objecttype.h` on master is three
+  entries — `seL4_RISCV_4K_Page`, `seL4_RISCV_Mega_Page`,
+  `seL4_RISCV_PageTableObject`. There is no `seL4_RISCV_VCPUObject`.
+- `src/arch/riscv/object/` contains `interrupt.c`, `objecttype.c`, `tcb.c`.
+  There is no `vcpu.c`; the ARM directory has one.
+- `src/arch/riscv/config.cmake` has no hypervisor option, and a full-tree grep
+  for `hgatp|vsatp|hstatus|hedeleg|hideleg|hvip` and
+  `RISCV_HE|RISCVVCPU|RiscvHypervisor` returns zero hits.
+- Releases 13.0.0, 14.0.0, 15.0.0 and 16.0.0 all 404 on
+  `src/arch/riscv/object/vcpu.c`.
+- The SDK on disk agrees: `board/qemu_virt_riscv64/*/include/kernel/
+  gen_config.h` has no hypervisor symbol in any build configuration, and
+  upstream Microkit's `tool/microkit/src/sel4.rs` hard-codes
+  `hypervisor = false` for RISC-V with the comment *"Hypervisor mode is not
+  available on RISC-V"*.
+
+Working code does exist, in a three-repo fork stack targeting the **ratified
+H v1.0** extension, maintained by the libvmm maintainer:
+
+- `Ivan-Velickovic/seL4` branch `microkit_riscv_he` — adds `vcpu.c` and
+  `KernelRiscVHypervisorSupport`; 29 ahead / 306 behind upstream master.
+- `Ivan-Velickovic/microkit` branch `riscv_he` — adds the RISC-V vCPU API;
+  4 ahead / **398 behind** upstream main.
+- `au-ts/libvmm` branch `riscv` — `src/arch/riscv/{fault,linux,plic,sbi,tcb,
+  vcpu,virq}.c`; 24 ahead / 424 behind main.
+
+None of it is upstream, none of it is verified, and there is **no open PR and
+no RFC** proposing to upstream any of it. The libvmm maintainer's own open
+issue, [au-ts/libvmm#246](https://github.com/au-ts/libvmm/issues/246), names
+seL4 as the blocker — *"Right now, seL4 does not have support for the RISC-V
+hypervisor extension"* — and says the Microkit half *"would need to be re-done
+on the current Microkit, which uses capDL now … rather than rebased"*. QEMU is
+not the obstacle: `-cpu rv64` already reports `rv64imafdch`.
+
+### The trade-off, if it ever did land
+
+Enabling the H-extension **forfeits the RV64 binary-verification result**.
+`RISCV64` (non-hypervisor) is one of the few configurations carrying C
+functional correctness, integrity, availability, confidentiality **and binary
+verification**. `ARM_HYP` (AArch32) is the only hypervisor configuration with
+proofs at all; AArch64 EL2 and x86 VT-x are unverified. So a riscv64
+hypervisor build would be unverified exactly like the aarch64 guest path this
+project already relies on — no worse, but no better — while destroying the one
+property that makes riscv64 distinctive in the lineup.
+
+Do not pull a forked seL4 or Microkit into `tools/sdk/` to chase this. That
+pipeline rebuilds pinned commits and checks kernel hashes; guest-on-riscv64 is
+upstream-gated work tracked outside this repository.
+
+### What `guest_vmm.c`'s `__riscv` arm is not
+
+It is **not** guest support and must never be described as such. It is a
+same-privilege `jalr` into a blob inside the VMM's own protection domain:
+no vCPU object (there is no such object type), no stage-2 / G-stage
+translation, no PLIC virtualisation, no SBI emulation, and
+`_guest_kernel_image` is permanently NULL. Nothing about it isolates anything,
+and it cannot execute an operating system.
+
+### What riscv64 does have
+
+The root task boots under OpenSBI through `kernel/loader/`'s riscv64 arm,
+verifies the signed PD manifest, and starts the full protection-domain set in
+`src/system_desc_riscv64.c`: `nameserver`, `log_drain`, `virtio_blk`,
+`block_pd`, `blk_virt`, `net_pd`, `net_virt`, `entropy_pd`, `fault_handler` —
+nine PDs, with the same driver-owns-the-device / virtualizer-is-the-only-mux
+shape as aarch64. `virtio_blk` owns the host virtio-mmio block transport at
+`0x10003000` and `net_pd` the host NIC at `0x10002000`; `blk_virt` and
+`net_virt` own no device frame and no IRQ. `make test-riscv64` asserts that
+exact count plus manifest verification and `[rt] boot complete`, so a riscv64
+image cannot repeat the x86_64 pattern of reaching a boot marker with zero PDs.
+
+riscv64 is also compiled by CI on every run, which it was not before. The
+`riscv64-root-task-build` job builds the pinned seL4 riscv64 board from the
+same commits and the same single patch `tools/sdk/candidate.mk` uses, then
+compiles every riscv64 PD and links `root_task.elf`, asserting the linked
+artifact is an EXEC RISC-V ELF defining `_start` and `root_task_main` and
+carrying the embedded PD bundle. riscv64 had been unbuildable for an unknown
+length of time behind one duplicate `case` label — correct on AArch64, a hard
+error on RISC-V — precisely because no CI job ever compiled it. That job is
+not a boot proof; `make test-riscv64` is, and its CI status is described under
+"Protection-domain image verification" above.
+
+Two absences are deliberate and are the next pieces of riscv64 device work:
+
+- **No serial driver PD.** `services/serial-mux/serial_pd.c` is an ARM PL011
+  driver; QEMU virt RISC-V has an NS16550A at `0x10000000`. The root task owns
+  that console on riscv64 (which is also what makes the boot log, and hence
+  the PD-count proof, possible). `serial_virt` and `operator_session` are
+  absent with it — a mux with no driver and no frontend would be a contract
+  with no caller.
+- **No second host block medium.** QEMU virt RISC-V gives each virtio-mmio
+  transport a full 4 KiB page and decodes only its first `0x200` bytes, so
+  AArch64 virt's shared slot-24..31 page has no counterpart
+  (`AGENTOS_HOST_SECONDARY_BLK_PAGE_PRESENT`).
+
+riscv64 now boots with **no** root-task fault reports at all, and
+`make test-riscv64` asserts that count exactly (`RISCV64_EXPECTED_FAULTS`),
+so a new fault fails the gate and so does the silent loss of the boot that
+produced none.
+
+It asserted exactly one until #300 merged. That one was
+`services/fault-handler/fault_handler.c` declaring `uintptr_t
+fault_ring_vaddr;` with nothing in the tree ever assigning it, so
+`fault_handler_init()` wrote its ring header through a null pointer — on
+every architecture, visible on riscv64 only because the root task still owns
+the console there while on aarch64 `serial_pd` has taken the PL011 before it
+happens. #300 fixed it at the source: root provisions a 2 MiB frame and maps
+it at `AOS_FAULT_RING_VA` for the PD named `fault_handler`. That matcher is
+arch-blind, so riscv64 picked the fix up with no riscv64-specific change and
+its boot log carries `[rt] fault_handler ring map err=0x0`. The count moved
+1 → 0 because the defect was fixed; it is the tighter assertion, not a
+relaxed one.
+
 ## What is not TCB (museum)
 
 Do not extend these. Do not add opcodes. Do not "finish" them.
@@ -1115,7 +1246,12 @@ them), and
 `task_56eae59d9aa94d2d9d047f03fc9d22ad` trimmed the manifest from 39 ELFs;
 MAC `task_f95d118416a24fa484c2c43f0d955b56` then dropped `controller`,
 `event_bus`, `init_agent`, `agentfs`, `vfs_server`, `net_server`,
-`framebuffer_pd`, and `usb_pd` from the descriptor). Museum sources are still
+`framebuffer_pd`, and `usb_pd` from the descriptor). The riscv64 descriptor
+had kept its own copy of that era — `event_bus`, `irq_pd`, `timer_pd`,
+`controller`, `init_agent`, `agentfs`, `vibe_engine`, `vfs_server`,
+`net_server`, `framebuffer_pd` — because it never tracked the aarch64
+evolution; the arch-parity work removed them, and with them five post-boot PD
+faults. Museum sources are still
 compiled by the root-task Makefile `IMAGES` list so they keep building, but
 they are not in the image. CC-PD now calls `vm_manager` directly for dynamic
 creation, status, lifecycle and console control. Its bounded handle registry
@@ -1530,16 +1666,25 @@ is the qualifying evidence under the pin.
 The root task verifies every protection-domain image before spawning it. The
 build emits a manifest of per-PD SHA-256 digests signed once with Ed25519;
 root checks that signature, then checks each PD's digest immediately before
-spawn. Verification covers the AArch64 and x86_64 targets, which embed their
-PD images in a signed bundle. RISC-V does not embed a PD bundle; PDs load
-there via the seL4 extra-BootInfo path and are **not** verified, on any tier.
-A RISC-V boot says so rather than naming a tier it does not run: the boot
-banner reports `unverified (no PD bundle on this target)` and states that no
-digest is computed and no signature checked, and `trust.anchor_tier` in the
-inspect snapshot carries the same sentinel rather than a tier value. Reporting
-any real tier there — `none` included, which would read as "a development
-anchor was chosen" — would be false in the one place an operator looks to find
-out what their machine enforces.
+spawn. Verification covers all three targets — AArch64, x86_64 and RISC-V —
+each of which embeds its PD images in a signed bundle. There is no longer a
+bundle-less architecture in this tree, so there is no architecture on which
+protection domains load unchecked.
+
+RISC-V was the exception until the arch-parity work: it had no PD-loading
+mechanism at all (the "PDs load via the seL4 extra BootInfo path" claim in
+`main.c` named a consumer with no producer anywhere in the tree, and every PD
+failed to spawn). It now embeds the same signed bundle the other two do, and
+`AGENTOS_HAS_PD_BUNDLE` is 1 on all three. The `unverified (no PD bundle on
+this target)` boot banner and the matching `trust.anchor_tier` sentinel that
+T10 introduced for RISC-V are consequently no longer reachable on any
+architecture: a RISC-V image is built under, and announces, a real anchor tier
+exactly as the other two are. Evidence under Microkit SDK 2.1.0: a `riscv64`
+boot reports `[rt] boot manifest OK: signature verified` and starts every PD
+its descriptor declares, and the same image with eight bytes flipped inside the
+bundled `nameserver.elf` is refused at the first PD with `[rt] pd nameserver:
+ELF digest MISMATCH against signed manifest; refusing boot`, having started
+none.
 
 Image verification runs under one of three trust anchors, recorded in the
 image and announced at boot (and visible on a running system via the inspect
@@ -1555,7 +1700,9 @@ compute or compare without one; the development anchor only changes what
 happens on a mismatch within an otherwise well-formed, signed manifest. The
 development anchor requires an explicit build opt-in
 (`AGENTOS_TRUST_ANCHOR=none`); a build with no key and no opt-in fails rather
-than producing a non-gating image.
+than producing a non-gating image. That opt-in and its consequences are
+identical on all three architectures — there is no architecture here on which
+verification is unconditional, and none on which it is absent.
 
 The machine-owner anchor does NOT defend against the machine owner, who can
 sign any image they choose. It constrains remote compromise and third-party
@@ -1585,7 +1732,34 @@ runtime flow.
 an image with its manifest stripped, under the vendor (gating) anchor;
 requiring the latter two to be refused, with the tampered image named. The
 manifest-stripped case refuses boot on every tier, not just gating ones (see
-above).
+above). It runs on AArch64 only. On RISC-V the positive half is covered on
+every run instead: `make test-riscv64` requires the manifest signature to
+verify and the exact declared PD count to start, and treats an `ELF digest
+MISMATCH` line as an immediate failure. The RISC-V tampered-image refusal
+quoted above is a manual run, not an automated assertion.
+
+The riscv64 positive result **is** a CI gate. The `os-claim-gate` job installs
+the SDK artifact the same workflow run just built, and that artifact now
+carries `qemu_virt_riscv64`, so its `make test-riscv64` step runs for real
+alongside the aarch64 and x86_64 boot gates and reports
+`riscv64: signed PD manifest verified, 9 of 9 PDs started, [rt] boot complete,
+0 known fault report(s)`.
+
+The step retains its guard, and the guard still matters: it skips **loudly** —
+a GitHub warning annotation plus a NOT RUN line in the job summary, never a
+quiet pass — if it is ever handed an SDK without the board. The same guard
+exists in the `test-riscv64` target itself, where it does fire today for a
+developer who ran `make sdk`: that fetches the *published* release asset, which
+predates `tools/sdk/candidate.mk` gaining the board. Running the proof locally
+needs an SDK that has it (`make test-riscv64 SEL4_SDK_VERSION=2.1.0`) until
+that asset is republished. The guard tests the SDK's contents, never the test's
+result, so it cannot report a pass it did not earn.
+
+riscv64 compile-and-link is covered separately and unconditionally by the
+`riscv64-root-task-build` job, which builds the pinned riscv64 board from
+source itself and fails the workflow if `root_task.elf` does not compile and
+link — the backstop for the class of breakage that left riscv64 unbuildable
+unnoticed.
 
 `make test-trust-anchor` boots the tier behaviour itself, each probe on its own
 freshly built image: the vendor anchor booting an unmodified image and refusing
@@ -1597,7 +1771,7 @@ compiled with its required key absent refusing rather than downgrading; and a
 machine-owner image's inspect snapshot reporting the machine-owner tier, not
 the vendor tier the rest of the inspect suite pins.
 
-Two limits on that, stated rather than implied. **The key-less gating tier
+Three limits on that, stated rather than implied. **The key-less gating tier
 probe asserts an absence, not a refusal message.** That check runs before the
 UART is mapped, so the refusal cannot print; the probe asserts a loader-stage
 marker and then the sustained absence of every root-task marker. It attributes
@@ -1605,11 +1779,16 @@ that silence to the anchor state only by running its own control first — the
 identical build without the fault injected, required to boot to completion —
 and by re-reading the generated header to confirm the key-less state was
 compiled in. A positive refusal marker would be better and needs the Step 0
-check re-ordered or given a channel that is live that early. **And a digest
+check re-ordered or given a channel that is live that early. **A digest
 mismatch under the machine-owner anchor is not covered on target**: that it
 refuses follows from the same `aos_anchor_gates_boot()` decision the vendor
 probe exercises, and is host-tested, but no booted image has been made to
-demonstrate it.
+demonstrate it. **And every one of those five probes runs on
+`qemu_virt_aarch64`.** RISC-V now compiles in a real tier, a real key and a
+real gating decision, and no automated probe exercises the tier model there at
+all; `make test-riscv64` covers the signature-verified positive path and
+nothing about tier selection. The tier model is proven on one architecture, not
+three.
 
 Scope: this constrains every adversary who can modify an image but not replace
 the boot chain. Under the vendor and machine-owner tiers it does NOT establish

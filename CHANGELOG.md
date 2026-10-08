@@ -22,6 +22,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **riscv64 architecture parity.** riscv64 went from "does not compile" to
+  booting the platform under QEMU with a real protection-domain set:
+  - a riscv64 arm of `kernel/loader/` and `src/start_riscv64.S`, so QEMU boots
+    a loader ELF that places seL4 and the root task and jumps to the kernel,
+    instead of handing the raw `"AGENTOS\0"` container to `-kernel` and
+    watching OpenSBI print its banner into silence;
+  - PDs loaded from the same signed, embedded bundle AArch64 and x86_64 use.
+    `main.c`'s claim that riscv64 loaded PDs "via the seL4 extra BootInfo
+    path" named a consumer with no producer anywhere in the tree, so no PD had
+    ever started there. `AGENTOS_HAS_PD_BUNDLE` is now 1 on all three
+    architectures and there is no bundle-less target left;
+  - a descriptor matching the AArch64 topology — driver PDs own a device
+    class, virtualizers mux it — in place of the pre-virtualizer HURD-era PD
+    list;
+  - `make test-riscv64`, which asserts the **exact** PD count, manifest
+    signature verification, the exact root-task fault count and
+    `[rt] boot complete`. A boot marker alone proves nothing, as
+    `x86_64_generic` shows by reaching one with an entirely empty descriptor.
+- **riscv64 is built by CI.** A new `riscv64-root-task-build` job builds the
+  pinned seL4 riscv64 board from the same commits and patch the SDK pipeline
+  uses, then compiles every riscv64 PD and links `root_task.elf`, asserting the
+  result is an EXEC RISC-V ELF defining `_start` and `root_task_main` and
+  carrying the embedded PD bundle. riscv64 was broken by a single duplicate
+  `case` label — correct on AArch64, a hard error on RISC-V — for an unknown
+  length of time, because nothing in CI ever compiled it.
+- `qemu_virt_riscv64` in `tools/sdk/candidate.mk`'s `--boards`, with a riscv64
+  cross-GCC and `qemu-system-riscv64` in the `sdk-candidate` workflow, and its
+  kernel hash in `tools/sdk/cr2-kernels.sha256`
+  (`8445adeb…`, measured from a real pipeline run and reproduced by the next
+  one). Same pinned commits, same single patch, no forked seL4 or Microkit.
+  RISC-V uses build_sdk.py's default bare-metal `riscv64-unknown-elf` triple
+  rather than a `riscv64-linux-gnu` override, because Ubuntu's `linux-gnu` GCC
+  defaults to PIE and Microkit's own loader `crt0.S` then fails to link with
+  `dangerous relocation: The addend isn't allowed for R_RISCV_GOT_HI20`.
 - `make test-fault-handler` (in `gate:` and as an explicit `os-claim-gate` CI
   step, since no CI job invokes `make gate`). `fault_handler` has no service
   endpoint and no device, so nothing else in the suite moved when it failed to
@@ -38,6 +72,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `sdk-candidate-check` now refuses an SDK that contains a kernel with no
+  recorded hash in `tools/sdk/cr2-kernels.sha256`, printing the computed
+  hashes when one is missing. `sha256sum -c` only checks the lines it is
+  given, so a board added to the build list but not to the manifest would
+  otherwise pass with its kernel entirely unverified. The requirement is
+  scoped to boards actually present in the SDK under test, because this target
+  is a prerequisite of every ordinary `make build` and therefore also runs
+  against published artifacts that predate a newly added board.
+- The `hurd-services-build` CI matrix lost its `qemu_virt_riscv64` leg. It
+  never referenced `matrix.board`: both legs ran `clang -fsyntax-only` against
+  host headers and `make -n ... ARCH=aarch64`, so it displayed a check named
+  for riscv64 while running aarch64 work twice. It was the only `riscv` string
+  under `.github/`.
 - The T6 child-spawn fault probe asserts the **provenance** of the fault IPC,
   not only its shape. Root no longer mints a badged copy of its own fault
   endpoint into `child_spawn_parent`'s CNode; it keeps that capability in its
@@ -64,6 +111,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Known limitations
 
+- **riscv64 runs no guest operating system, permanently, and nothing in this
+  repository changes that.** Upstream seL4 has no RISC-V hypervisor extension
+  in any release 13.0.0–16.0.0 or on master; the working code lives in a fork
+  stack whose own maintainer names seL4 as the blocker, and enabling the
+  H-extension would forfeit the RV64 binary-verification result that is
+  riscv64's distinguishing property in this lineup. See
+  `docs/superpowers/specs/2026-10-06-riscv-hypervisor-fork-feasibility.md`.
+  `guest_vmm.c`'s `__riscv` arm is a same-privilege `jalr` with
+  `_guest_kernel_image` permanently NULL and is not guest support.
+- **`make test-riscv64` run from a developer's `make sdk` still skips.** In CI
+  it is a real gate: `os-claim-gate` installs the artifact the same workflow
+  run built, which now carries `qemu_virt_riscv64`, and the step reports
+  `9 of 9 PDs started, [rt] boot complete, 0 known fault report(s)`. But
+  `make sdk` fetches the *published* release asset, which predates the board,
+  so the target's loud-skip guard fires locally until that asset is
+  republished. Use `make test-riscv64 SEL4_SDK_VERSION=2.1.0` meanwhile.
+- **The packaged SDK archive no longer matches `SDK_CANDIDATE_ARCHIVE_SHA256`,
+  and will not until it is republished.** That pin names the release asset
+  `make sdk` downloads; adding a board necessarily changes what the pipeline
+  packages. The pin is deliberately left alone, because raising it ahead of
+  publication would break `make sdk` for every developer. `sdk-candidate`
+  reports the divergence every run with both digests and the two-step fix
+  (publish the archive, *then* set the pin). The same republication is what
+  makes a developer's `make sdk` carry the riscv64 board.
+- **The T10 trust-anchor tier model is proven on one architecture, not
+  three.** All five `make test-trust-anchor` probes run on
+  `qemu_virt_aarch64`. riscv64 now compiles in a real tier, key and gating
+  decision with no automated tier probe of its own; `make test-riscv64` covers
+  the signature-verified positive path only.
 - The child-spawn probe's residual: root cannot tell one of the parent's
   threads from another, so the parent chooses which TCB it presents to the
   installer. The marker proves that a thread the parent created really took an

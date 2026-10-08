@@ -12,6 +12,18 @@
 #include <platform/net_layout.h>
 
 #define AGENTOS_HOST_NET_MMIO_PA          0x0A002000UL
+/*
+ * QEMU virt RISC-V's virtio-mmio aperture is 0x10001000 + N*0x1000 (one
+ * 4 KiB page per transport, PLIC IRQ 1+N), not AArch64 virt's
+ * 0x0A000000 + N*0x200, so the host NIC has its own physical address there:
+ * virtio-mmio-bus.1. Bus.0 is left alone deliberately -- no launch plan in
+ * this repository attaches a device to it (TCB invariant 5, enforced by
+ * tests/platform/lint_source_invariants.c) and RISC-V has seven other
+ * transports to spare. net_pd reads AGENTOS_HOST_NET_MMIO_VA on every
+ * architecture and never sees a physical address; only the root task picks
+ * between these two.
+ */
+#define AGENTOS_HOST_NET_MMIO_PA_RISCV    0x10002000UL
 #define AGENTOS_HOST_NET_MMIO_VA          0x06200000UL
 
 /*

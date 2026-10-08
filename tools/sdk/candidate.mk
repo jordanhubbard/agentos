@@ -6,8 +6,38 @@ SDK_CANDIDATE_SEL4_SOURCE ?=
 SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
+# Digest of the PUBLISHED release asset that `make sdk` downloads, NOT of
+# whatever the pipeline currently builds. Makefile's `sdk` recipe checks a
+# fresh download against it, so changing this value breaks `make sdk` for
+# everyone until the matching asset is actually published.
+#
+# Adding a board to SDK_CANDIDATE_BOARDS necessarily changes what
+# sdk-candidate-package produces, so this pin and the build diverge from the
+# moment the board lands until the new archive is published and this value
+# updated — in that order, in one change. Until then the sdk-candidate
+# workflow reports the divergence and prints the digest to publish, rather
+# than asserting an equality that is knowingly false or silently dropping the
+# check.
 SDK_CANDIDATE_ARCHIVE_SHA256 := fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b
 SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/_build/sdk-candidate-package
+
+# The boards this SDK is qualified for, in ONE place.  This list was repeated
+# four times (build, CMake cache seeding, package staging, acceptance check)
+# and adding a board meant editing all four; missing one produced an SDK that
+# built a kernel nobody hashed, or hashed a kernel nobody packaged.
+#
+# qemu_virt_riscv64 is here because riscv64 is a first-class target of this
+# tree (kernel/agentos-root-task/src/system_desc_riscv64.c, make test-riscv64)
+# and was previously unbuildable in CI for exactly one reason: no riscv64
+# kernel was ever produced.  Its toolchain prefix is passed to build_sdk.py
+# below; nothing forked is introduced, the pinned commits and the single
+# tools/sdk/patches/ patch are unchanged.
+SDK_CANDIDATE_COMMA := ,
+SDK_CANDIDATE_EMPTY :=
+SDK_CANDIDATE_SPACE := $(SDK_CANDIDATE_EMPTY) $(SDK_CANDIDATE_EMPTY)
+SDK_CANDIDATE_BOARDS := qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx qemu_virt_riscv64
+SDK_CANDIDATE_BOARDS_CSV := \
+	$(subst $(SDK_CANDIDATE_SPACE),$(SDK_CANDIDATE_COMMA),$(strip $(SDK_CANDIDATE_BOARDS)))
 
 .PHONY: sdk-candidate sdk-candidate-check
 
@@ -26,7 +56,7 @@ sdk-candidate-package: sdk-candidate-check
 	@set -eu; stage="$(SDK_CANDIDATE_PACKAGE_DIR)/stage/microkit-sdk-$(SDK_CANDIDATE_VERSION)"; \
 		mkdir "$$stage"; \
 		cp -a "$(SEL4_SDK)/VERSION" "$(SEL4_SDK)/LICENSE.md" "$(SEL4_SDK)/LICENSES" "$$stage/"; \
-		for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
+		for board in $(SDK_CANDIDATE_BOARDS); do \
 			mkdir -p "$$stage/board/$$board/release/elf"; \
 			mkdir -p "$$stage/board/$$board/release/lib"; \
 			cp -a "$(SEL4_SDK)/board/$$board/release/lib/microkit.ld" "$$stage/board/$$board/release/lib/"; \
@@ -57,6 +87,24 @@ sdk-candidate-package: sdk-candidate-check
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/normalize-header.c" \
 		"$(SDK_CANDIDATE_REPO)/docs/x86-cr2-candidate.md" "$(SDK_CANDIDATE_PACKAGE_DIR)/"
 	cd "$(SDK_CANDIDATE_PACKAGE_DIR)" && sha256sum *.tar.gz *.patch *.sha256 *.mk *.md *.txt *.c > SHA256SUMS
+	@# Print the archive digest. It is the value SDK_CANDIDATE_ARCHIVE_SHA256
+	@# must carry once this archive is published, and it was previously only
+	@# written to a file inside a build directory -- so the one number a
+	@# publisher needs never appeared in the log they were reading.
+	@set -eu; d="$$(sha256sum "$(SDK_CANDIDATE_PACKAGE_DIR)/agentos-sdk-targets.tar.gz" | cut -d' ' -f1)"; \
+	echo "Archive digest: $$d  (agentos-sdk-targets.tar.gz)"; \
+	if [ "$$d" = "$(SDK_CANDIDATE_ARCHIVE_SHA256)" ]; then \
+		echo 'Matches SDK_CANDIDATE_ARCHIVE_SHA256: this archive reproduces the published asset.'; \
+	else \
+		echo "::warning title=SDK archive differs from the published pin::This build" \
+		     "produced $$d but SDK_CANDIDATE_ARCHIVE_SHA256 names" \
+		     "$(SDK_CANDIDATE_ARCHIVE_SHA256), which is the asset make sdk downloads" \
+		     "today. Expected while a board is being added. To close it: publish this" \
+		     "agentos-sdk-targets.tar.gz as the release asset AND set" \
+		     "SDK_CANDIDATE_ARCHIVE_SHA256 to $$d, in that order. Until both are done," \
+		     "make sdk still installs the older board set."; \
+		echo "SDK archive digest differs from the published pin (see the warning above)."; \
+	fi
 	@echo 'Candidate artifacts packaged locally; publication and default adoption remain separate.'
 
 # Check the selected installed candidate before accepting it as a build input.
@@ -64,8 +112,54 @@ sdk-candidate-package: sdk-candidate-check
 sdk-candidate-check:
 	@test "$$(cat "$(SEL4_SDK)/VERSION")" = "$(SDK_CANDIDATE_VERSION)" || \
 		{ echo 'ERROR: candidate SDK VERSION does not match the qualified pin'; exit 1; }
-	@cd "$(SEL4_SDK)" && sha256sum -c "$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"
-	@for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
+	@# --ignore-missing, paired with the coverage check below.  cr2-kernels.sha256
+	@# is the manifest for the FULL board set; an SDK artifact published before a
+	@# board was added simply does not contain that board's files, and without
+	@# this flag sha256sum fails on them and blocks every build on every
+	@# architecture.  The flag alone would be a hole -- it would also pass an SDK
+	@# missing everything -- which is why the loop below separately requires each
+	@# board that IS present to be listed here, and requires at least one.
+	@# Together: listed and present must match; present and unlisted is refused;
+	@# listed and absent is the only thing skipped.
+	@cd "$(SEL4_SDK)" && sha256sum -c --ignore-missing \
+		"$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"
+	@# `sha256sum -c` only checks the lines it is given.  A board built into
+	@# the SDK but absent from cr2-kernels.sha256 would therefore sail through
+	@# the line above with its kernel completely unhashed -- the exact silent
+	@# gap this pipeline exists to close.  So: every board that is PRESENT in
+	@# the SDK under test must have a recorded kernel hash, and when one does
+	@# not, print the computed hashes so recording them is a paste, not a guess.
+	@#
+	@# The presence guard is load-bearing and is not a loophole.  This target
+	@# is a prerequisite of every ordinary `make build` (Makefile's sdk-check),
+	@# so it runs against the PUBLISHED SDK artifact as well as against a
+	@# freshly built candidate.  A board newly added to SDK_CANDIDATE_BOARDS
+	@# does not exist in an artifact published before it was added, and failing
+	@# there would block all builds on all architectures for a kernel that is
+	@# not in the tree being checked.  What must never pass is a kernel that IS
+	@# there and is unhashed, and that is exactly what this rejects.  The
+	@# sdk-candidate build produces the board, so the check fires for real.
+	@set -eu; hashes="$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"; \
+	missing=0; present=0; \
+	for board in $(SDK_CANDIDATE_BOARDS); do \
+		rel="board/$$board/release/elf/sel4.elf"; \
+		test -s "$(SEL4_SDK)/$$rel" || continue; \
+		present=$$((present + 1)); \
+		if ! grep -q "  $$rel\$$" "$$hashes"; then \
+			missing=1; \
+			echo "ERROR: $$rel is present in this SDK but has no recorded hash"; \
+			echo "       in tools/sdk/cr2-kernels.sha256. It produced:"; \
+			(cd "$(SEL4_SDK)" && sha256sum "$$rel") | sed 's/^/       /'; \
+			(cd "$(SEL4_SDK)" && sha256sum "board/$$board/release/lib/microkit.ld") | sed 's/^/       /'; \
+		fi; \
+	done; \
+	test "$$missing" = 0 || \
+		{ echo 'Record the lines above, then re-run; do not drop the board instead.'; exit 1; }; \
+	test "$$present" -ge 1 || \
+		{ echo 'ERROR: this SDK contains no kernel for any board in SDK_CANDIDATE_BOARDS,'; \
+		  echo '       so --ignore-missing above verified nothing at all.'; exit 1; }
+	@for board in $(SDK_CANDIDATE_BOARDS); do \
+		test -d "$(SEL4_SDK)/board/$$board" || continue; \
 		for header in sel4/sel4.h kernel/gen_config.h; do \
 			test -s "$(SEL4_SDK)/board/$$board/release/include/$$header" || \
 				{ echo "ERROR: candidate SDK missing $$board/$$header"; exit 1; }; \
@@ -90,7 +184,7 @@ sdk-candidate:
 	git clone --no-hardlinks --no-checkout -- "$(SDK_CANDIDATE_SEL4_SOURCE)" "$(SDK_CANDIDATE_DIR)/sel4"
 	git -C "$(SDK_CANDIDATE_DIR)/sel4" checkout --detach e60776acc31097ca063806c257f07a3ec05eacf8
 	git -C "$(SDK_CANDIDATE_DIR)/sel4" apply "$(SDK_CANDIDATE_REPO)/tools/sdk/patches/sel4-e60776ac-cr2.patch"
-	@for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
+	@for board in $(SDK_CANDIDATE_BOARDS); do \
 		cache="$(SDK_CANDIDATE_DIR)/microkit/build/$$board/release/sel4/build"; \
 		mkdir -p "$$cache" || exit 1; \
 		printf '%s\n' 'KernelVerificationBuild:BOOL=OFF' 'KernelDebugBuild:BOOL=OFF' \
@@ -98,9 +192,15 @@ sdk-candidate:
 			'KernelColourPrinting:BOOL=OFF' > "$$cache/CMakeCache.txt" || exit 1; \
 	done
 	cd "$(SDK_CANDIDATE_DIR)/microkit" && "$(SDK_CANDIDATE_PYTHON)" build_sdk.py \
-		--sel4 ../sel4 --boards qemu_virt_aarch64,x86_64_generic,x86_64_generic_vtx \
+		--sel4 ../sel4 --boards $(SDK_CANDIDATE_BOARDS_CSV) \
 		--configs release --gcc-toolchain-prefix-aarch64 aarch64-linux-gnu \
 		--skip-tool --skip-initialiser --skip-docs --skip-tar --version $(SDK_CANDIDATE_VERSION)
+# No --gcc-toolchain-prefix-riscv64: build_sdk.py's default for RISC-V is the
+# bare-metal riscv64-unknown-elf triple, and that is the right one. Overriding
+# it to riscv64-linux-gnu the way aarch64 is overridden fails: Ubuntu's
+# riscv64-linux-gnu GCC defaults to PIE, so Microkit's own loader crt0.S links
+# with "dangerous relocation: The addend isn't allowed for R_RISCV_GOT_HI20".
+# The seL4 kernel itself builds either way; the loader does not.
 	$(MAKE) sdk-candidate-check SEL4_SDK="$(SDK_CANDIDATE_DIR)/microkit/release/microkit-sdk-$(SDK_CANDIDATE_VERSION)"
 	@echo 'Candidate built; runtime acceptance and default SDK adoption remain separate.'
 	@echo 'SEL4_SDK=$(SDK_CANDIDATE_DIR)/microkit/release/microkit-sdk-$(SDK_CANDIDATE_VERSION)'

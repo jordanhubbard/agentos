@@ -532,7 +532,7 @@ static uint32_t g_guest_ram_reservation_count;
 /*
  * AGENTOS_HAS_PD_BUNDLE — compile-time predicate for "this architecture
  * embeds a .pd_bundle/.pd_manifest section at all", mirroring exactly the
- * `ifneq ($(filter $(ARCH),aarch64 x86_64),)` condition in
+ * `ifneq ($(filter $(ARCH),aarch64 x86_64 riscv64),)` condition in
  * kernel/agentos-root-task/Makefile that decides whether PD_BUNDLE_OBJ /
  * PD_MANIFEST_OBJ get linked in. This is a per-architecture compile-time
  * fact, not anything settable by a build flag, env var, or attacker/
@@ -543,7 +543,7 @@ static uint32_t g_guest_ram_reservation_count;
  * change ever made bundle_size() able to legitimately read 0 here (e.g. a
  * new PD-loading path on these architectures).
  */
-#if defined(__aarch64__) || defined(__x86_64__)
+#if defined(__aarch64__) || defined(__x86_64__) || defined(__riscv)
 #define AGENTOS_HAS_PD_BUNDLE 1
 #else
 #define AGENTOS_HAS_PD_BUNDLE 0
@@ -903,12 +903,19 @@ static void dbg_hex(seL4_Word v);
  */
 #if !AGENTOS_HAS_PD_BUNDLE
 /*
- * Bundle-less architectures (RISC-V): there is no PD bundle, no manifest,
- * and therefore no trust anchor. The generated boot_manifest_pubkey.h
- * carries no tier or key macros here, because there is no selection to
- * record -- see the placeholder recipe in kernel/agentos-root-task/
- * Makefile, and docs/TCB.md on PD images not being verified on this
- * target on any tier.
+ * Bundle-less architectures: there is no PD bundle, no manifest, and
+ * therefore no trust anchor, so the generated boot_manifest_pubkey.h would
+ * carry no tier or key macros.
+ *
+ * NO ARCHITECTURE IN THIS TREE TAKES THIS ARM. T10 wrote it for RISC-V,
+ * whose PDs were then believed to load via the seL4 extra-BootInfo path;
+ * they did not load at all (that path has no producer), and the arch-parity
+ * work gave RISC-V the same signed bundle AArch64 and x86_64 use. This arm
+ * is kept only so that a genuinely bundle-less future target reports
+ * AOS_ANCHOR_UNVERIFIED instead of naming a tier it does not run. If you
+ * find yourself compiling this, update docs/TCB.md's
+ * "Protection-domain image verification" section in the same change -- it
+ * currently states there is no such architecture.
  *
  * The state is filled with AOS_ANCHOR_UNVERIFIED so that every consumer
  * that reports it -- the boot banner below and the inspect snapshot --
@@ -1000,7 +1007,8 @@ static void boot_announce_trust_anchor(void)
  *
  * Same pattern as bundle_size(): pointer subtraction (not a direct
  * comparison) to avoid -Wtautological-compare when the symbols coincide
- * (zero-size section, e.g. on RISC-V — see tools/ld/agentos.ld).
+ * (a zero-size section; no architecture in this tree produces one today,
+ * but the linker scripts still define the symbols unconditionally).
  */
 static seL4_Word manifest_size(void)
 {
@@ -1021,9 +1029,10 @@ static seL4_Word manifest_size(void)
  * structurally valid manifest, so AOS_ANCHOR_NONE's "verify without
  * gating" promise has nothing to apply to). There is no flag, environment
  * variable, or #ifdef that bypasses this function or its caller — the only
- * way to avoid it is to not have an embedded PD bundle at all (RISC-V; see
- * the bundle_size() gate at the call site), in which case there is no
- * bundle-sourced PD to protect in the first place.
+ * way to avoid it is to not have an embedded PD bundle at all (see the
+ * bundle_size() gate at the call site), in which case there is no
+ * bundle-sourced PD to protect in the first place. All three architectures
+ * this tree builds have one, so no build avoids it.
  *
  * A SIGNATURE failure (manifest parses fine, but doesn't verify against
  * any present key) is different: it IS subject to the trust anchor's
@@ -1046,10 +1055,11 @@ static seL4_Word manifest_size(void)
 /*
  * Bundle-less architectures have no manifest and no compiled-in keys, so
  * there is nothing for this function to check. Its one caller is guarded
- * by `bundle_size() > 0`, which is never true here, so this is dead code
- * on this architecture -- but it returns 0 (refuse) rather than 1, so if
- * a future change ever does reach it, the result is a refused boot and
- * not an unverified spawn.
+ * by `bundle_size() > 0`, which is never true here. Like the
+ * boot_init_trust_anchor() arm above, no architecture in this tree compiles
+ * it -- it returns 0 (refuse) rather than 1, so if a future bundle-less
+ * target ever does reach it, the result is a refused boot and not an
+ * unverified spawn.
  */
 static int boot_verify_manifest(void)
 {
@@ -1355,8 +1365,20 @@ static void boot_setup_irqs(const pd_desc_t *pd,
  * Initialised in root_task_main after ut_alloc_init and slot-cursor advance.
  * Before init: dbg_puts falls back to sel4_dbg_puts (no-op on release kernel).
  */
+#if defined(__riscv)
+/*
+ * QEMU virt riscv64 has an NS16550A, not a PL011: byte-wide registers with
+ * the transmit holding register at +0x00 and the line status register at
+ * +0x05 (bit 5 = THR empty).  Only the physical address and the register
+ * access width differ; the VSpace slot and the handover to serial_pd are
+ * identical to AArch64's.
+ */
+#define AGENTOS_UART_PA  0x10000000UL  /* NS16550A UART0 on QEMU virt riscv64 */
+#define AGENTOS_UART_VA  0x10001000UL  /* root bootstrap, then serial_pd driver VA   */
+#else
 #define AGENTOS_UART_PA  0x09000000UL  /* PL011 UART0 physical address on QEMU virt */
 #define AGENTOS_UART_VA  0x10001000UL  /* root bootstrap, then serial_pd driver VA   */
+#endif
 
 /* QEMU virt GICv2 virtual CPU interface.
  *
@@ -1379,6 +1401,25 @@ _Static_assert(GIC_VCPU_IF_VA == AOS_GUEST_GIC_IPA,
  * it must remain unmapped so accesses fault into guest_vmm.
  */
 #define VIRTIO_MMIO_PAGE_PA  0x0A000000UL
+
+/*
+ * Physical address of the host block / network virtio-mmio transport the root
+ * task retypes once and hands to virtio_blk and net_pd respectively.
+ *
+ * AArch64 virt packs 32 virtio-mmio transports into a 0x0A000000 aperture at
+ * 0x200 each; QEMU virt RISC-V gives each of its eight a full 4 KiB page from
+ * 0x10001000 with PLIC IRQ 1+N.  Only this choice differs: both drivers read
+ * the architecture-independent AGENTOS_HOST_{BLK,NET}_MMIO_VA and never see a
+ * physical address.  xtask binds the test devices to fixed virtio-mmio buses
+ * on both machines so these addresses are not left to QEMU's attach order.
+ */
+#if defined(__riscv)
+#define AOS_HOST_BLK_MMIO_PA  AGENTOS_HOST_BLK_MMIO_PA_RISCV
+#define AOS_HOST_NET_MMIO_PA  AGENTOS_HOST_NET_MMIO_PA_RISCV
+#else
+#define AOS_HOST_BLK_MMIO_PA  AGENTOS_HOST_BLK_MMIO_PA
+#define AOS_HOST_NET_MMIO_PA  AGENTOS_HOST_NET_MMIO_PA
+#endif
 
 /* VirtIO serial device for cc_pd ↔ host socket bridge.
  * QEMU flags: -device virtio-serial-device,bus=virtio-mmio-bus.2,id=vser0
@@ -1640,6 +1681,11 @@ static seL4_CPtr g_gic_vcpu_frame_cap = seL4_CapNull;
 
 static volatile uint32_t *g_uart_dr;  /* PL011 UARTDR (offset 0x00) */
 static volatile uint32_t *g_uart_fr;  /* PL011 UARTFR (offset 0x18) */
+#if defined(__riscv)
+static volatile uint8_t *g_uart_thr;  /* NS16550A THR (offset 0x00) */
+static volatile uint8_t *g_uart_lsr;  /* NS16550A LSR (offset 0x05) */
+#define NS16550_LSR_THRE  0x20u       /* transmit holding register empty */
+#endif
 
 #if defined(__x86_64__)
 #define X86_COM1_PORT  0x03F8u
@@ -1719,6 +1765,16 @@ static void dbg_puts(const char *s)
         return;
     }
 #endif
+#if defined(__riscv)
+    if (!g_uart_thr) {
+        return;  /* UART not yet mapped; silent before step 3.5 */
+    }
+    for (; *s; s++) {
+        while (!(*g_uart_lsr & NS16550_LSR_THRE)) {}  /* spin until TX ready */
+        *g_uart_thr = (uint8_t)*s;
+    }
+    return;
+#else
     if (!g_uart_dr) {
         return;  /* UART not yet mapped; silent before step 3.5 */
     }
@@ -1726,6 +1782,7 @@ static void dbg_puts(const char *s)
         while (*g_uart_fr & (1u << 5)) {}  /* spin while TX FIFO full */
         *g_uart_dr = (uint32_t)(uint8_t)*s;
     }
+#endif
 }
 
 /* ── Main boot sequence ───────────────────────────────────────────────────── */
@@ -2842,13 +2899,22 @@ void root_task_main(const seL4_BootInfo *bi)
                                                    g_uart_frame_cap,
                                                    AGENTOS_UART_VA);
             if (uart_err == seL4_NoError) {
+#if defined(__riscv)
+                g_uart_thr = (volatile uint8_t *)(AGENTOS_UART_VA + 0x00u);
+                g_uart_lsr = (volatile uint8_t *)(AGENTOS_UART_VA + 0x05u);
+#else
                 g_uart_dr = (volatile uint32_t *)(AGENTOS_UART_VA + 0x00u);
                 g_uart_fr = (volatile uint32_t *)(AGENTOS_UART_VA + 0x18u);
+#endif
             }
         }
     }
+#if defined(__riscv)
+    dbg_puts("[rt] UART mapped, direct NS16550 output active\n");
+#else
     dbg_puts("[rt] UART mapped, direct PL011 output active\n");
 #endif
+#endif  /* !__x86_64__ */
 
     {
         seL4_Error serial_shmem_err = ut_alloc_cap(seL4_ARM_SmallPageObject,
@@ -2859,6 +2925,15 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_puts("\n");
     }
 
+#if defined(__aarch64__)
+    /*
+     * GICv2 virtual CPU interface — an AArch64-only device.  The consumer
+     * (the guest-VMM mapping in the PD start loop) is already
+     * `#if defined(__aarch64__)`; the producer must match.  Left arch-blind
+     * this "succeeds" on RISC-V, where 0x08040000 happens to fall inside a
+     * device untyped, printing `err=0` for a frame no architecture there
+     * has a GIC behind.
+     */
     {
         seL4_Error gic_err = ut_alloc_device_cap(GIC_VCPU_IF_PA,
                                                  &g_gic_vcpu_frame_cap);
@@ -2868,7 +2943,18 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_hex((seL4_Word)g_gic_vcpu_frame_cap);
         dbg_puts("\n");
     }
+#endif
 
+    /*
+     * cc_pd's host virtio-serial page, and only cc_pd's: the single consumer
+     * of g_virtio_mmio_frame_cap is the CC transport provisioning below.
+     * VIRTIO_MMIO_PAGE_PA is an AArch64-virt address, and on RISC-V it lands
+     * inside an unrelated device untyped and retypes successfully -- a frame
+     * of nothing, charged against that untyped's watermark. riscv64 has no
+     * cc_pd (no guest to control; see src/system_desc_riscv64.c), so do not
+     * take it there.
+     */
+#if !defined(__riscv)
     {
         seL4_Error virtio_err = ut_alloc_device_cap(VIRTIO_MMIO_PAGE_PA,
                                                     &g_virtio_mmio_frame_cap);
@@ -2878,11 +2964,44 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_hex((seL4_Word)g_virtio_mmio_frame_cap);
         dbg_puts("\n");
     }
+#endif
 
-#if defined(__aarch64__)
+/*
+ * Host device provisioning for the two architectures whose drivers own a
+ * virtio-mmio transport directly (x86_64 discovers the same devices over PCI
+ * below).  RISC-V differs from AArch64 only in the physical addresses, which
+ * AOS_HOST_{BLK,NET}_MMIO_PA already resolve.
+ */
+#if defined(__aarch64__) || defined(__riscv)
+#if defined(__riscv)
+    /*
+     * Allocation order is load-bearing here, and only on RISC-V.
+     *
+     * seL4 hands out device untypeds with a bump watermark, and QEMU virt
+     * RISC-V exposes its whole 0x10000000 device region as ONE untyped, so
+     * every retype in it must go in ascending physical address.  The host
+     * NIC (0x10002000, virtio-mmio-bus.1) sits below the host block
+     * transport (0x10003000, virtio-mmio-bus.2),
+     * so taking block first moved the watermark past the NIC and the NIC
+     * retype then failed with seL4_InvalidArgument -- net_pd got no MMIO
+     * and never started.  AArch64 virt's block page (0x0A001000) is already
+     * below its NIC page (0x0A002000), so its original order is kept below,
+     * unchanged.
+     */
+    {
+        seL4_Error net_err =
+            ut_alloc_device_cap(AOS_HOST_NET_MMIO_PA,
+                                &g_host_net_mmio_frame_cap);
+        dbg_puts("[rt] host net virtio-mmio frame cap err=");
+        dbg_hex((seL4_Word)net_err);
+        dbg_puts(" cap=");
+        dbg_hex((seL4_Word)g_host_net_mmio_frame_cap);
+        dbg_puts("\n");
+    }
+#endif
     {
         seL4_Error blk_err =
-            ut_alloc_device_cap(AGENTOS_HOST_BLK_MMIO_PA,
+            ut_alloc_device_cap(AOS_HOST_BLK_MMIO_PA,
                                 &g_host_blk_mmio_frame_cap);
         dbg_puts("[rt] host blk virtio-mmio frame cap err=");
         dbg_hex((seL4_Word)blk_err);
@@ -2913,16 +3032,18 @@ void root_task_main(const seL4_BootInfo *bi)
         return;
     }
 
+#if !defined(__riscv)
     {
         seL4_Error net_err =
-            ut_alloc_device_cap(AGENTOS_HOST_NET_MMIO_PA,
+            ut_alloc_device_cap(AOS_HOST_NET_MMIO_PA,
                                 &g_host_net_mmio_frame_cap);
-        dbg_puts("[rt] host net virtio-mmio bus16 frame cap err=");
+        dbg_puts("[rt] host net virtio-mmio frame cap err=");
         dbg_hex((seL4_Word)net_err);
         dbg_puts(" cap=");
         dbg_hex((seL4_Word)g_host_net_mmio_frame_cap);
         dbg_puts("\n");
     }
+#endif
 
     if (allocate_network_dma(NULL) != seL4_NoError) {
         dbg_puts("[rt] network DMA allocation failed; refusing startup\n");
@@ -2951,6 +3072,17 @@ void root_task_main(const seL4_BootInfo *bi)
     }
 #endif
 
+    /*
+     * The second host block transport, which only AArch64 virt has in this
+     * tree (AGENTOS_HOST_SECONDARY_BLK_PAGE_PRESENT): QEMU virt RISC-V
+     * decodes only the first 0x200 bytes of each 4 KiB virtio-mmio page, so
+     * AArch64's slot-24..31 shared page has no RISC-V counterpart, and
+     * x86_64 discovers its media over PCI. Leaving this producer arch-blind
+     * made it retype whatever device untyped happened to cover the AArch64
+     * physical address elsewhere — the arch-blind pattern the GIC vCPU frame
+     * cap had — and hand virtio_blk a frame of nothing.
+     */
+#if defined(__aarch64__)
     {
         seL4_Error v31_err =
             ut_alloc_device_cap(AGENTOS_HOST_SECONDARY_BLK_PAGE_PA,
@@ -2961,6 +3093,7 @@ void root_task_main(const seL4_BootInfo *bi)
         dbg_hex((seL4_Word)g_host_secondary_blk_mmio_frame_cap);
         dbg_puts("\n");
     }
+#endif
 
     /* Temporary: dump device untypeds to diagnose UART1 frame allocation */
     {
@@ -3340,24 +3473,22 @@ void root_task_main(const seL4_BootInfo *bi)
 
     /* ── Step 3.5: Verify the signed boot manifest before spawning anything ──
      *
-     * On architectures that embed a PD bundle at all (AGENTOS_HAS_PD_BUNDLE
-     * — AArch64, x86_64), a bundle with no PDs in it (bundle_size() == 0)
-     * is NOT "nothing to verify, skip ahead" — it is a build/link defect
-     * and refuses boot with its own diagnostic, same as every other
-     * manifest failure. This is an ASSERTION, not an inference from
-     * whatever the build happened to produce: today nothing on these
-     * architectures can reach the spawn loop with an empty bundle (the
-     * seL4 extra-BootInfo PD-loading path has no producer anywhere in this
-     * tree on AArch64/x86_64), but if that ever changes, this refuses boot
-     * instead of silently falling through to unverified spawning.
+     * Every architecture this tree builds (AArch64, x86_64, RISC-V) embeds
+     * a PD bundle, so AGENTOS_HAS_PD_BUNDLE is 1 everywhere today and the
+     * refusal below is always compiled in. A bundle with no PDs in it
+     * (bundle_size() == 0) is NOT "nothing to verify, skip ahead" — it is
+     * a build/link defect and refuses boot with its own diagnostic, same
+     * as every other manifest failure. This is an ASSERTION, not an
+     * inference from whatever the build happened to produce: nothing can
+     * reach the spawn loop with an empty bundle (the seL4 extra-BootInfo
+     * PD-loading path has no producer anywhere in this tree, on any
+     * architecture), but if that ever changes, this refuses boot instead
+     * of silently falling through to unverified spawning.
      *
-     * On RISC-V (AGENTOS_HAS_PD_BUNDLE == 0) there is no bundle at all —
-     * PDs load via the seL4 extra BootInfo path, unchanged by this task —
-     * so bundle_size() == 0 there is simply "this architecture doesn't use
-     * a bundle", not a defect, and the #if below compiles the refusal out
-     * entirely rather than ever evaluating it. This is a compile-time,
-     * per-architecture fact (see AGENTOS_HAS_PD_BUNDLE above), never a
-     * runtime flag, env var, or #ifdef an attacker or operator can flip.
+     * The #if is retained for a future architecture that genuinely loads
+     * PDs some other way; it is a compile-time, per-architecture fact (see
+     * AGENTOS_HAS_PD_BUNDLE above), never a runtime flag, env var, or
+     * #ifdef an attacker or operator can flip.
      */
     int manifest_trusted = 0;
     if (bundle_size() > 0u) {
@@ -4305,8 +4436,21 @@ void root_task_main(const seL4_BootInfo *bi)
                 df->paddr == AGENTOS_UART_PA &&
                 g_uart_frame_cap != seL4_CapNull) {
                 (void)seL4_ARCH_Page_Unmap(g_uart_frame_cap);
+                /*
+                 * Null every register pointer dbg_puts() guards on, for
+                 * EVERY architecture's UART — not just the PL011 pair.
+                 * dbg_puts() picks its guard by #ifdef (g_uart_thr on
+                 * RISC-V's NS16550A, g_uart_dr on PL011), so leaving the
+                 * other architecture's pointers non-NULL means the guard
+                 * still passes after the frame has been unmapped and the
+                 * next debug print spins on an unmapped VA.
+                 */
                 g_uart_dr = (volatile uint32_t *)0;
                 g_uart_fr = (volatile uint32_t *)0;
+#if defined(__riscv)
+                g_uart_thr = (volatile uint8_t *)0;
+                g_uart_lsr = (volatile uint8_t *)0;
+#endif
 
                 df_err = pd_vspace_map_device_frame(vspace,
                                                      g_uart_frame_cap,
@@ -4535,8 +4679,10 @@ void root_task_main(const seL4_BootInfo *bi)
         }
 #endif
 
-        /* ── 4g.4.6c: Give virtio_blk sole access to host block hardware ─── */
-#if defined(__aarch64__)
+        /* ── 4g.4.6c: Give virtio_blk sole access to host block hardware ───
+         * The secondary medium below stays AArch64-only: QEMU virt RISC-V
+         * has no second host block transport wired in this image. */
+#if defined(__aarch64__) || defined(__riscv)
         if (name_eq(pd->name, "virtio_blk") &&
             g_host_blk_mmio_frame_cap != seL4_CapNull) {
             seL4_Word blk_mmio_copy = ut_alloc_slot();
@@ -4678,7 +4824,7 @@ void root_task_main(const seL4_BootInfo *bi)
 
         if (name_eq(pd->name, "net_pd")) {
             seL4_Error net_err = seL4_NotEnoughMemory;
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(__riscv)
             if (g_host_net_mmio_frame_cap != seL4_CapNull) {
                 seL4_Word net_mmio_copy = ut_alloc_slot();
                 if (net_mmio_copy != seL4_CapNull) {
@@ -4713,6 +4859,14 @@ void root_task_main(const seL4_BootInfo *bi)
             }
             if (net_err != seL4_NoError) continue;
 #else
+            /*
+             * No host NIC MMIO path on this target: x86_64 without
+             * AGENTOS_X86_FIRMWARE_RESET, which has no PCI discovery and so
+             * no BARs to map.  Skipping silently made net_pd vanish from the
+             * boot log between "SC bound, starting" and the next PD with no
+             * diagnostic at all; say so instead.
+             */
+            dbg_puts("[rt] net_pd: no host NIC MMIO path on this target; not started\n");
             continue;
 #endif
             net_err = seL4_NotEnoughMemory;
@@ -5716,21 +5870,23 @@ void root_task_main(const seL4_BootInfo *bi)
  * _rt_start — seL4 root task C entry point.
  *
  * On AArch64, called from start_aarch64.S after SP is initialized.
- * On RISC-V, _start is this function directly (SP set by seL4 convention).
+ * On RISC-V, called from start_riscv64.S after SP is initialized.
  * On x86_64, start_x86_64.S installs a bootstrap stack before calling C.
  *
  * seL4 AArch64 boot protocol: BootInfo pointer is in x0 (capRegister).
  * seL4 RISC-V boot protocol:  BootInfo pointer is in a0.
  * seL4 x86_64 boot protocol:  BootInfo pointer is in rdi.
  */
-#if defined(__aarch64__)
+#if defined(__aarch64__) || defined(__riscv)
 /*
- * _rt_start — AArch64 C entry from start_aarch64.S.
+ * _rt_start — AArch64 C entry from start_aarch64.S, RISC-V C entry from
+ * start_riscv64.S.
  *
  * seL4 AArch64 boot protocol: capRegister (x0) = bi_frame_vptr (BootInfo
  * virtual address in root task's VSpace).  start_aarch64.S preserves x0
  * (only touches x9 and sp) before branching here, so the C calling
- * convention delivers seL4's x0 as bi.
+ * convention delivers seL4's x0 as bi.  RISC-V is the same arrangement with
+ * a0 in place of x0: start_riscv64.S touches only t0 and sp.
  */
 void __attribute__((noreturn)) _rt_start(seL4_BootInfo *bi)
 {

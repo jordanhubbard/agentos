@@ -36,7 +36,12 @@ ARCH := $(AGENTOS_ARCH)
 ifeq ($(ARCH),riscv64)
   CC     := clang -target riscv64-unknown-elf
   LD     := ld.lld
-  CFLAGS_ARCH := -march=rv64imafdc_zicsr_zifencei -mabi=lp64d
+  # -mcmodel=medany: the root task is linked at 0x90000000 (see
+  # tools/ld/root_task_riscv64.ld) because every DRAM address on QEMU virt
+  # riscv64 is above 0x80000000. RISC-V's default medlow model addresses
+  # symbols with lui/addi and can only reach the low 2 GiB, so medlow would
+  # fail to link there. medany is PC-relative and places no such limit.
+  CFLAGS_ARCH := -march=rv64imafdc_zicsr_zifencei -mabi=lp64d -mcmodel=medany
 else ifeq ($(ARCH),x86_64)
   CC     := clang -target x86_64-unknown-elf
   LD     := ld.lld
@@ -81,9 +86,11 @@ SERVICES_DIR := $(REPO_ROOT)/services
 # (e.g. "contracts/vibeos/interface.h" resolved from repo root)
 CFLAGS_SERVICES := $(CFLAGS) -I$(REPO_ROOT)
 
-# AArch64 loader and custom root_task linker script
-LOADER_DIR      := $(REPO_ROOT)/kernel/loader
-ROOT_TASK_LD    := $(REPO_ROOT)/tools/ld/root_task.ld
+# Pre-seL4 loader and the per-arch custom root_task linker scripts.
+# kernel/loader/ has an AArch64 and a RISC-V arm; other arches skip silently.
+LOADER_DIR         := $(REPO_ROOT)/kernel/loader
+ROOT_TASK_LD       := $(REPO_ROOT)/tools/ld/root_task.ld
+ROOT_TASK_RISCV_LD := $(REPO_ROOT)/tools/ld/root_task_riscv64.ld
 # Resolve llvm-objcopy: prefer the same LLVM installation that provides CC/LD.
 # On macOS, llvm-objcopy lives alongside clang in the Homebrew LLVM keg.
 ifeq ($(UNAME_S),Darwin)
@@ -136,7 +143,7 @@ ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_x86_64.o
 else
 ROOT_TASK_SRCS += src/system_desc_riscv64.c
 CFLAGS_ROOT_TASK := $(CFLAGS)
-ROOT_TASK_ASM_OBJS :=
+ROOT_TASK_ASM_OBJS := $(BUILD_DIR)/rt_start_riscv64.o
 endif
 # main.c includes the generated boot-manifest public-key header
 # (boot_manifest_pubkey.h) straight out of the build directory.
@@ -591,6 +598,12 @@ $(BUILD_DIR)/rt_start_x86_64.o: src/start_x86_64.S
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c -target x86_64-unknown-elf $< -o $@
 
+# Assemble RISC-V startup stub.  CFLAGS_ARCH carries -march/-mabi/-mcmodel so
+# the object's ELF attributes match the C objects it is linked with.
+$(BUILD_DIR)/rt_start_riscv64.o: src/start_riscv64.S
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS_ARCH) $< -o $@
+
 # Embedded PD bundle used by root_task on targets whose boot path does not
 # provide agentOS extra BootInfo chunks.
 PD_BUNDLE       := $(BUILD_DIR)/agentos_pd_bundle.bin
@@ -602,6 +615,17 @@ PD_BUNDLE_OBJ   := $(BUILD_DIR)/agentos_pd_bundle.o
 PD_MANIFEST            := $(BUILD_DIR)/agentos_pd_manifest.bin
 PD_MANIFEST_OBJ        := $(BUILD_DIR)/agentos_pd_manifest.o
 PD_MANIFEST_PUBKEY_HDR := $(BUILD_DIR)/boot_manifest_pubkey.h
+ifeq ($(ARCH),riscv64)
+# RISC-V cannot use `llvm-objcopy --input-target=binary`: the ELF it emits
+# is tagged with the default soft-float ABI and ld.lld refuses to link it
+# against the lp64d root task ("cannot link object files with different
+# floating-point ABI").  src/pd_bundle_riscv64.S embeds both blobs with
+# .incbin through the same compiler driver and flags as every other root
+# task object, so one object carries both sections and PD_MANIFEST_OBJ is
+# folded into PD_BUNDLE_OBJ.
+PD_BUNDLE_OBJ   := $(BUILD_DIR)/agentos_pd_blobs.o
+PD_MANIFEST_OBJ :=
+endif
 # Deferred reference: SYSTEM_TOML is set later in this Makefile.
 SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
 
@@ -727,13 +751,14 @@ $(PD_ANCHOR_STAMP): FORCE
 #   3. Convert bundle to a linkable .o (objcopy --input binary)
 #   4. Link root_task.elf with root_task.ld + bundle .o
 #
-ifeq ($(ARCH),aarch64)
-
-# Step 1: Build the loader
+# Step 1: Build the pre-seL4 loader.  kernel/loader/ builds a real loader for
+# aarch64 and riscv64 and skips silently elsewhere, so this rule is shared.
 $(BUILD_DIR)/loader.elf: FORCE
 	$(MAKE) -C $(LOADER_DIR) \
 		BUILD_DIR=$(BUILD_DIR) \
 		AGENTOS_ARCH=$(AGENTOS_ARCH)
+
+ifeq ($(ARCH),aarch64)
 
 # Step 4: Link root_task.elf with the custom AArch64 LD script + bundle object.
 # The PD bundle rules are declared after IMAGES/SYSTEM_TOML are finalized so
@@ -751,10 +776,15 @@ $(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_
 
 else
 
-# RISC-V: simple link with the standard PD linker script.  The current RISC-V
-# path still expects PD ELFs via extra BootInfo.
-$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_OBJS) $(AGENTOS_LD)
-	$(LD) $(LDFLAGS) -T$(AGENTOS_LD) $(filter-out $(AGENTOS_LD),$^) -o $@
+# RISC-V: link with the RISC-V root_task script, which places the image at
+# physical/virtual 0x90000000 (inside the kernel's available memory) and
+# provides __stack_top for start_riscv64.S.  kernel/loader/'s riscv64 arm
+# copies these LOAD segments to their physical addresses before enabling
+# Sv39 paging.  Like AArch64, RISC-V embeds the PD bundle and the signed
+# boot manifest in root_task.elf (the .pd_bundle / .pd_manifest sections
+# placed by root_task_riscv64.ld); there is no extra-BootInfo PD path.
+$(BUILD_DIR)/root_task.elf: $(ROOT_TASK_ASM_OBJS) $(ROOT_TASK_OBJS) $(PD_BUNDLE_OBJ) $(PD_MANIFEST_OBJ) $(ROOT_TASK_RISCV_LD)
+	$(LD) $(LDFLAGS) -T$(ROOT_TASK_RISCV_LD) $(filter-out $(ROOT_TASK_RISCV_LD),$^) -o $@
 
 endif
 
@@ -1767,9 +1797,13 @@ $(BUILD_DIR)/guest_vmm_secondary.o: $(REPO_ROOT_MK)/platform/guest-vmm/guest_vmm
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
+# pd_entry.o supplies _start / the ELF entry point.  Without it this ELF
+# links with e_entry == 0 and the root task starts the PD at address 0,
+# which faults immediately.  Invisible until Task 3 made RISC-V actually
+# load PD ELFs; guest_vmm_primary.elf above always had it.
 $(BUILD_DIR)/guest_vmm_secondary.elf: $(BUILD_DIR)/guest_vmm_secondary.o $(BUILD_DIR)/fdt_builder.o \
                                $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/m3_bare_metal.o \
-                               $(BUILD_DIR)/log.o
+                               $(BUILD_DIR)/log.o $(BUILD_DIR)/pd_entry.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 endif
 
@@ -2010,15 +2044,17 @@ endif
 
 KERNEL_ELF  := $(SEL4_SDK)/board/$(AGENTOS_BOARD)/$(SEL4_PROFILE)/elf/sel4.elf
 
-# On AArch64, loader.elf is also a build artifact (needed at QEMU launch time).
-# We add it as a dependency so it is rebuilt whenever the loader sources change.
-ifeq ($(ARCH),aarch64)
+# On AArch64 and RISC-V, loader.elf is also a build artifact (QEMU boots it
+# directly and supplies agentos.img as data).  We add it as a dependency so it
+# is rebuilt whenever the loader sources change.  x86_64 boots via multiboot
+# and has no loader.
+ifneq ($(filter $(ARCH),aarch64 riscv64),)
 _LOADER_DEP := $(BUILD_DIR)/loader.elf
 else
 _LOADER_DEP :=
 endif
 
-ifneq ($(filter $(ARCH),aarch64 x86_64),)
+ifneq ($(filter $(ARCH),aarch64 x86_64 riscv64),)
 # Step 2: Generate the PD bundle after all service PD ELFs and the final
 # system TOML have been selected. One `xtask gen-pd-bundle` invocation
 # always produces all three outputs together (PD_BUNDLE, the signed boot
@@ -2111,35 +2147,28 @@ $(PD_MANIFEST_OBJ): $(PD_MANIFEST)
 		--redefine-sym _binary_agentos_pd_manifest_bin_end=__pd_manifest_end \
 		--redefine-sym _binary_agentos_pd_manifest_bin_size=__pd_manifest_size \
 		agentos_pd_manifest.bin agentos_pd_manifest.o
-endif
-else
-# RISC-V does not embed a PD bundle at all (PDs load via the seL4 extra
-# BootInfo path, unchanged by T3 image verification) — see pd_bundle_stub.c
-# and tools/ld/agentos.ld's zero-size __pd_bundle_start/__pd_bundle_end.
-# main.c's manifest check is gated on the bundle actually being present
-# (bundle_size() > 0), which is never true here, so there is nothing to
-# verify on this path. It still needs *a* pubkey header to satisfy the
-# unconditional #include in main.c.
-#
-# The placeholder declares NOTHING, deliberately. It used to declare T3's
-# AOS_BOOT_MANIFEST_PUBKEY, and when T10 replaced that single symbol with a
-# tier and two key slots, this recipe was not updated and the RISC-V root
-# task stopped compiling — seven undeclared-identifier errors in rt_main.o.
-# The fix is NOT to paste the new macros in here with plausible values: a
-# tier macro would make boot_announce_trust_anchor() print an authoritative
-# trust anchor on a target that verifies nothing, turning a compile error
-# (fail-closed) into a lying boot banner (the exact overclaim this feature
-# exists to prevent). Instead main.c compiles every consumer of those macros
-# out on !AGENTOS_HAS_PD_BUNDLE and reports AOS_ANCHOR_UNVERIFIED, so there
-# is nothing left here to declare.
-#
-# Which means this file is now a tripwire as well as a placeholder: if a
-# future change makes main.c reference a generated anchor macro outside the
-# AGENTOS_HAS_PD_BUNDLE guard, RISC-V fails to compile again rather than
-# silently reporting a tier it does not run.
-$(PD_MANIFEST_PUBKEY_HDR):
+else ifeq ($(ARCH),riscv64)
+# See the PD_BUNDLE_OBJ override above for why RISC-V assembles the blobs
+# instead of objcopy-ing them.
+$(PD_BUNDLE_OBJ): src/pd_bundle_riscv64.S $(PD_BUNDLE) $(PD_MANIFEST)
 	@mkdir -p $(BUILD_DIR)
-	@printf '#pragma once\n/* No PD bundle on this target (see tools/ld/agentos.ld), so no trust\n * anchor is selected and no key is compiled in. Declares nothing on\n * purpose: main.c guards every consumer on AGENTOS_HAS_PD_BUNDLE and\n * reports AOS_ANCHOR_UNVERIFIED here. See the recipe in\n * kernel/agentos-root-task/Makefile. */\n' > $@
+	$(CC) -c $(CFLAGS_ARCH) \
+		-DAGENTOS_PD_BUNDLE_PATH='"$(PD_BUNDLE)"' \
+		-DAGENTOS_PD_MANIFEST_PATH='"$(PD_MANIFEST)"' \
+		$< -o $@
+endif
+# No `else` arm.  The outer condition above now matches every architecture
+# this tree builds, so there is no bundle-less target left.  T10 (#297) added
+# an `else` arm here that emitted a *declaring-nothing* placeholder pubkey
+# header for RISC-V, on the premise that RISC-V loaded PDs via the seL4 extra
+# BootInfo path and so had nothing to verify.  That premise was false — there
+# was no producer for that path and no PD ever spawned — and the arch-parity
+# work replaced it with the signed bundle above.  The placeholder arm is
+# therefore dead, and keeping it would re-create the thing it was a tripwire
+# against: a path on which a trust anchor is announced but nothing is checked.
+# If a bundle-less target is ever reintroduced, restore the arm *and* the
+# AGENTOS_HAS_PD_BUNDLE guards in main.c together; do not add one without the
+# other.
 endif
 
 $(BUILD_DIR)/rt_main.o: $(PD_MANIFEST_PUBKEY_HDR)
