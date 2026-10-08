@@ -1274,10 +1274,10 @@ here:
   and which carries the boot log this gate counts PDs from. `serial_virt`
   is absent with it, for the same reason as on riscv64.
 
-### x86_64 guest support: real, and unautomated
+### x86_64 guest support: one build check in CI, no execution
 
-agentOS has a working x86_64 guest path, and **no CI job anywhere exercises
-any part of it.** This is a known gap, stated here rather than papered over.
+agentOS has a working x86_64 guest path. **CI covers exactly one piece of it,
+and that piece is a link check.** No CI job executes an x86_64 guest.
 
 It is a non-libvmm VMX/EPT firmware VMM on the separate `x86_64_generic_vtx`
 board. Its targets, in increasing order of what they establish:
@@ -1290,9 +1290,23 @@ board. Its targets, in increasing order of what they establish:
 | `make gate-x86_64-debian-ssh`, `-cc-linux`, `-smp`, `-storage`, `-arch`, `-desktop` | SSH, CC transport, two online CPUs, storage, native install, display. |
 
 `grep vtx .github/workflows/*.yml` returns nothing, and that is accurate: none
-of the above runs on push. Every x86_64 guest claim in this document rests on
-recorded receipts under `docs/evidence/`, produced on named hardware, not on
-any run of CI.
+of the above runs on push. Every x86_64 guest EXECUTION claim in this document
+rests on recorded receipts under `docs/evidence/`, produced on named hardware,
+not on any run of CI.
+
+What CI does now run is `make test-x86-firmware-build`, as a step of the
+`os-claim-gate` job. It LINKS the real VMX/EPT firmware VMM --
+`guest_vmm_primary.elf`, the x86 runner, the serial and block drivers, the
+block and network virtualizers, the root task's MMIO dispatcher built with
+`AGENTOS_X86_VTX=1 AGENTOS_X86_FIRMWARE_RESET=1`, the host PCI probe and the
+shared virtio-pci transport -- against the pinned SDK. It needs the SDK 2.3
+VMCS entry controls, which the pinned `2.3.1-agentos-e60776ac-cr2` installed by
+`install-sdk` provides, and it needs no guest blobs and no nested VMX, so it
+runs unconditionally with no skip branch. Before this step was added the target
+existed in the Makefile and appeared in no workflow at all.
+
+It runs no guest, enters no VMX non-root mode and proves nothing about EPT at
+run time. It proves this composition still compiles and links.
 
 A runner that could execute them needs all of:
 
@@ -1310,11 +1324,10 @@ A runner that could execute them needs all of:
   `X86_SSH_KEY` and a free port in `X86_SSH_PORT`.
 
 Until a self-hosted runner meeting all of that exists, `make
-test-x86-firmware-build` is the only x86_64 guest-path coverage that CI could
-run: it compiles and **links** the firmware VMM, its runners, the serial and
-block drivers and the block/network virtualizers. That is a build proof. It
-does not execute a single guest instruction, and it is not a substitute for
-the table above.
+test-x86-firmware-build` -- described above, and now a step of the
+`os-claim-gate` job -- is the only x86_64 guest-path coverage CI has. That is
+a build proof. It does not execute a single guest instruction, and it is not a
+substitute for the table above.
 
 ## What is not TCB (museum)
 
@@ -1856,34 +1869,56 @@ link — the backstop for the class of breakage that left riscv64 unbuildable
 unnoticed.
 
 `make test-trust-anchor` boots the tier behaviour itself, each probe on its own
-freshly built image: the vendor anchor booting an unmodified image and refusing
-a byte-tampered one by name; the same tamper, applied to a separate build under
-the development anchor, emitting the digest mismatch and naming the same PD,
-**and** completing boot — both asserted, since the completed boot alone
-would equally describe an image that skipped verification; a gating tier
-compiled with its required key absent refusing rather than downgrading; and a
-machine-owner image's inspect snapshot reporting the machine-owner tier, not
-the vendor tier the rest of the inspect suite pins.
+freshly built image, **on all three architectures** — `qemu_virt_aarch64`,
+`x86_64_generic` and `qemu_virt_riscv64`, five probes each: the vendor anchor
+booting an unmodified image and refusing a byte-tampered one by name; the same
+tamper, applied to a separate build under the development anchor, emitting the
+digest mismatch and naming the same PD, **and** completing boot — both
+asserted, since the completed boot alone would equally describe an image that
+skipped verification; a gating tier compiled with its required key absent
+refusing rather than downgrading; and a machine-owner image reporting the
+machine-owner tier, not the vendor tier the rest of the inspect suite pins.
 
-Three limits on that, stated rather than implied. **The key-less gating tier
-probe asserts an absence, not a refusal message.** That check runs before the
-UART is mapped, so the refusal cannot print; the probe asserts a loader-stage
-marker and then the sustained absence of every root-task marker. It attributes
-that silence to the anchor state only by running its own control first — the
-identical build without the fault injected, required to boot to completion —
-and by re-reading the generated header to confirm the key-less state was
-compiled in. A positive refusal marker would be better and needs the Step 0
-check re-ordered or given a channel that is live that early. **A digest
-mismatch under the machine-owner anchor is not covered on target**: that it
-refuses follows from the same `aos_anchor_gates_boot()` decision the vendor
-probe exercises, and is host-tested, but no booted image has been made to
-demonstrate it. **And every one of those five probes runs on
-`qemu_virt_aarch64`.** RISC-V now compiles in a real tier, a real key and a
-real gating decision, and no automated probe exercises the tier model there at
-all; `make test-riscv64` covers the signature-verified positive path and
-nothing about tier selection. The tier model is proven on one architecture, not
-three.
+Four limits on that, stated rather than implied.
 
+**The key-less gating tier probe asserts an absence on two of the three
+architectures.** On x86_64 it is a positive assertion: `platform_debug_init()`
+issues the COM1 I/O port cap at Step 0a, before the Step 0b anchor check, so
+the refusal prints and the probe waits for `[rt] trust anchor state INVALID`
+itself — a seL4 panic or a root-task crash fails that probe instead of
+imitating it. On aarch64 and riscv64 the UART is a device untyped that is not
+retyped and mapped until Step 3.5, so the refusal cannot print; there the probe
+asserts a loader-stage marker and then the sustained absence of every root-task
+marker. It attributes that silence to the anchor state only by running its own
+control first — the identical build without the fault injected, required to
+boot to completion — and by re-reading the generated header to confirm the
+key-less state was compiled in. Making those two positive as well needs the
+Step 0b check re-ordered after their Step 3.5 UART mapping, which would let
+several more boot steps run before the anchor is validated; that trade has not
+been made.
+
+**The machine-owner probe reads the inspect snapshot only on aarch64.** The
+snapshot is served over the CC socket by `cc_pd`, which is in the aarch64 PD
+set and in neither the five-PD `x86_64_generic` set nor the nine-PD riscv64
+set. Adding it to either would change a count that `make test-authority`, the
+x86_64 boot test and `make test-riscv64` each assert exactly. On those two
+boards the probe asserts the boot banner only: a machine-owner build boots and
+the running root task names machine-owner as the gating tier. Taken with probes
+1 and 3 that is three distinct compiled tiers each reported as itself, so the
+banner is shown tracking the build — but the inspect field specifically is
+pinned on aarch64 alone.
+
+**A digest mismatch under the machine-owner anchor is not covered on target**:
+that it refuses follows from the same `aos_anchor_gates_boot()` decision the
+vendor probe exercises, and is host-tested, but no booted image has been made
+to demonstrate it.
+
+**riscv64's probes skip when the installed SDK carries no
+`qemu_virt_riscv64` board.** The skip is loud — a NOT RUN banner naming the
+SDK path — and never a silent pass. It fires for a developer running against
+the published 2.3.1 release asset, which predates `tools/sdk/candidate.mk`
+listing the board; it does not fire in CI, where `install-sdk` installs the
+artifact the same workflow run built.
 Scope: this constrains every adversary who can modify an image but not replace
 the boot chain. Under the vendor and machine-owner tiers it does NOT establish
 resistance to the local operator, who is untrusted under the platform threat

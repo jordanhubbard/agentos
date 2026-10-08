@@ -1874,10 +1874,25 @@ test-image-verify:
 # named anchor environment — xtask sets the anchor variables it wants and
 # REMOVES the rest, so a variable exported in the caller's shell cannot
 # redirect a probe to a tier it did not mean to test.
+#
+# ALL FIVE PROBES RUN ON ALL THREE ARCHITECTURES. Every architecture in this
+# tree embeds and verifies a signed PD bundle (AGENTOS_HAS_PD_BUNDLE is 1 for
+# aarch64, x86_64 and riscv64), so every one of them compiles in a real tier,
+# a real key and a real gating decision. Until this target covered all three,
+# aarch64 was the only architecture where any of that was exercised and the
+# identical machinery on the other two was carried by nothing.
+#
+# What differs per architecture, and why, is in trust_anchor_markers() in
+# xtask/src/cmd_test.rs. The two differences that matter here:
+#   - the completion marker. "agentOS boot complete" is printed by cc_pd,
+#     which is in the aarch64 PD set only; x86_64 (5 PDs) and riscv64 (9 PDs)
+#     use the root task's own "[rt] boot complete".
+#   - probe 4's shape (see below).
+#
 #   1. vendor control  — an unmodified vendor-signed image boots to completion
 #                         and the banner names vendor as gating.
 #   2. vendor gates     — one tampered byte refuses the whole boot and names
-#                         the PD; agentOS boot complete never appears. (1+2
+#                         the PD; the completion marker never appears. (1+2
 #                         together are T3's behaviour re-proven through the
 #                         tier machinery rather than an unconditional check.)
 #   3. THE PROBE        — the SAME TAMPER, applied to a separate build under
@@ -1891,32 +1906,79 @@ test-image-verify:
 #                         services/legacy-pds/verify.c), and the mismatch
 #                         alone would not show that development stops gating.
 #   4. no silent downgrade — a gating tier compiled in with its required key
-#                         absent refuses at the root task's first step. The
-#                         refusal is SILENT on this board (Step 0 runs before
-#                         the UART is mapped — see boot_init_trust_anchor()),
-#                         so there is no positive marker: the probe asserts a
-#                         loader-stage marker plus the sustained ABSENCE of
-#                         every root-task marker. That absence is attributable
-#                         to the anchor state only because the probe runs its
-#                         own control first — the identical build without the
-#                         flag, required to boot to completion — and because
-#                         it re-reads the generated header to confirm the
-#                         incoherent state was compiled in. Read the probe-4
-#                         comment in xtask/src/cmd_test.rs before relying on
-#                         this one; it is the weakest of the five.
-#   5. visible at runtime — a machine-owner image's inspect snapshot reports
-#                         tier 2 / machine-owner, deliberately NOT the vendor
-#                         tier test-inspect already pins, so the field is
-#                         shown tracking the build rather than matching a
-#                         constant.
+#                         absent refuses at the root task's first step. This
+#                         probe now has TWO shapes:
+#                           * x86_64: POSITIVE. platform_debug_init() issues
+#                             the COM1 I/O port cap at Step 0a, before the
+#                             Step 0b anchor check, so the refusal PRINTS and
+#                             the probe waits for "[rt] trust anchor state
+#                             INVALID" itself. A seL4 panic or a root-task
+#                             crash fails this shape instead of imitating it.
+#                           * aarch64 / riscv64: ABSENCE, as before. Their
+#                             UARTs are device untypeds mapped at Step 3.5, so
+#                             the refusal is silent and the probe asserts a
+#                             loader-stage marker plus the sustained ABSENCE
+#                             of every root-task marker. That absence is
+#                             attributable to the anchor state only because
+#                             the probe runs its own control first — the
+#                             identical build without the flag, required to
+#                             boot to completion — and because it re-reads the
+#                             generated header to confirm the incoherent state
+#                             was compiled in.
+#                         Read the probe-4 comment in xtask/src/cmd_test.rs
+#                         before relying on the absence shape.
+#   5. visible at runtime — a machine-owner image reports tier 2 /
+#                         machine-owner, deliberately NOT the vendor tier
+#                         test-inspect already pins, so the field is shown
+#                         tracking the build rather than matching a constant.
+#                         On aarch64 this asserts BOTH the boot banner and the
+#                         inspect snapshot over the CC socket. On x86_64 and
+#                         riscv64 it asserts the boot banner only: the inspect
+#                         snapshot is served by cc_pd, which is in neither PD
+#                         set, and adding it would change a PD count that
+#                         make test-authority, the x86_64 boot test and
+#                         make test-riscv64 each assert exactly.
+#
+# riscv64 LOUD-SKIPS when the installed SDK carries no qemu_virt_riscv64
+# board, exactly as test-riscv64 does and for the same reason: the published
+# 2.3.1 release asset predates tools/sdk/candidate.mk listing the board. In
+# CI, install-sdk installs the artifact the same workflow run built, which
+# does carry it, so these probes RUN there. A skip is never silent.
 .PHONY: test-trust-anchor
 test-trust-anchor:
 	$(MAKE) -C tools/agentctl
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 1
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 2
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 3
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 4
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe 5
+	@echo ""
+	@echo "── [GATE] T10 trust anchor tiers: aarch64 (probes 1-5) ──"
+	@set -e; for p in 1 2 3 4 5; do \
+	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none \
+	        --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe $$p; \
+	done
+	@echo ""
+	@echo "── [GATE] T10 trust anchor tiers: x86_64 (probes 1-5) ──"
+	@set -e; for p in 1 2 3 4 5; do \
+	    cargo xtask qemu-test --board x86_64_generic --guest-os none \
+	        --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe $$p; \
+	done
+	@echo ""
+	@echo "── [GATE] T10 trust anchor tiers: riscv64 (probes 1-5) ──"
+	@if [ ! -d "$(SEL4_SDK)/board/qemu_virt_riscv64" ]; then \
+	    echo ""; \
+	    echo "  !! riscv64 trust-anchor probes NOT RUN -- nothing here proves the"; \
+	    echo "  !! riscv64 tier machinery. The SDK at $(SEL4_SDK)"; \
+	    echo "  !! carries no qemu_virt_riscv64 board, so these probes cannot build."; \
+	    echo "  !! tools/sdk/candidate.mk DOES list qemu_virt_riscv64, and in CI"; \
+	    echo "  !! os-claim-gate installs the artifact the same workflow run built,"; \
+	    echo "  !! which carries the board, so they RUN there. What you have here is"; \
+	    echo "  !! the PUBLISHED release asset, which predates that change."; \
+	    echo "  !! Until it is republished, run them against an SDK that has it:"; \
+	    echo "  !!     make test-trust-anchor SEL4_SDK_VERSION=2.1.0"; \
+	    echo ""; \
+	else \
+	    set -e; for p in 1 2 3 4 5; do \
+	        cargo xtask qemu-test --board qemu_virt_riscv64 --guest-os none \
+	            --timeout-secs $(QEMU_TEST_TIMEOUT) --trust-anchor-probe $$p; \
+	    done; \
+	fi
 
 # test-entropy-unavailable: entropy_pd is reachable and degrades safely on
 # QEMU virt, where no virtio-mmio slot remains to wire a real virtio-rng

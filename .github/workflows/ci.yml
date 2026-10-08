@@ -492,6 +492,34 @@ jobs:
         timeout-minutes: 10
         run: make test TARGET_ARCH=x86_64 GUEST_OS=none
 
+      # The ONLY piece of x86_64's guest path that a normal CI runner can
+      # execute, and until now it ran in no workflow at all:
+      # `grep -rn test-x86-firmware-build .github/workflows/` returned zero
+      # hits while the target sat in the Makefile being green on nobody's
+      # machine.
+      #
+      # It LINKS the real VMX/EPT firmware VMM — guest_vmm_primary.elf, the
+      # x86 runner, serial/block drivers, the block and network virtualizers,
+      # the root task's MMIO dispatcher (rt_main.o built with
+      # AGENTOS_X86_VTX=1 AGENTOS_X86_FIRMWARE_RESET=1), the host PCI probe
+      # and the shared virtio-pci transport. It needs the SDK 2.3 VMCS entry
+      # controls, which the pinned SEL4_SDK_VERSION above
+      # (2.3.1-agentos-e60776ac-cr2, installed by install-sdk) provides, and
+      # it needs NO guest blobs and NO nested VMX. So it runs here for real
+      # and unconditionally: there is no skip branch, because there is
+      # nothing to skip on. Verified against that exact SDK before this step
+      # was added.
+      #
+      # What it does NOT do, stated so nobody reads more into a green tick:
+      # it executes no guest, enters no VMX non-root mode and proves nothing
+      # about EPT at run time. It proves this code still COMPILES AND LINKS
+      # as one composition. The step below it is the boot proof; neither is
+      # the guest proof, which cannot run on any runner here (see the gate
+      # summary at the end of this job and docs/TCB.md).
+      - name: GATE — make test-x86-firmware-build (VMX/EPT VMM links)
+        timeout-minutes: 15
+        run: make test-x86-firmware-build
+
       # The CC authority-envelope proof. Added here rather than relying on
       # `make gate`, which no CI job invokes -- the gate target's prerequisite
       # list is not what runs on push, so a proof reachable only through it
@@ -521,8 +549,16 @@ jobs:
       # the target's comment in the Makefile for why either alone is
       # worthless. Listed here explicitly as well as in `gate:` because no CI
       # job invokes `make gate`.
-      - name: GATE — make test-trust-anchor
-        timeout-minutes: 25
+      #
+      # This target now runs all five probes on aarch64, x86_64 AND riscv64
+      # — three times the boots it used to do, plus a control boot inside
+      # each architecture's probe 4, hence the raised timeout. riscv64
+      # loud-skips if the installed SDK lacks the board; install-sdk provides
+      # this run's own sdk-candidate artifact, which carries it, so the skip
+      # should not fire here. If it does, the Makefile prints a NOT RUN
+      # banner rather than passing quietly.
+      - name: GATE — make test-trust-anchor (aarch64 + x86_64 + riscv64)
+        timeout-minutes: 60
         run: make test-trust-anchor
       # entropy_pd reachability and safe degradation. NOT a working-entropy
       # proof: QEMU virt's virtio-mmio aperture is fully subscribed before
@@ -625,11 +661,18 @@ jobs:
           fi
           echo "   - CC operator authority envelope (admit / refuse / exact code)"
           echo "   - PD image verification (control / tampered-PD refusal / stripped-manifest refusal)"
-          echo "   - T10 trust anchor tiers (vendor gates, development reports"
-          echo "     without gating, tier visible at runtime). The key-less"
-          echo "     gating tier case asserts an ABSENCE of root-task output"
-          echo "     against its own control, not a printed refusal: the check"
-          echo "     runs before the UART is mapped, so it cannot print."
+          echo "   - T10 trust anchor tiers, ON ALL THREE ARCHITECTURES"
+          echo "     (aarch64, x86_64, riscv64): vendor gates a tampered PD,"
+          echo "     development reports the same mismatch and boots anyway,"
+          echo "     a key-less gating tier is refused, and a machine-owner"
+          echo "     build reports machine-owner. Two caveats, both measured:"
+          echo "     * the key-less case prints a POSITIVE refusal on x86_64"
+          echo "       (COM1 is live at Step 0a) but is an ABSENCE assertion"
+          echo "       against its own control on aarch64/riscv64, whose"
+          echo "       UARTs are not mapped until Step 3.5."
+          echo "     * the machine-owner case reads the INSPECT SNAPSHOT only"
+          echo "       on aarch64; x86_64 and riscv64 have no cc_pd in their"
+          echo "       PD sets, so there they assert the boot banner only."
           echo "   - entropy_pd reachable; reports UNAVAILABLE (no device wired"
           echo "     on QEMU virt) and validates over-length requests"
           echo "   - T5 capability lending (loan used, revoked, sub-delegate dies too)"
@@ -641,11 +684,19 @@ jobs:
           echo "parking only. Guest I/O is proven by the guest proof jobs; the"
           echo "os-claim-summary job combines them."
           echo ""
-          echo "NOT PROVEN ANYWHERE IN CI — x86_64 guest support."
+          echo "x86_64 GUEST SUPPORT — what this run does and does not cover."
+          echo "   COVERED, by make test-x86-firmware-build above: the VMX/EPT"
+          echo "   firmware VMM, its MMIO dispatcher, the shared virtio-pci"
+          echo "   transport and the drivers/virtualizers it composes with all"
+          echo "   still COMPILE AND LINK against the pinned SDK. That is a"
+          echo "   build check. It runs no guest and enters no VMX non-root"
+          echo "   mode."
+          echo "   NOT COVERED, here or in any workflow in this repository:"
+          echo "   x86_64 guest EXECUTION."
           echo "   agentOS has a working non-libvmm VMX/EPT firmware VMM on the"
           echo "   x86_64_generic_vtx board that boots Debian amd64 to login and"
           echo "   SSH (make gate-x86_64-vtx / -firmware-reset / -linux-login)."
-          echo "   None of it runs here. It needs a Linux host exposing /dev/kvm"
+          echo "   None of THAT runs here. It needs a Linux host exposing /dev/kvm"
           echo "   with nested Intel VMX (kvm_intel nested=1), Microkit SDK 2.3.x"
           echo "   for the VMCS entry controls, and for -linux-login a disposable"
           echo "   raw Debian amd64 root disk in X86_ROOT_DISK. The guest proof"

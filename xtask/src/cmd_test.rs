@@ -712,78 +712,222 @@ fn find_magic(haystack: &[u8], magic: &[u8; 8]) -> Option<usize> {
     haystack.windows(8).position(|w| w == magic)
 }
 
+/// Which file QEMU actually loads for `board`, and therefore the ONLY file
+/// a tamper probe may modify.
+///
+/// This differs per board and getting it wrong is silently vacuous, which
+/// is why it is a function with this comment rather than a path built at
+/// the call site:
+///
+///   - `qemu_virt_aarch64` and `qemu_virt_riscv64` are handed
+///     `_build/<board>/agentos.img` through `-device loader,file=...`, so
+///     the image file IS the boot artifact.
+///   - `x86_64_generic` is handed `_build/x86_64_generic/root_task.elf`
+///     through multiboot `-initrd`; seL4's multiboot path takes the root
+///     task as the initial module and NOTHING reads agentos.img. The build
+///     still writes an agentos.img on that board, so tampering it would
+///     succeed, print a convincing "tampered PD 'nameserver'" line, boot a
+///     completely untouched system, and pass probe 3 while failing to be
+///     evidence of anything at all. Tamper the ELF.
+///
+/// Returns the path plus the byte range within it that may contain the
+/// embedded, signature-verified `.pd_bundle`: the root_task.elf sub-range
+/// for an agentos.img, the whole file for a bare root_task.elf.
+fn boot_artifact_for_tamper(
+    repo_root: &Path,
+    board: &str,
+) -> anyhow::Result<(PathBuf, Vec<u8>, std::ops::Range<usize>)> {
+    let build_dir = repo_root.join("_build").join(board);
+    match board {
+        "x86_64_generic" | "x86_64_generic_vtx" => {
+            let path = build_dir.join("root_task.elf");
+            let buf = std::fs::read(&path).with_context(|| {
+                format!(
+                    "failed to read built root task for tampering: {}",
+                    path.display()
+                )
+            })?;
+            let len = buf.len();
+            Ok((path, buf, 0..len))
+        }
+        _ => {
+            let path = build_dir.join("agentos.img");
+            let buf = std::fs::read(&path).with_context(|| {
+                format!(
+                    "failed to read built image for tampering: {}",
+                    path.display()
+                )
+            })?;
+            let (root_off, root_len) = root_task_region(&buf)?;
+            Ok((path, buf, root_off..root_off + root_len))
+        }
+    }
+}
+
+/// Locate the embedded `.pd_bundle` header within `window` of `buf` by
+/// scanning for BUNDLE_MAGIC_LE and returning the first candidate whose
+/// HEADER FIELDS ARE STRUCTURALLY COHERENT.
+///
+/// The validation is load-bearing, not belt-and-braces. The magic is an
+/// 8-byte constant the root task compares against at boot, so on any
+/// architecture whose compiler materialises a 64-bit immediate as eight
+/// contiguous bytes it appears verbatim in `.text` BEFORE the real section.
+/// Measured on this tree at 5c501fec:
+///
+///   - `_build/x86_64_generic/root_task.elf`: magic at 15305, 15833 (both
+///     x86 `cmp`/`mov` immediates) and 282624 (the real bundle).
+///   - `_build/qemu_virt_riscv64/agentos.img`: within the root_task.elf
+///     range, magic at 170632 (code) and 222352 (the real bundle).
+///
+/// The previous first-match-wins code happened to be correct only on
+/// AArch64, where the magic is built with a movz/movk chain and never
+/// appears as eight contiguous bytes. Ported unchanged it would have
+/// flipped a byte of ROOT TASK CODE on the other two boards: on x86_64 the
+/// digest covers only the PD ELFs in the bundle, so no mismatch would be
+/// reported and probes 2 and 3 would both fail confusingly; on riscv64 the
+/// same. Either way the probe would not have been testing what it claims.
+///
+/// A candidate is accepted only if version is 1, num_pds is in 1..=64, the
+/// PD table starts at the fixed header size, the whole table lies inside
+/// the window, and the first entry carries a non-empty printable name and
+/// an in-window ELF region. That is enough structure that `.text` cannot
+/// fake it, and all of it comes from the on-disk headers rather than any
+/// hardcoded offset.
+fn find_bundle_header(buf: &[u8], window: std::ops::Range<usize>) -> anyhow::Result<usize> {
+    const HEADER_SIZE: usize = 64;
+    const PD_ENTRY_SIZE: usize = 64;
+    const MAX_PDS: u32 = 64;
+
+    anyhow::ensure!(
+        window.end <= buf.len() && window.start < window.end,
+        "bundle search window [{}, {}) is not inside a {}-byte artifact",
+        window.start,
+        window.end,
+        buf.len()
+    );
+
+    let mut rejected: Vec<String> = Vec::new();
+    let mut cursor = window.start;
+    while let Some(rel) = find_magic(&buf[cursor..window.end], &BUNDLE_MAGIC_LE) {
+        let off = cursor + rel;
+        cursor = off + 1;
+        match validate_bundle_header(buf, off, &window) {
+            Ok(()) => return Ok(off),
+            Err(why) => rejected.push(format!("{off}: {why}")),
+        }
+    }
+    anyhow::bail!(
+        "no structurally valid .pd_bundle header found in [{}, {}); \
+         rejected candidates: [{}]. Either the bundle is absent from this \
+         artifact (check boot_artifact_for_tamper picked the file QEMU loads) \
+         or the header layout changed and this validator needs updating.",
+        window.start,
+        window.end,
+        rejected.join("; ")
+    );
+
+    fn validate_bundle_header(
+        buf: &[u8],
+        off: usize,
+        window: &std::ops::Range<usize>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            off + HEADER_SIZE <= window.end,
+            "header truncated by the search window"
+        );
+        let version = read_u32_le(buf, off + 8)?;
+        anyhow::ensure!(version == 1, "version={version}, expected 1");
+        let num_pds = read_u32_le(buf, off + 12)?;
+        anyhow::ensure!(
+            (1..=MAX_PDS).contains(&num_pds),
+            "num_pds={num_pds} outside 1..={MAX_PDS}"
+        );
+        let pd_table_off = read_u32_le(buf, off + 32)? as usize;
+        anyhow::ensure!(
+            pd_table_off == HEADER_SIZE,
+            "pd_table_off={pd_table_off}, expected {HEADER_SIZE}"
+        );
+        let table_end = off + pd_table_off + (num_pds as usize) * PD_ENTRY_SIZE;
+        anyhow::ensure!(
+            table_end <= window.end,
+            "PD table ends at {table_end}, past the search window"
+        );
+
+        let entry = off + pd_table_off;
+        let name_field = &buf[entry..entry + 48];
+        let name_len = name_field.iter().position(|&b| b == 0).unwrap_or(48);
+        anyhow::ensure!(name_len > 0, "first PD entry has an empty name");
+        anyhow::ensure!(
+            name_field[..name_len]
+                .iter()
+                .all(|&b| b.is_ascii_graphic() || b == b' '),
+            "first PD entry name is not printable ASCII"
+        );
+        let elf_off = read_u32_le(buf, entry + 48)? as usize;
+        let elf_len = read_u32_le(buf, entry + 52)? as usize;
+        anyhow::ensure!(elf_len > 0, "first PD entry has a zero-length ELF");
+        anyhow::ensure!(
+            off.checked_add(elf_off)
+                .and_then(|start| start.checked_add(elf_len))
+                .is_some_and(|end| end <= window.end),
+            "first PD ELF [{elf_off}, {elf_off}+{elf_len}) escapes the search window"
+        );
+        Ok(())
+    }
+}
+
 /// Flip one byte inside a PD's ELF region of the embedded, SIGNATURE-
 /// VERIFIED `.pd_bundle` section nested inside root_task.elf — not the
 /// separate, unverified top-level PD copy that cmd_gen_image.rs also
 /// writes into agentos.img (boot_find_elf() in main.c always resolves the
 /// bundle copy first; per boot_elf_in_verified_bundle(), the root task
 /// refuses to spawn from anywhere else). The byte offset is derived at
-/// boot-artifact-read time from the on-disk headers — top-level header to
-/// find root_task.elf, then a magic-anchored search within it for the
-/// nested bundle header, then that header's own pd_table_off/elf_off
-/// fields — so a layout change shifts the computed offset instead of
-/// silently leaving this probe testing stale bytes.
+/// boot-artifact-read time from the on-disk headers — the board's boot
+/// artifact (see boot_artifact_for_tamper), then a validated magic-anchored
+/// search within it for the nested bundle header (see find_bundle_header),
+/// then that header's own pd_table_off/elf_off fields — so a layout change
+/// shifts the computed offset instead of silently leaving this probe
+/// testing stale bytes.
+///
+/// `board` selects the artifact. It is NOT cosmetic: x86_64 boots
+/// root_task.elf directly and never reads agentos.img, so a board-blind
+/// version of this would tamper a dead file there. See
+/// boot_artifact_for_tamper.
 ///
 /// Returns the tampered PD's name (bytes up to the first NUL, or all 48
 /// bytes if unterminated, exactly as the root task's own name comparison
 /// treats the field).
-fn tamper_bundle_pd_byte(image_path: &Path) -> anyhow::Result<String> {
-    let mut img = std::fs::read(image_path).with_context(|| {
-        format!(
-            "failed to read built image for tampering: {}",
-            image_path.display()
-        )
-    })?;
+fn tamper_bundle_pd_byte(repo_root: &Path, board: &str) -> anyhow::Result<String> {
+    let (path, mut buf, window) = boot_artifact_for_tamper(repo_root, board)?;
+    let bundle_off = find_bundle_header(&buf, window.clone())?;
 
-    let (root_off, root_len) = root_task_region(&img)?;
-    let bundle_rel = find_magic(&img[root_off..root_off + root_len], &BUNDLE_MAGIC_LE)
-        .context("embedded .pd_bundle header not found inside the root_task.elf region")?;
-    let bundle_off = root_off + bundle_rel;
-
-    anyhow::ensure!(
-        img.len() >= bundle_off + 64,
-        "bundle header at {bundle_off} is truncated by image length {}",
-        img.len()
-    );
-    let num_pds = read_u32_le(&img, bundle_off + 12)?;
-    let pd_table_off = read_u32_le(&img, bundle_off + 32)? as usize;
-    anyhow::ensure!(
-        num_pds > 0,
-        "bundle at {bundle_off} declares zero PDs; nothing to tamper"
-    );
-
+    let pd_table_off = read_u32_le(&buf, bundle_off + 32)? as usize;
     let entry_off = bundle_off + pd_table_off; // first PD entry in the table
-    anyhow::ensure!(
-        img.len() >= entry_off + 64,
-        "PD entry table at {entry_off} is truncated by image length {}",
-        img.len()
-    );
-    let name_field = &img[entry_off..entry_off + 48];
+    let name_field = &buf[entry_off..entry_off + 48];
     let name_len = name_field.iter().position(|&b| b == 0).unwrap_or(48);
     let pd_name = String::from_utf8_lossy(&name_field[..name_len]).into_owned();
-    anyhow::ensure!(
-        !pd_name.is_empty(),
-        "PD entry at {entry_off} has an empty name"
-    );
 
-    let elf_off = read_u32_le(&img, entry_off + 48)? as usize;
-    let elf_len = read_u32_le(&img, entry_off + 52)? as usize;
-    anyhow::ensure!(
-        elf_len > 0,
-        "PD '{pd_name}' has a zero-length ELF in the bundle"
-    );
+    let elf_off = read_u32_le(&buf, entry_off + 48)? as usize;
+    let elf_len = read_u32_le(&buf, entry_off + 52)? as usize;
 
-    // Any byte within [elf_off, elf_off+elf_len) suffices per the T3 plan;
-    // pick the midpoint so this is never the first or last byte of the ELF.
+    // find_bundle_header already proved version/num_pds/table/first-entry
+    // coherence and that this ELF region lies inside the search window, so
+    // everything above is in range. The midpoint is picked so the flipped
+    // byte is never the first or last byte of the ELF.
     let target = bundle_off + elf_off + (elf_len / 2);
     anyhow::ensure!(
-        target < bundle_off + elf_off + elf_len && target < img.len(),
+        target < bundle_off + elf_off + elf_len && target < buf.len(),
         "computed tamper offset {target} falls outside PD '{pd_name}' ELF region"
     );
-    img[target] ^= 0xFF;
+    buf[target] ^= 0xFF;
 
-    std::fs::write(image_path, &img)
-        .with_context(|| format!("failed to write tampered image: {}", image_path.display()))?;
+    std::fs::write(&path, &buf)
+        .with_context(|| format!("failed to write tampered artifact: {}", path.display()))?;
+    println!(
+        "[xtask:test] tampered byte {target} of PD '{pd_name}' ({elf_len}-byte ELF at \
+         bundle+{elf_off}, bundle header at {bundle_off}) in {}",
+        path.display()
+    );
     Ok(pd_name)
 }
 
@@ -850,6 +994,81 @@ fn tamper_zero_manifest(image_path: &Path) -> anyhow::Result<()> {
 /// wants set, and the rest explicitly removed — so an anchor variable
 /// already exported in the caller's shell can never redirect a probe to a
 /// tier it did not mean to build.
+/// The boards `--trust-anchor-probe` runs on.
+///
+/// All three embed and verify a signed PD bundle (AGENTOS_HAS_PD_BUNDLE in
+/// main.c is 1 for aarch64, x86_64 and riscv64), so all three compile in a
+/// real tier, a real key and a real gating decision. Before this list
+/// existed only `qemu_virt_aarch64` was ever probed and the tier machinery
+/// on the other two was carried by nothing.
+const TRUST_ANCHOR_BOARDS: [&str; 3] = ["qemu_virt_aarch64", "x86_64_generic", "qemu_virt_riscv64"];
+
+/// Per-board boot-log vocabulary for the trust-anchor probes.
+///
+/// The three boards do not print the same things, and every difference
+/// below is a measured fact about a boot log in this tree, not a guess:
+///
+///   - `completion`: AArch64's "agentOS boot complete" is printed by
+///     **cc_pd** (services/command-console/cc_pd.c), which is in the
+///     AArch64 PD set and in NEITHER the x86_64_generic (5 PDs) nor the
+///     riscv64 (9 PDs) set. Those two must use the root task's own
+///     "[rt] boot complete" instead. Using the AArch64 string on them would
+///     make probes 1/3 time out and probes 2/4's absence assertions pass
+///     vacuously — an absence of a marker that is never printed on a
+///     healthy boot either.
+///   - `loader`: AArch64's loader says "MMU enabled, jumping to seL4...";
+///     the riscv64 loader says "paging enabled, jumping to seL4...".
+///     x86_64 is booted by seL4's multiboot path with no agentOS loader at
+///     all and prints nothing before the root task, which is why its
+///     probe-4 arm is a positive marker instead (see below).
+///   - `refusal`: the Step 0b refusal message, printed only where the
+///     console is already live at Step 0b. On x86_64 Step 0a's
+///     platform_debug_init() has issued the COM1 I/O port cap by then, so
+///     the refusal PRINTS; on AArch64/RISC-V the UART is a mapped frame
+///     that does not exist until Step 3.5, so it does not. See
+///     boot_init_trust_anchor() in main.c.
+///   - `first_rt_output`: the earliest root-task line the board can emit,
+///     used as the thing whose ABSENCE attributes a probe-4 refusal.
+///     AArch64/RISC-V cannot print before the UART mapping, so it is
+///     "[rt] UART mapped"; x86_64 can print from Step 0a onward, so it is
+///     the "[rt] root_task_main:" banner that immediately follows Step 0b.
+struct TrustAnchorMarkers {
+    completion: &'static str,
+    loader: Option<&'static str>,
+    refusal: Option<&'static str>,
+    first_rt_output: &'static str,
+    /// Whether this board's image carries cc_pd, and therefore whether the
+    /// probe-5 inspect snapshot over the CC socket is reachable at all.
+    has_cc_pd: bool,
+}
+
+fn trust_anchor_markers(board: &str) -> anyhow::Result<TrustAnchorMarkers> {
+    Ok(match board {
+        "qemu_virt_aarch64" => TrustAnchorMarkers {
+            completion: "agentOS boot complete",
+            loader: Some("MMU enabled, jumping to seL4..."),
+            refusal: None,
+            first_rt_output: "[rt] UART mapped",
+            has_cc_pd: true,
+        },
+        "qemu_virt_riscv64" => TrustAnchorMarkers {
+            completion: "[rt] boot complete",
+            loader: Some("paging enabled, jumping to seL4..."),
+            refusal: None,
+            first_rt_output: "[rt] UART mapped",
+            has_cc_pd: false,
+        },
+        "x86_64_generic" => TrustAnchorMarkers {
+            completion: "[rt] boot complete",
+            loader: None,
+            refusal: Some("[rt] trust anchor state INVALID"),
+            first_rt_output: "[rt] root_task_main:",
+            has_cc_pd: false,
+        },
+        other => anyhow::bail!("no trust-anchor marker set for board {other}"),
+    })
+}
+
 const ANCHOR_ENV_VARS: [&str; 3] = [
     "AGENTOS_BUNDLE_SIGNING_KEY",
     "AGENTOS_MOK_SIGNING_KEY",
@@ -975,13 +1194,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     );
     anyhow::ensure!(
         args.trust_anchor_probe.is_none()
-            || (args.board == "qemu_virt_aarch64"
+            || (TRUST_ANCHOR_BOARDS.contains(&args.board.as_str())
                 && args.guest_os == "none"
                 && !args.no_build
                 && !args.keep_running),
-        "trust anchor qualification requires a fresh AArch64 GUEST_OS=none image: each \
-         probe builds its own image under a named anchor, so --no-build would boot \
-         whatever tier happened to be on disk and assert against the wrong one"
+        "trust anchor qualification requires a fresh GUEST_OS=none image on one of \
+         {TRUST_ANCHOR_BOARDS:?}: each probe builds its own image under a named anchor, \
+         so --no-build would boot whatever tier happened to be on disk and assert \
+         against the wrong one"
     );
     anyhow::ensure!(
         !(args.assert_inspect
@@ -1485,13 +1705,10 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             .join("agentos.img");
         match probe {
             2 => {
-                let pd_name = tamper_bundle_pd_byte(&image_path).context(
+                let pd_name = tamper_bundle_pd_byte(&repo_root, &args.board).context(
                     "image-verify probe 2: failed to flip a byte in a PD's bundle ELF region",
                 )?;
-                println!(
-                    "[xtask:test] image-verify probe 2: tampered PD '{pd_name}' in {}",
-                    image_path.display()
-                );
+                println!("[xtask:test] image-verify probe 2: tampered PD '{pd_name}'");
                 image_verify_tampered_pd = Some(pd_name);
             }
             3 => {
@@ -1514,20 +1731,15 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     // under development.
     let mut trust_anchor_tampered_pd: Option<String> = None;
     if matches!(args.trust_anchor_probe, Some(2) | Some(3)) {
-        let image_path = repo_root
-            .join("_build")
-            .join(&args.board)
-            .join("agentos.img");
-        let pd_name = tamper_bundle_pd_byte(&image_path).with_context(|| {
+        let pd_name = tamper_bundle_pd_byte(&repo_root, &args.board).with_context(|| {
             format!(
                 "trust-anchor probe {}: failed to flip a byte in a PD's bundle ELF region",
                 args.trust_anchor_probe.unwrap_or(0)
             )
         })?;
         println!(
-            "[xtask:test] trust-anchor probe {}: tampered PD '{pd_name}' in {}",
+            "[xtask:test] trust-anchor probe {}: tampered PD '{pd_name}'",
             args.trust_anchor_probe.unwrap_or(0),
-            image_path.display()
         );
         trust_anchor_tampered_pd = Some(pd_name);
     }
@@ -1924,6 +2136,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     } else if let Some(probe) = args.trust_anchor_probe {
         verify_trust_anchor_probe(
             probe,
+            &args.board,
             &log_path,
             trust_anchor_tampered_pd.as_deref(),
             Duration::from_secs(args.timeout_secs),
@@ -2630,7 +2843,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if result.is_ok() && args.assert_fault_handler {
         result = verify_fault_handler(&log_path, Duration::from_secs(30), &mut qemu);
     }
-    if result.is_ok() && args.trust_anchor_probe == Some(5) {
+    if result.is_ok()
+        && args.trust_anchor_probe == Some(5)
+        // The inspect half of probe 5 reads the tier over the CC socket,
+        // which only exists where cc_pd runs. See the probe-5 comment in
+        // verify_trust_anchor_probe(): x86_64_generic and qemu_virt_riscv64
+        // have no cc_pd in their PD sets and adding one would change a PD
+        // count three tests assert exactly. Those boards get the boot-banner
+        // half, which verify_trust_anchor_probe() already asserted above.
+        && trust_anchor_markers(&args.board)?.has_cc_pd
+    {
         // AOS_ANCHOR_MOK == 2 in contracts/trust_anchor.h; "machine-owner" is
         // aos_anchor_tier_name()'s string for it — the single source for tier
         // names, which inspect_snapshot.c calls rather than carrying a table.
@@ -5471,11 +5693,14 @@ pub fn wait_for_markers(
 /// gating policy.
 fn verify_trust_anchor_probe(
     probe: u8,
+    board: &str,
     log_path: &Path,
     tampered_pd: Option<&str>,
     timeout: Duration,
     qemu: &mut Child,
 ) -> anyhow::Result<String> {
+    let markers = trust_anchor_markers(board)?;
+    let completion = markers.completion;
     const VENDOR_GATING: &str =
         "[rt] TRUST ANCHOR: vendor -- gates boot on a manifest/digest mismatch";
     const MOK_GATING: &str =
@@ -5569,12 +5794,12 @@ fn verify_trust_anchor_probe(
             &[
                 VENDOR_GATING,
                 "[rt] boot manifest OK: signature verified",
-                "agentOS boot complete",
+                completion,
             ],
             timeout,
             qemu,
         )
-        .map(|proof| format!("{proof} (vendor anchor, unmodified image)")),
+        .map(|proof| format!("{proof} (vendor anchor, unmodified image, board {board})")),
 
         // Probe 2 (brief Probe 1, proof half): one flipped byte under the
         // vendor tier refuses the ENTIRE boot and names the PD. This is T3's
@@ -5595,12 +5820,12 @@ fn verify_trust_anchor_probe(
             )?;
             assert_absent_throughout(
                 log_path,
-                &["agentOS boot complete"],
+                &[completion],
                 ABSENCE_WINDOW,
                 qemu,
                 "the vendor anchor reported a tampered PD and then finished booting anyway",
             )?;
-            Ok(format!("{proof}; agentOS boot complete absent"))
+            Ok(format!("{proof}; {completion:?} absent (board {board})"))
         }
 
         // Probe 3 (brief Probe 2): THE probe that distinguishes "reports
@@ -5622,88 +5847,118 @@ fn verify_trust_anchor_probe(
             );
             wait_for_all_markers(
                 log_path,
-                &[
-                    DEV_NOT_GATING,
-                    digest_marker.as_str(),
-                    "agentOS boot complete",
-                ],
+                &[DEV_NOT_GATING, digest_marker.as_str(), completion],
                 timeout,
                 qemu,
             )
             .map(|proof| {
-                format!("{proof} (development anchor: mismatch REPORTED naming {pd_name}, boot COMPLETED)")
+                format!(
+                    "{proof} (development anchor on {board}: mismatch REPORTED naming \
+                     {pd_name}, boot COMPLETED)"
+                )
             })
         }
 
         // Probe 4 (brief Probe 3): a gating tier with its required key absent
         // is refused, not downgraded.
         //
-        // READ THIS BEFORE TRUSTING THIS PROBE. It is the weakest of the five
-        // and its exact strength is:
+        // READ THIS BEFORE TRUSTING THIS PROBE ON AArch64 OR RISC-V. The
+        // probe has TWO shapes and they are not equally strong. Which one
+        // runs is decided by `markers.refusal`, i.e. purely by whether the
+        // board's console is live when boot_init_trust_anchor() runs.
         //
-        // boot_init_trust_anchor() runs at Step 0, before the UART is mapped,
-        // so its diagnostic is dropped and the refusal is SILENT on this
-        // board. That is a trade main.c documents deliberately (check as early
-        // as possible, accept that the refusal cannot be printed), not a
-        // defect introduced here — but it means there is no positive marker to
-        // assert, so what follows is an ABSENCE.
+        // ── Shape A: POSITIVE. x86_64_generic. ───────────────────────────
         //
-        // What is asserted:
-        //   - one positive marker, "MMU enabled, jumping to seL4...", which is
-        //     emitted by the LOADER (kernel/loader/). It establishes that the
-        //     image was built and the loader ran. It does NOT establish that
-        //     seL4 started, or that seL4 started the root task — nothing in
-        //     this log can, because nothing between the loader and Step 1
-        //     prints;
-        //   - the absence, for a window far longer than a healthy boot needs,
-        //     of every root-task marker: "[rt] UART mapped" is the root task's
-        //     FIRST output and comes from Step 1, strictly after Step 0.
+        // Step 0a (main.c) issues the COM1 I/O port cap before Step 0b runs,
+        // so a refusal at Step 0b reaches the serial line. This probe waits
+        // for the refusal message ITSELF -- "[rt] trust anchor state
+        // INVALID ... refusing to start any PD" -- which is a direct,
+        // positive observation of the thing under test. The absence
+        // assertion below is then a SECOND, independent requirement (the
+        // root task must not continue past Step 0b afterwards), not the
+        // whole proof. A seL4 panic, a root-task crash or any other generic
+        // boot break FAILS this shape, because none of them print that line.
         //
-        // So the raw signature "loader marker, then nothing" is also the
-        // signature of a seL4 panic, a root-task crash before Step 1, or any
-        // future regression in the pre-Step-1 path. Two things, and only these
-        // two, make the silence attributable to the anchor state:
+        // ── Shape B: ABSENCE. qemu_virt_aarch64, qemu_virt_riscv64. ──────
+        //
+        // On these two the UART is a device untyped that has to be retyped
+        // into a frame and mapped, which is Step 3.5, so Step 0b's
+        // diagnostic is dropped and the refusal is SILENT. That is a trade
+        // main.c documents deliberately (check as early as possible, accept
+        // that the refusal cannot be printed), not a defect introduced here
+        // -- but it means there is no positive marker to assert, so what
+        // follows is an ABSENCE.
+        //
+        // What Shape B asserts:
+        //   - one positive marker emitted by the LOADER ("MMU enabled,
+        //     jumping to seL4..." on AArch64, "paging enabled, jumping to
+        //     seL4..." on RISC-V). It establishes that the image was built
+        //     and the loader ran. It does NOT establish that seL4 started,
+        //     or that seL4 started the root task — nothing in this log can,
+        //     because nothing between the loader and Step 1 prints;
+        //   - the absence, for a window far longer than a healthy boot
+        //     needs, of every root-task marker: "[rt] UART mapped" is the
+        //     root task's FIRST OUTPUT on both boards and comes strictly
+        //     after Step 0b.
+        //
+        // So Shape B's raw signature "loader marker, then nothing" is also
+        // the signature of a seL4 panic, a root-task crash before Step 1, or
+        // any future regression in the pre-Step-1 path. Two things, and only
+        // these two, make the silence attributable to the anchor state:
         //
         //   1. The CONTROL PASS run by this probe itself (see the probe-4
         //      branch near the top of run()): the identical build and boot,
         //      differing ONLY by TRUST_ANCHOR_INCOHERENT_PROBE=1, must reach
-        //      "agentOS boot complete" first. A generic boot break fails the
-        //      control, so it cannot be mistaken for the refusal. This is
-        //      carried by the probe, not borrowed from a sibling's ordering in
-        //      `make test-trust-anchor`.
-        //   2. The post-build re-read of the generated header (see the probe-4
-        //      branch in the build step), which proves the incoherent state
-        //      was actually compiled in, so this cannot pass against an image
-        //      that was never doctored.
+        //      completion first. A generic boot break fails the control, so
+        //      it cannot be mistaken for the refusal. This is carried by the
+        //      probe, not borrowed from a sibling's ordering in `make
+        //      test-trust-anchor`.
+        //   2. The post-build re-read of the generated header (see the
+        //      probe-4 branch in the build step), which proves the
+        //      incoherent state was actually compiled in, so this cannot
+        //      pass against an image that was never doctored.
         //
-        // The honest fix is a positive refusal marker, which requires the
-        // Step 0 check to emit through a channel live at Step 0, or to be
-        // re-ordered after platform_debug_init(). That is a change to Task 2's
-        // deliberate ordering in main.c and is deliberately NOT made here.
+        // Both of those still run under Shape A. Shape A is strictly
+        // stronger; it is not available on AArch64/RISC-V without moving the
+        // Step 0b check after their Step 3.5 UART mapping, which would let
+        // several more boot steps run before the anchor is validated. That
+        // trade is deliberately NOT made.
         4 => {
-            let proof = wait_for_all_markers(
-                log_path,
-                &["MMU enabled, jumping to seL4..."],
-                timeout,
-                qemu,
-            )?;
+            let positive: Vec<&str> = match (markers.refusal, markers.loader) {
+                (Some(refusal), _) => vec![refusal],
+                (None, Some(loader)) => vec![loader],
+                (None, None) => anyhow::bail!(
+                    "board {board} has neither a Step 0b refusal marker nor a loader \
+                     marker, so probe 4 would assert an absence with no positive \
+                     anchor at all -- that is not a probe. Add one to \
+                     trust_anchor_markers() before enabling probe 4 here."
+                ),
+            };
+            let proof = wait_for_all_markers(log_path, &positive, timeout, qemu)?;
+            let mut forbidden = vec![
+                markers.first_rt_output,
+                "[rt] TRUST ANCHOR:",
+                "[rt] starting",
+                completion,
+            ];
+            forbidden.retain(|m| !positive.contains(m));
             assert_absent_throughout(
                 log_path,
-                &[
-                    "[rt] UART mapped",
-                    "[rt] TRUST ANCHOR:",
-                    "[rt] starting",
-                    "agentOS boot complete",
-                ],
+                &forbidden,
                 ABSENCE_WINDOW,
                 qemu,
-                "a gating trust anchor with no key produced root-task output: the root \
-                 task continued past Step 0 instead of refusing",
+                "a gating trust anchor with no key produced root-task output past the \
+                 refusal: the root task continued past Step 0b instead of stopping",
             )?;
             Ok(format!(
-                "{proof} (loader-stage marker); QEMU stayed up and produced no root-task \
-                 output for {}s afterwards, and the control pass of the same build \
-                 without the flag booted to completion",
+                "{proof} ({}); QEMU stayed up and produced none of {forbidden:?} for {}s \
+                 afterwards, and the control pass of the same build without the flag \
+                 booted to completion (board {board})",
+                if markers.refusal.is_some() {
+                    "POSITIVE Step 0b refusal marker"
+                } else {
+                    "loader-stage marker only -- see Shape B above"
+                },
                 ABSENCE_WINDOW.as_secs()
             ))
         }
@@ -5711,15 +5966,37 @@ fn verify_trust_anchor_probe(
         // Probe 5 (brief Probe 4): the tier is visible at runtime. Built as a
         // machine-owner image standing alone — deliberately NOT the vendor
         // tier that make test-inspect already asserts, so this shows the
-        // inspect field tracking the image it was built from rather than
+        // reported tier tracking the image it was built from rather than
         // reporting a constant that happens to match.
-        5 => wait_for_all_markers(
-            log_path,
-            &[MOK_GATING, "agentOS boot complete"],
-            timeout,
-            qemu,
-        )
-        .map(|proof| format!("{proof} (machine-owner anchor, vendor key absent)")),
+        //
+        // TWO HALVES, and only AArch64 gets both:
+        //   - the BOOT BANNER half, asserted here on every board: a
+        //     machine-owner build boots and the running root task names
+        //     machine-owner as the gating tier. Combined with probes 1 and 3
+        //     (vendor and none), this shows three distinct compiled tiers
+        //     each reported as themselves, so the banner tracks the build.
+        //   - the INSPECT SNAPSHOT half, asserted by
+        //     verify_reported_anchor_tier() in run() and reachable ONLY on
+        //     AArch64. It reads the tier over the CC socket, which is served
+        //     by cc_pd -- a PD that is in the AArch64 default set and in
+        //     neither the x86_64_generic 5-PD set nor the riscv64 9-PD set.
+        //     Adding cc_pd to either would change a PD count that
+        //     make test-authority / the x86_64 boot test / make test-riscv64
+        //     assert exactly, so it is NOT done and the half is skipped
+        //     there. `markers.has_cc_pd` is the single place that decides.
+        5 => {
+            wait_for_all_markers(log_path, &[MOK_GATING, completion], timeout, qemu).map(|proof| {
+                format!(
+                    "{proof} (machine-owner anchor, vendor key absent, board {board}{})",
+                    if markers.has_cc_pd {
+                        ""
+                    } else {
+                        "; boot-banner half only -- no cc_pd in this PD set, so no inspect \
+                         snapshot to read"
+                    }
+                )
+            })
+        }
 
         other => anyhow::bail!("unknown trust anchor probe {other}"),
     }
