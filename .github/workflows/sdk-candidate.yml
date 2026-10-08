@@ -64,10 +64,30 @@ jobs:
             SEL4_SDK="$GITHUB_WORKSPACE/_build/sdk-candidate/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2" \
             SDK_CANDIDATE_MICROKIT_SOURCE="$RUNNER_TEMP/microkit-source" \
             SDK_CANDIDATE_SEL4_SOURCE="$RUNNER_TEMP/sel4-source" 2>&1 | tee _build/sdk-evidence/package.log
+          # Install the archive this run just built and verify it against the
+          # digest this run just computed. That is a packaging-integrity check
+          # of the artifact in hand.
+          #
+          # It deliberately does NOT reuse SDK_CANDIDATE_ARCHIVE_SHA256, which
+          # names the asset `make sdk` downloads from the release today. While a
+          # board is being added, the two necessarily differ, and asserting they
+          # are equal here would fail a build that is behaving correctly. The
+          # comparison against the published pin is made explicitly by
+          # sdk-candidate-package above, which prints both digests and emits a
+          # ::warning:: naming the republication step when they diverge.
+          built_sha="$(sha256sum _build/sdk-candidate-package/agentos-sdk-targets.tar.gz | cut -d' ' -f1)"
           make sdk GUEST_OS=none SEL4_SDK_VERSION=2.3.1-agentos-e60776ac-cr2 \
             SEL4_SDK="$RUNNER_TEMP/sdk-installed" \
+            SDK_CANDIDATE_ARCHIVE_SHA256="$built_sha" \
             MICROKIT_SDK_URL="file://$GITHUB_WORKSPACE/_build/sdk-candidate-package/agentos-sdk-targets.tar.gz" \
             2>&1 | tee _build/sdk-evidence/install.log
+          # The installed SDK must carry every board the pipeline builds, or
+          # packaging silently dropped one.
+          for board in $(sed -n 's/^SDK_CANDIDATE_BOARDS := //p' tools/sdk/candidate.mk); do
+            test -s "$RUNNER_TEMP/sdk-installed/board/$board/release/elf/sel4.elf" \
+              || { echo "ERROR: installed SDK has no kernel for $board"; exit 1; }
+            echo "installed: $board"
+          done
           cd _build/sdk-candidate-package
           sha256sum -c SHA256SUMS
       - name: Retain distribution artifacts

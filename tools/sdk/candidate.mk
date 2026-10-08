@@ -6,6 +6,18 @@ SDK_CANDIDATE_SEL4_SOURCE ?=
 SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
+# Digest of the PUBLISHED release asset that `make sdk` downloads, NOT of
+# whatever the pipeline currently builds. Makefile's `sdk` recipe checks a
+# fresh download against it, so changing this value breaks `make sdk` for
+# everyone until the matching asset is actually published.
+#
+# Adding a board to SDK_CANDIDATE_BOARDS necessarily changes what
+# sdk-candidate-package produces, so this pin and the build diverge from the
+# moment the board lands until the new archive is published and this value
+# updated — in that order, in one change. Until then the sdk-candidate
+# workflow reports the divergence and prints the digest to publish, rather
+# than asserting an equality that is knowingly false or silently dropping the
+# check.
 SDK_CANDIDATE_ARCHIVE_SHA256 := fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b
 SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/_build/sdk-candidate-package
 
@@ -75,6 +87,24 @@ sdk-candidate-package: sdk-candidate-check
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/normalize-header.c" \
 		"$(SDK_CANDIDATE_REPO)/docs/x86-cr2-candidate.md" "$(SDK_CANDIDATE_PACKAGE_DIR)/"
 	cd "$(SDK_CANDIDATE_PACKAGE_DIR)" && sha256sum *.tar.gz *.patch *.sha256 *.mk *.md *.txt *.c > SHA256SUMS
+	@# Print the archive digest. It is the value SDK_CANDIDATE_ARCHIVE_SHA256
+	@# must carry once this archive is published, and it was previously only
+	@# written to a file inside a build directory -- so the one number a
+	@# publisher needs never appeared in the log they were reading.
+	@set -eu; d="$$(sha256sum "$(SDK_CANDIDATE_PACKAGE_DIR)/agentos-sdk-targets.tar.gz" | cut -d' ' -f1)"; \
+	echo "Archive digest: $$d  (agentos-sdk-targets.tar.gz)"; \
+	if [ "$$d" = "$(SDK_CANDIDATE_ARCHIVE_SHA256)" ]; then \
+		echo 'Matches SDK_CANDIDATE_ARCHIVE_SHA256: this archive reproduces the published asset.'; \
+	else \
+		echo "::warning title=SDK archive differs from the published pin::This build" \
+		     "produced $$d but SDK_CANDIDATE_ARCHIVE_SHA256 names" \
+		     "$(SDK_CANDIDATE_ARCHIVE_SHA256), which is the asset make sdk downloads" \
+		     "today. Expected while a board is being added. To close it: publish this" \
+		     "agentos-sdk-targets.tar.gz as the release asset AND set" \
+		     "SDK_CANDIDATE_ARCHIVE_SHA256 to $$d, in that order. Until both are done," \
+		     "make sdk still installs the older board set."; \
+		echo "SDK archive digest differs from the published pin (see the warning above)."; \
+	fi
 	@echo 'Candidate artifacts packaged locally; publication and default adoption remain separate.'
 
 # Check the selected installed candidate before accepting it as a build input.
