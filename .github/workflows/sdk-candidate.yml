@@ -69,8 +69,7 @@ jobs:
         run: |
           make sdk-candidate-package GUEST_OS=none \
             SEL4_SDK="$GITHUB_WORKSPACE/_build/sdk-candidate/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2" \
-            SDK_CANDIDATE_MICROKIT_SOURCE="$RUNNER_TEMP/microkit-source" \
-            SDK_CANDIDATE_SEL4_SOURCE="$RUNNER_TEMP/sel4-source" 2>&1 | tee _build/sdk-evidence/package.log
+            2>&1 | tee _build/sdk-evidence/package.log
           # Install the archive this run just built and verify it against the
           # digest this run just computed. That is a packaging-integrity check
           # of the artifact in hand.
