@@ -120,13 +120,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/superpowers/specs/2026-10-06-riscv-hypervisor-fork-feasibility.md`.
   `guest_vmm.c`'s `__riscv` arm is a same-privilege `jalr` with
   `_guest_kernel_image` permanently NULL and is not guest support.
-- **The riscv64 boot proof is not yet a CI gate.** The `os-claim-gate` riscv64
-  step exists and skips loudly — a warning annotation plus a NOT RUN line in
-  the summary — because the published SDK release asset predates the
-  `candidate.mk` change and carries no `qemu_virt_riscv64` board. It becomes a
-  real gate once the `sdk-candidate` workflow is re-run and its artifact
-  republished. riscv64 *compile and link* is covered on every CI run in the
-  meantime.
+- **`make test-riscv64` run from a developer's `make sdk` still skips.** In CI
+  it is a real gate: `os-claim-gate` installs the artifact the same workflow
+  run built, which now carries `qemu_virt_riscv64`, and the step reports
+  `9 of 9 PDs started, [rt] boot complete, 0 known fault report(s)`. But
+  `make sdk` fetches the *published* release asset, which predates the board,
+  so the target's loud-skip guard fires locally until that asset is
+  republished. Use `make test-riscv64 SEL4_SDK_VERSION=2.1.0` meanwhile.
 - **The packaged SDK archive no longer matches `SDK_CANDIDATE_ARCHIVE_SHA256`,
   and will not until it is republished.** That pin names the release asset
   `make sdk` downloads; adding a board necessarily changes what the pipeline
@@ -134,7 +134,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   publication would break `make sdk` for every developer. `sdk-candidate`
   reports the divergence every run with both digests and the two-step fix
   (publish the archive, *then* set the pin). The same republication is what
-  turns the `os-claim-gate` riscv64 step from a loud skip into a real gate.
+  makes a developer's `make sdk` carry the riscv64 board.
 - **The T10 trust-anchor tier model is proven on one architecture, not
   three.** All five `make test-trust-anchor` probes run on
   `qemu_virt_aarch64`. riscv64 now compiles in a real tier, key and gating

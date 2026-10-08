@@ -557,26 +557,25 @@ jobs:
       # and requires the signed PD manifest to verify and EVERY PD in
       # src/system_desc_riscv64.c to start (exact count, not a marker).
       #
-      # tools/sdk/candidate.mk NOW LISTS qemu_virt_riscv64 and the
-      # sdk-candidate workflow now installs a riscv64 cross-GCC, so the
-      # pipeline produces a riscv64 kernel. But install-sdk fetches the
-      # PUBLISHED artifact, which was built before that change: until the
-      # sdk-candidate job is re-run and its artifact re-published as the
-      # pinned release asset, the installed SDK still has no
-      # qemu_virt_riscv64 board -- no sel4.elf and no libsel4 headers for it,
-      # which is a build failure, not a test failure.
+      # This step RUNS FOR REAL. install-sdk installs the sdk-candidate
+      # artifact THIS workflow run just built, and tools/sdk/candidate.mk now
+      # lists qemu_virt_riscv64, so that SDK carries the board. riscv64 boots
+      # here alongside aarch64 and x86_64 and a broken riscv64 fails this job.
       #
-      # So this step still skips LOUDLY: a GitHub warning annotation, and the
-      # summary below reporting riscv64 as NOT RUN. It never reports a pass it
-      # did not earn. The moment the installed SDK carries the board the proof
-      # runs for real and a broken riscv64 fails this job -- the condition
-      # tests the SDK's contents, never the test's result.
+      # The guard below is kept, not vestigial: if this job is ever handed an
+      # SDK without the board -- a hand-set SEL4_SDK, a changed install path,
+      # the board dropped from candidate.mk -- it skips LOUDLY, with a GitHub
+      # warning annotation and a NOT RUN line in the summary, rather than
+      # silently reporting a pass it did not earn. The condition tests the
+      # SDK's contents; it never looks at the test's result.
       #
-      # riscv64 is NOT uncovered in the meantime: the riscv64-root-task-build
-      # job below builds the pinned riscv64 board itself and compiles and
-      # links root_task.elf on every run, and fails the workflow when riscv64
-      # stops building. What is missing until republication is the BOOT proof,
-      # not the build proof.
+      # The same guard still fires for a developer, because `make sdk` fetches
+      # the PUBLISHED release asset, which predates the board. That closes
+      # when the sdk-candidate artifact is republished.
+      #
+      # riscv64 compile-and-link is covered separately and unconditionally by
+      # the riscv64-root-task-build job below, which builds the pinned riscv64
+      # board from source itself.
       - name: GATE — make test-riscv64 (exact PD count)
         timeout-minutes: 15
         run: |
@@ -585,10 +584,11 @@ jobs:
           if [ ! -d "$sdk/board/qemu_virt_riscv64" ]; then
             echo "::warning title=riscv64 boot gate not run::The installed Microkit" \
                  "SDK ($sdk) has no qemu_virt_riscv64 board, so make test-riscv64" \
-                 "cannot build. tools/sdk/candidate.mk now lists the board; the" \
-                 "published SDK release asset still has to be rebuilt by the" \
-                 "sdk-candidate workflow and republished. riscv64 BOOT is NOT" \
-                 "proven by this run. riscv64 BUILD is, by the" \
+                 "cannot build. This is unexpected: tools/sdk/candidate.mk lists the" \
+                 "board and install-sdk installs this run's own artifact, so the" \
+                 "board should be present -- check whether it was dropped from" \
+                 "candidate.mk or whether SEL4_SDK points somewhere else. riscv64" \
+                 "BOOT is NOT proven by this run. riscv64 BUILD is, by the" \
                  "riscv64-root-task-build job."
             echo "riscv64=not-run" >> "$GITHUB_ENV"
             exit 0
@@ -605,10 +605,10 @@ jobs:
             echo "   - riscv64 GUEST_OS=none (target/QEMU, exact PD count)"
           else
             echo "   - riscv64: NOT RUN (installed SDK has no qemu_virt_riscv64"
-            echo "     board; candidate.mk lists it, but the published SDK asset"
-            echo "     has not been rebuilt yet). Nothing in THIS job proves"
-            echo "     anything about riscv64 booting. The riscv64-root-task-build"
-            echo "     job does prove riscv64 still compiles and links."
+            echo "     board, which is unexpected here -- see the warning above)."
+            echo "     Nothing in THIS job proves anything about riscv64 booting."
+            echo "     The riscv64-root-task-build job does prove riscv64 still"
+            echo "     compiles and links."
           fi
           echo "   - CC operator authority envelope (admit / refuse / exact code)"
           echo "   - PD image verification (control / tampered-PD refusal / stripped-manifest refusal)"

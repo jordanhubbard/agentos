@@ -942,14 +942,13 @@ test-riscv64:
 		echo "  !! riscv64 boot proof NOT RUN -- nothing here proves riscv64 boots."; \
 		echo "  !! The SDK at $(SEL4_SDK)"; \
 		echo "  !! carries no qemu_virt_riscv64 board, so this target cannot build."; \
-		echo "  !! tools/sdk/candidate.mk DOES now list qemu_virt_riscv64, so the"; \
-		echo "  !! pipeline produces a riscv64 kernel -- but the published SDK"; \
-		echo "  !! release asset predates that change and has to be rebuilt by the"; \
-		echo "  !! sdk-candidate workflow and republished before this SDK gets it."; \
+		echo "  !! tools/sdk/candidate.mk DOES now list qemu_virt_riscv64, and in"; \
+		echo "  !! CI this proof RUNS: os-claim-gate installs the artifact the same"; \
+		echo "  !! workflow run built, which carries the board. What you have here"; \
+		echo "  !! is the PUBLISHED release asset, which predates that change and"; \
+		echo "  !! has to be rebuilt by the sdk-candidate workflow and republished."; \
 		echo "  !! Until then, run it against a local SDK that has the board:"; \
 		echo "  !!     make test-riscv64 SEL4_SDK_VERSION=2.1.0"; \
-		echo "  !! riscv64 compile+link IS covered on every CI run by the"; \
-		echo "  !! riscv64-root-task-build job, which builds the board itself."; \
 		echo ""; \
 		exit 0; \
 	fi; \

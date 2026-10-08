@@ -1738,16 +1738,28 @@ verify and the exact declared PD count to start, and treats an `ELF digest
 MISMATCH` line as an immediate failure. The RISC-V tampered-image refusal
 quoted above is a manual run, not an automated assertion.
 
-Neither riscv64 result is a CI gate yet. The `os-claim-gate` riscv64 step
-exists and skips **loudly** — a GitHub warning annotation plus a NOT RUN line
-in the job summary, never a quiet pass — because the published SDK release
-asset predates `tools/sdk/candidate.mk` gaining the `qemu_virt_riscv64` board
-and so contains no riscv64 kernel or headers to build against. It becomes a
-real gate the moment that artifact is rebuilt by the `sdk-candidate` workflow
-and republished; its condition tests the SDK's contents, never the test's
-result. What *is* covered on every CI run is riscv64 compile-and-link: the
-`riscv64-root-task-build` job builds the pinned riscv64 board itself and fails
-the workflow if `root_task.elf` does not compile and link.
+The riscv64 positive result **is** a CI gate. The `os-claim-gate` job installs
+the SDK artifact the same workflow run just built, and that artifact now
+carries `qemu_virt_riscv64`, so its `make test-riscv64` step runs for real
+alongside the aarch64 and x86_64 boot gates and reports
+`riscv64: signed PD manifest verified, 9 of 9 PDs started, [rt] boot complete,
+0 known fault report(s)`.
+
+The step retains its guard, and the guard still matters: it skips **loudly** —
+a GitHub warning annotation plus a NOT RUN line in the job summary, never a
+quiet pass — if it is ever handed an SDK without the board. The same guard
+exists in the `test-riscv64` target itself, where it does fire today for a
+developer who ran `make sdk`: that fetches the *published* release asset, which
+predates `tools/sdk/candidate.mk` gaining the board. Running the proof locally
+needs an SDK that has it (`make test-riscv64 SEL4_SDK_VERSION=2.1.0`) until
+that asset is republished. The guard tests the SDK's contents, never the test's
+result, so it cannot report a pass it did not earn.
+
+riscv64 compile-and-link is covered separately and unconditionally by the
+`riscv64-root-task-build` job, which builds the pinned riscv64 board from
+source itself and fails the workflow if `root_task.elf` does not compile and
+link — the backstop for the class of breakage that left riscv64 unbuildable
+unnoticed.
 
 `make test-trust-anchor` boots the tier behaviour itself, each probe on its own
 freshly built image: the vendor anchor booting an unmodified image and refusing
