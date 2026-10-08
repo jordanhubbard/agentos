@@ -150,8 +150,13 @@ sdk-candidate:
 	cd "$(SDK_CANDIDATE_DIR)/microkit" && "$(SDK_CANDIDATE_PYTHON)" build_sdk.py \
 		--sel4 ../sel4 --boards $(SDK_CANDIDATE_BOARDS_CSV) \
 		--configs release --gcc-toolchain-prefix-aarch64 aarch64-linux-gnu \
-		--gcc-toolchain-prefix-riscv64 riscv64-linux-gnu \
 		--skip-tool --skip-initialiser --skip-docs --skip-tar --version $(SDK_CANDIDATE_VERSION)
+# No --gcc-toolchain-prefix-riscv64: build_sdk.py's default for RISC-V is the
+# bare-metal riscv64-unknown-elf triple, and that is the right one. Overriding
+# it to riscv64-linux-gnu the way aarch64 is overridden fails: Ubuntu's
+# riscv64-linux-gnu GCC defaults to PIE, so Microkit's own loader crt0.S links
+# with "dangerous relocation: The addend isn't allowed for R_RISCV_GOT_HI20".
+# The seL4 kernel itself builds either way; the loader does not.
 	$(MAKE) sdk-candidate-check SEL4_SDK="$(SDK_CANDIDATE_DIR)/microkit/release/microkit-sdk-$(SDK_CANDIDATE_VERSION)"
 	@echo 'Candidate built; runtime acceptance and default SDK adoption remain separate.'
 	@echo 'SEL4_SDK=$(SDK_CANDIDATE_DIR)/microkit/release/microkit-sdk-$(SDK_CANDIDATE_VERSION)'

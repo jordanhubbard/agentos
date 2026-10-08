@@ -714,12 +714,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build python3-venv libxml2-utils \
-            gcc-13-riscv64-linux-gnu binutils-riscv64-linux-gnu \
+            gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf \
             clang lld llvm device-tree-compiler qemu-system-misc curl
-          mkdir -p "$RUNNER_TEMP/sdk-toolchain"
-          ln -s /usr/bin/riscv64-linux-gnu-gcc-13 "$RUNNER_TEMP/sdk-toolchain/riscv64-linux-gnu-gcc"
-          ln -s /usr/bin/riscv64-linux-gnu-cpp-13 "$RUNNER_TEMP/sdk-toolchain/riscv64-linux-gnu-cpp"
-          echo "$RUNNER_TEMP/sdk-toolchain" >> "$GITHUB_PATH"
           python3 -m venv "$RUNNER_TEMP/sdk-venv"
           "$RUNNER_TEMP/sdk-venv/bin/pip" install -r tools/sdk/python-requirements.txt
 
@@ -750,7 +746,6 @@ jobs:
           "$RUNNER_TEMP/sdk-venv/bin/python" build_sdk.py \
             --sel4 "$RUNNER_TEMP/sel4-source" \
             --boards qemu_virt_riscv64 --configs release \
-            --gcc-toolchain-prefix-riscv64 riscv64-linux-gnu \
             --skip-tool --skip-initialiser --skip-docs --skip-tar \
             --version "$SDK_VERSION"
           sdk="$RUNNER_TEMP/microkit-source/release/microkit-sdk-$SDK_VERSION"
@@ -768,14 +763,14 @@ jobs:
           set -euo pipefail
           elf=_build/qemu_virt_riscv64/root_task.elf
           test -s "$elf" || { echo "FAIL: $elf was not produced"; exit 1; }
-          riscv64-linux-gnu-readelf -h "$elf"
-          riscv64-linux-gnu-readelf -h "$elf" | grep -q 'Machine: *RISC-V' \
+          riscv64-unknown-elf-readelf -h "$elf"
+          riscv64-unknown-elf-readelf -h "$elf" | grep -q 'Machine: *RISC-V' \
             || { echo "FAIL: $elf is not a RISC-V ELF"; exit 1; }
-          riscv64-linux-gnu-readelf -h "$elf" | grep -q 'Type: *EXEC' \
+          riscv64-unknown-elf-readelf -h "$elf" | grep -q 'Type: *EXEC' \
             || { echo "FAIL: $elf is not a linked executable"; exit 1; }
           # Guard against a link that "succeeded" over nothing: require the
           # root task's own entry point and main to be defined in the image.
-          riscv64-linux-gnu-nm "$elf" > "$RUNNER_TEMP/rt.syms"
+          riscv64-unknown-elf-nm "$elf" > "$RUNNER_TEMP/rt.syms"
           grep -qE '^[0-9a-f]+ [Tt] _start$' "$RUNNER_TEMP/rt.syms" \
             || { echo "FAIL: _start is not defined in $elf"; exit 1; }
           grep -qE '^[0-9a-f]+ [Tt] root_task_main$' "$RUNNER_TEMP/rt.syms" \
