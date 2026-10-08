@@ -1180,6 +1180,17 @@ shape as aarch64. `virtio_blk` owns the host virtio-mmio block transport at
 exact count plus manifest verification and `[rt] boot complete`, so a riscv64
 image cannot repeat the x86_64 pattern of reaching a boot marker with zero PDs.
 
+riscv64 is also compiled by CI on every run, which it was not before. The
+`riscv64-root-task-build` job builds the pinned seL4 riscv64 board from the
+same commits and the same single patch `tools/sdk/candidate.mk` uses, then
+compiles every riscv64 PD and links `root_task.elf`, asserting the linked
+artifact is an EXEC RISC-V ELF defining `_start` and `root_task_main` and
+carrying the embedded PD bundle. riscv64 had been unbuildable for an unknown
+length of time behind one duplicate `case` label — correct on AArch64, a hard
+error on RISC-V — precisely because no CI job ever compiled it. That job is
+not a boot proof; `make test-riscv64` is, and its CI status is described under
+"Protection-domain image verification" above.
+
 Two absences are deliberate and are the next pieces of riscv64 device work:
 
 - **No serial driver PD.** `services/serial-mux/serial_pd.c` is an ARM PL011
@@ -1726,6 +1737,17 @@ every run instead: `make test-riscv64` requires the manifest signature to
 verify and the exact declared PD count to start, and treats an `ELF digest
 MISMATCH` line as an immediate failure. The RISC-V tampered-image refusal
 quoted above is a manual run, not an automated assertion.
+
+Neither riscv64 result is a CI gate yet. The `os-claim-gate` riscv64 step
+exists and skips **loudly** — a GitHub warning annotation plus a NOT RUN line
+in the job summary, never a quiet pass — because the published SDK release
+asset predates `tools/sdk/candidate.mk` gaining the `qemu_virt_riscv64` board
+and so contains no riscv64 kernel or headers to build against. It becomes a
+real gate the moment that artifact is rebuilt by the `sdk-candidate` workflow
+and republished; its condition tests the SDK's contents, never the test's
+result. What *is* covered on every CI run is riscv64 compile-and-link: the
+`riscv64-root-task-build` job builds the pinned riscv64 board itself and fails
+the workflow if `root_task.elf` does not compile and link.
 
 `make test-trust-anchor` boots the tier behaviour itself, each probe on its own
 freshly built image: the vendor anchor booting an unmodified image and refusing
