@@ -82,7 +82,17 @@ sdk-candidate-package: sdk-candidate-check
 sdk-candidate-check:
 	@test "$$(cat "$(SEL4_SDK)/VERSION")" = "$(SDK_CANDIDATE_VERSION)" || \
 		{ echo 'ERROR: candidate SDK VERSION does not match the qualified pin'; exit 1; }
-	@cd "$(SEL4_SDK)" && sha256sum -c "$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"
+	@# --ignore-missing, paired with the coverage check below.  cr2-kernels.sha256
+	@# is the manifest for the FULL board set; an SDK artifact published before a
+	@# board was added simply does not contain that board's files, and without
+	@# this flag sha256sum fails on them and blocks every build on every
+	@# architecture.  The flag alone would be a hole -- it would also pass an SDK
+	@# missing everything -- which is why the loop below separately requires each
+	@# board that IS present to be listed here, and requires at least one.
+	@# Together: listed and present must match; present and unlisted is refused;
+	@# listed and absent is the only thing skipped.
+	@cd "$(SEL4_SDK)" && sha256sum -c --ignore-missing \
+		"$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"
 	@# `sha256sum -c` only checks the lines it is given.  A board built into
 	@# the SDK but absent from cr2-kernels.sha256 would therefore sail through
 	@# the line above with its kernel completely unhashed -- the exact silent
@@ -100,10 +110,11 @@ sdk-candidate-check:
 	@# there and is unhashed, and that is exactly what this rejects.  The
 	@# sdk-candidate build produces the board, so the check fires for real.
 	@set -eu; hashes="$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"; \
-	missing=0; \
+	missing=0; present=0; \
 	for board in $(SDK_CANDIDATE_BOARDS); do \
 		rel="board/$$board/release/elf/sel4.elf"; \
 		test -s "$(SEL4_SDK)/$$rel" || continue; \
+		present=$$((present + 1)); \
 		if ! grep -q "  $$rel\$$" "$$hashes"; then \
 			missing=1; \
 			echo "ERROR: $$rel is present in this SDK but has no recorded hash"; \
@@ -113,7 +124,10 @@ sdk-candidate-check:
 		fi; \
 	done; \
 	test "$$missing" = 0 || \
-		{ echo 'Record the lines above, then re-run; do not drop the board instead.'; exit 1; }
+		{ echo 'Record the lines above, then re-run; do not drop the board instead.'; exit 1; }; \
+	test "$$present" -ge 1 || \
+		{ echo 'ERROR: this SDK contains no kernel for any board in SDK_CANDIDATE_BOARDS,'; \
+		  echo '       so --ignore-missing above verified nothing at all.'; exit 1; }
 	@for board in $(SDK_CANDIDATE_BOARDS); do \
 		test -d "$(SEL4_SDK)/board/$$board" || continue; \
 		for header in sel4/sel4.h kernel/gen_config.h; do \
