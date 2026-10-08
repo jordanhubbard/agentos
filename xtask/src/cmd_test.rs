@@ -2437,7 +2437,7 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 })
             }
         } else if args.board == "x86_64_generic" {
-            wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs))
+            wait_for_x86_reduced_smoke(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
         } else if args.board == "qemu_virt_riscv64" {
             wait_for_riscv64_pd_set(&log_path, Duration::from_secs(args.timeout_secs), &mut qemu)
         } else {
@@ -5886,9 +5886,11 @@ fn wait_for_emulated_net(
  * system_desc_riscv64.c declares, written out as a literal exactly as
  * verify_inspect()'s `count == 15` is for AArch64. Changing the riscv64
  * descriptor must force someone to come here and change this number: a boot
- * marker on its own proves nothing, which x86_64_generic demonstrates by
- * reaching "[rt] boot complete" with an entirely empty descriptor
- * (system_desc_x86_64.c wraps all of it in #if defined(AGENTOS_X86_VTX)).
+ * marker on its own proves nothing, which x86_64_generic used to demonstrate
+ * by reaching "[rt] boot complete" with an entirely empty descriptor
+ * (system_desc_x86_64.c wrapped all of it in #if defined(AGENTOS_X86_VTX)).
+ * That is fixed — see X86_64_EXPECTED_PDS below, which is the same assertion
+ * for x86_64.
  */
 const RISCV64_EXPECTED_PDS: usize = 9;
 
@@ -5927,10 +5929,17 @@ const RISCV64_EXPECTED_FAULTS: usize = 0;
 /*
  * Lines that mean the boot has already failed. Seeing any of these ends the
  * run immediately with the offending line, instead of sitting until the
- * harness timeout: a riscv64 image whose descriptor and PD bundle disagree
- * used to burn the full --timeout-secs and then report only "timeout".
+ * harness timeout: an image whose descriptor and PD bundle disagree used to
+ * burn the full --timeout-secs and then report only "timeout".
+ *
+ * Shared by the riscv64 and x86_64_generic PD-set proofs. Every line here is
+ * architecture-neutral in the sense that matters: it is a root-task refusal,
+ * and a refusal means the declared PD set was not started. "no host NIC MMIO
+ * path on this target" is in fact the x86_64-without-PCI message (main.c's
+ * net_pd arm), which is exactly why neither descriptor may list net_pd on a
+ * board that cannot back it.
  */
-const RISCV64_REFUSAL_MARKERS: &[&str] = &[
+const BOOT_REFUSAL_MARKERS: &[&str] = &[
     "NOT FOUND",
     "refusing boot",
     "refusing startup",
@@ -5966,7 +5975,7 @@ fn wait_for_riscv64_pd_set(
 
         if let Some(line) = accumulated
             .lines()
-            .find(|line| RISCV64_REFUSAL_MARKERS.iter().any(|m| line.contains(m)))
+            .find(|line| BOOT_REFUSAL_MARKERS.iter().any(|m| line.contains(m)))
         {
             anyhow::bail!(
                 "riscv64 boot refused after {} of {RISCV64_EXPECTED_PDS} PDs: {}",
@@ -6016,17 +6025,110 @@ fn wait_for_riscv64_pd_set(
     ))
 }
 
-fn wait_for_x86_reduced_smoke(log_path: &Path, timeout: Duration) -> anyhow::Result<String> {
-    let marker = wait_for_markers(log_path, &["[rt] boot complete"], timeout)?;
-    std::thread::sleep(Duration::from_secs(2));
+/*
+ * x86_64_generic PD-set proof.
+ *
+ * The number of protection domains kernel/agentos-root-task/src/
+ * system_desc_x86_64.c declares in its non-VTX (`#else`) branch, written out
+ * as a literal exactly as RISCV64_EXPECTED_PDS is for riscv64 and
+ * verify_inspect()'s `count == 15` is for AArch64. Changing the x86_64
+ * descriptor must force someone to come here and change this number.
+ *
+ * This existed as `0` in all but name until now. The entire x86_64 PD table
+ * was inside `#if defined(AGENTOS_X86_VTX)` and x86_64_generic is not a VTX
+ * board, so the image started ZERO protection domains — and this function
+ * asserted only "[rt] boot complete" plus the absence of fault reports, both
+ * of which a zero-PD image satisfies trivially (an image with no PDs has
+ * nothing that can fault). The required CI check "Dual-arch OS-claim gate
+ * (aarch64 + x86_64, GUEST_OS=none)" therefore proved, on x86_64, that the
+ * root task started and nothing else.
+ *
+ * Asserting the exact count is what makes this non-vacuous: an image that
+ * starts four PDs, or nine, fails here rather than passing on a marker.
+ */
+const X86_64_EXPECTED_PDS: usize = 5;
 
+/*
+ * Post-boot root-task fault reports this image is known to produce: none.
+ * The assertion is on the exact count, as on riscv64 — a new fault must fail,
+ * and so must the silent disappearance of a known one.
+ *
+ * Unlike riscv64 this has always been zero, but it was zero for a reason that
+ * proved nothing: there were no PDs. It is zero now with five PDs running.
+ */
+const X86_64_EXPECTED_FAULTS: usize = 0;
+
+/// Boot x86_64_generic and require the full declared PD set, not a marker.
+fn wait_for_x86_reduced_smoke(
+    log_path: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    let start = Instant::now();
+    let mut file = std::fs::File::open(log_path).context("failed to open log file")?;
+    let mut offset: u64 = 0;
+    let mut accumulated = String::new();
+    const BOOT_MARKER: &str = "[rt] boot complete";
+
+    loop {
+        ensure_qemu_running(qemu, "waiting for the x86_64 PD set")?;
+
+        file.seek(SeekFrom::Start(offset))?;
+        let mut raw = Vec::new();
+        let bytes_read = file.read_to_end(&mut raw)?;
+        if bytes_read > 0 {
+            offset += bytes_read as u64;
+            accumulated.push_str(&String::from_utf8_lossy(&raw));
+        }
+
+        if let Some(line) = accumulated
+            .lines()
+            .find(|line| BOOT_REFUSAL_MARKERS.iter().any(|m| line.contains(m)))
+        {
+            anyhow::bail!(
+                "x86_64 boot refused after {} of {X86_64_EXPECTED_PDS} PDs: {}",
+                accumulated.matches("[rt] pd started ok").count(),
+                line.trim()
+            );
+        }
+        if accumulated.contains(BOOT_MARKER) {
+            break;
+        }
+        if start.elapsed() >= timeout {
+            anyhow::bail!(
+                "x86_64 boot timeout after {}s; {} of {X86_64_EXPECTED_PDS} PDs started, \
+                 no \"{BOOT_MARKER}\"",
+                timeout.as_secs(),
+                accumulated.matches("[rt] pd started ok").count()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    /* Let the started PDs run far enough to fault, if they are going to. */
+    std::thread::sleep(Duration::from_secs(3));
     let output = std::fs::read_to_string(log_path).unwrap_or_default();
+
+    let started = output.matches("[rt] pd started ok").count();
     anyhow::ensure!(
-        !output.contains("[rt] FAULT"),
-        "x86 reduced smoke emitted root-task fault endpoint reports"
+        started == X86_64_EXPECTED_PDS,
+        "x86_64 started {started} PDs, expected exactly {X86_64_EXPECTED_PDS} \
+         (src/system_desc_x86_64.c and boards/qemu-x86_64/agentos.toml are \
+         rewritten in lockstep; update X86_64_EXPECTED_PDS with them)"
+    );
+    anyhow::ensure!(
+        output.contains("[rt] boot manifest OK: signature verified"),
+        "x86_64 booted without verifying the signed PD manifest"
+    );
+    let faults = output.matches("[rt] FAULT").count();
+    anyhow::ensure!(
+        faults == X86_64_EXPECTED_FAULTS,
+        "x86_64 produced {faults} root-task fault reports, expected exactly \
+         {X86_64_EXPECTED_FAULTS}"
     );
     Ok(format!(
-        "{marker} (x86 reduced smoke, no fault endpoint reports)"
+        "x86_64: signed PD manifest verified, {started} of {X86_64_EXPECTED_PDS} PDs started, \
+         {BOOT_MARKER}, {faults} fault report(s)"
     ))
 }
 

@@ -1,0 +1,62 @@
+# agentOS system descriptor (TOML) — QEMU x86_64 (q35) board override
+#
+# Consumed by: cargo xtask gen-pd-bundle / gen-image, selected by
+# kernel/agentos-root-task/Makefile's `_BOARD_TOML` rule because this file
+# exists and is non-empty.
+#
+# Why this file exists
+# --------------------
+# x86_64 embeds a signed PD bundle in root_task.elf (seL4's multiboot path
+# passes root_task.elf as the initial module; there is no agentOS extra
+# BootInfo chunk).  The bundle's contents come from this TOML; the PDs the
+# root task actually spawns come from src/system_desc_x86_64.c.  A PD named
+# by the descriptor but absent from the bundle prints
+# "[rt] pd elf <name> NOT FOUND" and refuses boot, so the two lists must
+# agree exactly.
+#
+# Until this file existed, BOARD_NAME=qemu-x86_64 found no board TOML and
+# fell back to the repository default, kernel/agentos-root-task/agentos.toml,
+# which is the *aarch64* PD set.  That mismatch was invisible only because
+# the x86_64 descriptor was empty and started nothing at all.
+#
+# ***  REWRITE THIS FILE AND src/system_desc_x86_64.c IN LOCKSTEP.  ***
+#
+# Priorities here are documentation only — the root task enforces the
+# descriptor's values.
+#
+# Not here, deliberately (see the descriptor's `#else` branch comment for the
+# full reasoning): net_pd / virtio_blk and their virtualizers (the host
+# virtio transports are PCI functions and PCI discovery is compiled in only
+# under AGENTOS_X86_FIRMWARE_RESET, which this board does not define), and
+# serial_pd / serial_virt (serial_pd is a PL011 driver on this build; q35 has
+# an NS16550 COM1 at I/O port 0x3F8, which the root task owns), and
+# cc_pd / vm_manager / guest_vmm_* (those need VMX/EPT — see
+# boards/qemu-x86_64-vtx/).
+
+# ── Foundation ───────────────────────────────────────────────────────────────
+
+[[pd]]
+name = "nameserver"
+priority = 245
+
+[[pd]]
+name = "log_drain"
+priority = 235
+
+# ── OS-neutral block contract (no host block driver on this board) ───────────
+
+[[pd]]
+name = "block_pd"
+priority = 213
+
+# ── Entropy (no device attached on this machine) ─────────────────────────────
+
+[[pd]]
+name = "entropy_pd"
+priority = 166
+
+# ── Fault handling ───────────────────────────────────────────────────────────
+
+[[pd]]
+name = "fault_handler"
+priority = 255

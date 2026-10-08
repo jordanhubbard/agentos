@@ -1178,7 +1178,9 @@ shape as aarch64. `virtio_blk` owns the host virtio-mmio block transport at
 `0x10003000` and `net_pd` the host NIC at `0x10002000`; `blk_virt` and
 `net_virt` own no device frame and no IRQ. `make test-riscv64` asserts that
 exact count plus manifest verification and `[rt] boot complete`, so a riscv64
-image cannot repeat the x86_64 pattern of reaching a boot marker with zero PDs.
+image cannot reach a boot marker with zero PDs. x86_64 used to do exactly
+that; it now asserts its own exact count too — see "x86_64 in CI: what is and
+is not proven" below.
 
 riscv64 is also compiled by CI on every run, which it was not before. The
 `riscv64-root-task-build` job builds the pinned seL4 riscv64 board from the
@@ -1221,6 +1223,98 @@ arch-blind, so riscv64 picked the fix up with no riscv64-specific change and
 its boot log carries `[rt] fault_handler ring map err=0x0`. The count moved
 1 → 0 because the defect was fixed; it is the tighter assertion, not a
 relaxed one.
+
+## x86_64 in CI: what is and is not proven
+
+### The default board, `x86_64_generic`
+
+The required check **Dual-arch OS-claim gate (aarch64 + x86_64,
+GUEST_OS=none)** boots `x86_64_generic` under QEMU q35 with
+`GUEST_OS=none`. Until this section was written it asserted only
+`[rt] boot complete`, and the entire PD table in
+`kernel/agentos-root-task/src/system_desc_x86_64.c` was inside
+`#if defined(AGENTOS_X86_VTX)`. `x86_64_generic` is not a VTX board, so the
+image started **zero** protection domains and reached the marker anyway. A
+required check was green over an empty system; it proved the root task ran,
+and nothing else. Its "no root-task fault reports" clause was satisfied
+trivially, because an image with no PDs has nothing that can fault.
+
+`x86_64_generic` now starts five protection domains: `nameserver`,
+`log_drain`, `block_pd`, `entropy_pd`, `fault_handler`. The gate asserts that
+**exact count** (`X86_64_EXPECTED_PDS` in `xtask/src/cmd_test.rs`, the same
+discipline as `RISCV64_EXPECTED_PDS` and `verify_inspect()`'s `count == 15`),
+plus signed-PD-manifest verification, plus exactly zero root-task fault
+reports. `boards/qemu-x86_64/agentos.toml` and the descriptor are rewritten in
+lockstep; a disagreement prints `[rt] pd elf <name> NOT FOUND` and refuses
+boot within seconds.
+
+What that proves: on x86_64 the root task verifies the signed manifest and
+then, five times over, retypes a TCB/CNode/VSpace, loads a PD ELF out of the
+bundle embedded in `root_task.elf`, maps its image and IPC buffer, mints the
+initial endpoint caps, binds a scheduling context, starts the thread — and
+the five PDs then run without faulting.
+
+What it does **not** prove: any I/O. No PD in this set owns a device frame or
+an IRQ on this board. Four PDs are deliberately absent and cannot be added
+here:
+
+- **No host block or NIC driver.** On x86_64 the host virtio transports are
+  PCI functions, and PCI discovery (`src/x86_host_pci.c`) is compiled in only
+  under `AGENTOS_X86_FIRMWARE_RESET`, which this board does not define. There
+  are no BARs to map; `main.c`'s `net_pd` arm for this configuration prints
+  `[rt] net_pd: no host NIC MMIO path on this target; not started` and the
+  `virtio_blk` host-MMIO arm is `#if defined(__aarch64__) || defined(__riscv)`.
+  `boards/qemu-x86_64/board.mk` also attaches no virtio-blk and an e1000
+  rather than a virtio-net. `blk_virt` and `net_virt` are absent with them: a
+  mux with no driver and no frontend is a contract with no caller.
+- **No serial driver PD.** `serial_pd.o` is built from
+  `services/serial-mux/serial_x86.c` only when `X86_FIRMWARE_RESET=1`;
+  otherwise it is `services/serial-mux/serial_pd.c`, an ARM PL011 driver.
+  QEMU q35 has an NS16550 COM1 at I/O port `0x3F8`, which the root task owns
+  and which carries the boot log this gate counts PDs from. `serial_virt`
+  is absent with it, for the same reason as on riscv64.
+
+### x86_64 guest support: real, and unautomated
+
+agentOS has a working x86_64 guest path, and **no CI job anywhere exercises
+any part of it.** This is a known gap, stated here rather than papered over.
+
+It is a non-libvmm VMX/EPT firmware VMM on the separate `x86_64_generic_vtx`
+board. Its targets, in increasing order of what they establish:
+
+| Target | What it asserts |
+|--------|-----------------|
+| `make gate-x86_64-vtx` | One VMM PD enters VMX non-root mode into a single EPT-mapped `HLT` and the expected VM exit is observed. Not a guest OS claim. |
+| `make gate-x86_64-firmware-reset` | The firmware composition's reset/entry path, with the serial, block and network drivers and virtualizers started. |
+| `make gate-x86_64-linux-login` | Debian amd64 boots to a login prompt on the emulated virtio devices. |
+| `make gate-x86_64-debian-ssh`, `-cc-linux`, `-smp`, `-storage`, `-arch`, `-desktop` | SSH, CC transport, two online CPUs, storage, native install, display. |
+
+`grep vtx .github/workflows/*.yml` returns nothing, and that is accurate: none
+of the above runs on push. Every x86_64 guest claim in this document rests on
+recorded receipts under `docs/evidence/`, produced on named hardware, not on
+any run of CI.
+
+A runner that could execute them needs all of:
+
+- **A Linux host.** These targets are not portable; the macOS development
+  path cannot run them at all.
+- **`/dev/kvm`, readable and writable by the job.** GitHub-hosted
+  `ubuntu-*` runners do not expose it.
+- **Nested Intel VMX** — `kvm_intel.nested=1` on the host, and an L1 CPU
+  model that exposes VMX to the guest (`-cpu host` or equivalent). TCG
+  emulation is not sufficient: the VMM executes real `VMLAUNCH`/`VMRESUME`.
+- **Microkit SDK 2.3.x**, for the VM-entry/VMCS controls the firmware VMM
+  uses (`SEL4_SDK_VERSION=2.3.0`; the default 2.1.0 does not have them).
+- For `-linux-login` and everything beyond it, **a disposable raw Debian
+  amd64 root disk** in `X86_ROOT_DISK`, and for the SSH targets a key pair in
+  `X86_SSH_KEY` and a free port in `X86_SSH_PORT`.
+
+Until a self-hosted runner meeting all of that exists, `make
+test-x86-firmware-build` is the only x86_64 guest-path coverage that CI could
+run: it compiles and **links** the firmware VMM, its runners, the serial and
+block drivers and the block/network virtualizers. That is a build proof. It
+does not execute a single guest instruction, and it is not a substitute for
+the table above.
 
 ## What is not TCB (museum)
 
