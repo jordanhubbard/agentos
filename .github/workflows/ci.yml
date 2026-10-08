@@ -475,7 +475,20 @@ jobs:
         run: make test TARGET_ARCH=aarch64 GUEST_OS=none
 
       # TARGET/QEMU test #2 — x86_64.  Required for any OS-level claim.
-      - name: GATE — make test TARGET_ARCH=x86_64 GUEST_OS=none
+      #
+      # This step asserts an EXACT PD count (X86_64_EXPECTED_PDS in
+      # xtask/src/cmd_test.rs), not just "[rt] boot complete". Until that
+      # changed it proved nothing at all: the whole x86_64 PD table lived
+      # inside `#if defined(AGENTOS_X86_VTX)` and x86_64_generic is not a VTX
+      # board, so the image started ZERO protection domains and still reached
+      # the boot marker. This required check was green over an empty system.
+      #
+      # x86_64 GUEST support is NOT exercised here and is not exercised
+      # anywhere in this file. It lives on the x86_64_generic_vtx board
+      # (gate-x86_64-vtx / -firmware-reset / -linux-login) and needs a Linux
+      # host with /dev/kvm and nested Intel VMX, which no runner here
+      # provides. See docs/TCB.md, "x86_64 in CI: what is and is not proven".
+      - name: GATE — make test TARGET_ARCH=x86_64 GUEST_OS=none (exact PD count)
         timeout-minutes: 10
         run: make test TARGET_ARCH=x86_64 GUEST_OS=none
 
@@ -600,7 +613,7 @@ jobs:
         run: |
           echo "✅ Dual-arch boot gate passed:"
           echo "   - aarch64 GUEST_OS=none (target/QEMU)"
-          echo "   - x86_64  GUEST_OS=none (target/QEMU)"
+          echo "   - x86_64  GUEST_OS=none (target/QEMU, exact PD count)"
           if [ "${riscv64:-not-run}" = "run" ]; then
             echo "   - riscv64 GUEST_OS=none (target/QEMU, exact PD count)"
           else
@@ -627,6 +640,17 @@ jobs:
           echo "GUEST_OS=none is a stub VMM: this proves PD load and root-task"
           echo "parking only. Guest I/O is proven by the guest proof jobs; the"
           echo "os-claim-summary job combines them."
+          echo ""
+          echo "NOT PROVEN ANYWHERE IN CI — x86_64 guest support."
+          echo "   agentOS has a working non-libvmm VMX/EPT firmware VMM on the"
+          echo "   x86_64_generic_vtx board that boots Debian amd64 to login and"
+          echo "   SSH (make gate-x86_64-vtx / -firmware-reset / -linux-login)."
+          echo "   None of it runs here. It needs a Linux host exposing /dev/kvm"
+          echo "   with nested Intel VMX (kvm_intel nested=1), Microkit SDK 2.3.x"
+          echo "   for the VMCS entry controls, and for -linux-login a disposable"
+          echo "   raw Debian amd64 root disk in X86_ROOT_DISK. The guest proof"
+          echo "   jobs above are AArch64. x86_64 guest claims rest on recorded"
+          echo "   receipts, not on this run -- see docs/TCB.md."
 
   # ---------------------------------------------------------------------------
   # OS-claim summary — the only job whose success means "OS-level completion

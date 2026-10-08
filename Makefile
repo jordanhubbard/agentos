@@ -921,11 +921,13 @@ gate: test-host test-virtio-backends-build gate-aarch64 gate-x86_64 gate-guest-i
 # the signed PD manifest and start EVERY protection domain
 # src/system_desc_riscv64.c declares, counted from the boot log, plus the
 # "[rt] boot complete" marker.  It asserts the exact count on purpose: a boot
-# marker alone proves nothing, as x86_64_generic shows by reaching
-# "[rt] boot complete" with a completely empty descriptor.  The expected
-# number lives in xtask (RISCV64_EXPECTED_PDS in xtask/src/cmd_test.rs),
-# mirroring test-inspect's hardcoded 15, so changing the descriptor forces an
-# explicit change to the test.
+# marker alone proves nothing, as x86_64_generic used to show by reaching
+# "[rt] boot complete" with a completely empty descriptor.  (x86_64_generic
+# now has a five-PD descriptor and asserts its own exact count --
+# X86_64_EXPECTED_PDS -- so that demonstration is history, not current
+# behaviour.)  The expected number lives in xtask (RISCV64_EXPECTED_PDS in
+# xtask/src/cmd_test.rs), mirroring test-inspect's hardcoded 15, so changing
+# the descriptor forces an explicit change to the test.
 #
 # A disagreement between the descriptor and boards/qemu-riscv64/agentos.toml
 # now fails within seconds on the "NOT FOUND" line rather than burning the
