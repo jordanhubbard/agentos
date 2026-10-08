@@ -876,12 +876,14 @@ static void dbg_hex(seL4_Word v);
  * state from the GENERATED boot_manifest_pubkey.h macros (AOS_BOOT_
  * TRUST_ANCHOR_TIER / _VENDOR_PUBKEY / _VENDOR_PRESENT / _MOK_PUBKEY /
  * _MOK_PRESENT — see xtask/src/boot_manifest.rs::render_pubkey_header)
- * and validate it. Called as early as possible (before UART/COM1 is
- * mapped, so any diagnostic here may be silently dropped exactly like
- * every other pre-step-3.5 dbg_puts call in this file — see
- * boot_announce_trust_anchor() below for the UNMISSABLE banner, called
- * once the UART is live) so a build-time tier-selection bug refuses to
- * spawn any PD as early as this code can possibly check for it.
+ * and validate it. Called as early as possible — before any PD exists and
+ * before the AArch64/RISC-V UART is mapped, so on those two boards any
+ * diagnostic here is silently dropped exactly like every other
+ * pre-step-3.5 dbg_puts call in this file (on x86_64 COM1 is already live;
+ * see the Returns paragraph below) — so a build-time tier-selection bug
+ * refuses to spawn any PD as early as this code can possibly check for it.
+ * See boot_announce_trust_anchor() below for the UNMISSABLE banner, which
+ * is printed on every board once the console is up.
  *
  * A validation failure here means the build-time tier selection
  * (xtask/src/boot_manifest.rs::select_anchor, which is strictest-first and
@@ -892,14 +894,27 @@ static void dbg_hex(seL4_Word v);
  * fail-open: refuse to spawn any PD rather than guess a tier.
  *
  * Returns 1 if the compiled-in state is valid (safe to consult
- * aos_anchor_gates_boot() elsewhere), 0 otherwise. On AArch64 the caller
- * (root_task_main) returns immediately on a 0 here, and because this runs
- * before the UART is mapped, that diagnostic is dropped: a build with a
- * genuinely incoherent compiled-in anchor state manifests on the board as
- * a SILENT HANG at Step 0, not a printed refusal. That is the documented
- * trade of calling this as early as possible (see above) rather than
- * deferring validation until the UART is live, where the refusal would be
- * printed but a few more boot steps would already have run first.
+ * aos_anchor_gates_boot() elsewhere), 0 otherwise. The caller
+ * (root_task_main) returns immediately on a 0 here. Whether that refusal is
+ * AUDIBLE is per-architecture and follows entirely from when the console
+ * becomes live:
+ *
+ *   - x86_64: AUDIBLE. Step 0a's platform_debug_init() has already issued
+ *     the COM1 I/O port cap, so the dbg_puts() below reaches the serial
+ *     line and the refusal is a printed, positive event.
+ *   - AArch64 / RISC-V: SILENT. Their UARTs are device untypeds that have
+ *     to be retyped into a frame and mapped into the root task's VSpace,
+ *     which is Step 3.5, far later than this. A genuinely incoherent
+ *     compiled-in anchor state manifests on those boards as a SILENT HANG
+ *     at Step 0b, not a printed refusal. That is the documented trade of
+ *     calling this as early as possible (see above) rather than deferring
+ *     validation until the UART is live, where the refusal would be printed
+ *     but a few more boot steps would already have run first.
+ *
+ * xtask's --trust-anchor-probe 4 asserts the positive marker on x86_64 and
+ * falls back to the weaker loader-marker-plus-sustained-absence shape on the
+ * other two boards; see verify_trust_anchor_probe() for exactly what each
+ * one establishes.
  */
 #if !AGENTOS_HAS_PD_BUNDLE
 /*
@@ -2801,14 +2816,35 @@ void root_task_main(const seL4_BootInfo *bi)
         (seL4_IPCBuffer *)((seL4_Word)bi->ipcBuffer & ~(seL4_Word)0xFFF);
     seL4_SetIPCBuffer(ipc_buf);
 
-    /* ── Step 0: Announce the trust anchor tier (T10) ─────────────────────── */
+    /*
+     * ── Step 0a: untyped allocator and the platform debug console ─────────
+     *
+     * These two run BEFORE the Step 0b trust-anchor check, and the ordering
+     * is deliberate. Neither consults, depends on, or is protected by the
+     * trust anchor: ut_alloc_init() only reads BootInfo's untyped list, and
+     * platform_debug_init() only claims the console the refusal needs in
+     * order to be audible. Nothing is spawned, mapped for a PD, or granted
+     * here, so Step 0b still runs strictly before any protection domain
+     * exists -- which is the property it was placed early for.
+     *
+     * What this buys: on x86_64, platform_debug_init() issues the COM1 I/O
+     * port cap, so dbg_puts() is LIVE by the time Step 0b runs and a refusal
+     * there PRINTS. That turns the key-less-gating-tier case from an
+     * absence assertion into a positive one on x86_64 (see
+     * --trust-anchor-probe 4 in xtask/src/cmd_test.rs).
+     *
+     * On AArch64 and RISC-V platform_debug_init() is a no-op returning 0 --
+     * their UARTs need a device untyped retyped into a frame and mapped,
+     * which is Step 3.5 -- so Step 0b stays silent there and probe 4 keeps
+     * its weaker absence shape on those two boards.
+     */
+    ut_alloc_init(bi);
+    seL4_Word pre_reserved_slots = platform_debug_init();
+
+    /* ── Step 0b: Announce the trust anchor tier (T10) ────────────────────── */
     if (!boot_init_trust_anchor()) {
         return;
     }
-
-    /* ── Step 1: Initialise untyped memory allocator ──────────────────────── */
-    ut_alloc_init(bi);
-    seL4_Word pre_reserved_slots = platform_debug_init();
 
     /* Read TPIDR_EL0 on AArch64; other architectures leave this diagnostic 0. */
 #if defined(__aarch64__)
