@@ -1851,21 +1851,88 @@ test-authority:
 # image before spawning it (docs/superpowers/plans/
 # 2026-10-03-t3-image-verification.md). Each probe performs its own fresh
 # build (no --no-build), so a stale image from a previous probe can never
-# leak into the next one; probes 2 and 3 tamper the just-built image file
-# in-process, strictly after that build and strictly before QEMU launch
-# (xtask/src/cmd_test.rs), so a rebuild can never clobber the tamper.
+# leak into the next one; probes 2 and 3 tamper the just-built BOOT
+# ARTIFACT in-process, strictly after that build and strictly before QEMU
+# launch (xtask/src/cmd_test.rs), so a rebuild can never clobber the tamper.
 #   1. control        — an unmodified image boots and completes verification.
 #   2. the proof       — a single tampered byte inside one PD's verified
 #                         bundle ELF region refuses the entire boot and
-#                         names the tampered PD; agentOS boot complete never
+#                         names the tampered PD; the completion marker never
 #                         appears.
 #   3. fail-open pin    — a zeroed .pd_manifest section refuses boot rather
 #                         than being treated as nothing to verify.
+#
+# ALL THREE PROBES RUN ON ALL THREE ARCHITECTURES, for the same reason
+# test-trust-anchor does: AGENTOS_HAS_PD_BUNDLE is 1 for aarch64, x86_64 and
+# riscv64, so every one of them embeds a signed PD bundle and a signed
+# .pd_manifest and runs the root task's verification before spawning
+# anything. Until this target covered all three, T3 — the claim that PD
+# images are verified at all — was asserted on AArch64 only and the
+# identical code on the other two was carried by nothing.
+#
+# What differs per architecture:
+#   - THE BOOT ARTIFACT. aarch64 and riscv64 are handed
+#     _build/<board>/agentos.img via -device loader; x86_64 is handed
+#     _build/x86_64_generic/root_task.elf via multiboot -initrd and never
+#     reads agentos.img. Tampering the wrong file there would print a
+#     convincing "tampered PD ..." line, boot a completely untouched
+#     system, and prove nothing. See boot_artifact_for_tamper().
+#   - THE COMPLETION MARKER. "agentOS boot complete" is printed by cc_pd,
+#     which is in the aarch64 PD set and in NEITHER the x86_64 (5 PDs) nor
+#     the riscv64 (9 PDs) set; those use the root task's own
+#     "[rt] boot complete". Using the aarch64 string on them would time out
+#     probe 1 and make probes 2 and 3 pass VACUOUSLY, since both assert that
+#     marker is ABSENT. Both come from one table: boot_log_markers().
+#   - WHERE THE SIGNED BLOBS ARE. Located by ELF SECTION HEADER
+#     (.pd_bundle / .pd_manifest), never by scanning for their magic: on
+#     x86_64 and riscv64 both magics also appear verbatim in root-task
+#     .text, hundreds of kilobytes before the real section. See
+#     elf_section_range().
+#
+# Every PASS line names its board, so a result cannot be misread as covering
+# an architecture it did not run on.
+#
+# riscv64 LOUD-SKIPS when the installed SDK carries no qemu_virt_riscv64
+# board, exactly as test-trust-anchor and test-riscv64 do and for the same
+# reason: the published 2.3.1 release asset predates tools/sdk/candidate.mk
+# listing the board. In CI, install-sdk installs the artifact the same
+# workflow run built, which does carry it, so these probes RUN there. A skip
+# is never silent.
 .PHONY: test-image-verify
 test-image-verify:
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 1
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 2
-	@cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe 3
+	@echo ""
+	@echo "── [GATE] T3 PD image verification: aarch64 (probes 1-3) ──"
+	@set -e; for p in 1 2 3; do \
+	    cargo xtask qemu-test --board qemu_virt_aarch64 --guest-os none \
+	        --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe $$p; \
+	done
+	@echo ""
+	@echo "── [GATE] T3 PD image verification: x86_64 (probes 1-3) ──"
+	@set -e; for p in 1 2 3; do \
+	    cargo xtask qemu-test --board x86_64_generic --guest-os none \
+	        --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe $$p; \
+	done
+	@echo ""
+	@echo "── [GATE] T3 PD image verification: riscv64 (probes 1-3) ──"
+	@if [ ! -d "$(SEL4_SDK)/board/qemu_virt_riscv64" ]; then \
+	    echo ""; \
+	    echo "  !! riscv64 image-verify probes NOT RUN -- nothing here proves the"; \
+	    echo "  !! riscv64 PD image verification path. The SDK at $(SEL4_SDK)"; \
+	    echo "  !! carries no qemu_virt_riscv64 board, so these probes cannot build."; \
+	    echo "  !! tools/sdk/candidate.mk DOES list qemu_virt_riscv64, and in CI"; \
+	    echo "  !! os-claim-gate installs the artifact the same workflow run built,"; \
+	    echo "  !! which carries the board, so they RUN there. What you have here is"; \
+	    echo "  !! the PUBLISHED release asset, which predates that change."; \
+	    echo "  !! Until it is republished, run them against an SDK that has it:"; \
+	    echo "  !!     make test-image-verify SEL4_SDK_VERSION=2.1.0"; \
+	    echo ""; \
+	else \
+	    set -e; for p in 1 2 3; do \
+	        cargo xtask qemu-test --board qemu_virt_riscv64 --guest-os none \
+	            --timeout-secs $(QEMU_TEST_TIMEOUT) --image-verify-probe $$p; \
+	    done; \
+	fi
+
 # test-trust-anchor — T10 target proof: image verification runs under a named
 # trust anchor tier, the tier decides whether a mismatch stops boot, and the
 # tier a running system reports is the one its image was built with

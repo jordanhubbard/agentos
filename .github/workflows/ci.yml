@@ -537,8 +537,15 @@ jobs:
       # image refusing to boot (named), and a zeroed boot manifest refusing
       # to boot. See docs/superpowers/plans/2026-10-03-t3-image-verification.md
       # and docs/TCB.md.
-      - name: GATE — make test-image-verify
-        timeout-minutes: 15
+      #
+      # This target now runs all three probes on aarch64, x86_64 AND riscv64
+      # — three times the boots it used to do, hence the raised timeout.
+      # riscv64 loud-skips if the installed SDK lacks the board; install-sdk
+      # provides this run's own sdk-candidate artifact, which carries it, so
+      # the skip should not fire here. If it does, the Makefile prints a
+      # NOT RUN banner rather than passing quietly.
+      - name: GATE — make test-image-verify (aarch64 + x86_64 + riscv64)
+        timeout-minutes: 45
         run: make test-image-verify
 
       # T10 trust anchor tiers target proof: verification runs under a named

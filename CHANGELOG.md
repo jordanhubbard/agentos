@@ -7,6 +7,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Tamper probes located signed blobs by first magic match, which is not the
+  same thing as finding them.** `tamper_zero_manifest()` scanned the root-task
+  byte range for `AOS_BOOT_MANIFEST_MAGIC` and took the first hit. That magic
+  is a compile-time constant `main.c` compares against, so on any architecture
+  whose compiler materialises a 64-bit immediate as eight contiguous bytes it
+  is also present in root-task `.text`. Measured in this tree, the manifest
+  magic occurs in `_build/x86_64_generic/root_task.elf` at 63370, 63490 and
+  827112, and in `_build/qemu_virt_riscv64/root_task.elf` at 95752 and
+  2637824 — only the last of each is the real `.pd_manifest`. AArch64 has a
+  single occurrence, which is the only reason first-match was ever right, and
+  it was right there by luck. The function also always wrote to `agentos.img`,
+  which x86_64 never boots. Both are now structural: `elf_section_range()`
+  reads the ELF section header table for `.pd_bundle` / `.pd_manifest`, and
+  `boot_artifact_for_tamper()` picks the file QEMU actually loads. A section
+  whose header fields do not corroborate it — wrong magic, wrong version, a
+  declared size the section cannot hold — aborts the probe before a single
+  byte is written, rather than doctoring bytes it cannot account for.
+- **A tampered boot artifact survived the next probe's "fresh build".** The
+  tamper writes over a file that is also a make target, giving it a timestamp
+  newer than every prerequisite, so the next `make build` relinked nothing.
+  On x86_64, where the artifact is `root_task.elf`, image-verify probe 3's
+  zeroed manifest was still there for the following control boot. Tampers are
+  now undone on drop, and a tamper probe's build step removes both candidate
+  artifacts first so a killed run cannot leave one behind.
+- Image-verify probes 2 and 3 asserted the absence of the completion marker
+  with a single 500 ms sleep and one read — a boot that completed a moment
+  later would have been recorded as a successful refusal. They now share
+  `assert_absent_throughout()` with the trust-anchor probes, which polls for a
+  window and fails if QEMU dies during it.
+- Image-verify probe 1 was exempted from the AArch64 `[log_drain] ready`
+  requirement along with probes 2 and 3. Probes 2 and 3 refuse the boot on
+  purpose and have no PDs; probe 1 completes a boot and is now held to the
+  same driver-backed output requirement as every other AArch64 run.
+
 - `fault_handler` was dead on arrival on every architecture. Its
   `fault_ring_vaddr` global was declared in `.bss` and assigned nowhere in the
   tree — no linker script, no `--defsym`, no generated header, no root-task
@@ -71,6 +105,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   IRQ handler.
 
 ### Changed
+
+- **`make test-image-verify` runs all three T3 probes on all three
+  architectures** — aarch64 (15 PDs), x86_64 (5 PDs) and riscv64 (9 PDs) —
+  where it previously ran on aarch64 alone while the identical verification
+  path on the other two was carried by nothing. Per-board boot vocabulary
+  comes from one table shared with `make test-trust-anchor`: x86_64 and
+  riscv64 use the root task's `[rt] boot complete`, because `agentOS boot
+  complete` is a `cc_pd` string and `cc_pd` is in neither PD set — using it
+  there would have timed out probe 1 and made probes 2 and 3 pass vacuously.
+  Every PASS line names its board. riscv64 loud-skips when the installed SDK
+  carries no `qemu_virt_riscv64` board, as `make test-riscv64` and
+  `make test-trust-anchor` already do; it runs in CI, where `install-sdk`
+  provides an artifact that carries the board. Default PD sets are unchanged.
 
 - `sdk-candidate-check` now refuses an SDK that contains a kernel with no
   recorded hash in `tools/sdk/cr2-kernels.sha256`, printing the computed
