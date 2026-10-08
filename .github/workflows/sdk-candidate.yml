@@ -20,6 +20,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # The kernel/SDK sources are vendored as submodules under vendor/
+          # (see docs/sdk-provenance.md). This checkout is what supplies them;
+          # nothing in this job fetches from upstream.
+          submodules: true
       - name: Install build tools
         run: |
           sudo apt-get update -qq
@@ -38,14 +42,19 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/sdk-venv"
           "$RUNNER_TEMP/sdk-venv/bin/pip" install -r tools/sdk/python-requirements.txt
           echo "$RUNNER_TEMP/sdk-venv/bin" >> "$GITHUB_PATH"
-      - name: Fetch pinned upstream sources
+      # Replaces a `git fetch --depth=1 <upstream> <sha>` pair. That form has
+      # no fallback when an upstream deletes the ref, which is an observed
+      # failure mode (docs/superpowers/specs/2026-10-08-riscv-he-spike-findings.md),
+      # and it was also the only thing making the provenance claim checkable.
+      # The vendored mirrors supply the sources; this step records what they
+      # are, and reports -- without failing -- whether upstream still serves
+      # the pinned commits.
+      - name: Report vendored source provenance
         run: |
-          git init "$RUNNER_TEMP/microkit-source"
-          git -C "$RUNNER_TEMP/microkit-source" fetch --depth=1 https://github.com/seL4/microkit.git ec86afdcd662b5976d11d4994acf1b11a2979882
-          git -C "$RUNNER_TEMP/microkit-source" checkout --detach FETCH_HEAD
-          git init "$RUNNER_TEMP/sel4-source"
-          git -C "$RUNNER_TEMP/sel4-source" fetch --depth=1 https://github.com/seL4/seL4.git e60776acc31097ca063806c257f07a3ec05eacf8
-          git -C "$RUNNER_TEMP/sel4-source" checkout --detach FETCH_HEAD
+          mkdir -p _build/sdk-evidence
+          make sdk-provenance 2>&1 | tee _build/sdk-evidence/provenance.txt
+      - name: Enforce vendored source pins
+        run: make sdk-vendor-check
       - name: Rebuild and check kernel and Multiboot hashes
         run: |
           mkdir -p _build/sdk-evidence
@@ -54,16 +63,13 @@ jobs:
           riscv64-unknown-elf-gcc --version >> _build/sdk-evidence/toolchain.txt
           "$RUNNER_TEMP/sdk-venv/bin/pip" freeze > _build/sdk-evidence/python-requirements.txt
           make sdk-candidate GUEST_OS=none \
-            SDK_CANDIDATE_MICROKIT_SOURCE="$RUNNER_TEMP/microkit-source" \
-            SDK_CANDIDATE_SEL4_SOURCE="$RUNNER_TEMP/sel4-source" \
             SDK_CANDIDATE_PYTHON="$RUNNER_TEMP/sdk-venv/bin/python" \
             SDK_CANDIDATE_DIR="$GITHUB_WORKSPACE/_build/sdk-candidate" 2>&1 | tee _build/sdk-evidence/build.log
       - name: Package and verify installation
         run: |
           make sdk-candidate-package GUEST_OS=none \
             SEL4_SDK="$GITHUB_WORKSPACE/_build/sdk-candidate/microkit/release/microkit-sdk-2.3.1-agentos-e60776ac-cr2" \
-            SDK_CANDIDATE_MICROKIT_SOURCE="$RUNNER_TEMP/microkit-source" \
-            SDK_CANDIDATE_SEL4_SOURCE="$RUNNER_TEMP/sel4-source" 2>&1 | tee _build/sdk-evidence/package.log
+            2>&1 | tee _build/sdk-evidence/package.log
           # Install the archive this run just built and verify it against the
           # digest this run just computed. That is a packaging-integrity check
           # of the artifact in hand.
@@ -99,6 +105,7 @@ jobs:
             _build/sdk-candidate-package/*.patch
             _build/sdk-candidate-package/*.sha256
             _build/sdk-candidate-package/*.mk
+            _build/sdk-candidate-package/*.manifest
             _build/sdk-candidate-package/*.md
             _build/sdk-candidate-package/*.txt
             _build/sdk-candidate-package/*.c

@@ -1,0 +1,41 @@
+# agentOS vendored external-source manifest.
+#
+# One record per vendored dependency, records separated by blank lines, each
+# record a set of `key = value` lines.  This file is the single declaration of
+# what agentOS vendors; `cargo xtask sdk-provenance` (make sdk-provenance) and
+# tools/sdk/candidate.mk both read their facts from here, so a dependency is
+# added by appending a record and adding the matching git submodule -- not by
+# editing a recipe in four places.
+#
+# Keys
+#   name      Short identifier.  Also the make variable stem:
+#             SDK_CANDIDATE_<NAME>_SOURCE.
+#   upstream  The canonical repository the sources came from.  agentOS does not
+#             fetch from it at build time; it is recorded so a reviewer can
+#             diff the mirror against it, and so sdk-provenance can report
+#             whether the pinned commit is still reachable there.
+#   mirror    The agentOS-controlled full-history mirror the submodule tracks.
+#             This is what makes the pin survive upstream ref deletion.
+#   path      Submodule path in this repository.  The gitlink recorded at this
+#             path IS the pin: git's own object integrity binds this
+#             repository's tree to that exact upstream commit.
+#   commit    The upstream commit this project builds from.  Must equal the
+#             gitlink; sdk-provenance fails if it does not.
+#   patch     Repository-relative path to the agentOS delta applied on top of
+#             `commit`, or empty when the sources are used unmodified.  The
+#             delta deliberately stays a readable patch file rather than
+#             commits on a fork branch, so review is a diff of this repository.
+
+name = sel4
+upstream = https://github.com/seL4/seL4.git
+mirror = https://github.com/jordanhubbard/agentos-vendor-sel4.git
+path = vendor/sel4
+commit = e60776acc31097ca063806c257f07a3ec05eacf8
+patch = tools/sdk/patches/sel4-e60776ac-cr2.patch
+
+name = microkit
+upstream = https://github.com/seL4/microkit.git
+mirror = https://github.com/jordanhubbard/agentos-vendor-microkit.git
+path = vendor/microkit
+commit = ec86afdcd662b5976d11d4994acf1b11a2979882
+patch =

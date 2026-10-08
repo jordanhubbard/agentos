@@ -2908,6 +2908,8 @@ help:
 	@echo "  make clean-images     Remove staged guest images"
 	@echo "  make build-tools      Build Rust host tools in release mode"
 	@echo "  make policy-check     Enforce language/UI policy and xtask formatting"
+	@echo "  make sdk-provenance   Report upstream repo, commit, reachability and delta"
+	@echo "                        for every vendored source under vendor/"
 	@echo "  make lint-source      Source lint for docs/TCB.md I/O invariants (not a test)"
 	@echo "  make release          Print a read-only patch-release plan"
 	@echo "  make release-prepare/check/publish/verify  Advance explicit release states"

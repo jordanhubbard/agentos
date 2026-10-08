@@ -3,11 +3,11 @@ use xtask::{
     cmd_ci_matrix, cmd_extract_freebsd_file, cmd_fault_inject, cmd_fetch_guest, cmd_gen_abi,
     cmd_gen_caps, cmd_gen_channels, cmd_gen_image, cmd_gen_pd_bundle, cmd_gen_policy,
     cmd_guest_profile, cmd_guest_timing, cmd_host_test, cmd_policy_check, cmd_release,
-    cmd_render_deck, cmd_run_tests, cmd_setup, cmd_test, cmd_test_api, CiMatrixArgs,
-    ExtractFreebsdFileArgs, FaultInjectArgs, FetchGuestArgs, GenAbiArgs, GenCapsArgs,
+    cmd_render_deck, cmd_run_tests, cmd_sdk_provenance, cmd_setup, cmd_test, cmd_test_api,
+    CiMatrixArgs, ExtractFreebsdFileArgs, FaultInjectArgs, FetchGuestArgs, GenAbiArgs, GenCapsArgs,
     GenChannelsArgs, GenImageArgs, GenPdBundleArgs, GenPolicyArgs, GuestProfileArgs,
     GuestScenarioArgs, GuestTimingCompareArgs, HostTestArgs, PolicyCheckArgs, QemuLaunchArgs,
-    ReleaseArgs, RenderDeckArgs, RunTestsArgs, SetupArgs, TestApiArgs, TestArgs,
+    ReleaseArgs, RenderDeckArgs, RunTestsArgs, SdkProvenanceArgs, SetupArgs, TestApiArgs, TestArgs,
 };
 
 #[derive(Parser)]
@@ -78,6 +78,9 @@ enum Cmd {
     /// Extract one regular file from a FreeBSD UFS2 disk image
     #[command(name = "extract-freebsd-file")]
     ExtractFreebsdFile(ExtractFreebsdFileArgs),
+    /// Report the provenance of every vendored external source
+    #[command(name = "sdk-provenance")]
+    SdkProvenance(SdkProvenanceArgs),
     /// Reject repository-owned files forbidden by the project constitution
     #[command(name = "policy-check")]
     PolicyCheck(PolicyCheckArgs),
@@ -124,6 +127,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::GenChannels(a) => cmd_gen_channels::run(&a),
         Cmd::GenPolicy(a) => cmd_gen_policy::run(&a),
         Cmd::ExtractFreebsdFile(a) => cmd_extract_freebsd_file::run(&a),
+        Cmd::SdkProvenance(a) => cmd_sdk_provenance::run(&a),
         Cmd::PolicyCheck(a) => cmd_policy_check::run(&a),
         Cmd::GenImage(a) => cmd_gen_image::run(&a),
         Cmd::GenPdBundle(a) => cmd_gen_pd_bundle::run(&a),
