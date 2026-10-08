@@ -27,9 +27,17 @@ Use an isolated clone of Microkit
 Python 3.12.3 and `sel4-deps==0.9.0`. The dependency freeze and complete build
 logs are retained with the qualification evidence.
 
-Use the opt-in Make target with local upstream clones and an external Python
-environment containing the pinned dependencies. The example uses absolute
-paths; the output directory must be fresh. The default is `_build/sdk-candidate`;
+The sources are vendored: `vendor/sel4` and `vendor/microkit` are git
+submodules tracking agentOS-controlled full-history mirrors, pinned by gitlink
+to the commits above. `make submodules` fetches them and nothing in the build
+contacts upstream. `make sdk-provenance` reports, per dependency, the upstream
+repository and commit, whether upstream still serves it, and the diff stat of
+the recorded patch; see [sdk-provenance.md](sdk-provenance.md) for what that
+does and does not establish.
+
+Use the opt-in Make target with an external Python environment containing the
+pinned dependencies. The example uses absolute paths; the output directory must
+be fresh. The default is `_build/sdk-candidate`;
 an explicit external output directory is also supported.
 GNU build tools and the `aarch64-linux-gnu` and `x86_64-linux-gnu` GCC 13.3
 cross toolchains must be on `PATH`.
@@ -41,11 +49,12 @@ as well; the default QEMU network device used by upstream's DTB probe needs
 its `efi-virtio.rom`.
 
 ```sh
-make sdk-candidate \
-  SDK_CANDIDATE_MICROKIT_SOURCE=/path/to/upstream/microkit \
-  SDK_CANDIDATE_SEL4_SOURCE=/path/to/upstream/sel4 \
-  SDK_CANDIDATE_PYTHON=/path/to/sel4-venv/bin/python
+make submodules
+make sdk-candidate SDK_CANDIDATE_PYTHON=/path/to/sel4-venv/bin/python
 ```
+
+`SDK_CANDIDATE_MICROKIT_SOURCE` and `SDK_CANDIDATE_SEL4_SOURCE` still accept
+other clones for local experiments; they default to the vendored submodules.
 
 The target creates private clones at the pinned revisions, applies only the
 recorded patch, and builds all three release boards. It verifies their kernel
@@ -65,7 +74,7 @@ candidate as the default SDK.
 
 ## Local distribution artifacts
 
-`make sdk-candidate-package` accepts `SEL4_SDK`, both upstream source-clone
+`make sdk-candidate-package` accepts `SEL4_SDK`, both vendored source-path
 variables above, and an optional fresh `SDK_CANDIDATE_PACKAGE_DIR` (default
 `build/sdk-candidate-package`). It verifies the candidate, then produces:
 
@@ -118,8 +127,10 @@ when the evidence-bound release workflow publishes that asset. The bundle
 version is not an upstream Microkit release tag.
 
 The `Pinned SDK candidate` workflow rebuilds the three-board bundle from the
-exact upstream commits and scoped patch on Ubuntu 24.04 with GCC 13 and the
-retained Python dependency pins. It rejects kernel hash differences, packages
+vendored submodules at the exact upstream commits, plus the scoped patch, on
+Ubuntu 24.04 with GCC 13 and the retained Python dependency pins. It no longer
+fetches from upstream at build time; it reports upstream reachability through
+`make sdk-provenance` and enforces the pins with `make sdk-vendor-check`. It rejects kernel hash differences, packages
 sources and licenses with the target bundle, and exercises the checksum-checked
 installer before uploading distribution artifacts. Build logs and toolchain
 versions are retained even on failure. Main CI and nightly guest qualification
