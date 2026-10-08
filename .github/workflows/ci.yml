@@ -557,27 +557,39 @@ jobs:
       # and requires the signed PD manifest to verify and EVERY PD in
       # src/system_desc_riscv64.c to start (exact count, not a marker).
       #
-      # This step cannot run yet, and says so rather than passing quietly.
-      # Task 1 of the arch-parity plan -- add qemu_virt_riscv64 to
-      # tools/sdk/candidate.mk's --boards and extend tools/sdk/
-      # cr2-kernels.sha256 -- has not landed, so the SDK artifact that
-      # install-sdk puts in place contains no riscv64 board: no sel4.elf and
-      # no libsel4 headers for it, which is a build failure, not a test
-      # failure. Until then this emits a GitHub warning annotation and the
-      # summary below reports riscv64 as NOT RUN. The moment the SDK carries
-      # the board, the proof runs for real and a broken riscv64 fails this
-      # job -- the condition tests the SDK, never the test result.
+      # tools/sdk/candidate.mk NOW LISTS qemu_virt_riscv64 and the
+      # sdk-candidate workflow now installs a riscv64 cross-GCC, so the
+      # pipeline produces a riscv64 kernel. But install-sdk fetches the
+      # PUBLISHED artifact, which was built before that change: until the
+      # sdk-candidate job is re-run and its artifact re-published as the
+      # pinned release asset, the installed SDK still has no
+      # qemu_virt_riscv64 board -- no sel4.elf and no libsel4 headers for it,
+      # which is a build failure, not a test failure.
+      #
+      # So this step still skips LOUDLY: a GitHub warning annotation, and the
+      # summary below reporting riscv64 as NOT RUN. It never reports a pass it
+      # did not earn. The moment the installed SDK carries the board the proof
+      # runs for real and a broken riscv64 fails this job -- the condition
+      # tests the SDK's contents, never the test's result.
+      #
+      # riscv64 is NOT uncovered in the meantime: the riscv64-root-task-build
+      # job below builds the pinned riscv64 board itself and compiles and
+      # links root_task.elf on every run, and fails the workflow when riscv64
+      # stops building. What is missing until republication is the BOOT proof,
+      # not the build proof.
       - name: GATE — make test-riscv64 (exact PD count)
         timeout-minutes: 15
         run: |
           set -euo pipefail
           sdk="${SEL4_SDK:-$HOME/.cache/agentos/microkit-sdk-$(cat tools/sdk/default-version)}"
           if [ ! -d "$sdk/board/qemu_virt_riscv64" ]; then
-            echo "::warning title=riscv64 gate not run::The installed Microkit SDK" \
-                 "($sdk) has no qemu_virt_riscv64 board, so make test-riscv64 cannot" \
-                 "build. Blocked on arch-parity Task 1 (tools/sdk/candidate.mk" \
-                 "--boards + tools/sdk/cr2-kernels.sha256). riscv64 is NOT proven" \
-                 "by this run."
+            echo "::warning title=riscv64 boot gate not run::The installed Microkit" \
+                 "SDK ($sdk) has no qemu_virt_riscv64 board, so make test-riscv64" \
+                 "cannot build. tools/sdk/candidate.mk now lists the board; the" \
+                 "published SDK release asset still has to be rebuilt by the" \
+                 "sdk-candidate workflow and republished. riscv64 BOOT is NOT" \
+                 "proven by this run. riscv64 BUILD is, by the" \
+                 "riscv64-root-task-build job."
             echo "riscv64=not-run" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -592,9 +604,11 @@ jobs:
           if [ "${riscv64:-not-run}" = "run" ]; then
             echo "   - riscv64 GUEST_OS=none (target/QEMU, exact PD count)"
           else
-            echo "   - riscv64: NOT RUN (SDK has no qemu_virt_riscv64 board;"
-            echo "     blocked on arch-parity Task 1). Nothing in this job"
-            echo "     proves anything about riscv64."
+            echo "   - riscv64: NOT RUN (installed SDK has no qemu_virt_riscv64"
+            echo "     board; candidate.mk lists it, but the published SDK asset"
+            echo "     has not been rebuilt yet). Nothing in THIS job proves"
+            echo "     anything about riscv64 booting. The riscv64-root-task-build"
+            echo "     job does prove riscv64 still compiles and links."
           fi
           echo "   - CC operator authority envelope (admit / refuse / exact code)"
           echo "   - PD image verification (control / tampered-PD refusal / stripped-manifest refusal)"
@@ -634,14 +648,152 @@ jobs:
           echo "   - native Rust PD boot and checked seL4 IPC"
           echo "OS-level completion claims are permitted for this commit."
 
+  # ---------------------------------------------------------------------------
+  # riscv64 root-task build — the backstop that stops riscv64 rotting again.
+  #
+  # riscv64 was broken for an unknown length of time by a single duplicate
+  # `case` label in ut_alloc.c, correct on aarch64 and a hard error on RISC-V,
+  # and nobody noticed because NOTHING IN CI EVER COMPILED IT. This job exists
+  # to make that impossible. It is not a syntax check and not a `make -n`: it
+  # compiles every riscv64 PD and LINKS root_task.elf, then asserts the linked
+  # artifact is a RISC-V ELF with real content. If riscv64 stops building, this
+  # job goes red.
+  #
+  # It builds its own seL4/Microkit riscv64 board rather than using the
+  # install-sdk artifact, because the published SDK artifact carries no
+  # qemu_virt_riscv64 board until the sdk-candidate pipeline (now extended with
+  # that board) has been re-run and re-published. Same pinned commits, same
+  # single tools/sdk/patches/ patch, same discipline as tools/sdk/candidate.mk
+  # — nothing forked, and nothing written into tools/sdk/. Kernel-hash
+  # qualification stays where it belongs, in the sdk-candidate job; this job's
+  # subject is OUR code's buildability, not the kernel's provenance.
+  #
+  # Does NOT boot anything. The riscv64 boot-and-PD-count proof is
+  # `make test-riscv64`, run by the os-claim-gate job once the installed SDK
+  # carries the board.
+  # ---------------------------------------------------------------------------
+  riscv64-root-task-build:
+    name: riscv64 root task builds (compile + link root_task.elf)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # Must match tools/sdk/candidate.mk. The step below fails the job if
+      # they ever drift, so this duplication cannot go stale silently.
+      MICROKIT_COMMIT: ec86afdcd662b5976d11d4994acf1b11a2979882
+      SEL4_COMMIT: e60776acc31097ca063806c257f07a3ec05eacf8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pins match tools/sdk/candidate.mk
+        run: |
+          set -euo pipefail
+          grep -q "$MICROKIT_COMMIT" tools/sdk/candidate.mk \
+            || { echo "MICROKIT_COMMIT does not appear in tools/sdk/candidate.mk"; exit 1; }
+          grep -q "$SEL4_COMMIT" tools/sdk/candidate.mk \
+            || { echo "SEL4_COMMIT does not appear in tools/sdk/candidate.mk"; exit 1; }
+          grep -q 'qemu_virt_riscv64' tools/sdk/candidate.mk \
+            || { echo "tools/sdk/candidate.mk no longer lists qemu_virt_riscv64"; exit 1; }
+          sdk_version="$(sed -n 's/^SDK_CANDIDATE_VERSION := //p' tools/sdk/candidate.mk)"
+          test -n "$sdk_version" || { echo "could not read SDK_CANDIDATE_VERSION"; exit 1; }
+          echo "SDK_VERSION=$sdk_version" >> "$GITHUB_ENV"
+
+      - name: Install toolchains
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build python3-venv libxml2-utils \
+            gcc-13-riscv64-linux-gnu binutils-riscv64-linux-gnu \
+            clang lld llvm device-tree-compiler curl
+          mkdir -p "$RUNNER_TEMP/sdk-toolchain"
+          ln -s /usr/bin/riscv64-linux-gnu-gcc-13 "$RUNNER_TEMP/sdk-toolchain/riscv64-linux-gnu-gcc"
+          ln -s /usr/bin/riscv64-linux-gnu-cpp-13 "$RUNNER_TEMP/sdk-toolchain/riscv64-linux-gnu-cpp"
+          echo "$RUNNER_TEMP/sdk-toolchain" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/sdk-venv"
+          "$RUNNER_TEMP/sdk-venv/bin/pip" install -r tools/sdk/python-requirements.txt
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> _build/cargo"
+
+      - name: Build the pinned seL4 riscv64 board
+        run: |
+          set -euo pipefail
+          git init -q "$RUNNER_TEMP/microkit-source"
+          git -C "$RUNNER_TEMP/microkit-source" fetch -q --depth=1 \
+            https://github.com/seL4/microkit.git "$MICROKIT_COMMIT"
+          git -C "$RUNNER_TEMP/microkit-source" checkout -q --detach FETCH_HEAD
+          git init -q "$RUNNER_TEMP/sel4-source"
+          git -C "$RUNNER_TEMP/sel4-source" fetch -q --depth=1 \
+            https://github.com/seL4/seL4.git "$SEL4_COMMIT"
+          git -C "$RUNNER_TEMP/sel4-source" checkout -q --detach FETCH_HEAD
+          git -C "$RUNNER_TEMP/sel4-source" apply \
+            "$GITHUB_WORKSPACE/tools/sdk/patches/sel4-e60776ac-cr2.patch"
+          cache="$RUNNER_TEMP/microkit-source/build/qemu_virt_riscv64/release/sel4/build"
+          mkdir -p "$cache"
+          printf '%s\n' 'KernelVerificationBuild:BOOL=OFF' 'KernelDebugBuild:BOOL=OFF' \
+            'KernelPrinting:BOOL=OFF' 'KernelIRQReporting:BOOL=OFF' \
+            'KernelColourPrinting:BOOL=OFF' > "$cache/CMakeCache.txt"
+          cd "$RUNNER_TEMP/microkit-source"
+          "$RUNNER_TEMP/sdk-venv/bin/python" build_sdk.py \
+            --sel4 "$RUNNER_TEMP/sel4-source" \
+            --boards qemu_virt_riscv64 --configs release \
+            --gcc-toolchain-prefix-riscv64 riscv64-linux-gnu \
+            --skip-tool --skip-initialiser --skip-docs --skip-tar \
+            --version "$SDK_VERSION"
+          sdk="$RUNNER_TEMP/microkit-source/release/microkit-sdk-$SDK_VERSION"
+          test -s "$sdk/board/qemu_virt_riscv64/release/elf/sel4.elf"
+          echo "SEL4_SDK=$sdk" >> "$GITHUB_ENV"
+
+      - name: Build the riscv64 root task
+        run: |
+          set -euo pipefail
+          make build BOARD=qemu_virt_riscv64 GUEST_OS=none \
+            SEL4_SDK="$SEL4_SDK" SEL4_SDK_VERSION="$SDK_VERSION"
+
+      - name: Assert root_task.elf was actually linked
+        run: |
+          set -euo pipefail
+          elf=_build/qemu_virt_riscv64/root_task.elf
+          test -s "$elf" || { echo "FAIL: $elf was not produced"; exit 1; }
+          riscv64-linux-gnu-readelf -h "$elf"
+          riscv64-linux-gnu-readelf -h "$elf" | grep -q 'Machine: *RISC-V' \
+            || { echo "FAIL: $elf is not a RISC-V ELF"; exit 1; }
+          riscv64-linux-gnu-readelf -h "$elf" | grep -q 'Type: *EXEC' \
+            || { echo "FAIL: $elf is not a linked executable"; exit 1; }
+          # Guard against a link that "succeeded" over nothing: require the
+          # root task's own entry point and main to be defined in the image.
+          riscv64-linux-gnu-nm "$elf" > "$RUNNER_TEMP/rt.syms"
+          grep -qE '^[0-9a-f]+ [Tt] _start$' "$RUNNER_TEMP/rt.syms" \
+            || { echo "FAIL: _start is not defined in $elf"; exit 1; }
+          grep -qE '^[0-9a-f]+ [Tt] root_task_main$' "$RUNNER_TEMP/rt.syms" \
+            || { echo "FAIL: root_task_main is not defined in $elf"; exit 1; }
+          # The embedded signed PD bundle must be present too, or riscv64 has
+          # linked a root task that can spawn nothing (see docs/TCB.md).
+          grep -qE '[0-9a-f]+ . __pd_bundle_start$' "$RUNNER_TEMP/rt.syms" \
+            || { echo "FAIL: no embedded PD bundle in $elf"; exit 1; }
+          test -s _build/qemu_virt_riscv64/agentos.img \
+            || { echo "FAIL: agentos.img was not produced"; exit 1; }
+          echo "OK: riscv64 root_task.elf linked ($(stat -c %s "$elf") bytes), bundle embedded"
+
   # ── Track P: HURD-parity service CI jobs ────────────────────────────────
 
+  # NOTE: this job had a `strategy.matrix.board` of
+  # [qemu_virt_aarch64, qemu_virt_riscv64] and never referenced
+  # `matrix.board` anywhere: both legs ran `clang -fsyntax-only` on host
+  # headers and `make -n ... ARCH=aarch64`. It therefore ran the identical
+  # aarch64 work twice while displaying a job named "...(qemu_virt_riscv64)"
+  # in the checks list. It was the only `riscv` string under .github/ and it
+  # proved nothing about riscv64 -- decorative coverage, which is worse than
+  # no coverage because it answers the question "is riscv64 built in CI?"
+  # with a lie. The matrix is gone. Real riscv64 coverage is the
+  # riscv64-root-task-build job above, which compiles and links the actual
+  # root_task.elf.
   hurd-services-build:
     name: HURD services build (all new kernel PDs)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        board: [qemu_virt_aarch64, qemu_virt_riscv64]
     steps:
       - uses: actions/checkout@v4
 

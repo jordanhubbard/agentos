@@ -9,6 +9,24 @@ SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
 SDK_CANDIDATE_ARCHIVE_SHA256 := fb4290f10c2e59a0baa4d85d477726c3713dec5c497e0d232968bcb6675d566b
 SDK_CANDIDATE_PACKAGE_DIR ?= $(SDK_CANDIDATE_REPO)/_build/sdk-candidate-package
 
+# The boards this SDK is qualified for, in ONE place.  This list was repeated
+# four times (build, CMake cache seeding, package staging, acceptance check)
+# and adding a board meant editing all four; missing one produced an SDK that
+# built a kernel nobody hashed, or hashed a kernel nobody packaged.
+#
+# qemu_virt_riscv64 is here because riscv64 is a first-class target of this
+# tree (kernel/agentos-root-task/src/system_desc_riscv64.c, make test-riscv64)
+# and was previously unbuildable in CI for exactly one reason: no riscv64
+# kernel was ever produced.  Its toolchain prefix is passed to build_sdk.py
+# below; nothing forked is introduced, the pinned commits and the single
+# tools/sdk/patches/ patch are unchanged.
+SDK_CANDIDATE_COMMA := ,
+SDK_CANDIDATE_EMPTY :=
+SDK_CANDIDATE_SPACE := $(SDK_CANDIDATE_EMPTY) $(SDK_CANDIDATE_EMPTY)
+SDK_CANDIDATE_BOARDS := qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx qemu_virt_riscv64
+SDK_CANDIDATE_BOARDS_CSV := \
+	$(subst $(SDK_CANDIDATE_SPACE),$(SDK_CANDIDATE_COMMA),$(strip $(SDK_CANDIDATE_BOARDS)))
+
 .PHONY: sdk-candidate sdk-candidate-check
 
 # GNU tar normalizes archive metadata; gzip -n omits timestamps and filenames.
@@ -26,7 +44,7 @@ sdk-candidate-package: sdk-candidate-check
 	@set -eu; stage="$(SDK_CANDIDATE_PACKAGE_DIR)/stage/microkit-sdk-$(SDK_CANDIDATE_VERSION)"; \
 		mkdir "$$stage"; \
 		cp -a "$(SEL4_SDK)/VERSION" "$(SEL4_SDK)/LICENSE.md" "$(SEL4_SDK)/LICENSES" "$$stage/"; \
-		for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
+		for board in $(SDK_CANDIDATE_BOARDS); do \
 			mkdir -p "$$stage/board/$$board/release/elf"; \
 			mkdir -p "$$stage/board/$$board/release/lib"; \
 			cp -a "$(SEL4_SDK)/board/$$board/release/lib/microkit.ld" "$$stage/board/$$board/release/lib/"; \
@@ -65,7 +83,27 @@ sdk-candidate-check:
 	@test "$$(cat "$(SEL4_SDK)/VERSION")" = "$(SDK_CANDIDATE_VERSION)" || \
 		{ echo 'ERROR: candidate SDK VERSION does not match the qualified pin'; exit 1; }
 	@cd "$(SEL4_SDK)" && sha256sum -c "$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"
-	@for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
+	@# `sha256sum -c` only checks the lines it is given.  A board added to
+	@# SDK_CANDIDATE_BOARDS but not to cr2-kernels.sha256 would therefore sail
+	@# through the line above with its kernel completely unhashed -- the exact
+	@# silent gap this pipeline exists to close.  Require a recorded hash for
+	@# every board's kernel, and print the computed one when it is missing so
+	@# recording it is a paste rather than a guess.
+	@set -eu; hashes="$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"; \
+	missing=0; \
+	for board in $(SDK_CANDIDATE_BOARDS); do \
+		rel="board/$$board/release/elf/sel4.elf"; \
+		if ! grep -q "  $$rel\$$" "$$hashes"; then \
+			missing=1; \
+			echo "ERROR: $$rel has no recorded hash in tools/sdk/cr2-kernels.sha256."; \
+			echo "       This build produced:"; \
+			(cd "$(SEL4_SDK)" && sha256sum "$$rel") | sed 's/^/       /'; \
+			(cd "$(SEL4_SDK)" && sha256sum "board/$$board/release/lib/microkit.ld") | sed 's/^/       /'; \
+		fi; \
+	done; \
+	test "$$missing" = 0 || \
+		{ echo 'Record the lines above, then re-run; do not remove the board instead.'; exit 1; }
+	@for board in $(SDK_CANDIDATE_BOARDS); do \
 		for header in sel4/sel4.h kernel/gen_config.h; do \
 			test -s "$(SEL4_SDK)/board/$$board/release/include/$$header" || \
 				{ echo "ERROR: candidate SDK missing $$board/$$header"; exit 1; }; \
@@ -90,7 +128,7 @@ sdk-candidate:
 	git clone --no-hardlinks --no-checkout -- "$(SDK_CANDIDATE_SEL4_SOURCE)" "$(SDK_CANDIDATE_DIR)/sel4"
 	git -C "$(SDK_CANDIDATE_DIR)/sel4" checkout --detach e60776acc31097ca063806c257f07a3ec05eacf8
 	git -C "$(SDK_CANDIDATE_DIR)/sel4" apply "$(SDK_CANDIDATE_REPO)/tools/sdk/patches/sel4-e60776ac-cr2.patch"
-	@for board in qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx; do \
+	@for board in $(SDK_CANDIDATE_BOARDS); do \
 		cache="$(SDK_CANDIDATE_DIR)/microkit/build/$$board/release/sel4/build"; \
 		mkdir -p "$$cache" || exit 1; \
 		printf '%s\n' 'KernelVerificationBuild:BOOL=OFF' 'KernelDebugBuild:BOOL=OFF' \
@@ -98,8 +136,9 @@ sdk-candidate:
 			'KernelColourPrinting:BOOL=OFF' > "$$cache/CMakeCache.txt" || exit 1; \
 	done
 	cd "$(SDK_CANDIDATE_DIR)/microkit" && "$(SDK_CANDIDATE_PYTHON)" build_sdk.py \
-		--sel4 ../sel4 --boards qemu_virt_aarch64,x86_64_generic,x86_64_generic_vtx \
+		--sel4 ../sel4 --boards $(SDK_CANDIDATE_BOARDS_CSV) \
 		--configs release --gcc-toolchain-prefix-aarch64 aarch64-linux-gnu \
+		--gcc-toolchain-prefix-riscv64 riscv64-linux-gnu \
 		--skip-tool --skip-initialiser --skip-docs --skip-tar --version $(SDK_CANDIDATE_VERSION)
 	$(MAKE) sdk-candidate-check SEL4_SDK="$(SDK_CANDIDATE_DIR)/microkit/release/microkit-sdk-$(SDK_CANDIDATE_VERSION)"
 	@echo 'Candidate built; runtime acceptance and default SDK adoption remain separate.'
