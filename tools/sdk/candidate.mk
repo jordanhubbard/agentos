@@ -1,8 +1,20 @@
 # Opt-in, isolated build for the approved CR2 dependency qualification.
-# The source arguments name local upstream clones; only pinned commits are used.
+#
+# The sources are VENDORED: each dependency is a git submodule under vendor/
+# tracking an agentOS-controlled full-history mirror of the upstream
+# repository, pinned by gitlink to the exact upstream commit. Upstream is not
+# contacted at build time. See docs/sdk-provenance.md for why (an upstream was
+# observed deleting a commit another project referenced) and for what the
+# mechanism does and does not establish.
+#
+# tools/sdk/vendor.manifest is the single declaration of what is vendored;
+# `make sdk-provenance` cross-checks it against the recorded gitlinks, the
+# mirror contents and this file's pins. Overriding the *_SOURCE variables with
+# a different clone is still supported for local experiments, but the pinned
+# commits below are what is built and hashed.
 SDK_CANDIDATE_DIR ?= $(SDK_CANDIDATE_REPO)/_build/sdk-candidate
-SDK_CANDIDATE_MICROKIT_SOURCE ?=
-SDK_CANDIDATE_SEL4_SOURCE ?=
+SDK_CANDIDATE_MICROKIT_SOURCE ?= $(SDK_CANDIDATE_REPO)/vendor/microkit
+SDK_CANDIDATE_SEL4_SOURCE ?= $(SDK_CANDIDATE_REPO)/vendor/sel4
 SDK_CANDIDATE_PYTHON ?= python3
 SDK_CANDIDATE_REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 SDK_CANDIDATE_VERSION := 2.3.1-agentos-e60776ac-cr2
@@ -39,12 +51,30 @@ SDK_CANDIDATE_BOARDS := qemu_virt_aarch64 x86_64_generic x86_64_generic_vtx qemu
 SDK_CANDIDATE_BOARDS_CSV := \
 	$(subst $(SDK_CANDIDATE_SPACE),$(SDK_CANDIDATE_COMMA),$(strip $(SDK_CANDIDATE_BOARDS)))
 
-.PHONY: sdk-candidate sdk-candidate-check
+.PHONY: sdk-candidate sdk-candidate-check sdk-provenance
+
+# One-line wrapper over the Rust implementation (xtask/src/cmd_sdk_provenance.rs).
+# This is the artifact that replaces "go check the SHA against upstream
+# yourself": it reports, per dependency, the upstream repo and commit, whether
+# the pin is still reachable upstream (plainly saying so when it is not --
+# an expected, non-fatal state once sources are vendored), and the diff stat of
+# the agentOS delta.
+sdk-provenance:
+	@cargo xtask sdk-provenance
+
+# Enforced form of the same checks, minus the network query, so the build
+# refuses to proceed if the recorded gitlink, the manifest and the commits
+# pinned in this file have drifted apart.
+.PHONY: sdk-vendor-check
+sdk-vendor-check:
+	@test -e "$(SDK_CANDIDATE_SEL4_SOURCE)/.git" -a -e "$(SDK_CANDIDATE_MICROKIT_SOURCE)/.git" || \
+		{ echo 'ERROR: vendored sources are not checked out; run: make submodules'; exit 1; }
+	@cargo xtask sdk-provenance --offline
 
 # GNU tar normalizes archive metadata; gzip -n omits timestamps and filenames.
 # Keep sources and the exact patch alongside the target-only SDK archive.
 .PHONY: sdk-candidate-package
-sdk-candidate-package: sdk-candidate-check
+sdk-candidate-package: sdk-vendor-check sdk-candidate-check
 	@git -C "$(SDK_CANDIDATE_MICROKIT_SOURCE)" cat-file -e ec86afdcd662b5976d11d4994acf1b11a2979882^{commit}
 	@git -C "$(SDK_CANDIDATE_SEL4_SOURCE)" cat-file -e e60776acc31097ca063806c257f07a3ec05eacf8^{commit}
 	@mkdir -p "$$(dirname "$(SDK_CANDIDATE_PACKAGE_DIR)")"
@@ -83,10 +113,11 @@ sdk-candidate-package: sdk-candidate-check
 	cp "$(SDK_CANDIDATE_REPO)/tools/sdk/patches/sel4-e60776ac-cr2.patch" \
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256" \
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/candidate.mk" \
+		"$(SDK_CANDIDATE_REPO)/tools/sdk/vendor.manifest" \
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/python-requirements.txt" \
 		"$(SDK_CANDIDATE_REPO)/tools/sdk/normalize-header.c" \
 		"$(SDK_CANDIDATE_REPO)/docs/x86-cr2-candidate.md" "$(SDK_CANDIDATE_PACKAGE_DIR)/"
-	cd "$(SDK_CANDIDATE_PACKAGE_DIR)" && sha256sum *.tar.gz *.patch *.sha256 *.mk *.md *.txt *.c > SHA256SUMS
+	cd "$(SDK_CANDIDATE_PACKAGE_DIR)" && sha256sum *.tar.gz *.patch *.sha256 *.mk *.manifest *.md *.txt *.c > SHA256SUMS
 	@# Print the archive digest. It is the value SDK_CANDIDATE_ARCHIVE_SHA256
 	@# must carry once this archive is published, and it was previously only
 	@# written to a file inside a build directory -- so the one number a
@@ -167,9 +198,10 @@ sdk-candidate-check:
 	done
 	@echo 'Candidate version, kernel hashes and required header presence verified.'
 
-sdk-candidate:
+sdk-candidate: sdk-vendor-check
 	@test -d "$(SDK_CANDIDATE_MICROKIT_SOURCE)" -a -d "$(SDK_CANDIDATE_SEL4_SOURCE)" || \
-		{ echo 'Set SDK_CANDIDATE_MICROKIT_SOURCE and SDK_CANDIDATE_SEL4_SOURCE to upstream clones'; exit 1; }
+		{ echo 'Vendored sources missing. Run: make submodules'; \
+		echo '(or set SDK_CANDIDATE_MICROKIT_SOURCE / SDK_CANDIDATE_SEL4_SOURCE to other clones)'; exit 1; }
 	@case "$$(realpath -m -- "$(SDK_CANDIDATE_DIR)")" in \
 		"$(SDK_CANDIDATE_REPO)/_build/"*) ;; \
 		"$(SDK_CANDIDATE_REPO)"|"$(SDK_CANDIDATE_REPO)"/*) \

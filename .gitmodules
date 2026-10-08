@@ -1,0 +1,6 @@
+[submodule "vendor/sel4"]
+	path = vendor/sel4
+	url = https://github.com/jordanhubbard/agentos-vendor-sel4.git
+[submodule "vendor/microkit"]
+	path = vendor/microkit
+	url = https://github.com/jordanhubbard/agentos-vendor-microkit.git
