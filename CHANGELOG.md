@@ -48,8 +48,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `case` label — correct on AArch64, a hard error on RISC-V — for an unknown
   length of time, because nothing in CI ever compiled it.
 - `qemu_virt_riscv64` in `tools/sdk/candidate.mk`'s `--boards`, with a riscv64
-  cross-GCC and `qemu-system-riscv64` in the `sdk-candidate` workflow. Same
-  pinned commits, same single patch, no forked seL4 or Microkit.
+  cross-GCC and `qemu-system-riscv64` in the `sdk-candidate` workflow, and its
+  kernel hash in `tools/sdk/cr2-kernels.sha256`
+  (`8445adeb…`, measured from a real pipeline run and reproduced by the next
+  one). Same pinned commits, same single patch, no forked seL4 or Microkit.
+  RISC-V uses build_sdk.py's default bare-metal `riscv64-unknown-elf` triple
+  rather than a `riscv64-linux-gnu` override, because Ubuntu's `linux-gnu` GCC
+  defaults to PIE and Microkit's own loader `crt0.S` then fails to link with
+  `dangerous relocation: The addend isn't allowed for R_RISCV_GOT_HI20`.
 - `make test-fault-handler` (in `gate:` and as an explicit `os-claim-gate` CI
   step, since no CI job invokes `make gate`). `fault_handler` has no service
   endpoint and no device, so nothing else in the suite moved when it failed to
@@ -121,11 +127,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   real gate once the `sdk-candidate` workflow is re-run and its artifact
   republished. riscv64 *compile and link* is covered on every CI run in the
   meantime.
-- **`tools/sdk/cr2-kernels.sha256` does not yet carry the riscv64 kernel
-  hash**, for the same reason: that hash is whatever the pinned sources built
-  by the pinned cross-compiler produce, and it is recorded from a real
-  pipeline run rather than guessed. `sdk-candidate-check` fails and prints the
-  value until it is.
+- **The packaged SDK archive no longer matches `SDK_CANDIDATE_ARCHIVE_SHA256`,
+  and will not until it is republished.** That pin names the release asset
+  `make sdk` downloads; adding a board necessarily changes what the pipeline
+  packages. The pin is deliberately left alone, because raising it ahead of
+  publication would break `make sdk` for every developer. `sdk-candidate`
+  reports the divergence every run with both digests and the two-step fix
+  (publish the archive, *then* set the pin). The same republication is what
+  turns the `os-claim-gate` riscv64 step from a loud skip into a real gate.
 - **The T10 trust-anchor tier model is proven on one architecture, not
   three.** All five `make test-trust-anchor` probes run on
   `qemu_virt_aarch64`. riscv64 now compiles in a real tier, key and gating
