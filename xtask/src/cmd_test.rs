@@ -834,6 +834,64 @@ fn tamper_zero_manifest(image_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ─── T10 trust anchor tiers: target-proof build/boot helpers ──────────────
+//
+// `--trust-anchor-probe` boots the SAME verification path as
+// `--image-verify-probe`, under a DIFFERENT compiled-in anchor. The only
+// thing a probe controls is the build environment `select_anchor`
+// (xtask/src/boot_manifest.rs) reads, plus — for the tamper probes — the
+// same in-process byte flip the image-verify probes already use. Nothing
+// here touches verification logic, the manifest format, the signing path,
+// or main.c.
+
+/// The three build-time trust-anchor environment variables, mirrored from
+/// boot_manifest.rs's `VENDOR_SIGNING_KEY_ENV` / `MOK_SIGNING_KEY_ENV` /
+/// `TRUST_ANCHOR_ENV`. Every probe passes ALL THREE to `make` — the ones it
+/// wants set, and the rest explicitly removed — so an anchor variable
+/// already exported in the caller's shell can never redirect a probe to a
+/// tier it did not mean to build.
+const ANCHOR_ENV_VARS: [&str; 3] = [
+    "AGENTOS_BUNDLE_SIGNING_KEY",
+    "AGENTOS_MOK_SIGNING_KEY",
+    "AGENTOS_TRUST_ANCHOR",
+];
+
+/// The anchor environment a given probe builds under, as (set, unset).
+///
+/// The key paths point at the in-tree development seed. That is deliberate
+/// and is not a weakening: these probes qualify the TIER MACHINERY (which
+/// tier is compiled in, whether it gates, what it reports), not the secrecy
+/// of any key. A probe that minted its own keypair would prove the same
+/// thing while making the build non-reproducible. The resulting images are
+/// all dev-signed and say so in their own boot banner.
+fn anchor_env_for_probe(
+    repo_root: &Path,
+    probe: u8,
+) -> (Vec<(&'static str, String)>, Vec<&'static str>) {
+    let dev_seed = repo_root
+        .join(crate::boot_manifest::DEV_SIGNING_KEY_REL_PATH)
+        .display()
+        .to_string();
+    let set: Vec<(&'static str, String)> = match probe {
+        // Probes 1, 2 and 4 are vendor builds. Probe 4 then edits the
+        // compiled-in anchor state after the fact (see below).
+        1 | 2 | 4 => vec![("AGENTOS_BUNDLE_SIGNING_KEY", dev_seed)],
+        // Probe 3 is the development anchor, reached ONLY through the
+        // explicit opt-in, with neither signing key configured.
+        3 => vec![("AGENTOS_TRUST_ANCHOR", String::from("none"))],
+        // Probe 5 is a machine-owner build standing alone: a MOK and no
+        // vendor key at all (see trust_anchor.h on why vendor is optional).
+        5 => vec![("AGENTOS_MOK_SIGNING_KEY", dev_seed)],
+        _ => Vec::new(),
+    };
+    let unset = ANCHOR_ENV_VARS
+        .iter()
+        .copied()
+        .filter(|name| !set.iter().any(|(set_name, _)| set_name == name))
+        .collect();
+    (set, unset)
+}
+
 pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
         !args.retain_failed_guest || (args.keep_running && std::io::stdin().is_terminal()),
@@ -916,6 +974,16 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
          rebuild can never clobber it)"
     );
     anyhow::ensure!(
+        args.trust_anchor_probe.is_none()
+            || (args.board == "qemu_virt_aarch64"
+                && args.guest_os == "none"
+                && !args.no_build
+                && !args.keep_running),
+        "trust anchor qualification requires a fresh AArch64 GUEST_OS=none image: each \
+         probe builds its own image under a named anchor, so --no-build would boot \
+         whatever tier happened to be on disk and assert against the wrong one"
+    );
+    anyhow::ensure!(
         !(args.assert_inspect
             || args.inspect_write_probe
             || args.assert_operator_session
@@ -925,9 +993,17 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             || args.cc_envelope_probe.is_some()
             || args.authority_probe.is_some()
             || args.assert_entropy_unavailable
-            || args.assert_cap_lending)
+            || args.assert_cap_lending
+            || args.assert_child_spawn)
             || (args.board == "qemu_virt_aarch64" && args.guest_os == "none"),
         "inspect qualification requires AArch64 with guest-os none"
+    );
+    anyhow::ensure!(
+        !args.assert_fault_handler
+            || (args.board == "qemu_virt_aarch64" && args.guest_os == "none" && !args.no_build),
+        "fault_handler qualification requires a fresh AArch64 GUEST_OS=none image \
+         (fault_handler is a row in system_desc_aarch64.c only; the x86_64 \
+          descriptor has no such PD)"
     );
     anyhow::ensure!(
         !args.assert_native_guest
@@ -1161,6 +1237,42 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         );
     }
 
+    if args.trust_anchor_probe == Some(4) {
+        // Probe 4's own control pass.
+        //
+        // Probe 4 proves a NEGATIVE: an image with a gating tier and no key
+        // produces no root-task output. A negative is only attributable to the
+        // thing under test if the identical configuration WITHOUT that thing
+        // produces the positive. Probe 1 is exactly that configuration --
+        // same board, same guest-os, same anchor environment
+        // (AGENTOS_BUNDLE_SIGNING_KEY at the dev seed), differing ONLY by
+        // TRUST_ANCHOR_INCOHERENT_PROBE=1 -- so it is run here, inside probe
+        // 4, rather than left to happen to run first in `make
+        // test-trust-anchor`. A probe whose soundness depends on a sibling's
+        // ordering in one Makefile target is not a probe anyone can run alone.
+        //
+        // Recursion terminates immediately: the control is probe 1, which
+        // takes neither this branch nor any other re-entry.
+        //
+        // Placed after every argument check and immediately before the build:
+        // the control is a full build and boot, and spending that before the
+        // invocation has finished validating its own arguments would be a
+        // trap for whoever next relaxes one of clap's conflicts.
+        println!(
+            "[xtask:test] trust-anchor probe 4: control pass -- the same build WITHOUT \
+             the incoherent-anchor flag must boot to completion"
+        );
+        let mut control = args.clone();
+        control.trust_anchor_probe = Some(1);
+        run(&control).context(
+            "trust-anchor probe 4 control FAILED: the identical build without \
+             TRUST_ANCHOR_INCOHERENT_PROBE=1 did not boot to completion, so the silence \
+             probe 4 is about to assert could not be attributed to the incoherent anchor \
+             state. Fix the boot first; probe 4 proves nothing until this control passes",
+        )?;
+        println!("[xtask:test] trust-anchor probe 4: control passed; now the real probe");
+    }
+
     if !args.no_build {
         println!(
             "[xtask:test] Building BOARD={} selection={}...",
@@ -1205,6 +1317,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         if let Some(mode) = args.guest_gic_failure_probe {
             make_args.push(format!("GUEST_GIC_FAILURE_PROBE={mode}"));
         }
+        if args.trust_anchor_probe == Some(4) {
+            // Compile in the one anchor state select_anchor() cannot produce:
+            // a gating tier with its required key absent. See
+            // --incoherent-anchor-probe in cmd_gen_pd_bundle.rs.
+            make_args.push(String::from("TRUST_ANCHOR_INCOHERENT_PROBE=1"));
+        }
         if args.inspect_write_probe {
             make_args.push(String::from("INSPECT_WRITE_PROBE=1"));
         }
@@ -1228,6 +1346,9 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         }
         if args.assert_cap_lending {
             make_args.push(String::from("CAP_LEND_TEST=1"));
+        }
+        if args.assert_child_spawn {
+            make_args.push(String::from("CHILD_SPAWN_TEST=1"));
         }
         if args.assert_framebuffer {
             make_args.push(String::from("FRAMEBUFFER_TEST=1"));
@@ -1300,7 +1421,55 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             )?);
         }
         let make_arg_refs = make_args.iter().map(String::as_str).collect::<Vec<_>>();
-        run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?;
+        match args.trust_anchor_probe {
+            None => {
+                run_make(&make_arg_refs, &repo_root).context("profile-driven build step failed")?
+            }
+            Some(probe) => {
+                // T10: build under exactly the anchor this probe names, with
+                // every other anchor variable removed from the child's
+                // environment (see anchor_env_for_probe).
+                let (set, unset) = anchor_env_for_probe(&repo_root, probe);
+                println!(
+                    "[xtask:test] trust-anchor probe {probe}: building with {}",
+                    set.iter()
+                        .map(|(name, value)| format!("{name}={value}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                run_make_with_env(&make_arg_refs, &repo_root, &set, &unset)
+                    .context("trust anchor probe build step failed")?;
+
+                if probe == 4 {
+                    // The build knob above (TRUST_ANCHOR_INCOHERENT_PROBE,
+                    // added to make_args) is what actually compiles in the
+                    // incoherent state. Confirm it landed by reading the
+                    // GENERATED header back: this probe asserts an ABSENCE of
+                    // boot output, and an absence assertion against an image
+                    // that was never doctored passes for the wrong reason.
+                    let header = repo_root
+                        .join("_build")
+                        .join(&args.board)
+                        .join("boot_manifest_pubkey.h");
+                    let text = std::fs::read_to_string(&header).with_context(|| {
+                        format!("trust-anchor probe 4: failed to read {}", header.display())
+                    })?;
+                    anyhow::ensure!(
+                        text.contains("#define AOS_BOOT_TRUST_ANCHOR_TIER 2u")
+                            && text.contains("#define AOS_BOOT_MANIFEST_MOK_PRESENT 0"),
+                        "trust-anchor probe 4: {} does not compile in a gating tier with an \
+                         absent key, so the image about to boot is NOT the incoherent one \
+                         this probe claims to test",
+                        header.display()
+                    );
+                    println!(
+                        "[xtask:test] trust-anchor probe 4: compiled in AOS_ANCHOR_MOK with \
+                         MOK_PRESENT=0 ({})",
+                        header.display()
+                    );
+                }
+            }
+        }
     }
 
     // T3 image verification (probes 2/3): mutate the just-built image file
@@ -1335,6 +1504,32 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             }
             _ => {}
         }
+    }
+
+    // T10 trust anchor (probes 2/3): the identical in-process byte flip, at
+    // the identical point in the sequence — strictly after the build, strictly
+    // before QEMU. The ONLY difference between the two probes is which anchor
+    // the image above was built under, which is the entire point: the same
+    // tampered image must be refused under vendor and reported-but-booted
+    // under development.
+    let mut trust_anchor_tampered_pd: Option<String> = None;
+    if matches!(args.trust_anchor_probe, Some(2) | Some(3)) {
+        let image_path = repo_root
+            .join("_build")
+            .join(&args.board)
+            .join("agentos.img");
+        let pd_name = tamper_bundle_pd_byte(&image_path).with_context(|| {
+            format!(
+                "trust-anchor probe {}: failed to flip a byte in a PD's bundle ELF region",
+                args.trust_anchor_probe.unwrap_or(0)
+            )
+        })?;
+        println!(
+            "[xtask:test] trust-anchor probe {}: tampered PD '{pd_name}' in {}",
+            args.trust_anchor_probe.unwrap_or(0),
+            image_path.display()
+        );
+        trust_anchor_tampered_pd = Some(pd_name);
     }
 
     let seeded_plan = format!("{profile_plan:#?}\n");
@@ -1726,6 +1921,14 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
             );
             Ok(proof)
         })
+    } else if let Some(probe) = args.trust_anchor_probe {
+        verify_trust_anchor_probe(
+            probe,
+            &log_path,
+            trust_anchor_tampered_pd.as_deref(),
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
     } else if args.image_verify_probe == Some(1) {
         // Control: an unmodified image boots and completes verification.
         wait_for_all_markers(
@@ -1812,6 +2015,12 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         // present; absence of the fault-probe marker is exactly what Step
         // 4's non-vacuity demonstration (aos_cap_lend_revoke neutered)
         // exercises as a FAILURE of this same command.
+        //
+        // The last marker is root's own fault oracle. The badged endpoint
+        // it keys on is installed by root on the borrower's TCB from
+        // root's own CSpace and is not addressable from any PD's CSpace,
+        // and no PD holds a capability to root's fault endpoint, so that
+        // marker cannot be produced by a message a PD composes.
         wait_for_all_markers(
             &log_path,
             &[
@@ -1821,6 +2030,58 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
                 "[cap-lend-lender] OK: revoked original",
                 "[cap-lend-borrower] OK: sub-delegated copy dead after revoke",
                 "[cap-lend-probe] OK: borrower access faulted after revoke",
+            ],
+            Duration::from_secs(args.timeout_secs),
+            &mut qemu,
+        )
+    } else if args.assert_child_spawn {
+        // T6 run-time child domain creation
+        // (tests/child-spawn/{parent,child}_pd.c). Four probes, in the
+        // order the parent runs them:
+        //
+        //   Probe 3 -- the deliberately doomed spawn (its endowment names
+        //     an empty slot) is refused at the endowment step, leaves
+        //     nothing staged, never signals, and records nothing.
+        //   Probe 1 -- the real child reads the exact pattern from the
+        //     endowed frame, invokes its endowed FRAME CAPABILITY
+        //     (seL4_ARM_Page_GetAddress) and reports a physical address
+        //     the parent independently confirms, then signals through its
+        //     endowed Signal-only Notification.
+        //   Probe 2 -- the child's next access, at a page the parent
+        //     deliberately withheld, faults. The marker is emitted by the
+        //     ROOT TASK's fault oracle (main.c's AGENTOS_CHILD_SPAWN_TEST
+        //     ROOT_PROBE_* block) after matching the exact badge, address
+        //     and direction, so neither a timeout nor an unrelated fault
+        //     can satisfy it. The badged endpoint the oracle keys on is
+        //     installed on the CHILD's TCB by root, from root's own
+        //     CSpace: no PD holds a capability to root's fault endpoint,
+        //     so the marker cannot be produced by a message a PD
+        //     composes -- only by a real kernel fault IPC. (Stripping
+        //     send rights from a copy handed to the parent was tried and
+        //     is rejected: MCS validFaultHandler() requires Send plus
+        //     Grant or GrantReply.) The residual is that the parent
+        //     chooses which of its threads it presents to root's
+        //     installer, so the marker proves a real fault by a thread
+        //     the parent created, not specifically by the child; see the
+        //     oracle comment in main.c. Step 5 of the task brief (endow
+        //     the withheld page too, rebuild, watch this command FAIL on
+        //     exactly this marker) is what establishes that it is not
+        //     vacuous.
+        //   Probe 4 -- the endowment-delta ledger, rendered through T4's
+        //     own authority formatter. The pd= line is asserted verbatim:
+        //     a row for the child with exactly one notification and one
+        //     frame and nothing else. It is a report, not a proof --
+        //     see platform/endow_ledger.h.
+        wait_for_all_markers(
+            &log_path,
+            &[
+                "[child-spawn-parent] OK: endowment failed, child never started, ledger empty",
+                "[child-spawn-parent] OK: child used endowment, response and paddr verified",
+                "[rt] child-spawn: root installed child fault handler",
+                "[rt] child-spawn: expected withheld-page fault verified",
+                "pd=child_spawn_child index=1 untyped=0 tcb=0 endpoint=0 notification=1 \
+                 cnode=0 frame=1 vspace=0 irq_handler=0 sched_context=0 reply=0 other=0",
+                "[child-spawn-parent] OK: ledger reports 1 child, 2 endowed capabilities",
             ],
             Duration::from_secs(args.timeout_secs),
             &mut qemu,
@@ -2366,6 +2627,15 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
     if result.is_ok() && args.assert_inspect {
         result = verify_inspect(&cc_sock, &repo_root);
     }
+    if result.is_ok() && args.assert_fault_handler {
+        result = verify_fault_handler(&log_path, Duration::from_secs(30), &mut qemu);
+    }
+    if result.is_ok() && args.trust_anchor_probe == Some(5) {
+        // AOS_ANCHOR_MOK == 2 in contracts/trust_anchor.h; "machine-owner" is
+        // aos_anchor_tier_name()'s string for it — the single source for tier
+        // names, which inspect_snapshot.c calls rather than carrying a table.
+        result = verify_reported_anchor_tier(&cc_sock, &repo_root, 2, "machine-owner");
+    }
     if result.is_ok() && args.authority_probe == Some(1) {
         result = verify_authority(&cc_sock, &repo_root);
     }
@@ -2389,6 +2659,11 @@ pub fn run(args: &TestArgs) -> anyhow::Result<()> {
         && args.board == "qemu_virt_aarch64"
         && args.guest_gic_failure_probe.is_none()
         && args.image_verify_probe.is_none()
+        // Trust-anchor probes 2 and 4 refuse the boot on purpose, so no PD —
+        // log_drain included — ever starts. Probes 1, 3 and 5 all complete a
+        // boot and are held to the same driver-backed output requirement as
+        // every other AArch64 run.
+        && !matches!(args.trust_anchor_probe, Some(2) | Some(4))
     {
         if let Err(error) = wait_for_all_markers(
             &log_path,
@@ -3059,10 +3334,45 @@ pub fn qemu_tmp_dir(repo_root: &Path) -> PathBuf {
 }
 
 pub fn run_make(args: &[&str], cwd: &Path) -> anyhow::Result<()> {
-    let status = std::process::Command::new("make")
-        .args(args)
-        .current_dir(cwd)
-        .status()?;
+    run_make_with_env(args, cwd, &[], &[])
+}
+
+/// `run_make` with an explicit environment overlay.
+///
+/// `set` entries are exported to the child `make` (and therefore to every
+/// recipe it runs, including `cargo xtask gen-pd-bundle`, which reads the
+/// trust-anchor variables out of its own environment rather than from any
+/// make variable). `unset` entries are REMOVED from the child's environment
+/// even if this process inherited them.
+///
+/// Removing matters as much as setting for the trust-anchor probes: a
+/// developer or CI runner with `AGENTOS_MOK_SIGNING_KEY` already exported
+/// would otherwise silently retarget a probe that means to build a vendor
+/// image.
+///
+/// Scope, precisely: this covers the ENVIRONMENT. It does not and cannot
+/// cover make COMMAND-LINE variables — `make test-trust-anchor
+/// AGENTOS_MOK_SIGNING_KEY=...` reaches the child make through `MAKEFLAGS`
+/// and outranks anything set here. That case is loud rather than silent: each
+/// probe's banner assertion is a whole phrase naming the tier *and* its
+/// gating policy, so a retargeted probe fails on the banner instead of
+/// passing against a tier it never meant to test. Still, do not read this as
+/// "a probe's anchor environment is hermetic".
+pub fn run_make_with_env(
+    args: &[&str],
+    cwd: &Path,
+    set: &[(&str, String)],
+    unset: &[&str],
+) -> anyhow::Result<()> {
+    let mut command = std::process::Command::new("make");
+    command.args(args).current_dir(cwd);
+    for name in unset {
+        command.env_remove(name);
+    }
+    for (name, value) in set {
+        command.env(name, value);
+    }
+    let status = command.status()?;
     anyhow::ensure!(status.success(), "make {} failed", args.join(" "));
     Ok(())
 }
@@ -5150,6 +5460,271 @@ pub fn wait_for_markers(
     }
 }
 
+/// Boot-log side of `--trust-anchor-probe`. The image has already been built
+/// under this probe's named anchor (and, for probes 2 and 3, tampered) by the
+/// time this runs; all that is left is to read what the running system said.
+///
+/// Markers are quoted from main.c: `boot_announce_trust_anchor()` for the
+/// banner and the Step 4d.5 digest block for the per-PD outcome. They are
+/// matched as whole phrases rather than on the tier word alone, so a probe
+/// cannot pass on a banner that names the right tier while claiming the wrong
+/// gating policy.
+fn verify_trust_anchor_probe(
+    probe: u8,
+    log_path: &Path,
+    tampered_pd: Option<&str>,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    const VENDOR_GATING: &str =
+        "[rt] TRUST ANCHOR: vendor -- gates boot on a manifest/digest mismatch";
+    const MOK_GATING: &str =
+        "[rt] TRUST ANCHOR: machine-owner -- gates boot on a manifest/digest mismatch";
+    const DEV_NOT_GATING: &str = "[rt] TRUST ANCHOR: none (development, not gating) -- does NOT gate boot on a manifest/digest MISMATCH";
+
+    /// Assert that none of `forbidden` appears in the log at any point during
+    /// `window`, re-reading throughout rather than sampling once after a fixed
+    /// sleep.
+    ///
+    /// These probes assert ABSENCES, and an absence assertion fails OPEN if it
+    /// is really "that had not been printed yet". Both failure modes it guards
+    /// against are things that would appear LATE: a root task that continues
+    /// past the refusal, or a boot that completes after the marker that was
+    /// waited for. A single sample after 500 ms on a loaded CI runner can miss
+    /// either. Polling across a window turns "was not there at one instant"
+    /// into "was not there for the whole window".
+    ///
+    /// **It also requires QEMU to stay alive for the whole window.** This is
+    /// the assertion that matters most here, not the polling. A dead machine
+    /// prints nothing, so a QEMU that died — crashed, was killed, hit the
+    /// harness timeout — satisfies every absence VACUOUSLY. Without this check
+    /// probe 4 would report a successful refusal for a run in which the root
+    /// task never got the chance to speak: a pass for the wrong reason, in the
+    /// weakest of the five probes. Silence is only evidence if the thing that
+    /// would have spoken was still running.
+    ///
+    /// Cost, stated plainly: this burns the full window on the PASSING path —
+    /// it cannot return early, because "nothing yet" is exactly what it is
+    /// trying to distinguish from "nothing ever". At `ABSENCE_WINDOW`, that is
+    /// ~10 s each for probes 2 and 4, so ~20 s added to a
+    /// `make test-trust-anchor` run. That is the price of the absence
+    /// assertions not failing open, and it is worth paying here; do not copy
+    /// the pattern to probes that have a positive marker to wait for.
+    ///
+    /// Scale: a healthy AArch64 GUEST_OS=none boot reaches `[rt] UART mapped`
+    /// in tens of milliseconds and `agentOS boot complete` in a couple of
+    /// seconds, so the window below is roughly an order of magnitude of margin
+    /// over the slowest thing it needs to outlast.
+    fn assert_absent_throughout(
+        log_path: &Path,
+        forbidden: &[&str],
+        window: Duration,
+        qemu: &mut Child,
+        context: &str,
+    ) -> anyhow::Result<()> {
+        let deadline = Instant::now() + window;
+        loop {
+            if let Some(status) = qemu
+                .try_wait()
+                .context("failed to poll the QEMU process during an absence assertion")?
+            {
+                // Deliberately NOT prefixed with `context`: that string
+                // describes the marker-appeared failure ("the root task
+                // continued past Step 0"), which is the opposite of what
+                // happened here and would read as a contradiction.
+                anyhow::bail!(
+                    "QEMU EXITED ({status}) during the absence window, so this run \
+                     establishes NOTHING -- it is neither a pass nor the failure the \
+                     probe was looking for. A dead machine prints nothing, so the \
+                     silence observed is QEMU's, not the root task's; treating it as a \
+                     successful refusal would be a pass for the wrong reason. Was \
+                     asserting the absence of {forbidden:?}. Investigate why QEMU exited \
+                     and re-run."
+                );
+            }
+            let text = std::fs::read_to_string(log_path).unwrap_or_default();
+            for marker in forbidden {
+                anyhow::ensure!(
+                    !text.contains(marker),
+                    "{context}: {marker:?} appeared in the boot log"
+                );
+            }
+            if Instant::now() >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
+    /// How long the absence assertions keep watching. See
+    /// `assert_absent_throughout` for why this is a window and not a sample.
+    const ABSENCE_WINDOW: Duration = Duration::from_secs(10);
+
+    match probe {
+        // Probe 1 (brief Probe 1, control half): the vendor tier still boots
+        // an unmodified image to completion under the tier machinery, and
+        // names itself as gating while doing it.
+        1 => wait_for_all_markers(
+            log_path,
+            &[
+                VENDOR_GATING,
+                "[rt] boot manifest OK: signature verified",
+                "agentOS boot complete",
+            ],
+            timeout,
+            qemu,
+        )
+        .map(|proof| format!("{proof} (vendor anchor, unmodified image)")),
+
+        // Probe 2 (brief Probe 1, proof half): one flipped byte under the
+        // vendor tier refuses the ENTIRE boot and names the PD. This is T3's
+        // behaviour, re-asserted through the T10 gating policy rather than
+        // through an unconditional check, which is what makes "it did not
+        // regress" a measured statement.
+        2 => {
+            let pd_name = tampered_pd
+                .context("trust-anchor probe 2 requires a tampered PD name from the build step")?;
+            let digest_marker = format!(
+                "[rt] pd {pd_name}: ELF digest MISMATCH against signed manifest; refusing boot"
+            );
+            let proof = wait_for_all_markers(
+                log_path,
+                &[VENDOR_GATING, digest_marker.as_str()],
+                timeout,
+                qemu,
+            )?;
+            assert_absent_throughout(
+                log_path,
+                &["agentOS boot complete"],
+                ABSENCE_WINDOW,
+                qemu,
+                "the vendor anchor reported a tampered PD and then finished booting anyway",
+            )?;
+            Ok(format!("{proof}; agentOS boot complete absent"))
+        }
+
+        // Probe 3 (brief Probe 2): THE probe that distinguishes "reports
+        // without enforcing" from "does not verify". The same tamper as probe
+        // 2, under the development anchor, must produce BOTH:
+        //   - the digest mismatch, naming the same PD, said just as loudly;
+        //   - a completed boot.
+        // Asserting only the completion would pass against an image that
+        // skipped the digest comparison entirely — the quarantined
+        // VIBE_VERIFY_MODE shape in services/legacy-pds/verify.c. Asserting
+        // only the mismatch would not show that development mode stops
+        // gating. Both, or the probe proves nothing.
+        3 => {
+            let pd_name = tampered_pd
+                .context("trust-anchor probe 3 requires a tampered PD name from the build step")?;
+            let digest_marker = format!(
+                "[rt] pd {pd_name}: ELF digest MISMATCH against signed manifest; CONTINUING -- \
+                 none (development, not gating) trust anchor does not gate boot"
+            );
+            wait_for_all_markers(
+                log_path,
+                &[
+                    DEV_NOT_GATING,
+                    digest_marker.as_str(),
+                    "agentOS boot complete",
+                ],
+                timeout,
+                qemu,
+            )
+            .map(|proof| {
+                format!("{proof} (development anchor: mismatch REPORTED naming {pd_name}, boot COMPLETED)")
+            })
+        }
+
+        // Probe 4 (brief Probe 3): a gating tier with its required key absent
+        // is refused, not downgraded.
+        //
+        // READ THIS BEFORE TRUSTING THIS PROBE. It is the weakest of the five
+        // and its exact strength is:
+        //
+        // boot_init_trust_anchor() runs at Step 0, before the UART is mapped,
+        // so its diagnostic is dropped and the refusal is SILENT on this
+        // board. That is a trade main.c documents deliberately (check as early
+        // as possible, accept that the refusal cannot be printed), not a
+        // defect introduced here — but it means there is no positive marker to
+        // assert, so what follows is an ABSENCE.
+        //
+        // What is asserted:
+        //   - one positive marker, "MMU enabled, jumping to seL4...", which is
+        //     emitted by the LOADER (kernel/loader/). It establishes that the
+        //     image was built and the loader ran. It does NOT establish that
+        //     seL4 started, or that seL4 started the root task — nothing in
+        //     this log can, because nothing between the loader and Step 1
+        //     prints;
+        //   - the absence, for a window far longer than a healthy boot needs,
+        //     of every root-task marker: "[rt] UART mapped" is the root task's
+        //     FIRST output and comes from Step 1, strictly after Step 0.
+        //
+        // So the raw signature "loader marker, then nothing" is also the
+        // signature of a seL4 panic, a root-task crash before Step 1, or any
+        // future regression in the pre-Step-1 path. Two things, and only these
+        // two, make the silence attributable to the anchor state:
+        //
+        //   1. The CONTROL PASS run by this probe itself (see the probe-4
+        //      branch near the top of run()): the identical build and boot,
+        //      differing ONLY by TRUST_ANCHOR_INCOHERENT_PROBE=1, must reach
+        //      "agentOS boot complete" first. A generic boot break fails the
+        //      control, so it cannot be mistaken for the refusal. This is
+        //      carried by the probe, not borrowed from a sibling's ordering in
+        //      `make test-trust-anchor`.
+        //   2. The post-build re-read of the generated header (see the probe-4
+        //      branch in the build step), which proves the incoherent state
+        //      was actually compiled in, so this cannot pass against an image
+        //      that was never doctored.
+        //
+        // The honest fix is a positive refusal marker, which requires the
+        // Step 0 check to emit through a channel live at Step 0, or to be
+        // re-ordered after platform_debug_init(). That is a change to Task 2's
+        // deliberate ordering in main.c and is deliberately NOT made here.
+        4 => {
+            let proof = wait_for_all_markers(
+                log_path,
+                &["MMU enabled, jumping to seL4..."],
+                timeout,
+                qemu,
+            )?;
+            assert_absent_throughout(
+                log_path,
+                &[
+                    "[rt] UART mapped",
+                    "[rt] TRUST ANCHOR:",
+                    "[rt] starting",
+                    "agentOS boot complete",
+                ],
+                ABSENCE_WINDOW,
+                qemu,
+                "a gating trust anchor with no key produced root-task output: the root \
+                 task continued past Step 0 instead of refusing",
+            )?;
+            Ok(format!(
+                "{proof} (loader-stage marker); QEMU stayed up and produced no root-task \
+                 output for {}s afterwards, and the control pass of the same build \
+                 without the flag booted to completion",
+                ABSENCE_WINDOW.as_secs()
+            ))
+        }
+
+        // Probe 5 (brief Probe 4): the tier is visible at runtime. Built as a
+        // machine-owner image standing alone — deliberately NOT the vendor
+        // tier that make test-inspect already asserts, so this shows the
+        // inspect field tracking the image it was built from rather than
+        // reporting a constant that happens to match.
+        5 => wait_for_all_markers(
+            log_path,
+            &[MOK_GATING, "agentOS boot complete"],
+            timeout,
+            qemu,
+        )
+        .map(|proof| format!("{proof} (machine-owner anchor, vendor key absent)")),
+
+        other => anyhow::bail!("unknown trust anchor probe {other}"),
+    }
+}
+
 fn wait_for_all_markers(
     log_path: &Path,
     markers: &[&str],
@@ -5318,27 +5893,36 @@ fn wait_for_emulated_net(
 const RISCV64_EXPECTED_PDS: usize = 9;
 
 /*
- * Post-boot root-task fault reports this image is known to produce, with the
- * reason each one is not a riscv64 regression. The assertion is on the exact
- * count, not "no faults" and not "at most N": a new fault must fail, and so
- * must the silent disappearance of one of these (which would mean the boot
- * stopped earlier than it used to).
+ * Post-boot root-task fault reports this image is known to produce. The
+ * assertion is on the exact count, not "no faults" and not "at most N": a new
+ * fault must fail, and so must the silent disappearance of a known one (which
+ * would mean the boot stopped earlier than it used to).
  *
- *   1. fault_handler, VM fault storing to 0x3 at its first instruction after
- *      entry. services/fault-handler/fault_handler.c declares
- *      `uintptr_t fault_ring_vaddr;` and nothing in the tree ever assigns it,
- *      so fault_handler_init() writes its ring header through a null pointer.
- *      Nothing about this is riscv64-specific and nothing about it is new:
- *      fault_handler is in the AArch64 default PD set too and takes the same
- *      fault there. It is invisible on AArch64 only because serial_pd has
- *      taken the PL011 by then and the root task's own console output stops
- *      (an AArch64 GUEST_OS=none boot log ends at the second "pd started
- *      ok"); riscv64 keeps its console in the root task, so the fault report
- *      is actually printed. It is not fixed here: fault_handler is outside
- *      this change, and provisioning its ring region would alter the AArch64
- *      image this branch must leave alone.
+ * This is ZERO, and it was 1 until the merge of #300.
+ *
+ * The one known fault was fault_handler taking a VM fault storing to 0x3 at
+ * its first instruction after entry: services/fault-handler/fault_handler.c
+ * declared `uintptr_t fault_ring_vaddr;` and nothing in the tree ever
+ * assigned it, so fault_handler_init() wrote its ring header through a null
+ * pointer. That was never riscv64-specific — fault_handler is in the AArch64
+ * default PD set too and took the same fault there, invisible only because
+ * serial_pd has taken the PL011 by then and the root task's console output
+ * stops. riscv64 keeps its console in the root task, so riscv64 was the
+ * architecture where the fault was actually printed.
+ *
+ * #300 fixed it at the source: root now provisions a 2 MiB fault-ring frame
+ * and maps it at AOS_FAULT_RING_VA for any PD named fault_handler
+ * (provision_fault_ring() in kernel/agentos-root-task/src/main.c). That
+ * matcher is arch-blind and fault_handler is riscv64 PD index 8, so riscv64
+ * gets the ring with no riscv64-specific change; the boot log now carries
+ * `[rt] fault_handler ring map err=0x0` and no `[rt] FAULT` line at all.
+ *
+ * So this number moved 1 -> 0 because a real defect was fixed, not because an
+ * assertion was relaxed to make a test pass: 0 is strictly the tighter
+ * requirement, and if the ring provisioning ever regresses the null-pointer
+ * store returns and this assertion fails.
  */
-const RISCV64_EXPECTED_FAULTS: usize = 1;
+const RISCV64_EXPECTED_FAULTS: usize = 0;
 
 /*
  * Lines that mean the boot has already failed. Seeing any of these ends the
@@ -5480,22 +6064,93 @@ fn wait_for_x86_vtx_proof(
     Ok(format!("{marker} (x86 VMX/EPT entry qualification)"))
 }
 
+/// Mirrors `AOS_INSPECT_VERSION` in platform/include/platform/inspect.h.
+///
+/// Hand-synced, which is safe here because drift fails loudly rather than
+/// silently: cc_pd rejects any request whose version is not the compiled-in
+/// one, so a header bump without a bump here makes every inspect call return
+/// the error path and `make test-inspect` fails on the first assertion. It is
+/// also asserted directly, as the fourth word of the reply header below.
+const AOS_INSPECT_VERSION: u32 = 2;
+
+/// Ask a RUNNING system which trust anchor it booted under, and require the
+/// answer to be the one the image was actually built with.
+///
+/// Deliberately narrow: `verify_inspect()` already qualifies the snapshot as
+/// a whole (header, PD count, thread state) under the vendor tier. The thing
+/// this adds is that the tier field FOLLOWS THE BUILD — it is read here from
+/// an image built under a different anchor than the one verify_inspect pins,
+/// so a hardcoded constant in the snapshot path would fail here even though
+/// it passes there.
+///
+/// Both surfaces are checked, because they are reached by different code:
+/// the raw CC snapshot word at byte offset 76 (platform/include/platform/
+/// inspect.h), and agentctl's rendered `trust.anchor_tier` /
+/// `trust.anchor_tier_name` lines.
+fn verify_reported_anchor_tier(
+    socket: &Path,
+    root: &Path,
+    expected_tier: u32,
+    expected_name: &str,
+) -> anyhow::Result<String> {
+    let snapshot = {
+        let mut client = CcClient::connect(socket)?;
+        client.call(0x261a, AOS_INSPECT_VERSION, 0, 0, &[])?
+    };
+    let reported = rd32(&snapshot.shmem, 76);
+    anyhow::ensure!(
+        reported == expected_tier,
+        "inspect snapshot reports trust anchor tier {reported}, but the image was built \
+         under tier {expected_tier} ({expected_name})"
+    );
+
+    let out = std::process::Command::new(root.join("_build/tools/agentctl/agentctl"))
+        .arg("--socket")
+        .arg(socket)
+        .arg("inspect")
+        .output()
+        .context("run make -C tools/agentctl before trust anchor qualification")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "agentctl inspect failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = String::from_utf8(out.stdout)?;
+    for expected in [
+        format!("trust.anchor_tier={expected_tier}\n"),
+        format!("trust.anchor_tier_name={expected_name}\n"),
+    ] {
+        anyhow::ensure!(
+            report.contains(&expected),
+            "agentctl inspect missing {expected:?}; got:\n{report}"
+        );
+    }
+    Ok(format!(
+        "inspect reports trust anchor tier {expected_tier} ({expected_name}) on a running system"
+    ))
+}
+
 fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
     let first;
     {
         let mut client = CcClient::connect(socket)?;
-        for version in [0, 2, u32::MAX] {
+        for version in [
+            0,
+            AOS_INSPECT_VERSION - 1,
+            AOS_INSPECT_VERSION + 1,
+            u32::MAX,
+        ] {
             let bad = client.call(0x261a, version, 0, 0, &[])?;
             anyhow::ensure!(
                 bad.mr == [9, 0, 0, 0] && bad.shmem.iter().all(|b| *b == 0),
                 "inspect invalid version returned data or wrong error"
             );
         }
-        let bad = client.call(0x261a, 1, 1, 0, &[])?;
+        let bad = client.call(0x261a, AOS_INSPECT_VERSION, 1, 0, &[])?;
         anyhow::ensure!(bad.mr == [9, 0, 0, 0], "inspect accepted reserved argument");
-        first = client.call(0x261a, 1, 0, 0, &[])?;
+        first = client.call(0x261a, AOS_INSPECT_VERSION, 0, 0, &[])?;
         anyhow::ensure!(
-            first.mr == [0, 1488, 7, 1],
+            first.mr == [0, 1488, 7, AOS_INSPECT_VERSION],
             "inspect header: {:?}",
             first.mr
         );
@@ -5510,6 +6165,19 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
                 "boot snapshot advertised live thread state"
             );
         }
+        // T10: anchor_tier lives at byte offset 76 (right after
+        // thread_count at 72), repurposed from the always-zero `reserved`
+        // field -- see platform/include/platform/inspect.h. The default
+        // test build signs with the in-tree dev seed via
+        // AGENTOS_BUNDLE_SIGNING_KEY (kernel/agentos-root-task/Makefile's
+        // default), which selects AOS_ANCHOR_VENDOR (value 1) -- gating,
+        // not AOS_ANCHOR_NONE. A running system must be askable which
+        // trust anchor it booted under, not just the boot log.
+        anyhow::ensure!(
+            rd32(&first.shmem, 76) == 1,
+            "inspect did not report the AOS_ANCHOR_VENDOR trust anchor tier (offset 76): {}",
+            rd32(&first.shmem, 76)
+        );
     }
     let out = std::process::Command::new(root.join("_build/tools/agentctl/agentctl"))
         .arg("--socket")
@@ -5533,17 +6201,82 @@ fn verify_inspect(socket: &Path, root: &Path) -> anyhow::Result<String> {
         ".name=cc_pd\n",
         ".name=net_virt\n",
         ".name=serial_virt\n",
+        "trust.anchor_tier=1\n",
+        "trust.anchor_tier_name=vendor\n",
     ] {
         anyhow::ensure!(report.contains(expected), "inspect missing {expected}");
     }
     println!("{report}");
     let mut client = CcClient::connect(socket)?;
-    let second = client.call(0x261a, 1, 0, 0, &[])?;
+    let second = client.call(0x261a, AOS_INSPECT_VERSION, 0, 0, &[])?;
     anyhow::ensure!(
         first.mr == second.mr && first.shmem == second.shmem,
         "boot snapshot changed after reconnect and intervening requests"
     );
     Ok("root boot observations returned by CC and agentctl; invalid requests rejected; repeat stable".into())
+}
+
+/*
+ * verify_fault_handler() — the fault_handler TCB PD is alive and its fault
+ * ring is usable memory.
+ *
+ * WHY THIS TEST EXISTS. fault_handler is the only PD in the default AArch64
+ * image with neither a service endpoint nor a device: nothing calls it at
+ * boot, nothing waits on it, and no other assertion in this file moves if it
+ * never starts. It shipped dead on every architecture from the commit that
+ * introduced it -- its `fault_ring_vaddr` global was declared in .bss and
+ * assigned nowhere in the tree, so `fault_handler_init()` stored the ring
+ * header through NULL and the thread died at its first store, before any log
+ * call. On AArch64 and x86_64 that was additionally invisible because
+ * serial_pd owns the UART by then, so the kernel's fault report never
+ * reached the console. Every boot test still passed.
+ *
+ * WHAT IT PROVES, and what it does not. These markers come from the PD's own
+ * boot path running on target through log_drain and serial_pd -- the PD had
+ * to start, map its ring, and complete fault_ring_selfcheck()'s round trips
+ * at ring offset 0, at the final entry slot, and at the last byte of the ring
+ * before any of them can print. The exact self-check line is matched in full,
+ * including the mapped VA and the span, so a ring mapped short, mapped at the
+ * wrong address, or backed by a read-only or aliased frame cannot satisfy it.
+ * It does NOT prove fault delivery: no PD is made to fault here and no entry
+ * reaches the ring through a real seL4 fault IPC. It proves the handler is
+ * alive with working storage, which is the precondition that was missing.
+ */
+fn verify_fault_handler(
+    log_path: &Path,
+    timeout: Duration,
+    qemu: &mut Child,
+) -> anyhow::Result<String> {
+    // Byte-exact, including the fixed-width hex fields: AOS_FAULT_RING_VA and
+    // AOS_FAULT_RING_BYTES in platform/include/platform/fault_ring.h, the
+    // FAULT_RING_MAGIC and derived capacity in
+    // services/fault-handler/fault_handler.c. A change to any of them must be
+    // restated here deliberately rather than passing by accident.
+    const SELF_CHECK: &str = "[fault_handler] ring self-check: PASS \
+         va=0x0000000032000000 magic=0x00000000fa17dead \
+         capacity=0x00000000000013b0 span=0x000000000003ffff";
+    const READY: &str = "[fault_handler] Ready \u{2014} priority 250, passive, \
+         monitoring all PD faults";
+
+    let log = wait_for_all_markers(log_path, &[SELF_CHECK, READY], timeout, qemu).context(
+        "fault_handler did not report a live PD with a usable fault ring; a silent \
+             fault_handler is exactly the failure this assertion exists to catch -- \
+             check that the root task mapped AOS_FAULT_RING_VA into its VSpace",
+    )?;
+
+    // The PD parks forever rather than serving with a broken ring, so this
+    // line and the two above are mutually exclusive; assert it anyway, since
+    // a future edit could make the failure path fall through.
+    anyhow::ensure!(
+        !log.contains("[fault_handler] ring self-check: FAIL"),
+        "fault_handler reported its fault ring is not usable memory"
+    );
+
+    Ok(
+        "fault_handler reached its IPC loop and round-tripped its fault ring at \
+        offset 0, at the last entry slot and at the final byte of the 256 KiB ring"
+            .into(),
+    )
 }
 
 fn rd16(src: &[u8], off: usize) -> u16 {
@@ -5559,6 +6292,7 @@ fn rd16(src: &[u8], off: usize) -> u16 {
 const AOS_AUTHORITY_VERSION: u32 = 1;
 const AOS_AUTHORITY_ROW_OFFSET: usize = 24;
 const AOS_AUTHORITY_ROW_STRIDE: usize = 60;
+const AOS_AUTHORITY_KIND_FRAME: usize = 5;
 const AOS_AUTHORITY_KIND_IRQ_HANDLER: usize = 7;
 
 fn authority_row(shmem: &[u8], pd_count: u32, pd_index: u32) -> Option<usize> {
@@ -5570,14 +6304,15 @@ fn authority_row(shmem: &[u8], pd_count: u32, pd_index: u32) -> Option<usize> {
     })
 }
 
-fn authority_irq_count(shmem: &[u8], row: usize) -> u16 {
+fn authority_kind_count(shmem: &[u8], row: usize, kind: usize) -> u16 {
     rd16(
         shmem,
-        AOS_AUTHORITY_ROW_OFFSET
-            + row * AOS_AUTHORITY_ROW_STRIDE
-            + 36
-            + AOS_AUTHORITY_KIND_IRQ_HANDLER * 2,
+        AOS_AUTHORITY_ROW_OFFSET + row * AOS_AUTHORITY_ROW_STRIDE + 36 + kind * 2,
     )
+}
+
+fn authority_irq_count(shmem: &[u8], row: usize) -> u16 {
+    authority_kind_count(shmem, row, AOS_AUTHORITY_KIND_IRQ_HANDLER)
 }
 
 /* Probe 1: the published boot authority page agrees with the compiled
@@ -5654,6 +6389,40 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
                  (TCB invariant 2: the virtualizer owns no device frame and no IRQ)"
             );
         }
+
+        /* fault_handler (pd_index 14) is the only PD in the default image
+         * that holds TWO frame capabilities: its IPC buffer, like everyone
+         * else, plus the single 2 MiB frame backing its fault ring
+         * (platform/fault_ring.h, provision_fault_ring() in the root task).
+         * Before that region existed the PD's `fault_ring_vaddr` global was
+         * never assigned, so it stored its ring header through NULL and died
+         * on entry on every architecture. Asserting the exact count here is
+         * what makes "root really granted the ring" a published, checkable
+         * fact rather than something only the PD's own log claims.
+         *
+         * NOTE on the baseline: every other row reports frame=1 because the
+         * ledger records only the IPC buffer -- the per-PD log config/client
+         * pages are mapped by log_map_copy() without a cap_acct_record call.
+         * That under-recording predates this assertion and is not what the
+         * +1 here measures; this counts the fault ring specifically. */
+        {
+            let row = authority_row(&first.shmem, pd_count, 14)
+                .context("authority: no published row for pd_index 14 (fault_handler)")?;
+            let frames = authority_kind_count(&first.shmem, row, AOS_AUTHORITY_KIND_FRAME);
+            anyhow::ensure!(
+                frames == 2,
+                "fault_handler (pd_index 14) reports {frames} frame capabilities, \
+                 expected 2 (IPC buffer + the 2 MiB fault-ring region). If this \
+                 moved, say which frame was added or removed and why -- do not \
+                 retune the number to make the test pass"
+            );
+            let irq = authority_irq_count(&first.shmem, row);
+            anyhow::ensure!(
+                irq == 0,
+                "fault_handler (pd_index 14) reports {irq} IRQ handlers, expected 0 \
+                 (it is reached through TCB fault endpoints, owns no device)"
+            );
+        }
     }
 
     let out = std::process::Command::new(root.join("_build/tools/agentctl/agentctl"))
@@ -5674,6 +6443,8 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
         "pd=net_virt",
         "pd=blk_virt",
         "pd=serial_virt",
+        "pd=fault_handler index=14 untyped=0 tcb=1 endpoint=2 notification=0 cnode=1 \
+         frame=2 vspace=1 irq_handler=0 sched_context=0 reply=0 other=0",
         "truncated_adds=0\n",
         "saturated=0\n",
     ] {
@@ -5693,8 +6464,9 @@ fn verify_authority(socket: &Path, root: &Path) -> anyhow::Result<String> {
 
     Ok(
         "boot authority counts matched the compiled descriptor (serial_pd/cc_pd each \
-        own their one IRQ handler; net_virt/blk_virt/serial_virt own none); CC and \
-        agentctl agree; repeat stable"
+        own their one IRQ handler; net_virt/blk_virt/serial_virt own none; \
+        fault_handler holds its IPC buffer plus exactly one fault-ring frame and \
+        no IRQ); CC and agentctl agree; repeat stable"
             .into(),
     )
 }

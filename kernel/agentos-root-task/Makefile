@@ -2,6 +2,15 @@
 # This builds the agentOS personality layer that boots on top of seL4.
 # Image packing uses cargo xtask gen-image (no external Microkit SDK required).
 
+# A failed recipe must not leave a stale target file with a fresh mtime,
+# which `make` would then treat as up to date on the next invocation. This
+# matters most for the PD_BUNDLE/PD_MANIFEST/PD_MANIFEST_PUBKEY_HDR trio
+# (T10 review, task-2-review.md "Disclosed concern (a)"): `xtask
+# gen-pd-bundle` writes the bundle file before it can fail on trust-anchor
+# selection (no key, no opt-in), which would otherwise leave a dangling,
+# unsigned bundle on disk that looked current.
+.DELETE_ON_ERROR:
+
 ifeq ($(strip $(BUILD_DIR)),)
 $(error BUILD_DIR must be specified)
 endif
@@ -100,6 +109,11 @@ else
   OBJCOPY ?= llvm-objcopy
 endif
 
+# llvm-nm, resolved alongside the llvm-objcopy found above. Used only by the
+# child-spawn test image, to check the run-time-created child ELF fits the
+# single page its parent maps for it.
+CHILD_SPAWN_NM := $(subst objcopy,nm,$(OBJCOPY))
+
 # ─── Root task seL4 boot binary ──────────────────────────────────────────────
 # main.c is the seL4 root task entry point and boot sequence orchestrator.
 # It is NOT a Microkit PD — it links without libmicrokit and uses its own
@@ -145,6 +159,16 @@ ROOT_TASK_OBJS += $(BUILD_DIR)/rt_authority.o
 # used by the legacy monitor PD, so the object is shared/deduped rather than
 # duplicated under an rt_ prefix.
 ROOT_TASK_OBJS += $(BUILD_DIR)/sha256_mini.o $(BUILD_DIR)/ed25519_verify.o $(BUILD_DIR)/monocypher.o
+# Trust anchor tier contract and gating policy (T10) -- host-testable, no
+# seL4/key material of its own; see libs/pd-support/trust_anchor.c and
+# kernel/agentos-root-task/include/contracts/trust_anchor.h.
+#
+# platform/inspect/inspect_snapshot.c calls aos_anchor_tier_name() directly
+# (the single source of tier -> name strings, see its own comment) rather
+# than hand-syncing a second copy, so every binary that links
+# inspect_snapshot.c -- or its inspect_snapshot.pd.o twin, see cc_pd.elf
+# and operator_session.elf below -- must also link trust_anchor.o.
+ROOT_TASK_OBJS += $(BUILD_DIR)/trust_anchor.o
 ifeq ($(ARCH),x86_64)
 ROOT_TASK_OBJS += $(BUILD_DIR)/rt_virtio_pci_caps.o
 endif
@@ -555,6 +579,10 @@ $(BUILD_DIR)/authority.pd.o: $(REPO_ROOT_MK)/platform/inspect/authority.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/endow_ledger.pd.o: $(REPO_ROOT_MK)/platform/inspect/endow_ledger.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # Compile root task objects with rt_ prefix to avoid colliding with PD objects
 $(BUILD_DIR)/rt_%.o: src/%.c
 	@mkdir -p $(BUILD_DIR)
@@ -600,6 +628,117 @@ PD_MANIFEST_OBJ :=
 endif
 # Deferred reference: SYSTEM_TOML is set later in this Makefile.
 SYSTEM_TOML_FOR_BUNDLE = $(SYSTEM_TOML)
+
+# Trust anchor tier selection (T10) for `xtask gen-pd-bundle`: strictest-first
+# on AGENTOS_BUNDLE_SIGNING_KEY / AGENTOS_MOK_SIGNING_KEY / AGENTOS_TRUST_ANCHOR
+# -- see xtask/src/boot_manifest.rs::select_anchor. A build with NEITHER a
+# signing key NOR an explicit AGENTOS_TRUST_ANCHOR=none opt-in is a build
+# ERROR by design (the one outcome this whole feature must not produce is a
+# silently non-gating image). This Makefile default exists so `make build`/
+# `make test` with no special environment keep working exactly as they did
+# before this task -- by EXPLICITLY exporting AGENTOS_BUNDLE_SIGNING_KEY at
+# the dev seed path (committed in-tree, not a secret) rather than relying on
+# any implicit fallback inside xtask. That still selects AOS_ANCHOR_VENDOR
+# (gating) with the dev-signed indicator set, identical to today's behavior;
+# it is not the non-gating AOS_ANCHOR_NONE tier. `?=` lets a real
+# AGENTOS_BUNDLE_SIGNING_KEY (or AGENTOS_MOK_SIGNING_KEY / AGENTOS_TRUST_ANCHOR
+# opt-in) from the caller's environment take priority untouched, and a
+# caller deliberately exercising AOS_ANCHOR_NONE or a MOK-only build is not
+# second-guessed by this default forcing a vendor key back in.
+ifeq ($(AGENTOS_TRUST_ANCHOR),none)
+# Explicit opt-in to the non-gating development anchor: leave it alone.
+else ifdef AGENTOS_MOK_SIGNING_KEY
+# MOK-only (or MOK + vendor, if the caller also sets the vendor var) build
+# requested explicitly: do not force a vendor key into it.
+else
+AGENTOS_BUNDLE_SIGNING_KEY ?= $(REPO_ROOT_MK)/kernel/agentos-root-task/keys/dev_signing_key.seed
+endif
+
+# Export all three unconditionally. `xtask gen-pd-bundle` reads them from its
+# own environment, make's own view of them is what the stamp below records, and
+# those two views MUST be the same view -- a build whose stamp says "vendor key
+# configured" while gen-pd-bundle saw no key is the silent-downgrade shape this
+# whole feature exists to prevent.
+#
+# Only AGENTOS_BUNDLE_SIGNING_KEY was exported before, and only in the `else`
+# branch above, which left the equality resting on an implementation detail:
+# GNU make automatically marks command-line variables for export, so
+# `make build AGENTOS_BUNDLE_SIGNING_KEY=...` happens to reach the recipe even
+# in the branches that never say `export`. (Measured on GNU Make 3.81: all
+# three command-line forms select the intended tier today.) That is true, but
+# it is not something this invariant should depend on knowing. Exporting
+# unconditionally makes make's view and gen-pd-bundle's view the same by
+# construction, and the --anchor-selection-stamp cross-check passed to
+# gen-pd-bundle below turns any future divergence into a hard build error
+# rather than a quietly mis-tiered image.
+#
+# NOTE on the empty case: `export` on an UNDEFINED variable still puts
+# `NAME=` (empty) into the recipe environment. load_env_seed_key() in
+# xtask/src/boot_manifest.rs therefore treats an empty value as "not set",
+# which is both what make means here and fail-closed -- no key, so
+# select_anchor() takes its no-key path and errors without an explicit opt-in.
+export AGENTOS_BUNDLE_SIGNING_KEY
+export AGENTOS_MOK_SIGNING_KEY
+export AGENTOS_TRUST_ANCHOR
+
+# Trust anchor selection stamp (T10 Task 3). `xtask gen-pd-bundle` reads the
+# three anchor env vars above out of its OWN environment, so none of them is
+# visible to make's dependency graph: without this stamp, PD_BUNDLE /
+# PD_MANIFEST / PD_MANIFEST_PUBKEY_HDR depend only on the PD ELFs, the system
+# TOML and GUEST_CONFIG_STAMP, and a build that changes ONLY the anchor
+# selection regenerates nothing.
+#
+# What saves it today is an ACCIDENT, not a dependency: guest_vmm_primary.elf
+# is in IMAGES and is relinked unconditionally (`: FORCE`) on every build, so
+# it usually lands newer than PD_BUNDLE and drags the whole trio along with it.
+# That is an mtime race, not a guarantee — measured on this tree, a plain
+# `make build` was observed re-running gen-pd-bundle on most invocations and
+# skipping it on one, where the relink and the previous bundle write fell in
+# the same filesystem timestamp tick.
+#
+# Losing that race in the AGENTOS_TRUST_ANCHOR=none -> plain `make build`
+# direction is the one outcome this whole feature exists to prevent: the image
+# left on disk is still the NON-GATING development one, while every signal the
+# operator has — the command they typed, the Makefile default, the absence of
+# any opt-in — says it is a gating vendor image. Recording the selection in a
+# stamp file and depending on it makes the anchor a tracked input, so a changed
+# anchor rebuilds the bundle, the manifest and the compiled-in key header
+# together, deterministically and regardless of what any unrelated PD ELF's
+# mtime happens to be.
+#
+# The signing key FILES are listed as prerequisites too (via $(wildcard ...),
+# so an unset or not-yet-created path is simply no prerequisite rather than a
+# hard error): rotating a key in place, at an unchanged path, must also
+# invalidate the compiled-in public key.
+#
+# Same write-only-if-changed shape as GUEST_CONFIG_STAMP above, so an unchanged
+# selection does not churn mtimes and force a rebuild on every invocation.
+PD_ANCHOR_STAMP := $(BUILD_DIR)/trust_anchor_selection.stamp
+PD_ANCHOR_KEY_FILES := $(wildcard $(AGENTOS_BUNDLE_SIGNING_KEY)) $(wildcard $(AGENTOS_MOK_SIGNING_KEY))
+
+# TEST-ONLY (T10 target proof, probe 4). TRUST_ANCHOR_INCOHERENT_PROBE=1 makes
+# gen-pd-bundle compile in a gating tier with its required key absent, so the
+# root task's Step 0 validation has something to reject; see that flag's doc
+# comment in xtask/src/cmd_gen_pd_bundle.rs for why the state has to be
+# constructed rather than configured, and why it is fail-closed (the only
+# image it can produce is one that refuses to start any PD). Same shape as the
+# other test-only build knobs in this file (INSPECT_WRITE_PROBE,
+# AUTHORITY_WRITE_PROBE, GUEST_GIC_FAILURE_PROBE): off unless named, and
+# recorded in the stamp below so switching it on or off rebuilds the image
+# rather than leaving the previous one in place.
+ifeq ($(TRUST_ANCHOR_INCOHERENT_PROBE),1)
+PD_ANCHOR_PROBE_FLAG := --incoherent-anchor-probe
+else
+PD_ANCHOR_PROBE_FLAG :=
+endif
+
+$(PD_ANCHOR_STAMP): FORCE
+	@mkdir -p $(BUILD_DIR)
+	@tmp="$@.tmp"; \
+	printf 'AGENTOS_TRUST_ANCHOR=%s\nAGENTOS_BUNDLE_SIGNING_KEY=%s\nAGENTOS_MOK_SIGNING_KEY=%s\nPROBE=%s\n' \
+		'$(AGENTOS_TRUST_ANCHOR)' '$(AGENTOS_BUNDLE_SIGNING_KEY)' '$(AGENTOS_MOK_SIGNING_KEY)' \
+		'$(PD_ANCHOR_PROBE_FLAG)' > "$$tmp"; \
+	if test -f "$@" && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
 
 # ─── AArch64: root_task uses custom LD script + embedded PD bundle ───────────
 # On AArch64 the loader (kernel/loader/) loads root_task.elf from DRAM at
@@ -828,7 +967,7 @@ ifdef GUEST_INPUT
   else ifneq ($(ARCH),aarch64)
     $(error GUEST_INPUT requires aarch64 or x86_64 firmware mode)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
     $(error GUEST_INPUT cannot be combined with focused test images)
   endif
   ifeq ($(ARCH),x86_64)
@@ -851,7 +990,7 @@ ifdef GUEST_GRAPHICS
   else ifneq ($(ARCH),aarch64)
     $(error GUEST_GRAPHICS requires aarch64 or x86_64 firmware mode)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
     $(error GUEST_GRAPHICS cannot be combined with focused test images)
   endif
   ifeq ($(ARCH),x86_64)
@@ -870,7 +1009,7 @@ ifdef FRAMEBUFFER_TEST
   ifneq ($(ARCH),aarch64)
     $(error FRAMEBUFFER_TEST requires aarch64)
   endif
-  ifneq ($(strip $(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+  ifneq ($(strip $(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
     $(error FRAMEBUFFER_TEST is a separate image variant)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_FRAMEBUFFER_TEST=1
@@ -898,8 +1037,8 @@ ifdef NATIVE_RUST_TEST
   ifneq ($(ARCH),aarch64)
     $(error NATIVE_RUST_TEST currently requires aarch64)
   endif
-  ifneq ($(strip $(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
-    $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE/CAP_LEND_TEST are separate image variants)
+  ifneq ($(strip $(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)$(CHILD_SPAWN_TEST)),)
+    $(error NATIVE_RUST_TEST and SEL4_TEST_IMAGE/CAP_LEND_TEST/CHILD_SPAWN_TEST are separate image variants)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_NATIVE_RUST_TEST=1
   CFLAGS += -DAGENTOS_NATIVE_RUST_TEST=1
@@ -918,12 +1057,34 @@ ifdef CAP_LEND_TEST
   ifneq ($(ARCH),aarch64)
     $(error CAP_LEND_TEST currently requires aarch64)
   endif
-  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)),)
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CHILD_SPAWN_TEST)),)
     $(error CAP_LEND_TEST is a separate image variant)
   endif
   CFLAGS_ROOT_TASK += -DAGENTOS_CAP_LEND_TEST=1
   CFLAGS += -DAGENTOS_CAP_LEND_TEST=1
   IMAGES += cap_lend_lender.elf cap_lend_borrower.elf
+endif
+
+# T6: run-time child-domain-creation demonstration (test image only). See
+# tests/child-spawn/{parent,child}_pd.c, child_spawn.h/.c, and
+# docs/superpowers/plans/2026-10-04-t6-hierarchical-delegation.md. Absent
+# from the default image and from every other focused test-image variant.
+# Unlike every other pair above, child_spawn_child is NOT a system_desc row
+# and is never loaded by the root task's normal per-PD boot loop -- it is
+# linked as a raw binary blob directly into child_spawn_parent's own ELF
+# (see the objcopy rules below) so its bytes are covered by the SAME T3
+# verification that covers the rest of the parent's binary, with no new
+# PD-loading path. Only child_spawn_parent.elf is added to IMAGES.
+ifdef CHILD_SPAWN_TEST
+  ifneq ($(ARCH),aarch64)
+    $(error CHILD_SPAWN_TEST currently requires aarch64)
+  endif
+  ifneq ($(strip $(FRAMEBUFFER_TEST)$(NATIVE_RUST_TEST)$(SEL4_TEST_IMAGE)$(CAP_LEND_TEST)),)
+    $(error CHILD_SPAWN_TEST is a separate image variant)
+  endif
+  CFLAGS_ROOT_TASK += -DAGENTOS_CHILD_SPAWN_TEST=1
+  CFLAGS += -DAGENTOS_CHILD_SPAWN_TEST=1
+  IMAGES += child_spawn_parent.elf
 endif
 
 ifdef BLK_ISOLATION_PROBE
@@ -954,7 +1115,7 @@ $(BUILD_DIR)/operator_session.o: $(REPO_ROOT_MK)/platform/operator-session/opera
 $(BUILD_DIR)/operator_protocol.o: $(REPO_ROOT_MK)/platform/operator-session/session.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
-$(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o
+$(BUILD_DIR)/operator_session.elf: $(BUILD_DIR)/operator_session.o $(BUILD_DIR)/operator_protocol.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/m3_bare_metal.o $(BUILD_DIR)/log.o $(BUILD_DIR)/trust_anchor.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 GUEST_CONFIG_STAMP := $(BUILD_DIR)/guest_config.stamp
 # SDK paths and compile definitions are part of this stamp. Invalidate all
@@ -1328,6 +1489,99 @@ $(BUILD_DIR)/cap_lend_lender.elf: $(BUILD_DIR)/cap_lend_lender.o $(BUILD_DIR)/ca
 $(BUILD_DIR)/cap_lend_borrower.elf: $(BUILD_DIR)/cap_lend_borrower.o $(BUILD_DIR)/cap_lend.o $(BUILD_DIR)/cap_lease.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
+# T6: run-time child-domain-creation demonstration pair. child_spawn.o/
+# endowment.o build through the generic libs/pd-support pattern rule above
+# (line ~1171). Endowment mints directly (seL4_CNode_Mint), not through
+# T5's cap_lend.c, so this pair does not link cap_lend.o/cap_lease.o at
+# all -- see child_spawn.h's "Endowment: a MINT, not a loan".
+#
+# child_spawn_child.elf uses the same _start convention and the same
+# tools/ld/agentos.ld link address as any other service PD, but NOT the
+# same link line -- see the three deliberate differences at its own rule
+# below (own pd_entry object without AGENTOS_LOG_RINGS, no
+# rust_pd_memory.o, --nmagic) and the long comment at the top of
+# tests/child-spawn/child_pd.c. It is NOT
+# added to IMAGES and is NOT a system_desc_aarch64.c row -- it is never
+# loaded by the root task's per-PD boot loop. Instead its loadable bytes
+# are extracted (objcopy -O binary) and linked directly into
+# child_spawn_parent.elf as a read-only blob (see child_spawn.h's file
+# header on why: this keeps the child's "ELF" inside the SAME T3-verified
+# bundle entry as the parent, with no new image-loading path). The
+# objcopy-to-.o step mirrors the existing $(PD_BUNDLE_OBJ) /
+# $(PD_MANIFEST_OBJ) rules above exactly (same --input-target=binary,
+# same cd-into-BUILD_DIR-for-predictable-symbol-names trick).
+$(BUILD_DIR)/child_spawn_child.o: $(REPO_ROOT)/tests/child-spawn/child_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+# The child gets its OWN pd_entry object, built WITHOUT AGENTOS_LOG_RINGS.
+# Every other PD is created by the root task, which maps the log-config page
+# at AOS_LOG_CONFIG_VA into it. Under -DAGENTOS_LOG_RINGS, _start()
+# UNCONDITIONALLY dereferences that page (`logs->magic`) before it can decide
+# whether log rings are present at all -- that read is the fatal one. The
+# subsequent write to log_drain_rings_vaddr is guarded by the magic/version
+# compare and so is never reached; it is a second, latent problem only
+# because the linker places that word in .bss past the end of the single
+# content page.
+#
+# This child holds neither page: it has exactly what its parent endowed it,
+# and log rings are not on that list. Linking the shared pd_entry.o into it
+# makes it fault inside _start(), before pd_main() -- which is precisely the
+# bug "the child is endowed exactly this and nothing more" is supposed to
+# surface, so the fix is to stop linking authority-assuming startup code into
+# it, not to widen the endowment.
+$(BUILD_DIR)/child_spawn_pd_entry.o: $(REPO_ROOT_MK)/libs/pd-support/pd_entry.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(filter-out -DAGENTOS_LOG_RINGS=1,$(CFLAGS)) $< -o $@
+# Two deliberate omissions from this link, both forced by the one-page budget
+# above and both correct on their own terms:
+#   - rust_pd_memory.o (memcpy/memmove/memset/memcmp/strlen, ~3 KiB of .text).
+#     This child copies nothing and formats nothing; it reads two words,
+#     writes four, and makes three syscalls.
+#   - page alignment between output sections (--nmagic). sel4_crt.c's unused
+#     1 KiB IPC-buffer placeholder lands in .bss, and the default 4 KiB
+#     segment alignment would push it past the mapped page on its own.
+#     pd_entry.c's _start repoints __sel4_ipc_buffer at the real mapped
+#     buffer before any IPC, so that placeholder is never touched -- but
+#     "never touched" is not something to rely on silently, which is why the
+#     check below covers .bss too.
+$(BUILD_DIR)/child_spawn_child.elf: $(BUILD_DIR)/child_spawn_child.o $(BUILD_DIR)/child_spawn_pd_entry.o $(BUILD_DIR)/sel4_crt.o
+	$(LD) $(LDFLAGS) --nmagic $^ $(LIBS) -o $@
+	@# The parent maps exactly ONE page for this image, so every allocated
+	@# section -- including .bss, which the payload blob below does not even
+	@# contain -- must fit inside [AOS_CHILD_SPAWN_CONTENT_VA, +4096). A
+	@# section landing above that is unmapped memory the child touches with
+	@# no diagnostic beyond a fault at a surprising address, so fail the
+	@# build instead.
+	@set -eu; \
+	command -v $(CHILD_SPAWN_NM) >/dev/null 2>&1 || { \
+		echo "ERROR: $(CHILD_SPAWN_NM) not found on PATH; it is needed to check that"; \
+		echo "       child_spawn_child.elf fits the single page its parent maps for it."; \
+		exit 1; }; \
+	end=$$($(CHILD_SPAWN_NM) $@ | awk '$$3 == "_end" { print $$1 }'); \
+	test -n "$$end" || { echo "ERROR: child_spawn_child.elf has no _end symbol (tools/ld/agentos.ld should define it)"; exit 1; }; \
+	if [ "$$(printf '%d' 0x$$end)" -gt "$$(printf '%d' 0x401000)" ]; then \
+		echo "ERROR: child_spawn_child.elf spans past the single page its parent maps for it (_end=0x$$end, limit 0x401000); shrink tests/child-spawn/child_pd.c or map a second page"; \
+		exit 1; \
+	fi
+$(BUILD_DIR)/child_spawn_payload.bin: $(BUILD_DIR)/child_spawn_child.elf
+	$(OBJCOPY) -O binary $< $@
+$(BUILD_DIR)/child_spawn_payload.o: $(BUILD_DIR)/child_spawn_payload.bin
+	cd $(BUILD_DIR) && $(OBJCOPY) \
+		--input-target=binary \
+		--output-target=elf64-littleaarch64 \
+		--binary-architecture=aarch64 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents \
+		--redefine-sym _binary_child_spawn_payload_bin_start=__child_spawn_payload_start \
+		--redefine-sym _binary_child_spawn_payload_bin_end=__child_spawn_payload_end \
+		--redefine-sym _binary_child_spawn_payload_bin_size=__child_spawn_payload_size \
+		child_spawn_payload.bin child_spawn_payload.o
+
+$(BUILD_DIR)/child_spawn_parent.o: $(REPO_ROOT)/tests/child-spawn/parent_pd.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+$(BUILD_DIR)/child_spawn_parent.elf: $(BUILD_DIR)/child_spawn_parent.o $(BUILD_DIR)/child_spawn.o $(BUILD_DIR)/endowment.o $(BUILD_DIR)/endow_ledger.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/child_spawn_payload.o $(BUILD_DIR)/pd_entry.o $(BUILD_DIR)/sel4_crt.o $(BUILD_DIR)/rust_pd_memory.o
+	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
+
 # Swap slot sources need wasm3 headers + bare-metal shim
 $(BUILD_DIR)/swap_slot.o: $(REPO_ROOT_MK)/services/legacy-pds/swap_slot.c
 	@mkdir -p $(BUILD_DIR)
@@ -1506,7 +1760,7 @@ $(BUILD_DIR)/framebuffer_pd.elf: $(FB_PD_OBJS)
 $(BUILD_DIR)/usb_pd.elf: $(USB_PD_OBJS)
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
-$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o
+$(BUILD_DIR)/cc_pd.elf: $(CC_PD_OBJS) $(BUILD_DIR)/virtio_host_transport.o $(BUILD_DIR)/serial_pump.pd.o $(BUILD_DIR)/inspect_snapshot.pd.o $(BUILD_DIR)/authority.pd.o $(BUILD_DIR)/framebuffer_observer.o $(BUILD_DIR)/input_service.o $(BUILD_DIR)/trust_anchor.o
 	$(LD) $(LDFLAGS) $^ $(LIBS) -o $@
 
 $(BUILD_DIR)/gpu_sched.elf: $(GPU_SCHED_OBJS)
@@ -1706,6 +1960,11 @@ SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-cap-lend-test.toml)
 $(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
 	@mkdir -p $(BUILD_DIR)
 	{ cat $<; printf '\n[[pd]]\nname = "cap_lend_lender"\npriority = 200\n'; printf '\n[[pd]]\nname = "cap_lend_borrower"\npriority = 199\n'; } > $@
+else ifdef CHILD_SPAWN_TEST
+SYSTEM_TOML_DEFAULT := $(abspath $(BUILD_DIR)/agentos-child-spawn-test.toml)
+$(SYSTEM_TOML_DEFAULT): $(abspath $(CURDIR)/agentos.toml)
+	@mkdir -p $(BUILD_DIR)
+	{ cat $<; printf '\n[[pd]]\nname = "child_spawn_parent"\npriority = 150\n'; } > $@
 else ifdef SEL4_TEST_IMAGE
 # agentos-8f5: test images (with no guest profiles) append the contract-runner PD
 # so gen-pd-bundle embeds test_runner.elf and the root task can spawn it, plus
@@ -1811,29 +2070,32 @@ ifneq ($(filter $(ARCH),aarch64 x86_64 riscv64),)
 # `$(PD_MANIFEST_OBJ): $(PD_MANIFEST)` objcopy rule fails on a missing
 # input. Giving each file its own full recipe means deleting any one of
 # the three — individually or together — always regenerates all three.
-$(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+$(PD_BUNDLE): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG) \
+		--anchor-selection-stamp $(PD_ANCHOR_STAMP)
 
-$(PD_MANIFEST): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+$(PD_MANIFEST): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG) \
+		--anchor-selection-stamp $(PD_ANCHOR_STAMP)
 
-$(PD_MANIFEST_PUBKEY_HDR): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP)
+$(PD_MANIFEST_PUBKEY_HDR): $(addprefix $(BUILD_DIR)/, $(IMAGES)) $(SYSTEM_TOML) $(GUEST_CONFIG_STAMP) $(PD_ANCHOR_STAMP) $(PD_ANCHOR_KEY_FILES)
 	cargo run -p xtask -- gen-pd-bundle \
 		--system $(SYSTEM_TOML) \
 		--pd-dir $(BUILD_DIR) \
 		--out $(PD_BUNDLE) \
 		--manifest-out $(PD_MANIFEST) \
-		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR)
+		--pubkey-header-out $(PD_MANIFEST_PUBKEY_HDR) $(PD_ANCHOR_PROBE_FLAG) \
+		--anchor-selection-stamp $(PD_ANCHOR_STAMP)
 
 # Step 3: Turn the binary bundle and manifest into relocatable ELF64 objects.
 #
@@ -1895,6 +2157,18 @@ $(PD_BUNDLE_OBJ): src/pd_bundle_riscv64.S $(PD_BUNDLE) $(PD_MANIFEST)
 		-DAGENTOS_PD_MANIFEST_PATH='"$(PD_MANIFEST)"' \
 		$< -o $@
 endif
+# No `else` arm.  The outer condition above now matches every architecture
+# this tree builds, so there is no bundle-less target left.  T10 (#297) added
+# an `else` arm here that emitted a *declaring-nothing* placeholder pubkey
+# header for RISC-V, on the premise that RISC-V loaded PDs via the seL4 extra
+# BootInfo path and so had nothing to verify.  That premise was false — there
+# was no producer for that path and no PD ever spawned — and the arch-parity
+# work replaced it with the signed bundle above.  The placeholder arm is
+# therefore dead, and keeping it would re-create the thing it was a tripwire
+# against: a path on which a trust anchor is announced but nothing is checked.
+# If a bundle-less target is ever reintroduced, restore the arm *and* the
+# AGENTOS_HAS_PD_BUNDLE guards in main.c together; do not add one without the
+# other.
 endif
 
 $(BUILD_DIR)/rt_main.o: $(PD_MANIFEST_PUBKEY_HDR)

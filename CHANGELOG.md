@@ -5,6 +5,156 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fault_handler` was dead on arrival on every architecture. Its
+  `fault_ring_vaddr` global was declared in `.bss` and assigned nowhere in the
+  tree — no linker script, no `--defsym`, no generated header, no root-task
+  provisioning — so `fault_handler_init()` stored the ring header through a
+  NULL pointer and the PD died at its first store after entry, before it could
+  log anything. On AArch64 and x86_64 this was additionally invisible because
+  `serial_pd` owns the UART by then, so the kernel's fault report never reached
+  the console; it surfaced only during riscv64 bring-up. The root task now
+  allocates one 2 MiB frame and maps it into the PD's VSpace at
+  `AOS_FAULT_RING_VA` (`platform/include/platform/fault_ring.h`) before the
+  thread starts, failing the boot closed if that mapping fails, and records the
+  grant in the capability ledger so the published authority page stays honest.
+
+### Added
+
+- `make test-fault-handler` (in `gate:` and as an explicit `os-claim-gate` CI
+  step, since no CI job invokes `make gate`). `fault_handler` has no service
+  endpoint and no device, so nothing else in the suite moved when it failed to
+  start. The PD now runs a bounded self-check at boot — it round-trips writes
+  at ring offset 0, at the last entry slot, and at the final byte of the
+  256 KiB ring, then re-verifies the header — and the harness matches the
+  emitted line byte for byte, including the mapped VA and the ring span, so a
+  ring mapped short or at the wrong address fails too. This proves liveness and
+  usable storage; it does **not** prove fault delivery, since no PD is made to
+  fault and no entry reaches the ring through a real seL4 fault IPC.
+- `make test-authority` now asserts `fault_handler`'s published row: exactly
+  two frame capabilities (its IPC buffer plus the one fault-ring frame) and no
+  IRQ handler.
+
+### Changed
+
+- The T6 child-spawn fault probe asserts the **provenance** of the fault IPC,
+  not only its shape. Root no longer mints a badged copy of its own fault
+  endpoint into `child_spawn_parent`'s CNode; it keeps that capability in its
+  own CSpace and installs it on the child's TCB itself, over a separate
+  single-shot installer endpoint the parent calls with the child's TCB
+  capability. No protection domain holds a capability to root's fault endpoint
+  or any derivative of it, so `AOS_CHILD_SPAWN_PROBE_BADGE` can only reach
+  root's fault loop in a kernel-generated fault IPC.
+
+  Stripping send rights from the parent's copy was tried first and does not
+  work: seL4's MCS `validFaultHandler()` requires a fault-handler capability to
+  carry Send plus Grant or GrantReply, and `seL4_TCB_SetSchedParams` refuses a
+  rights-stripped copy with `seL4_InvalidCapability`.
+
+- `aos_child_spawn()` gained `fault_install_ep` / `fault_install_label` for
+  this delegated-install shape. When they are used the SchedContext is bound
+  with `seL4_SchedContext_Bind` rather than a second `seL4_TCB_SetSchedParams`,
+  because the latter unconditionally rewrites the fault handler.
+
+- The T5 capability-lending probe needed no change: root already minted the
+  borrower's badged fault endpoint into its own CNode and installed it on the
+  borrower's TCB. Comments claiming T5 shared T6's forgeability gap were
+  wrong and have been corrected.
+
+### Known limitations
+
+- The child-spawn probe's residual: root cannot tell one of the parent's
+  threads from another, so the parent chooses which TCB it presents to the
+  installer. The marker proves that a thread the parent created really took an
+  unmapped read fault at the withheld address, as reported by the kernel; it
+  does not by itself prove that thread was the child.
+
+## [0.6.0] - 2026-10-04
+
+Trust and delegation baseline: the corrective actions from the 2026-10-03
+architecture audit. Capabilities now have a lending primitive, a hierarchical
+delegation path, and an image-verification trust model that works on hardware
+with no key store.
+
+### Added
+
+- Hierarchical delegation (T6). A protection domain may create a child domain
+  at run time and endow it from its own authority: the parent retypes the
+  child's CNode, VSpace and TCB from an untyped pool root granted it at boot,
+  mints rights-reduced derivatives of capabilities it already holds, and starts
+  the child only after every endowment succeeded. `make test-child-spawn`
+  proves on target that the child reads an exact byte pattern from an endowed
+  frame (cross-checked by physical address against the parent's own
+  capability), faults on authority the parent withheld (asserted on exact
+  badge, address, direction and fault type), does not start at all when an
+  endowment fails, and is reported in the parent's endowment ledger with
+  matching counts.
+
+  Endowment is deliberately **not** capability lending. Lending revokes the
+  lender's own original and so destroys every derivative system-wide, which is
+  correct for a loan and catastrophic in spawn teardown; a failed spawn of one
+  child would have stripped a running sibling of its authority. Endowment is a
+  lifetime grant: it mints directly, and teardown deletes the child's CNode.
+
+- Trust anchor tiers (T10), extending protection-domain image verification from
+  a single compiled-in vendor key to four tiers on the Linux shim/MOK model:
+  `AOS_ANCHOR_NONE` (development — verifies and reports, does not gate),
+  `AOS_ANCHOR_VENDOR` (the previous behaviour), `AOS_ANCHOR_MOK` (a
+  machine-owner key), and `AOS_ANCHOR_HARDWARE` (a defined key source that is
+  **not implemented** and reports unavailable). The tier is compiled into the
+  image, announced at boot, and exposed through inspect.
+
+  Development mode does not skip verification — it verifies and reports without
+  gating. `boot_verify_pd_digest()` takes no tier argument and has no tier
+  branch: digests are always computed and compared, and the tier is consulted
+  only afterwards. This is mutation-tested — short-circuiting the comparison
+  makes the proof fail in exactly the shape of the anti-pattern it guards
+  against. An ordinary `make build` produces a gating vendor image, and that is
+  asserted by `make test-inspect`, not merely argued.
+
+  Anchor selection is now a tracked build input. It previously was not: what
+  regenerated the bundle on an anchor change was an unrelated relink winning an
+  mtime race, which could leave a non-gating image on disk while every
+  operator-visible signal said vendor.
+
+### Fixed
+
+- Collapse a duplicated `gate:` rule into one prerequisite list. GNU make
+  unions prerequisites across rules, so no proof was being skipped, but editing
+  one of the two lines would have silently removed a proof from the release
+  gate with no error.
+- Remove a contradictory `Qualification boundary` paragraph in `docs/TCB.md`
+  that asserted both that CI's `os-claim-gate` result is the qualifying
+  evidence under the pinned SDK and that the results were not qualified under
+  it.
+
+### Limits
+
+Stated here because the project treats overclaiming as the primary defect:
+
+- The machine-owner anchor **stands alone**: it requires an owner key and
+  treats the vendor key as optional. On a MOK-only machine, vendor-signed
+  images — including agentOS's own release artifacts — do not verify until the
+  owner signs or counter-signs them.
+- MOK does **not** defend against the machine owner, and no anchor available
+  today does: an owner with physical access can replace the boot chain. MOK
+  enrolment is build-time-provisioned; there is no runtime physical-presence
+  enrolment flow.
+- `AOS_ANCHOR_HARDWARE` claims nothing about TPM or measured boot. There is no
+  attestation and this is not a measured-boot chain.
+- The endowment ledger is **PD-local** and reports rather than proves. seL4
+  exposes no capability-enumeration syscall, so nothing here verifies the
+  subsetting invariant — the kernel enforces that independently. A
+  runtime-created child does not appear in `agentctl authority` output.
+- The fault-probe oracle asserts the shape of a fault IPC, not its provenance.
+  (Fixed for T6 after this release; see Unreleased. T5 was already sound.)
+- A digest mismatch under the machine-owner anchor is not target-proven, and
+  the gating-tier-with-no-key probe asserts an absence bounded by a
+  loader-stage marker rather than a positive refusal marker.
+- `riscv64` architecture parity is **not** in this release; it is open as a
+  pull request.
+
 ## [0.5.1] - 2026-09-27
 
 ### Documentation

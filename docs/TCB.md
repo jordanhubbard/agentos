@@ -38,6 +38,27 @@ Those receipts do not establish target peer-input mapping isolation.
 
 ## Privilege
 
+`fault_handler` now receives a private fault-ring region. Root allocates one
+2 MiB frame and maps it into that PD's VSpace at `AOS_FAULT_RING_VA`
+(`platform/include/platform/fault_ring.h`) before starting its thread, and
+refuses the boot if the mapping fails. No other domain maps that frame, and it
+conveys no device, IRQ or guest authority; reading the ring remains an IPC
+operation on `fault_handler`'s own endpoint. The grant is recorded in the
+capability ledger, so the published authority page reports `fault_handler` with
+two frames — its IPC buffer and the ring — rather than silently omitting it.
+Until this existed the PD's `fault_ring_vaddr` symbol was never assigned on any
+architecture, so it stored its ring header through NULL and died at its first
+instruction after entry while every boot test still passed; `serial_pd` owned
+the UART by then, so the kernel's fault report never reached the console. It
+did reach the console on riscv64, where the root task keeps the UART — that is
+how `make test-riscv64` came to assert one known fault, and why it now asserts
+none.
+`make test-fault-handler` now requires the PD to reach its IPC loop and to
+round-trip writes at ring offset 0, at the last entry slot, and at the final
+byte of the 256 KiB ring. That is a liveness and usable-storage proof only: no
+domain is made to fault in that test, so fault delivery into the ring and the
+restart-policy path remain unqualified.
+
 VM manager now binds the guest ID returned by a successful coordinator CREATE
 reply to that dedicated slot and endpoint. Later lifecycle, input and console
 requests use that binding, rather than assuming guest ID zero. A malformed
@@ -1172,14 +1193,23 @@ Two absences are deliberate and are the next pieces of riscv64 device work:
   AArch64 virt's shared slot-24..31 page has no counterpart
   (`AGENTOS_HOST_SECONDARY_BLK_PAGE_PRESENT`).
 
-One known post-boot fault remains on riscv64 and is not riscv64's:
-`services/fault-handler/fault_handler.c` declares `uintptr_t
-fault_ring_vaddr;` and nothing in the tree ever assigns it, so
-`fault_handler_init()` writes its ring header through a null pointer on every
-architecture. It is visible on riscv64 only because the root task still owns
-the console there; on aarch64 `serial_pd` has taken the PL011 before it
-happens. `make test-riscv64` asserts the exact fault count, so a new fault
-fails the gate.
+riscv64 now boots with **no** root-task fault reports at all, and
+`make test-riscv64` asserts that count exactly (`RISCV64_EXPECTED_FAULTS`),
+so a new fault fails the gate and so does the silent loss of the boot that
+produced none.
+
+It asserted exactly one until #300 merged. That one was
+`services/fault-handler/fault_handler.c` declaring `uintptr_t
+fault_ring_vaddr;` with nothing in the tree ever assigning it, so
+`fault_handler_init()` wrote its ring header through a null pointer — on
+every architecture, visible on riscv64 only because the root task still owns
+the console there while on aarch64 `serial_pd` has taken the PL011 before it
+happens. #300 fixed it at the source: root provisions a 2 MiB frame and maps
+it at `AOS_FAULT_RING_VA` for the PD named `fault_handler`. That matcher is
+arch-blind, so riscv64 picked the fix up with no riscv64-specific change and
+its boot log carries `[rt] fault_handler ring map err=0x0`. The count moved
+1 → 0 because the defect was fixed; it is the tighter assertion, not a
+relaxed one.
 
 ## What is not TCB (museum)
 
@@ -1623,49 +1653,120 @@ is the qualifying evidence under the pin.
 ### Protection-domain image verification
 
 The root task verifies every protection-domain image before spawning it. The
-build emits a manifest of per-PD SHA-256 digests signed once with Ed25519; root
-verifies that signature against a public key fixed at build time, then checks
-each PD's digest immediately before spawn. Verification covers all three targets —
-AArch64, x86_64 and RISC-V — each of which embeds its PD images in a signed
-bundle. It is unconditional: no build flag, environment variable or
-configuration disables it, and an absent or malformed manifest refuses boot
-rather than skipping the check. There is no longer any bundle-less
-architecture in this tree, so no architecture spawns unverified PDs.
+build emits a manifest of per-PD SHA-256 digests signed once with Ed25519;
+root checks that signature, then checks each PD's digest immediately before
+spawn. Verification covers all three targets — AArch64, x86_64 and RISC-V —
+each of which embeds its PD images in a signed bundle. There is no longer a
+bundle-less architecture in this tree, so there is no architecture on which
+protection domains load unchecked.
 
 RISC-V was the exception until the arch-parity work: it had no PD-loading
 mechanism at all (the "PDs load via the seL4 extra BootInfo path" claim in
 `main.c` named a consumer with no producer anywhere in the tree, and every PD
-failed to spawn). It now embeds the same signed bundle the other two do;
-`AGENTOS_HAS_PD_BUNDLE` is 1 on all three. Evidence under Microkit SDK 2.1.0:
-a `riscv64` boot reports `[rt] boot manifest OK: signature verified` and starts
-all nine PDs, and the same image with eight bytes flipped inside the bundled
-`nameserver.elf` is refused at the first PD with `[rt] pd nameserver: ELF
-digest MISMATCH against signed manifest; refusing boot`, having started none.
+failed to spawn). It now embeds the same signed bundle the other two do, and
+`AGENTOS_HAS_PD_BUNDLE` is 1 on all three. The `unverified (no PD bundle on
+this target)` boot banner and the matching `trust.anchor_tier` sentinel that
+T10 introduced for RISC-V are consequently no longer reachable on any
+architecture: a RISC-V image is built under, and announces, a real anchor tier
+exactly as the other two are. Evidence under Microkit SDK 2.1.0: a `riscv64`
+boot reports `[rt] boot manifest OK: signature verified` and starts every PD
+its descriptor declares, and the same image with eight bytes flipped inside the
+bundled `nameserver.elf` is refused at the first PD with `[rt] pd nameserver:
+ELF digest MISMATCH against signed manifest; refusing boot`, having started
+none.
+
+Image verification runs under one of three trust anchors, recorded in the
+image and announced at boot (and visible on a running system via the inspect
+snapshot's `trust.anchor_tier` field — `agentctl inspect`). Under the vendor
+anchor (a public key fixed at build time) and the machine-owner anchor (an
+enrolled key), a manifest or digest mismatch refuses boot. Under the
+development anchor, digests are still computed and mismatches still
+reported, but a digest mismatch does not stop boot — it establishes nothing
+about image integrity and exists so the platform can be iterated on before
+production key storage exists. A structurally absent or invalid manifest is
+refused on **every** tier including development, since there is nothing to
+compute or compare without one; the development anchor only changes what
+happens on a mismatch within an otherwise well-formed, signed manifest. The
+development anchor requires an explicit build opt-in
+(`AGENTOS_TRUST_ANCHOR=none`); a build with no key and no opt-in fails rather
+than producing a non-gating image. That opt-in and its consequences are
+identical on all three architectures — there is no architecture here on which
+verification is unconditional, and none on which it is absent.
+
+The machine-owner anchor does NOT defend against the machine owner, who can
+sign any image they choose. It constrains remote compromise and third-party
+tampering. The vendor key is **optional** for this tier: a machine owner may
+enrol their own key alone, with no vendor key at all, in which case the
+owner is the sole root of trust on that machine and agentOS's own
+vendor-signed images are refused unless the owner signs or counter-signs
+them — that is the intended meaning of standing alone, not a defect. Only a
+tier that excludes the owner, or that the owner cannot re-key with physical
+access, would exclude the local operator from the trust model, and neither
+tier here does; only a hardware anchor — OTP-fused signed boot or a firmware
+TPM — would change that. `AOS_ANCHOR_HARDWARE` is defined as a key source in
+the contract (`kernel/agentos-root-task/include/contracts/trust_anchor.h`)
+and is **not implemented**; it reports unavailable and makes no claim about
+TPM or measured-boot support. This is not a measured-boot chain and produces
+no attestation.
+
+The machine-owner key is enrolled by setting `AGENTOS_MOK_SIGNING_KEY` to a
+seed file at build time — **build-time-provisioned, not a persistent runtime
+enrolment mechanism.** There is no on-target storage a running system writes
+to when an owner enrols a key with physical presence; see
+`kernel/agentos-root-task/keys/README.md` for what would need to exist
+(writable, attested storage reachable at boot) before this becomes a real
+runtime flow.
 
 `make test-image-verify` boots an unmodified image, a byte-tampered image, and
-an image with its manifest stripped, requiring the latter two to be refused with
-the tampered image named. It runs on AArch64 only. On RISC-V, `make
-test-riscv64` asserts the positive half — manifest signature verified and the
-exact PD count started — on every run, and treats an `ELF digest MISMATCH` as
-an immediate failure; the tampered-image half above is a manual run. Neither
-riscv64 result is a CI gate yet: the `os-claim-gate` riscv64 step is present
-but cannot build until the SDK carries the `qemu_virt_riscv64` board (see the
-step's own comment and its `::warning::` output).
+an image with its manifest stripped, under the vendor (gating) anchor;
+requiring the latter two to be refused, with the tampered image named. The
+manifest-stripped case refuses boot on every tier, not just gating ones (see
+above). It runs on AArch64 only. On RISC-V the positive half is covered on
+every run instead: `make test-riscv64` requires the manifest signature to
+verify and the exact declared PD count to start, and treats an `ELF digest
+MISMATCH` line as an immediate failure. The RISC-V tampered-image refusal
+quoted above is a manual run, not an automated assertion.
+
+`make test-trust-anchor` boots the tier behaviour itself, each probe on its own
+freshly built image: the vendor anchor booting an unmodified image and refusing
+a byte-tampered one by name; the same tamper, applied to a separate build under
+the development anchor, emitting the digest mismatch and naming the same PD,
+**and** completing boot — both asserted, since the completed boot alone
+would equally describe an image that skipped verification; a gating tier
+compiled with its required key absent refusing rather than downgrading; and a
+machine-owner image's inspect snapshot reporting the machine-owner tier, not
+the vendor tier the rest of the inspect suite pins.
+
+Three limits on that, stated rather than implied. **The key-less gating tier
+probe asserts an absence, not a refusal message.** That check runs before the
+UART is mapped, so the refusal cannot print; the probe asserts a loader-stage
+marker and then the sustained absence of every root-task marker. It attributes
+that silence to the anchor state only by running its own control first — the
+identical build without the fault injected, required to boot to completion —
+and by re-reading the generated header to confirm the key-less state was
+compiled in. A positive refusal marker would be better and needs the Step 0
+check re-ordered or given a channel that is live that early. **A digest
+mismatch under the machine-owner anchor is not covered on target**: that it
+refuses follows from the same `aos_anchor_gates_boot()` decision the vendor
+probe exercises, and is host-tested, but no booted image has been made to
+demonstrate it. **And every one of those five probes runs on
+`qemu_virt_aarch64`.** RISC-V now compiles in a real tier, a real key and a
+real gating decision, and no automated probe exercises the tier model there at
+all; `make test-riscv64` covers the signature-verified positive path and
+nothing about tier selection. The tier model is proven on one architecture, not
+three.
 
 Scope: this constrains every adversary who can modify an image but not replace
-the boot chain. It does NOT establish resistance to the local operator, who is
-untrusted under the platform threat model and has physical access: a public key
-shipped in the image can be replaced along with the image it validates. Only a
-hardware anchor — OTP-fused signed boot or a firmware TPM — would change that,
-and none is confirmed for the target boards. This is not a measured-boot chain
-and produces no attestation.
+the boot chain. Under the vendor and machine-owner tiers it does NOT establish
+resistance to the local operator, who is untrusted under the platform threat
+model and has physical access: a public key shipped in the image can be
+replaced along with the image it validates. Only a hardware anchor would
+change that, and none is confirmed for the target boards.
 
 Qualification boundary: development results were obtained under Microkit SDK
-2.1.0. `make test-image-verify` is additionally run by the CI `os-claim-gate`
-job, which installs the verified SDK artifact; that job's result on a given
-revision is the qualifying evidence under the pin.
-Qualification boundary: obtained under Microkit SDK 2.1.0, not the pin in
-`tools/sdk/default-version`; release qualification must re-run it.
+2.1.0. `make test-image-verify` and `make test-trust-anchor` are additionally
+run by the CI `os-claim-gate` job, which installs the verified SDK artifact;
+that job's result on a given revision is the qualifying evidence under the pin.
 
 ### Capability lending (T5)
 
@@ -1682,3 +1783,50 @@ while holding the capability and does not recover data the borrower copied --
 lending bounds authority in time, it is not confinement. The bound is operation
 completion, not elapsed time: agentOS has no timer service. The lender/borrower
 pair exists only in the test image; no default-image PD lends anything yet.
+
+### Hierarchical delegation (T6)
+
+A protection domain may create a child domain at run time and endow it from its
+own authority. The parent retypes the child's CNode, VSpace and TCB from an
+untyped pool root granted it at boot, mints rights-reduced derivatives of
+capabilities it already holds into the child's CSpace, and starts it only after
+every endowment succeeded. `make test-child-spawn` verifies on target that the
+child uses an endowed capability, faults on one the parent withheld, does not
+start at all when an endowment fails, and is named with the endowed kinds in the
+delegating domain's own endowment report.
+
+That report is delegator-side, not root-side. The parent keeps an
+endowment-delta ledger in its own memory (`platform/endow_ledger.h`), appends to
+it on each successful mint, renders it with T4's authority formatter and writes
+it to the serial log; the probe asserts that log line. It is **not** an entry in
+the root-published authority page that `MSG_CC_AUTHORITY` and `make
+test-authority` read. No channel exists from a protection domain into that page,
+and none should: it is published read-only precisely so no domain can write its
+own claims into root's accounting (`make test-inspect` proves the read-only
+property). A runtime-created child therefore does not appear in `agentctl
+authority` output. The consequence is that a delegator's report is only as
+available as the delegator chooses to make it — visibility here depends on the
+delegating domain, which is the honest position given that seL4 offers root no
+way to enumerate what a domain holds.
+
+Endowment is a mint, not a loan. It does not reuse the T5 lending path above:
+`aos_cap_lend_revoke()` revokes the lender's own original, which would strip
+every other child endowed from the same capability if one spawn failed. The two
+lifetimes are separate and share no teardown. A failed spawn instead deletes the
+child's CNode, which destroys every mint already placed in it, and never resumes
+the thread.
+
+Scope and limits. This creates a domain at run time; it does not load code at
+run time. The child's ELF comes from the bundle verified at boot, so image
+verification is unaffected. The subsetting invariant -- no domain holds authority
+its parent did not hold -- is enforced by seL4 itself, since a parent cannot mint
+from a capability it does not possess. The delegator's ledger *reports* the
+endowment but cannot verify it, because seL4 exposes no capability-enumeration
+syscall: it records what the parent says it granted and cannot read kernel state
+back. It uses T4's `aos_authority_snapshot_t` shape and formatter -- that is a
+reuse of the reporting vocabulary `platform/authority.h` defines, not an entry
+in the page root publishes, and nothing verifies a delegator's claim against the
+kernel. A parent can create
+children only from the pool it was granted; exhaustion is a resource limit, not
+an authority boundary. The parent/child pair exists only in the test image; no
+default-image PD creates children.

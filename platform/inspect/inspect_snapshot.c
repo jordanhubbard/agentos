@@ -7,6 +7,21 @@
 #include <stddef.h>
 #include <string.h>
 
+/*
+ * contracts/trust_anchor.h is a dependency-free header (no seL4, no key
+ * material -- see its own comment) and libs/pd-support/trust_anchor.c is
+ * already linked everywhere this file is: the root task
+ * (kernel/agentos-root-task/Makefile's ROOT_TASK_OBJS), agentctl
+ * (tools/agentctl/Makefile's SRC), and every host test that links this
+ * file (Makefile's test-agentctl-*-host / test-operator-host /
+ * test-inspect-snapshot-host targets). aos_anchor_tier_name() is THE
+ * single source for tier -> name strings; see the T10 review that caught
+ * a hand-synced duplicate copy here diverging silently from it, which
+ * would have let the boot log and `agentctl inspect` disagree on exactly
+ * the question this feature exists to answer ("is this box gating").
+ */
+#include "contracts/trust_anchor.h"
+
 static void copy_name(uint8_t dst[AOS_INSPECT_NAME_LEN], const uint8_t src[AOS_INSPECT_NAME_LEN])
 {
     uint32_t i;
@@ -70,6 +85,7 @@ int aos_inspect_fill(aos_inspect_snapshot_t *snap, const aos_inspect_view_t *vie
     snap->hw.gic_dist_pa = view->gic_dist_pa;
     snap->hw.virtio_net_ipa = view->virtio_net_ipa;
     snap->thread_count = view->thread_count;
+    snap->anchor_tier = view->anchor_tier;
 
     for (i = 0u; i < view->thread_count; i++) {
         snap->threads[i].pd_index = view->threads[i].pd_index;
@@ -90,7 +106,16 @@ int aos_inspect_validate(const aos_inspect_snapshot_t *snap)
     if (!snap) return AOS_INSPECT_ERR_NULL;
     if (snap->version != AOS_INSPECT_VERSION) return AOS_INSPECT_ERR_VERSION;
     if (snap->thread_count > AOS_INSPECT_MAX_THREADS) return AOS_INSPECT_ERR_TOO_MANY;
-    if ((snap->flags & ~AOS_INSPECT_FLAG_KNOWN) || snap->reserved ||
+    /* anchor_tier must be one of the four defined aos_anchor_tier_t values
+     * (NONE=0 .. HARDWARE=3), or AOS_ANCHOR_UNVERIFIED on an architecture
+     * that embeds no PD bundle and so runs no tier at all. Note the
+     * asymmetry with aos_anchor_validate(), which REJECTS the sentinel:
+     * that function validates a SELECTABLE anchor state, and no build may
+     * select "unverified"; this one validates an OBSERVED snapshot, and
+     * "this box runs no tier" is a true observation. See the sentinel's
+     * comment in contracts/trust_anchor.h. */
+    if ((snap->flags & ~AOS_INSPECT_FLAG_KNOWN) ||
+        (snap->anchor_tier > 3u && snap->anchor_tier != AOS_ANCHOR_UNVERIFIED) ||
         snap->mem.reserved || snap->mem.pd_count != snap->thread_count ||
         (snap->mem.ut_total_bytes && snap->mem.ut_used_bytes > snap->mem.ut_total_bytes) ||
         snap->hw.arch > AOS_INSPECT_ARCH_RISCV64) return AOS_INSPECT_ERR_INVALID;
@@ -304,7 +329,9 @@ int aos_inspect_format(const aos_inspect_snapshot_t *snap, char *buf, size_t buf
         || line_hex(&p, end, "hardware.gic_dist_pa", snap->hw.gic_dist_pa) != 0
         || line_hex(&p, end, "hardware.virtio_net_ipa", snap->hw.virtio_net_ipa) != 0
         || line_u64(&p, end, "hardware.virtio_net_virq", snap->hw.virtio_net_virq) != 0
-        || line_u64(&p, end, "thread.count", snap->thread_count) != 0) {
+        || line_u64(&p, end, "thread.count", snap->thread_count) != 0
+        || line_u64(&p, end, "trust.anchor_tier", snap->anchor_tier) != 0
+        || line_str(&p, end, "trust.anchor_tier_name", aos_anchor_tier_name(snap->anchor_tier)) != 0) {
         *p = '\0';
         return AOS_INSPECT_ERR_TRUNC;
     }

@@ -141,7 +141,14 @@
  * with (ROOT_PROBE_BADGE in main.c's AGENTOS_CAP_LEND_TEST branch of the
  * ROOT_FAULT_PROBE chain) -- distinct from every other image variant's
  * probe badge so a fault from an unrelated source can never satisfy this
- * oracle by coincidence. */
+ * oracle by coincidence.
+ *
+ * The capability carrying this badge never leaves root's CSpace: root
+ * installs it on the borrower's TCB itself, and a TCB fault handler is
+ * not addressable from any CSpace. No PD holds a capability to root's
+ * fault endpoint at all. So this badge can only appear in root's fault
+ * loop on a kernel-generated fault IPC -- the borrower cannot send a
+ * fault-shaped message that satisfies the oracle. */
 #define AOS_CAP_LEND_PROBE_BADGE               0xCA5Eu
 
 /*

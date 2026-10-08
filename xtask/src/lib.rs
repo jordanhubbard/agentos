@@ -57,6 +57,20 @@ pub struct TestArgs {
     /// Query the root-provisioned boot snapshot through CC and agentctl.
     #[arg(long)]
     pub assert_inspect: bool,
+    /// Require the fault_handler TCB PD to be alive with a usable fault ring.
+    ///
+    /// fault_handler has no service endpoint and no device, so a dead one is
+    /// invisible: it is the one PD in the default AArch64 image that can fail
+    /// to start without any other PD noticing or any existing assertion
+    /// moving. It shipped exactly that way -- `fault_ring_vaddr` was a .bss
+    /// global nothing assigned, so the PD stored its ring header through NULL
+    /// on entry on every architecture. This asserts both halves: the PD
+    /// reached its IPC loop, AND its ring round-tripped writes at offset 0
+    /// and at its last byte (see fault_ring_selfcheck() in
+    /// services/fault-handler/fault_handler.c). A liveness marker alone would
+    /// pass against a ring mapped one page short.
+    #[arg(long)]
+    pub assert_fault_handler: bool,
     /// Verify entropy_pd is reachable, reports AOS_ENTROPY_ERR_UNAVAILABLE
     /// (no virtio-rng device can be wired to it on QEMU virt -- see
     /// docs/TCB.md), and validates an over-length request with
@@ -85,6 +99,14 @@ pub struct TestArgs {
     /// and a sub-delegated copy dies too (test image only).
     #[arg(long, conflicts_with_all = ["assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "assert_native_rust", "assert_native_guest", "assert_framebuffer", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "cc_envelope_probe", "authority_probe"])]
     pub assert_cap_lending: bool,
+    /// T6 run-time child domain creation: the child uses an endowed
+    /// capability, faults on one the parent withheld, never starts when an
+    /// endowment fails, and is named with the endowed kinds in the parent's
+    /// own endowment-delta ledger, printed to serial. That ledger is
+    /// PD-local -- it is not the root-published authority page
+    /// --authority-probe reads over CC (test image only).
+    #[arg(long, conflicts_with_all = ["assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "assert_native_rust", "assert_native_guest", "assert_framebuffer", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "cc_envelope_probe", "authority_probe", "assert_cap_lending"])]
+    pub assert_child_spawn: bool,
     /// Qualify framebuffer queue transactions from two isolated native clients.
     #[arg(long, conflicts_with_all = ["assert_native_rust", "assert_native_guest", "assert_inspect", "inspect_write_probe", "assert_operator_session", "operator_isolation_probe", "assert_log_rings", "log_isolation_probe", "serial_isolation_probe", "network_isolation_probe", "block_isolation_probe", "virtualizer_authority_probe", "assert_vmx_exit"])]
     pub assert_framebuffer: bool,
@@ -127,6 +149,40 @@ pub struct TestArgs {
     /// zeroed boot manifest refuses to boot.
     #[arg(long, conflicts_with = "block_isolation_probe", value_parser = clap::value_parser!(u8).range(1..=3))]
     pub image_verify_probe: Option<u8>,
+    /// Test T10 trust anchor tiers (target proof). Each probe builds its own
+    /// image under an explicitly named anchor (the build environment is set
+    /// by xtask, never inherited) and boots it:
+    ///   1 vendor tier, unmodified: boots, banner names vendor as gating;
+    ///   2 vendor tier, byte-tampered PD: refused, PD named, boot incomplete;
+    ///   3 development tier, byte-tampered PD: mismatch REPORTED naming the
+    ///     PD *and* boot completes — reports without enforcing;
+    ///   4 a gating tier whose required key is absent: boot refused at the
+    ///     root task's first step, never silently downgraded;
+    ///   5 machine-owner tier: the inspect snapshot reports the tier the
+    ///     image was actually built with, not a hardcoded one.
+    ///
+    /// Conflicts with every other assertion that pins a boot: probes 2 and 4
+    /// deliberately refuse to boot, and probes 3 and 5 boot images built under
+    /// a non-vendor anchor, so anything expecting a normal vendor boot (most
+    /// of all `--assert-inspect`, which asserts tier 1) would fail for a
+    /// reason that has nothing to do with what it was testing. Rejecting the
+    /// combination at parse time beats a confusing failure inside
+    /// `verify_inspect`.
+    ///
+    /// Keep this list current when a new boot-pinning assertion lands:
+    /// `assert_cap_lending` arrived from T5 after this list was written and
+    /// had to be added later. The tell is an argument that is permitted on
+    /// `qemu_virt_aarch64` / `GUEST_OS=none`, since that is the exact
+    /// configuration these probes require.
+    #[arg(long, conflicts_with_all = [
+        "block_isolation_probe", "image_verify_probe", "guest_gic_failure_probe",
+        "assert_inspect", "inspect_write_probe", "authority_probe", "cc_envelope_probe",
+        "assert_entropy_unavailable", "assert_operator_session", "operator_isolation_probe",
+        "assert_log_rings", "log_isolation_probe", "assert_native_rust", "assert_native_guest",
+        "assert_framebuffer", "serial_isolation_probe", "network_isolation_probe",
+        "virtualizer_authority_probe", "assert_cap_lending", "keep_running", "no_build",
+    ], value_parser = clap::value_parser!(u8).range(1..=5))]
+    pub trust_anchor_probe: Option<u8>,
     /// Test-only VMM fault probe: 1..4 primary foreign/disk read/write; 5..8 secondary.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
     pub block_isolation_probe: Option<u8>,

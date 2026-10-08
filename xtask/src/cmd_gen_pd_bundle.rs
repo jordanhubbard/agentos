@@ -36,8 +36,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use crate::boot_manifest::{
-    build_signed_manifest, load_signing_key, render_pubkey_header, verifying_key_bytes,
-    ManifestEntry,
+    build_signed_manifest, render_pubkey_header, select_anchor, AnchorTier, ManifestEntry,
 };
 
 // Re-use the same SystemDesc / PdDesc types from cmd_gen_image
@@ -70,11 +69,124 @@ pub struct GenPdBundleArgs {
     /// Defaults to `boot_manifest_pubkey.h` next to `--out`.
     #[arg(long = "pubkey-header-out")]
     pub pubkey_header_out: Option<PathBuf>,
+
+    /// TEST-ONLY failure injection (T10 target proof, probe 4): compile in an
+    /// INCOHERENT trust anchor state — the gating tier `AOS_ANCHOR_MOK` with
+    /// no machine-owner key present — so the root task's Step 0 validation
+    /// has something to reject.
+    ///
+    /// `select_anchor()` has four exits and none of them can produce this
+    /// state; that is the whole point of the contract. But "a gating tier
+    /// whose key is missing refuses to boot rather than quietly becoming a
+    /// non-gating one" is the single most important rule in
+    /// contracts/trust_anchor.h, and a rule nothing can construct is a rule
+    /// nothing has ever tested. This flag constructs it, and only it: the
+    /// state is hardcoded, not parameterised.
+    ///
+    /// It is fail-closed by construction. The only image it can produce is
+    /// one that `aos_anchor_validate()` rejects, i.e. one that refuses to
+    /// start any PD. There is no value of this flag that makes an image gate
+    /// LESS than it otherwise would, so a build that set it by accident
+    /// fails loudly at boot instead of shipping something unverified.
+    /// `select_anchor()` itself is untouched — this rewrites the already
+    /// selected result on the way out.
+    #[arg(long = "incoherent-anchor-probe")]
+    pub incoherent_anchor_probe: bool,
+
+    /// Path to the build system's record of the trust anchor selection
+    /// (`$(PD_ANCHOR_STAMP)`, kernel/agentos-root-task/Makefile). When given,
+    /// this command refuses to run unless make's recorded view of the
+    /// selection is byte-identical to the environment this process actually
+    /// sees.
+    ///
+    /// The stamp exists to make the anchor a tracked build input. That is only
+    /// worth anything if what make recorded is what got compiled in: a build
+    /// whose stamp says "a vendor key is configured" while this process saw no
+    /// key would produce a non-gating image with a gating-looking audit trail.
+    /// Make's view and this process's view travel by different routes (make
+    /// variables vs. the recipe's environment), so nothing structural keeps
+    /// them equal — this flag checks it instead of assuming it.
+    #[arg(long = "anchor-selection-stamp")]
+    pub anchor_selection_stamp: Option<PathBuf>,
+}
+
+/// Cross-check the build system's recorded trust anchor selection against the
+/// environment this process is actually reading. Any divergence is a hard
+/// error: there is no safe way to continue, because the two disagree about
+/// which tier this image is.
+///
+/// Format is the stamp file's own, one `KEY=VALUE` per line, written by
+/// `$(PD_ANCHOR_STAMP)`'s recipe. Unknown keys are ignored so the stamp can
+/// grow; a MISSING expected key is an error, since silently skipping a
+/// comparison is the failure this check exists to prevent.
+fn verify_anchor_selection_stamp(stamp_path: &std::path::Path, probe: bool) -> Result<()> {
+    let text = fs::read_to_string(stamp_path).with_context(|| {
+        format!(
+            "failed to read the trust anchor selection stamp: {}",
+            stamp_path.display()
+        )
+    })?;
+
+    let expected: [(&str, String); 4] = [
+        (
+            "AGENTOS_TRUST_ANCHOR",
+            std::env::var("AGENTOS_TRUST_ANCHOR").unwrap_or_default(),
+        ),
+        (
+            "AGENTOS_BUNDLE_SIGNING_KEY",
+            std::env::var("AGENTOS_BUNDLE_SIGNING_KEY").unwrap_or_default(),
+        ),
+        (
+            "AGENTOS_MOK_SIGNING_KEY",
+            std::env::var("AGENTOS_MOK_SIGNING_KEY").unwrap_or_default(),
+        ),
+        (
+            "PROBE",
+            String::from(if probe {
+                "--incoherent-anchor-probe"
+            } else {
+                ""
+            }),
+        ),
+    ];
+
+    for (key, mine) in &expected {
+        let recorded = text
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .with_context(|| {
+                format!(
+                    "{} records no {key} line; the build system's view of the trust anchor \
+                     selection cannot be compared with this process's view",
+                    stamp_path.display()
+                )
+            })?;
+        anyhow::ensure!(
+            recorded == mine,
+            "trust anchor selection MISMATCH: the build system recorded {key}={recorded:?} but \
+             gen-pd-bundle sees {key}={mine:?}. These must be the same value -- the stamp is \
+             what makes the anchor a tracked build input, and if it disagrees with the \
+             environment the keys are actually read from, the image's real tier is not the one \
+             the build recorded. Refusing to produce an image whose audit trail is wrong. \
+             (Most likely cause: a variable that reaches make but not the recipe's \
+             environment; see the `export` block in kernel/agentos-root-task/Makefile.)"
+        );
+    }
+    Ok(())
 }
 
 // ─── run ─────────────────────────────────────────────────────────────────────
 
 pub fn run(args: &GenPdBundleArgs) -> Result<()> {
+    // 0. Before anything is read or written: confirm the build system's view
+    //    of the trust anchor selection matches the environment this process
+    //    will actually read the keys from. Running first means a divergence
+    //    produces no output files at all, rather than relying on
+    //    .DELETE_ON_ERROR to clean up a half-written bundle.
+    if let Some(stamp) = &args.anchor_selection_stamp {
+        verify_anchor_selection_stamp(stamp, args.incoherent_anchor_probe)?;
+    }
+
     // 1. Parse system TOML
     let toml_text = fs::read_to_string(&args.system)
         .with_context(|| format!("failed to read system TOML: {}", args.system.display()))?;
@@ -208,8 +320,25 @@ pub fn run(args: &GenPdBundleArgs) -> Result<()> {
     }
 
     let repo_root = boot_manifest_repo_root(&args.system)?;
-    let loaded_key = load_signing_key(&repo_root)?;
-    let manifest_blob = build_signed_manifest(&manifest_entries, &loaded_key.signing_key)
+    let mut selection = select_anchor(&repo_root)?;
+    if args.incoherent_anchor_probe {
+        // See --incoherent-anchor-probe. Exactly one state, hardcoded: a
+        // gating tier (MOK) with its required key absent. Everything else
+        // about the build — the signing key, the manifest, the PD set — is
+        // left alone, so the ONLY thing under test is what the root task
+        // does with an anchor state that does not validate.
+        eprintln!(
+            "[gen-pd-bundle] WARNING: --incoherent-anchor-probe is set. This build compiles \
+             in a DELIBERATELY INVALID trust anchor state (AOS_ANCHOR_MOK with no \
+             machine-owner key) and the resulting image WILL REFUSE TO BOOT. It is a test \
+             fixture for the T10 target proof and must never be shipped."
+        );
+        selection.tier = AnchorTier::Mok;
+        selection.mok.present = false;
+        selection.mok.pubkey = [0u8; 32];
+    }
+    let selection = selection;
+    let manifest_blob = build_signed_manifest(&manifest_entries, &selection.signing_key)
         .context("failed to build signed boot manifest")?;
 
     let manifest_out = args
@@ -219,35 +348,47 @@ pub fn run(args: &GenPdBundleArgs) -> Result<()> {
     fs::write(&manifest_out, &manifest_blob)
         .with_context(|| format!("failed to write boot manifest: {}", manifest_out.display()))?;
 
-    let pubkey = verifying_key_bytes(&loaded_key.signing_key);
     let pubkey_header_out = args.pubkey_header_out.clone().unwrap_or_else(|| {
         args.out
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("boot_manifest_pubkey.h")
     });
-    fs::write(
-        &pubkey_header_out,
-        render_pubkey_header(&pubkey, loaded_key.is_dev_key),
-    )
-    .with_context(|| {
+    fs::write(&pubkey_header_out, render_pubkey_header(&selection)).with_context(|| {
         format!(
             "failed to write boot manifest pubkey header: {}",
             pubkey_header_out.display()
         )
     })?;
 
+    let tier_name = match selection.tier {
+        AnchorTier::None => "NONE (development, not gating)",
+        AnchorTier::Vendor => "VENDOR",
+        AnchorTier::Mok => "MOK",
+    };
     println!(
-        "[gen-pd-bundle] wrote {}: {} bytes, {} entries, signed with {} key ({})",
+        "[gen-pd-bundle] wrote {}: {} bytes, {} entries, trust anchor tier {} \
+         (vendor key {}, mok key {}), signed with {} key ({})",
         manifest_out.display(),
         manifest_blob.len(),
         manifest_entries.len(),
-        if loaded_key.is_dev_key {
+        tier_name,
+        if selection.vendor.present {
+            "present"
+        } else {
+            "absent"
+        },
+        if selection.mok.present {
+            "present"
+        } else {
+            "absent"
+        },
+        if selection.signing_key_is_dev {
             "DEVELOPMENT"
         } else {
             "custom"
         },
-        loaded_key.source.display(),
+        selection.signing_key_source.display(),
     );
     println!("[gen-pd-bundle] wrote {}", pubkey_header_out.display());
 
@@ -298,6 +439,8 @@ fn boot_manifest_repo_root(system_toml: &std::path::Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boot_manifest::test_support::{with_anchor_env, ENV_LOCK};
+    use crate::boot_manifest::{DEV_SIGNING_KEY_REL_PATH, VENDOR_SIGNING_KEY_ENV};
     use std::io::Read;
     use tempfile::NamedTempFile;
 
@@ -306,6 +449,30 @@ mod tests {
         v.extend_from_slice(&[0u8; 12]);
         v
     }
+
+    /// `run()` calls `select_anchor()`, which reads the same process-global
+    /// trust-anchor env vars boot_manifest.rs's own tests mutate -- hence
+    /// ENV_LOCK/with_anchor_env are shared across both modules. Tests here
+    /// just need SOME gating key configured so `run()` succeeds; the dev
+    /// seed (committed in-tree, not a secret) mirrors what the real
+    /// Makefile defaults AGENTOS_BUNDLE_SIGNING_KEY to.
+    fn run_with_dev_vendor_key(args: &GenPdBundleArgs) -> anyhow::Result<()> {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let repo_root = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .expect("git rev-parse failed to run");
+        let repo_root = std::path::PathBuf::from(
+            String::from_utf8(repo_root.stdout)
+                .expect("git output not UTF-8")
+                .trim(),
+        );
+        let dev_seed_abs = repo_root.join(DEV_SIGNING_KEY_REL_PATH);
+        let dev_seed_abs_str = dev_seed_abs.to_str().unwrap();
+        with_anchor_env(&[(VENDOR_SIGNING_KEY_ENV, dev_seed_abs_str)], || run(args))
+    }
+
+    use std::process::Command;
 
     #[test]
     fn test_gen_pd_bundle_magic_and_layout() {
@@ -334,9 +501,11 @@ priority = 1
             out: out_file.path().to_path_buf(),
             manifest_out: Some(manifest_out.path().to_path_buf()),
             pubkey_header_out: Some(pubkey_header_out.path().to_path_buf()),
+            incoherent_anchor_probe: false,
+            anchor_selection_stamp: None,
         };
 
-        run(&args).expect("gen-pd-bundle failed");
+        run_with_dev_vendor_key(&args).expect("gen-pd-bundle failed");
 
         let mut bytes = Vec::new();
         std::fs::File::open(out_file.path())
@@ -390,9 +559,11 @@ priority = 1
             out: out_file.path().to_path_buf(),
             manifest_out: None,
             pubkey_header_out: None,
+            incoherent_anchor_probe: false,
+            anchor_selection_stamp: None,
         };
 
-        let err = run(&args).expect_err("48-byte PD name must be rejected");
+        let err = run_with_dev_vendor_key(&args).expect_err("48-byte PD name must be rejected");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("47-byte limit"),
@@ -404,6 +575,6 @@ priority = 1
         std::fs::write(pd_dir.path().join(format!("{ok_name}.elf")), fake_elf()).unwrap();
         let toml_str_ok = format!("[[pd]]\nname = \"{ok_name}\"\npriority = 1\n");
         std::fs::write(toml_file.path(), toml_str_ok).unwrap();
-        run(&args).expect("47-byte PD name must be accepted");
+        run_with_dev_vendor_key(&args).expect("47-byte PD name must be accepted");
     }
 }

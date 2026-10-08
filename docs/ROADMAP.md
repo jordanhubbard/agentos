@@ -167,19 +167,23 @@ rather than a conservative virtue.
 Ranked by risk retired per unit of work, which is not the same as dependency
 order. T1 through T4 are mutually independent and may proceed in parallel;
 T1 through T3 are ranked first because they retire more risk per unit of work,
-not because T4 waits on them. T5 onward are ordered by dependency.
+not because T4 waits on them. T5 onward are ordered by dependency. T10 was
+added after T3 shipped: it does not extend the design, it corrects an
+assumption T3 made — that a single compiled-in vendor key is the only trust
+anchor — which no board in hand can satisfy without blocking development.
 
 | Order | MAC task | Corrective action | Proof |
 | --- | --- | --- | --- |
-| T1 | to file | Bound the `cc_pd` control plane to a build-defined operator authority envelope. `handle_connect` currently records a caller-supplied `client_badge` (`cc_pd.c`) with no check, so socket possession is total authority. Because the operator is untrusted and a build-supplied credential is readable by them, the credential selects an envelope rather than authenticating a principal; operations outside it require vendor-signed authorization. Fix `reap_oldest_session`, which lets an unauthenticated peer evict an established session by exhausting the table | A target test in which an in-envelope operation succeeds, an out-of-envelope one is refused even with a valid credential, and a session-exhaustion attempt fails to evict a live session |
-| T2 | to file | Replace the `entropy_svc.c` stub with a real entropy PD. No nonce, key, or challenge can be generated on target today | A target test drawing from the service and asserting the driver's source, not a statistical randomness claim |
-| T3 | to file | Verify protection-domain images before spawn. The root task currently hashes and checks nothing; trust in the PD set is trust in the boot medium. Verification needs only a build-time public key and the existing `libs/pd-support/ed25519_verify.c`, so it does not depend on T2 | A boot that refuses a tampered PD image and names the rejected image, plus an unmodified-image boot through `make gate` |
-| T4 | to file | Read-only authority observer. Enumerate the live capability derivation state and expose it through a mapping that grants no minting authority. Required before T5 and T6 so that delegation can be checked against an observed graph rather than an asserted one | A target test comparing observed authority against the descriptor for the default image, and a fault probe proving the observer cannot mint or write |
-| T5 | to file | Capability lending primitive (caretaker). A library, not a service: the holder mints a badged, rights-reduced derived capability and revokes it on operation completion. Useful within the current static PD set, independent of T6 | A target test in which a borrower exercises lent authority, then faults on the same access after revocation |
-| T6 | to file | Hierarchical delegation and dynamic domain creation. A parent creates a child and endows it from its own authority, with the subsetting invariant enforced and observable via T4. This is the agentic-workload requirement | A target test creating a child that exercises delegated authority and faults on authority the parent withheld, with the observer showing no superset |
-| T7 | to file | `agentos_gui` hardening and a real authority view. Set a restrictive CSP (currently `null`), scope `capabilities/default.json` beyond `core:default`, remove the unused `@tauri-apps/plugin-shell` dependency, and validate the socket path in Rust rather than accepting an arbitrary frontend string. Replace the hardcoded topology graph with the T4 observer feed | GUI tests asserting the command surface is unreachable without the capability grant, and a topology view sourced from observed authority |
+| T1 | shipped v0.6.0 | Bound the `cc_pd` control plane to a build-defined operator authority envelope. `handle_connect` currently records a caller-supplied `client_badge` (`cc_pd.c`) with no check, so socket possession is total authority. Because the operator is untrusted and a build-supplied credential is readable by them, the credential selects an envelope rather than authenticating a principal; operations outside it require vendor-signed authorization. Fix `reap_oldest_session`, which lets an unauthenticated peer evict an established session by exhausting the table | A target test in which an in-envelope operation succeeds, an out-of-envelope one is refused even with a valid credential, and a session-exhaustion attempt fails to evict a live session |
+| T2 | shipped v0.6.0 | Replace the `entropy_svc.c` stub with a real entropy PD. No nonce, key, or challenge can be generated on target today | A target test drawing from the service and asserting the driver's source, not a statistical randomness claim |
+| T3 | shipped v0.6.0 | Verify protection-domain images before spawn. The root task currently hashes and checks nothing; trust in the PD set is trust in the boot medium. Verification needs only a build-time public key and the existing `libs/pd-support/ed25519_verify.c`, so it does not depend on T2 | A boot that refuses a tampered PD image and names the rejected image, plus an unmodified-image boot through `make gate` |
+| T4 | shipped v0.6.0 | Read-only authority observer. Enumerate the live capability derivation state and expose it through a mapping that grants no minting authority. Required before T5 and T6 so that delegation can be checked against an observed graph rather than an asserted one | A target test comparing observed authority against the descriptor for the default image, and a fault probe proving the observer cannot mint or write |
+| T5 | shipped v0.6.0 | Capability lending primitive (caretaker). A library, not a service: the holder mints a badged, rights-reduced derived capability and revokes it on operation completion. Useful within the current static PD set, independent of T6 | A target test in which a borrower exercises lent authority, then faults on the same access after revocation |
+| T6 | shipped v0.6.0 | Hierarchical delegation and dynamic domain creation. A parent creates a child and endows it from its own authority, with the subsetting invariant enforced and observable via T4. This is the agentic-workload requirement | A target test creating a child that exercises delegated authority and faults on authority the parent withheld, with the observer showing no superset |
+| T7 | shipped (gui#17) | `agentos_gui` hardening and a real authority view. Set a restrictive CSP (currently `null`), scope `capabilities/default.json` beyond `core:default`, remove the unused `@tauri-apps/plugin-shell` dependency, and validate the socket path in Rust rather than accepting an arbitrary frontend string. Replace the hardcoded topology graph with the T4 observer feed | GUI tests asserting the command surface is unreachable without the capability grant, and a topology view sourced from observed authority |
 | T8 | to file | Measured boot and remote attestation, built on T2 and T3. Supersedes `boot_integrity.c`, whose Ed25519 key is derived from the data it signs and whose signature is discarded. **Gated on hardware:** without a key store the operator cannot extract, an untrusted operator can attest any state, so this must not ship as a claim until a per-board hardware anchor is confirmed | An attestation a host verifier accepts, and rejects after image substitution — admissible only once the signing key is hardware-anchored |
 | T9 | deferred | Perimeter signing for cross-node authority. Only required if agentOS federates; capabilities do not traverse a network | Deferred — no proof obligation until federation is scoped |
+| T10 | shipped v0.6.0 | Trust anchor tiers (MOK model), extending T3. T3 verifies PD images against a single compiled-in vendor key, which blocks iteration on hardware that has no key store. Introduce three live tiers — `AOS_ANCHOR_NONE` (development: verifies and reports, does not gate), `AOS_ANCHOR_VENDOR` (today's behaviour), `AOS_ANCHOR_MOK` (a machine-owner key that **stands alone**: it does not require the vendor key, and on a MOK-only machine vendor-signed images do not verify) — plus `AOS_ANCHOR_HARDWARE` as a real enum arm whose key source reports unavailable, so later TPM/OTP work is a new key source rather than a redesign. MOK does not defend against the machine owner, who can sign anything; `docs/TCB.md` must say so and must drop its claim that verification is unconditional | Host tests pinning the tier/gating policy, a boot under each tier showing the anchor named in boot output, and a development-tier boot that still reports a digest mismatch without stopping |
 
 Museum constraint: `docs/TCB.md` forbids extending `cap_broker`, CapStore, and
 the other quarantined components. None of T1 through T9 may be implemented by
@@ -493,3 +497,41 @@ from a host test or roadmap entry.
   direction remain distinct in documentation and presentations.
 - Significant scope discovered during a release is assigned to a later
   milestone unless it is required to make an existing claim truthful.
+
+### Status after v0.6.0 (2026-10-06)
+
+T1–T7 and T10 shipped. T1–T6 and T10 are in the `v0.6.0` tag (receipt bound to
+`6991227b`, 258 target proofs); T7 is `agentos_gui` PR #17.
+
+Also fixed after the release, in `fff9ab12` (PR #300): `fault_handler` declared
+`fault_ring_vaddr` and never assigned it, so the PD stored through NULL and had
+been **dead on arrival on every architecture** since it was written. Nothing
+noticed because no test asserted a TCB PD was alive — with the fix removed, the
+boot gate still passes green while the new `make test-fault-handler` fails.
+That test is now in `gate` and in `os-claim-gate`.
+
+**Not shipped, and why:**
+
+- **T8** (measured boot and remote attestation) remains gated on hardware. An
+  untrusted operator can attest any state without a key store they cannot
+  extract, so this must not ship as a claim until a per-board hardware anchor
+  is confirmed. Nothing in the T10 tier work changes that: `AOS_ANCHOR_HARDWARE`
+  is a defined key source that reports unavailable and claims nothing.
+- **T9** stays deferred; no proof obligation until federation is scoped.
+- **riscv64 architecture parity** (PR #298) is open and deferred by decision. It
+  builds, boots, verifies a signed PD bundle and starts 9 of 9 PDs, but cannot
+  run guests: upstream seL4 has no RISC-V hypervisor extension in any release or
+  on master. See
+  `docs/superpowers/specs/2026-10-06-riscv-hypervisor-fork-feasibility.md` for
+  the measured cost of forking.
+
+**Correction to an earlier claim in this document's surrounding work.** It was
+repeatedly stated that enabling the RISC-V H-extension would forfeit the RV64
+binary-verification result. That is wrong, and the error ran the other way too:
+`configs/include/AARCH64_verified_include.cmake` sets
+`KernelArmHypervisorSupport ON`, so AArch64 EL2 **is** verified. Meanwhile
+Microkit's `build_sdk.py` sets `KernelIsMCS: True` globally and seL4's own
+`config.cmake` describes MCS as "not verified" — so **no Microkit build on any
+architecture is a verified configuration**, and agentOS never held the RV64
+proof to lose. What a fork would cost is the option of ever pursuing it, not a
+property the project currently has.
