@@ -696,7 +696,17 @@ jobs:
             || { echo "tools/sdk/candidate.mk no longer lists qemu_virt_riscv64"; exit 1; }
           sdk_version="$(sed -n 's/^SDK_CANDIDATE_VERSION := //p' tools/sdk/candidate.mk)"
           test -n "$sdk_version" || { echo "could not read SDK_CANDIDATE_VERSION"; exit 1; }
-          echo "SDK_VERSION=$sdk_version" >> "$GITHUB_ENV"
+          # Deliberately NOT the candidate version string. The kernel built
+          # below comes from the same pinned commits and the same patch, but
+          # it is a one-board, in-job build and is not the qualified published
+          # artifact. Naming it the candidate version would make `make build`
+          # run tools/sdk/candidate.mk's sdk-candidate-check against it, whose
+          # cr2-kernels.sha256 manifest covers boards this one-board SDK does
+          # not contain -- and would quietly imply this job re-qualifies the
+          # pinned kernel. It does not. Kernel qualification is the
+          # sdk-candidate workflow's job; this job's subject is whether OUR
+          # riscv64 code compiles and links.
+          echo "SDK_VERSION=${sdk_version}-riscv64-ci" >> "$GITHUB_ENV"
 
       - name: Install toolchains
         run: |
@@ -705,7 +715,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build python3-venv libxml2-utils \
             gcc-13-riscv64-linux-gnu binutils-riscv64-linux-gnu \
-            clang lld llvm device-tree-compiler curl
+            clang lld llvm device-tree-compiler qemu-system-misc curl
           mkdir -p "$RUNNER_TEMP/sdk-toolchain"
           ln -s /usr/bin/riscv64-linux-gnu-gcc-13 "$RUNNER_TEMP/sdk-toolchain/riscv64-linux-gnu-gcc"
           ln -s /usr/bin/riscv64-linux-gnu-cpp-13 "$RUNNER_TEMP/sdk-toolchain/riscv64-linux-gnu-cpp"

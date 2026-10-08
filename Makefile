@@ -939,13 +939,17 @@ test-riscv64:
 	@echo "── [GATE] TARGET/QEMU test: riscv64 (GUEST_OS=none, exact PD count) ──"
 	@if [ ! -d "$(SEL4_SDK)/board/qemu_virt_riscv64" ]; then \
 		echo ""; \
-		echo "  !! riscv64 proof NOT RUN -- nothing here proves anything about riscv64."; \
+		echo "  !! riscv64 boot proof NOT RUN -- nothing here proves riscv64 boots."; \
 		echo "  !! The SDK at $(SEL4_SDK)"; \
 		echo "  !! carries no qemu_virt_riscv64 board, so this target cannot build."; \
-		echo "  !! This is the Task 1 gap: tools/sdk/candidate.mk does not list"; \
-		echo "  !! qemu_virt_riscv64 in --boards, so no riscv64 kernel is produced."; \
-		echo "  !! Until that lands, run it against a local SDK that has the board:"; \
+		echo "  !! tools/sdk/candidate.mk DOES now list qemu_virt_riscv64, so the"; \
+		echo "  !! pipeline produces a riscv64 kernel -- but the published SDK"; \
+		echo "  !! release asset predates that change and has to be rebuilt by the"; \
+		echo "  !! sdk-candidate workflow and republished before this SDK gets it."; \
+		echo "  !! Until then, run it against a local SDK that has the board:"; \
 		echo "  !!     make test-riscv64 SEL4_SDK_VERSION=2.1.0"; \
+		echo "  !! riscv64 compile+link IS covered on every CI run by the"; \
+		echo "  !! riscv64-root-task-build job, which builds the board itself."; \
 		echo ""; \
 		exit 0; \
 	fi; \

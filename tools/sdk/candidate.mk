@@ -83,27 +83,39 @@ sdk-candidate-check:
 	@test "$$(cat "$(SEL4_SDK)/VERSION")" = "$(SDK_CANDIDATE_VERSION)" || \
 		{ echo 'ERROR: candidate SDK VERSION does not match the qualified pin'; exit 1; }
 	@cd "$(SEL4_SDK)" && sha256sum -c "$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"
-	@# `sha256sum -c` only checks the lines it is given.  A board added to
-	@# SDK_CANDIDATE_BOARDS but not to cr2-kernels.sha256 would therefore sail
-	@# through the line above with its kernel completely unhashed -- the exact
-	@# silent gap this pipeline exists to close.  Require a recorded hash for
-	@# every board's kernel, and print the computed one when it is missing so
-	@# recording it is a paste rather than a guess.
+	@# `sha256sum -c` only checks the lines it is given.  A board built into
+	@# the SDK but absent from cr2-kernels.sha256 would therefore sail through
+	@# the line above with its kernel completely unhashed -- the exact silent
+	@# gap this pipeline exists to close.  So: every board that is PRESENT in
+	@# the SDK under test must have a recorded kernel hash, and when one does
+	@# not, print the computed hashes so recording them is a paste, not a guess.
+	@#
+	@# The presence guard is load-bearing and is not a loophole.  This target
+	@# is a prerequisite of every ordinary `make build` (Makefile's sdk-check),
+	@# so it runs against the PUBLISHED SDK artifact as well as against a
+	@# freshly built candidate.  A board newly added to SDK_CANDIDATE_BOARDS
+	@# does not exist in an artifact published before it was added, and failing
+	@# there would block all builds on all architectures for a kernel that is
+	@# not in the tree being checked.  What must never pass is a kernel that IS
+	@# there and is unhashed, and that is exactly what this rejects.  The
+	@# sdk-candidate build produces the board, so the check fires for real.
 	@set -eu; hashes="$(SDK_CANDIDATE_REPO)/tools/sdk/cr2-kernels.sha256"; \
 	missing=0; \
 	for board in $(SDK_CANDIDATE_BOARDS); do \
 		rel="board/$$board/release/elf/sel4.elf"; \
+		test -s "$(SEL4_SDK)/$$rel" || continue; \
 		if ! grep -q "  $$rel\$$" "$$hashes"; then \
 			missing=1; \
-			echo "ERROR: $$rel has no recorded hash in tools/sdk/cr2-kernels.sha256."; \
-			echo "       This build produced:"; \
+			echo "ERROR: $$rel is present in this SDK but has no recorded hash"; \
+			echo "       in tools/sdk/cr2-kernels.sha256. It produced:"; \
 			(cd "$(SEL4_SDK)" && sha256sum "$$rel") | sed 's/^/       /'; \
 			(cd "$(SEL4_SDK)" && sha256sum "board/$$board/release/lib/microkit.ld") | sed 's/^/       /'; \
 		fi; \
 	done; \
 	test "$$missing" = 0 || \
-		{ echo 'Record the lines above, then re-run; do not remove the board instead.'; exit 1; }
+		{ echo 'Record the lines above, then re-run; do not drop the board instead.'; exit 1; }
 	@for board in $(SDK_CANDIDATE_BOARDS); do \
+		test -d "$(SEL4_SDK)/board/$$board" || continue; \
 		for header in sel4/sel4.h kernel/gen_config.h; do \
 			test -s "$(SEL4_SDK)/board/$$board/release/include/$$header" || \
 				{ echo "ERROR: candidate SDK missing $$board/$$header"; exit 1; }; \
