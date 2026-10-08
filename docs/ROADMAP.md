@@ -487,6 +487,182 @@ artifact checksums, limitations, release notes, and presentation edition. A
 missing proof is a stated limitation or a release blocker; it is never inferred
 from a host test or roadmap entry.
 
+## riscv64 guest port — plan
+
+**Status: planned, not started. Not scheduled against a release.** This section
+records what the work is, what it costs, and the gates at which it should be
+abandoned. It does not commit anyone to doing it.
+
+### What is already true
+
+riscv64 **platform parity is shipped** (PR #298, `41e6305a`). The architecture
+builds, boots through its own loader and `start_riscv64.S`, loads protection
+domains from an embedded Ed25519-signed bundle, runs a 9-PD topology with
+drivers and virtualizers, and is proven by `make test-riscv64`, which asserts an
+exact PD count and zero fault reports and is non-vacuous. The T10 trust anchor
+probes and the T3 image-verification probes both run on riscv64 alongside
+aarch64 and x86_64 (PRs #306, #307).
+
+What riscv64 **cannot** do is run a guest operating system, and no work in this
+repository changes that. Upstream seL4 has no RISC-V hypervisor extension: no
+`seL4_RISCV_VCPUObject`, no `src/arch/riscv/object/vcpu.c`, no Kconfig, in any
+release 13.0.0-16.0.0 or on master. The H-extension work exists only on a fork
+stack.
+
+### What the spike established
+
+`docs/superpowers/specs/2026-10-08-riscv-he-spike-findings.md` reproduced the
+fork authors' claim in roughly 70 minutes of work:
+
+- Linux boots to a shell prompt on riscv64 under seL4/Microkit on QEMU.
+- `examples/virtio` enumerates virtio-console, -blk and -net and passes real
+  traffic through them.
+- **Zero patches to seL4. Zero to Microkit.** `build_sdk.py` at the pinned SHAs
+  exits 0 in 52 seconds.
+
+So the feasibility question is answered: this is engineering, not research. The
+spike also found that the fork's sddf pin no longer exists upstream, which is
+what prompted the vendoring decision now implemented in PR #309 — so the
+mechanical blocker that made this impossible is gone.
+
+### What the spike did not establish, and why the estimate is large
+
+The spike touched **none** of the work below. Every boot was single-hart. It
+exercised no VMID reuse, no TLB shootdown, no FPU state across preemption, no
+`sel4test`. It used the fork's **pre-capDL** Microkit, so the capDL
+re-implementation and `rust-sel4` — the two largest unknowns — remain entirely
+unvalidated. A Linux guest booting is a smoke test.
+
+The fork is also unfinished in ways that are visible by reading it. 167 of its
+added lines sit **outside** the `CONFIG_RISCV_HYPERVISOR_SUPPORT` flag, including
+`src/arch/riscv/object/objecttype.c:199`, which makes every RISC-V page table
+16 KiB whether or not the hypervisor is enabled. `vmid_pool_cap` and
+`s2_root_page_table_cap` are declared in the `.bf` and referenced by **zero** C:
+VMID management is ASID aliasing. A commented-out kernel-abort check from a
+commit named `temp:` is still on the tip.
+
+### Phases
+
+Each phase has an exit criterion and a stop condition. **A phase that misses its
+exit criterion ends the port; it does not get an extension by default.**
+
+**R1 — Vendor the stack.** Mirror and submodule `Ivan-Velickovic/seL4@microkit_riscv_he`,
+`Ivan-Velickovic/microkit@riscv_he`, `au-ts/libvmm@riscv` and sddf, using the
+mechanism in `tools/sdk/vendor.manifest` and `make sdk-provenance`. Add riscv64
+hypervisor boards to `tools/sdk/candidate.mk` and `cr2-kernels.sha256`.
+*Exit:* `make sdk-provenance` reports every dependency bound to a named commit
+with a reviewable delta, and `sdk-candidate` builds a hash-verified SDK carrying
+the hypervisor board. *Estimate: 1-2 weeks.*
+*Note:* the provenance diffstat stops being review at this delta size. R1 must
+state what replaces reading the patch, or the provenance claim weakens silently.
+
+**R2 — Settle the rebase question. This is the real go/no-go.** The spike
+rebased the hypervisor delta onto current master: 7 conflict hunks in 6 files,
+all build-config or small headers, and `vcpu.c`/`machine.h`/`vspace.c`/
+`hardware.c`/every `.bf`/all of libsel4 applied clean. But the rebased kernel
+then **failed** — it boots to `dropped to user space` and dies on a boot-info
+versus untyped-info mismatch between the fork's Microkit and upstream. Until
+that is resolved, "the recurring rebase cost is low" is an inference from
+conflict counts, not an observation.
+*Exit:* a kernel rebased onto an upstream release boots Linux on QEMU.
+*Stop:* if this takes more than 4 weeks, the maintenance model in §R7 is not
+affordable and the port should end here. *Estimate: 2-4 weeks.*
+
+**R3 — De-contaminate.** Bring the 167 unguarded lines inside the config flag,
+starting with the unconditional 16 KiB page table. Replace VMID aliasing with
+real VMID pool management, or document precisely what the aliasing costs and why
+it is acceptable. Remove the `temp:` remnants. Rebase libvmm's riscv arm onto
+`main` — it is **424 commits behind** and ships a stale copy of
+`src/virtio/{net,block,console}.c`, the arch-independent files agentOS depends
+on, including a null deref in `virtio_console_handle_rx` already fixed upstream.
+*Exit:* a non-hypervisor riscv64 build is byte-identical to one from unmodified
+upstream at the same commit; `sel4test` passes on riscv64 in both configurations.
+*Estimate: 4-6 weeks.* This is the phase most likely to overrun, because it is
+where "attempt to fix guest FPU access" actually gets finished.
+
+**R4 — capDL and rust-sel4.** The fork's Microkit predates capDL; upstream
+Microkit now pins `sel4-capdl-initializer` from `seL4/rust-sel4`, whose VCPU bind
+is gated `any(all(ARCH_ARM, ARM_HYPERVISOR_SUPPORT), all(ARCH_X86_64, VTX))` and
+whose `crates/sel4/src/arch/riscv/object.rs` has no VCPU type. A fourth
+dependency, ~300-500 lines, and the Microkit side needs **re-doing on capDL, not
+rebasing**.
+*Exit:* a current-Microkit SDK with riscv64 hypervisor support builds and boots
+the libvmm examples. *Estimate: 3-5 weeks.*
+
+**R5 — agentOS integration.** A riscv64 VMM protection domain, a guest entry in
+`system_desc_riscv64.c`, and the sDDF plumbing. `guest_vmm.c`'s current `__riscv`
+arm is a same-privilege `jalr` with `_guest_kernel_image` permanently NULL — it
+is **not** guest support and must be replaced, not extended. The riscv64 PD count
+(currently 9) will change; `make test-riscv64` asserts it exactly and the new
+count must be justified, not loosened.
+*Exit:* a guest boots under agentOS on riscv64, not merely under libvmm's own
+examples. *Estimate: 3-5 weeks.*
+
+**R6 — Proofs and CI.** riscv64 equivalents of `test-guest-net`, `test-guest-blk`
+and `test-guest-console`, joined to `gate` **and** to `os-claim-gate` as explicit
+steps, since no CI job invokes `make gate`. Each proof must be demonstrated to
+fail before it is trusted: this repository found **five** checks in a single week
+that looked like coverage and proved nothing.
+*Exit:* the guest I/O proofs run on riscv64 in CI and have each been seen to fail.
+*Estimate: 2-3 weeks.*
+
+**R7 — Hardware, and the standing cost.** Everything above is QEMU. The fork
+author's own status reports serial IRQ passthrough broken on HiFive P550, so
+nothing here predicts the silicon being built. Steady-state maintenance is
+**45-65 person-days per year** (~0.25 FTE), rising in year one, against a
+roughly quarterly seL4 release cadence.
+
+### Total and the decision it implies
+
+**16-30 person-weeks**, plus ~0.25 FTE forever. The feasibility study's 16-26
+range is credible as a floor; the spike's author widened the top to ~30 after
+first-hand contact, on the grounds that static reading systematically
+understates this kind of work.
+
+The line from the study that survived contact best: the fork is **cheap to carry
+and expensive to be answerable for**. Resolving `include/machine/fpu.h` during
+the rebase meant keeping both sides with no way to know whether that is correct
+— no test, no upstream to check against. That is the shape of the whole
+commitment.
+
+**Do not start R1 without a named engineer owning riscv64 virtualisation for a
+year.** The failure mode is not that the port fails; it is that it half-succeeds,
+becomes demonstrable, never gets R3, and quietly becomes load-bearing.
+
+### Verification: what is and is not given up
+
+An earlier version of this analysis claimed that enabling the H-extension would
+forfeit the RV64 binary-verification result. **That was wrong**, and it was the
+strongest argument raised against the port:
+
+- `configs/include/AARCH64_verified_include.cmake` sets
+  `KernelArmHypervisorSupport ON`. **AArch64 EL2 is verified**, with
+  `VCPU_A.thy`, `VCPUAcc_A.thy` and `ArchVCPU_AI.thy` in l4v. The correct
+  analogy for RISC-V H is x86 VT-x, which has no proofs at all.
+- The RV64 verified configuration pins platform `hifive`,
+  `KernelRootCNodeSizeBits 19`, `ExtF`/`ExtD` off and non-MCS.
+  `qemu-riscv-virt` is not among its platforms.
+- Microkit's `build_sdk.py` sets `KernelIsMCS: True` globally, and seL4's own
+  `config.cmake` describes MCS as "not verified". **No Microkit build on any
+  architecture is a verified configuration.**
+
+agentOS therefore never held the RV64 proof. What a port costs is the *option*
+of pursuing it later, not a property the project has today. Verifying RISC-V H
+would be a separate effort of **two or more person-years of Isabelle** —
+`spec/abstract/RISCV64/Hypervisor_A.thy` is a one-line no-op stub and no RISC-V
+`VCPU_A.thy` exists — and should be treated as out of scope rather than deferred.
+
+### Upstreaming
+
+Not a viable primary path on this timeline. Yanyan Shen and Ivan Velickovic,
+who wrote all the RISC-V H code that exists, are **both on the seL4 technical
+steering committee**, and in four years no RFC has been filed. Acceptance is not
+the blocker; capacity is. Comparable RFCs have run 195 and 271 days; the closest
+analogue, RFC-15 (CHERI), has been open more than two years. Upstream explicitly
+accepts unverified platforms in `CONTRIBUTING.md`, so verification is not what
+keeps this out either. Contributing the work upstream after R3 is worth doing on
+its own merits; it should not be on the critical path for any agentOS release.
+
 ## Roadmap maintenance
 
 - Human maintainers choose when a minor or major release is scheduled.
