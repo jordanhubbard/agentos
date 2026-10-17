@@ -414,12 +414,9 @@ const HOST_ACTIONS: &[&str] = &[
 pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<RecipeStep>)> {
     let (profile, _) = resolve(root, path, &mut Vec::new())?;
     validate(&profile, None)?;
-    ensure!(
-        profile.status == Some(Status::Runtime),
-        "only status=runtime profiles can acquire boot artifacts"
-    );
     let id = profile.id.context("id is required")?;
     let steps = profile.host.map(|host| host.acquire).unwrap_or_default();
+    validate_acquisition_status(profile.status, &steps)?;
     for step in &steps {
         ensure!(
             matches!(
@@ -440,25 +437,48 @@ pub(crate) fn acquire_recipe(root: &Path, path: &Path) -> Result<(String, Vec<Re
                     | "normalize-arm64-linux-image"
                     | "build-linux-probe-initramfs"
             ),
-            "runtime host.acquire action {:?} has no bounded executor",
+            "host.acquire action {:?} has no bounded executor",
             step.action
         );
     }
     Ok((id, steps))
 }
 
+fn validate_acquisition_status(status: Option<Status>, steps: &[RecipeStep]) -> Result<()> {
+    match status {
+        Some(Status::Runtime) => Ok(()),
+        Some(Status::Planned) => {
+            ensure!(
+                !steps.is_empty(),
+                "status=planned artifact acquisition requires at least one step"
+            );
+            ensure!(
+                steps.iter().all(|step| {
+                    step.action == "stage-url"
+                        && (step.args.contains_key("sha256") || step.args.contains_key("sha512"))
+                }),
+                "status=planned profiles may acquire only hash-pinned upstream media"
+            );
+            Ok(())
+        }
+        _ => anyhow::bail!("only status=planned or status=runtime profiles can acquire artifacts"),
+    }
+}
+
 pub(crate) fn acquire_output_dir(root: &Path, path: &Path) -> Result<PathBuf> {
     let (profile, _) = resolve(root, path, &mut Vec::new())?;
     validate(&profile, None)?;
-    ensure!(
-        profile.status == Some(Status::Runtime),
-        "only status=runtime profiles can acquire boot artifacts"
-    );
+    let steps = profile
+        .host
+        .as_ref()
+        .map(|host| host.acquire.as_slice())
+        .unwrap_or_default();
+    validate_acquisition_status(profile.status, steps)?;
     let value = &profile
         .host
         .as_ref()
         .and_then(|host| host.build.as_ref())
-        .context("runtime profile requires host.build metadata")?
+        .context("artifact acquisition requires host.build metadata")?
         .acquire_dir;
     validate_repo_relative(value, "host.build.acquire_dir")?;
     Ok(PathBuf::from(value))
@@ -3208,9 +3228,65 @@ mod tests {
     }
 
     #[test]
-    fn planned_profiles_cannot_execute_on_the_host() {
+    fn planned_profiles_can_fetch_pinned_media_but_cannot_execute_on_the_host() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
         let path = resolve_alias(&root, "omarchy").unwrap();
+        let (id, acquire) = acquire_recipe(&root, &path).unwrap();
+        assert_eq!(id, "omarchy-x86-64");
+        assert_eq!(acquire.len(), 1);
+        assert_eq!(acquire[0].action, "stage-url");
+        assert_eq!(
+            acquire[0].args.get("sha256").map(String::as_str),
+            Some("ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d")
+        );
         assert!(host_profile_plan(&root, &path).is_err());
+        assert_eq!(
+            acquire_output_dir(&root, &path).unwrap(),
+            PathBuf::from("_build/guest-images/omarchy-4.0.4")
+        );
+    }
+
+    #[test]
+    fn planned_acquisition_rejects_unpinned_invalid_and_executable_recipes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
+        let (_, canonical) = resolve(&root, Path::new("omarchy.toml"), &mut Vec::new()).unwrap();
+        let source: toml::Value = toml::from_str(&canonical).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let path = Path::new("planned.toml");
+        for case in ["unpinned", "invalid", "empty", "executable", "sha512"] {
+            let mut candidate = source.clone();
+            let steps = candidate["host"]["acquire"].as_array_mut().unwrap();
+            match case {
+                "empty" => steps.clear(),
+                "executable" => {
+                    // Even a second, otherwise valid executable action must not be admitted.
+                    let step: toml::Value =
+                        toml::from_str("action = 'run-ssh'\n[args]\nrecipe = 'omarchy-wayland'\n")
+                            .unwrap();
+                    steps.push(step);
+                }
+                _ => {
+                    let args = steps[0]["args"].as_table_mut().unwrap();
+                    args.remove("sha256");
+                    if case == "invalid" {
+                        args.insert("sha256".into(), toml::Value::String("0".repeat(64)));
+                    } else if case == "sha512" {
+                        args.insert("sha512".into(), toml::Value::String("a".repeat(128)));
+                    }
+                }
+            }
+            fs::write(temp.path().join(path), toml::to_string(&candidate).unwrap()).unwrap();
+            assert_eq!(
+                acquire_recipe(temp.path(), path).is_ok(),
+                case == "sha512",
+                "{case}"
+            );
+            assert_eq!(
+                acquire_output_dir(temp.path(), path).is_ok(),
+                case == "sha512",
+                "{case}"
+            );
+            assert!(host_profile_plan(temp.path(), path).is_err(), "{case}");
+        }
     }
 }

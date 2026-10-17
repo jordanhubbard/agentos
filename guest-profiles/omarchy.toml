@@ -25,6 +25,18 @@ board = "x86_64_generic"
 machine = "q35"
 memory = "2G"
 
+[host.build]
+adapter = "uefi-artifacts"
+acquire_dir = "_build/guest-images/omarchy-4.0.4"
+
+# Artifact qualification is deliberately available while this profile remains
+# planned.  The guest-profile tool permits planned profiles to stage only
+# hash-pinned upstream media; it still rejects host execution and target-image
+# admission until the installation path is qualified and status becomes runtime.
+[[host.acquire]]
+action = "stage-url"
+args = { cache_name = "omarchy-4.0.4.iso", output = "omarchy-4.0.4.iso", url = "https://iso.omarchy.org/omarchy-4.0.4.iso", override_env = "AGENTOS_OMARCHY_ISO", sha256 = "ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d" }
+
 [[host.provision]]
 action = "run-ssh"
 args = { recipe = "omarchy-wayland" }

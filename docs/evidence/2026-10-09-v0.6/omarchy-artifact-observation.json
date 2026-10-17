@@ -1,0 +1,39 @@
+{
+  "schema": "agentos.omarchy-artifact-observation.v1",
+  "status": "in_progress",
+  "observed_date": "2026-10-09",
+  "agentos_source_revision": "1c3ae4aff713f971ea214132be2fc70e569d7795",
+  "upstream_release": "v4.0.4",
+  "upstream_release_commit": "c668141e9c42b13c80c9ca4ea108e11708c5e8a5",
+  "iso_url": "https://iso.omarchy.org/omarchy-4.0.4.iso",
+  "published_iso_sha256": "ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d",
+  "published_iso_bytes": 6185304064,
+  "architecture": "x86_64",
+  "firmware_modes": ["BIOS", "UEFI"],
+  "upstream_integrity": {
+    "sha256_sidecar": "https://iso.omarchy.org/omarchy-4.0.4.iso.sha256",
+    "signature_sidecar": "https://iso.omarchy.org/omarchy-4.0.4.iso.sig",
+    "release_tag_verified_by_github": true
+  },
+  "agentos_change": "The planned Omarchy profile stages only the exact HTTPS ISO with its published SHA-256. Planned profiles remain forbidden from host execution and target-image admission.",
+  "validation": [
+    "cargo test -p xtask cmd_guest_profile",
+    "make guest-profile-check"
+  ],
+  "blocked_validation": "make test-host reached the xtask suite, where 9 existing Unix-socket tests failed with EPERM under the managed macOS sandbox; 134 of 143 xtask tests passed.",
+  "followup_validation": {
+    "date": "2026-10-17",
+    "base_revision": "4df03aab",
+    "result": "make test-host passed on macOS, including repository policy, all 21 guest profiles, 166 xtask tests, and the C host suites. The previous Unix-socket test restriction did not recur.",
+    "coverage": "Planned acquisition rejects missing or invalid hashes, empty recipes and executable actions, accepts SHA-256 or SHA-512 staging, and still rejects host execution.",
+    "limits": "Host validation only. The ISO was not downloaded, signature-verified, installed or booted; no target or physical-hardware qualification was performed.",
+    "mac_task": "task_b253e3d4188c43259535c4b67a932773"
+  },
+  "limits": [
+    "The ISO was not downloaded or hashed in this macOS session.",
+    "The detached ISO signature and signing-key fingerprint were not verified.",
+    "Upstream does not publish an exact source-revision binding for this release ISO.",
+    "No Omarchy installation, boot, SSH, desktop, update, rollback, or agentOS support claim is made."
+  ],
+  "mac_task": "task_67e3fd4664c84a97a41531b1644339cd"
+}
