@@ -5,15 +5,17 @@ roadmap. It records facts about an official artifact separately from agentOS
 implementation choices and unproven expectations. An entry here is not a
 support claim. `docs/ROADMAP.md` defines the gates for such a claim.
 
-Current release observation: **2026-09-16**, upstream **Omarchy v4.0.4**.
+Current release observation: **2026-10-09**, upstream **Omarchy v4.0.4**.
 The detailed compatibility baseline below remains the explicitly dated v4.0.3
 study; this update records newly verified facts without implying that the new
 ISO has been installed or qualified on agentOS.
 
-The upstream release listing, tag and published checksum were rechecked on
-**2026-09-22** and still identify v4.0.4 and the same digest. The ISO size and
-source observations below remain dated 2026-09-16; this metadata check did not
-download or requalify the media.
+The upstream release listing, download page, tag and published checksum were
+rechecked on **2026-10-09** and still identify v4.0.4 and the same digest. The
+ISO size and source observations below remain dated 2026-09-16; this metadata
+check did not download or requalify the media. The planned agentOS profile can
+now stage only this hash-pinned ISO while remaining ineligible for host
+execution or target-image admission.
 
 ## Current official release observation
 
@@ -26,6 +28,14 @@ download or requalify the media.
 | ISO size | `6,185,304,064` bytes | HTTP Content-Length, observed 2026-09-16 |
 | ISO source observed | `7cfb7111a06873d61c45d37034577d4ba08d3f4f` on `quattro` | [observed source](https://github.com/omacom/omarchy-iso/commit/7cfb7111a06873d61c45d37034577d4ba08d3f4f) |
 | ISO architecture and firmware | `x86_64`; BIOS and UEFI boot modes | [source profile](https://github.com/omacom/omarchy-iso/blob/7cfb7111a06873d61c45d37034577d4ba08d3f4f/configs/profiledef.sh) |
+
+Upstream now documents a `.sig` beside every release ISO, a stable-image
+pipeline that verifies that signature before installing the release ISO, and
+an unattended install/boot test before publishing its derived VM image. Those
+are useful independent integrity and installability signals, but they do not
+replace agentOS verification of the ISO bytes or bind the v4.0.4 ISO to an
+exact public `omarchy-iso` source revision. The agentOS acquisition recipe
+therefore pins the published SHA-256 and retains the source-provenance gap.
 
 The release changes the default kernel to `linux-omarchy`. Future qualification
 must retain the actual installed kernel identity and configuration; the prior
@@ -147,5 +157,7 @@ official Omarchy ISO or turn this branch into a released platform.
 - The official release page supplies an ISO digest but not an exact ISO source
   revision or package-manifest digest. Those provenance gaps must be retained
   explicitly in release evidence.
+- The release ISO has a detached signature, but agentOS has not yet pinned the
+  signing-key fingerprint or verified that signature in its acquisition tool.
 - Upstream contains AArch64 planning and community experiments, but the
-  v4.0.3 official image and repositories pinned above are x86_64-only.
+  v4.0.4 official image and repositories observed above are x86_64-only.
