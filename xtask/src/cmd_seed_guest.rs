@@ -227,7 +227,7 @@ mod tests {
     use super::*;
     #[test]
     fn disk_assembly_preserves_surroundings_and_rejects_wrong_source() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let source = dir.path().join("source");
         let original = dir.path().join("original");
         let seeded = dir.path().join("seeded");

@@ -194,7 +194,6 @@ pub fn run(args: &GenImageArgs) -> Result<()> {
 mod tests {
     use super::*;
     use std::io::Read;
-    use tempfile::NamedTempFile;
 
     /// Minimal fake ELF: 4-byte magic + 12 bytes of zeros = 16 bytes total.
     fn fake_elf() -> Vec<u8> {
@@ -206,14 +205,14 @@ mod tests {
     #[test]
     fn test_gen_image_magic_and_pd_count() {
         // Write temporary input files
-        let kernel_file = NamedTempFile::new().unwrap();
+        let kernel_file = crate::build_paths::tempfile().unwrap();
         std::fs::write(kernel_file.path(), fake_elf()).unwrap();
 
-        let root_file = NamedTempFile::new().unwrap();
+        let root_file = crate::build_paths::tempfile().unwrap();
         std::fs::write(root_file.path(), fake_elf()).unwrap();
 
         // PD ELFs in a temp dir
-        let pd_dir = tempfile::tempdir().unwrap();
+        let pd_dir = crate::build_paths::tempdir().unwrap();
         std::fs::write(pd_dir.path().join("serial-mux.elf"), fake_elf()).unwrap();
         std::fs::write(pd_dir.path().join("net-service.elf"), fake_elf()).unwrap();
 
@@ -227,11 +226,11 @@ priority = 1
 name = "net-service"
 priority = 2
 "#;
-        let toml_file = NamedTempFile::new().unwrap();
+        let toml_file = crate::build_paths::tempfile().unwrap();
         std::fs::write(toml_file.path(), toml_str).unwrap();
 
         // Output image
-        let out_file = NamedTempFile::new().unwrap();
+        let out_file = crate::build_paths::tempfile().unwrap();
 
         let args = GenImageArgs {
             arch: "aarch64".to_string(),
@@ -275,18 +274,18 @@ priority = 2
 
     #[test]
     fn test_gen_image_zero_pds() {
-        let kernel_file = NamedTempFile::new().unwrap();
+        let kernel_file = crate::build_paths::tempfile().unwrap();
         std::fs::write(kernel_file.path(), fake_elf()).unwrap();
-        let root_file = NamedTempFile::new().unwrap();
+        let root_file = crate::build_paths::tempfile().unwrap();
         std::fs::write(root_file.path(), fake_elf()).unwrap();
 
-        let pd_dir = tempfile::tempdir().unwrap();
+        let pd_dir = crate::build_paths::tempdir().unwrap();
 
         let toml_str = "# empty system — no PDs\n";
-        let toml_file = NamedTempFile::new().unwrap();
+        let toml_file = crate::build_paths::tempfile().unwrap();
         std::fs::write(toml_file.path(), toml_str).unwrap();
 
-        let out_file = NamedTempFile::new().unwrap();
+        let out_file = crate::build_paths::tempfile().unwrap();
 
         let args = GenImageArgs {
             arch: "riscv64".to_string(),

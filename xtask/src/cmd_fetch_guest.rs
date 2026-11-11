@@ -743,7 +743,7 @@ fn build_static_linux_elf(step: &RecipeStep, root: &Path, output_dir: &Path) -> 
     let temp = output.with_extension("elf.tmp");
     // This freestanding build uses Clang resource headers and LLD, not a
     // discovered host GCC installation or its target runtime libraries.
-    let empty_toolchain = tempfile::tempdir()?;
+    let empty_toolchain = crate::build_paths::tempdir()?;
     let tool_path = std::env::var_os("AGENTOS_HOST_TOOL_PATH")
         .or_else(|| std::env::var_os("PATH"))
         .context("native helper compiler search path is unavailable")?;
@@ -1803,7 +1803,7 @@ mod tests {
 
     #[test]
     fn native_helper_recipe_builds_reproducible_static_elf_for_both_architectures() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         fs::write(
             dir.path().join("helper.c"),
             b"void _start(void) { for (;;) {} }\n",
@@ -1846,7 +1846,7 @@ mod tests {
 
     #[test]
     fn binary_initramfs_recipe_preserves_bytes_and_rejects_changed_payload() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let payload = b"\x7fELF\0\xff\x80\n";
         fs::write(dir.path().join("helper"), payload).unwrap();
         fs::write(dir.path().join("base"), b"old").unwrap();
@@ -1888,7 +1888,7 @@ mod tests {
 
     #[test]
     fn initramfs_overlay_is_aligned_bounded_newc() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let source = dir.path().join("base.initrd");
         let dest = dir.path().join("ready.initrd");
         fs::write(&source, b"base!").unwrap();
@@ -1915,7 +1915,7 @@ mod tests {
 
     #[test]
     fn standalone_initramfs_file_contains_only_the_bounded_overlay() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let dest = dir.path().join("overlay.initrd");
 
         build_initramfs_file(
@@ -1937,7 +1937,7 @@ mod tests {
 
     #[test]
     fn initramfs_overlay_rejects_escaping_paths_and_modes() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let source = dir.path().join("base.initrd");
         let dest = dir.path().join("ready.initrd");
         fs::write(&source, b"base").unwrap();
@@ -1947,7 +1947,7 @@ mod tests {
 
     #[test]
     fn initramfs_module_filter_retains_exact_selection_and_trailing_archive() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let source = dir.path().join("full.initrd");
         let dest = dir.path().join("filtered.initrd");
         let mut archive = Vec::new();
@@ -1984,7 +1984,7 @@ mod tests {
 
     #[test]
     fn zstd_initramfs_overlay_is_a_separate_reproducible_frame() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let source = dir.path().join("base.initrd");
         let dest = dir.path().join("ready.initrd");
         fs::write(&source, b"base-zstd-frame").unwrap();
@@ -2002,7 +2002,7 @@ mod tests {
 
     #[test]
     fn sha512_verification_accepts_exact_content_and_rejects_drift() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let artifact = dir.path().join("artifact");
         fs::write(&artifact, b"agentOS\n").unwrap();
         let expected = format!("{:x}", Sha512::digest(b"agentOS\n"));
@@ -2012,7 +2012,7 @@ mod tests {
 
     #[test]
     fn sha256_verification_accepts_exact_content_and_rejects_drift() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let artifact = dir.path().join("artifact");
         fs::write(&artifact, b"agentOS\n").unwrap();
         let expected = format!("{:x}", Sha256::digest(b"agentOS\n"));
@@ -2022,7 +2022,7 @@ mod tests {
 
     #[test]
     fn qcow2_conversion_produces_raw_image_and_reuses_matching_source() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let source = dir.path().join("source.qcow2");
         let dest = dir.path().join("dest.raw");
         let Ok(qemu_img) = find_tool(&[
@@ -2055,7 +2055,7 @@ mod tests {
 
     #[test]
     fn gpt_partition_extraction_uses_declared_entry_and_exact_bounds() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let source = dir.path().join("disk.raw");
         let dest = dir.path().join("partition.raw");
         let mut disk = vec![0u8; 64 * 512];
@@ -2088,7 +2088,7 @@ mod tests {
             eprintln!("skipping: mkfs.ext4 is unavailable");
             return;
         };
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let partition = dir.path().join("root.ext4");
         let length = 8 * 1024 * 1024;
         fs::File::create(&partition)
@@ -2162,7 +2162,7 @@ mod tests {
 
     #[test]
     fn arm64_image_normalization_accepts_a_raw_image() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let source = dir.path().join("vmlinuz");
         let dest = dir.path().join("Image");
         let mut image = vec![0u8; 0x1000];

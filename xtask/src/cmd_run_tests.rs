@@ -27,7 +27,7 @@ pub fn run(args: &RunTestsArgs) -> Result<()> {
         .context("seL4-target test image build failed")?;
     }
 
-    let log_file = tempfile::NamedTempFile::new().context("failed to create temp log file")?;
+    let log_file = crate::build_paths::tempfile().context("failed to create temp log file")?;
     let log_path = log_file.path().to_path_buf();
 
     let mut qemu = spawn_qemu_test_image(&args.board, &repo_root, &log_path)

@@ -131,6 +131,8 @@ caps Unix socket paths at 104 bytes). `make help` lists every target.
 Generated build outputs live under `_build/`: board objects, archives and images
 in `_build/<board>/`, Rust outputs in `_build/cargo/`, host executables in
 `_build/tools/` and test outputs in `_build/tmp/` or `_build/test-bins/`.
+Rust test fixtures, API-test executables, temporary QEMU logs, SDK download
+staging and release-verification downloads also use `_build/tmp/`.
 `make clean` removes the entire `_build/` tree, including staged guest images
 and local test evidence; `make clean-all` is an alias. Cleanup needs neither
 Cargo nor the SDK. Installed SDKs and downloaded ISO inputs in the user cache

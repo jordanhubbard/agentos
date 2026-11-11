@@ -104,7 +104,8 @@ echo "      Downloading: ${SDK_URL}"
 echo ""
 
 # Download to a temp file
-TMP_TAR="$(mktemp /tmp/microkit-sdk-XXXXXX.tar.gz)"
+mkdir -p "${PROJECT_DIR}/_build/tmp"
+TMP_TAR="$(mktemp "${PROJECT_DIR}/_build/tmp/microkit-sdk-XXXXXX.tar.gz")"
 trap 'rm -f "${TMP_TAR}"' EXIT
 
 if command -v curl &>/dev/null; then
@@ -129,7 +130,7 @@ elif [[ -L "${SDK_DIR}" ]]; then
     rm "${SDK_DIR}"
 fi
 
-EXTRACT_TMP="${PROJECT_DIR}/.sdk-extract-tmp"
+EXTRACT_TMP="${PROJECT_DIR}/_build/tmp/sdk-extract"
 rm -rf "${EXTRACT_TMP}"
 mkdir -p "${EXTRACT_TMP}"
 

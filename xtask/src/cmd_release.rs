@@ -756,7 +756,7 @@ fn verify_remote_asset(
         asset.size
     );
     let temporary =
-        tempfile::tempdir().context("failed to create release verification directory")?;
+        crate::build_paths::tempdir().context("failed to create release verification directory")?;
     let path = temporary.path().join(&asset.name);
     let output = fs::File::create(&path)?;
     let status = Command::new("gh")

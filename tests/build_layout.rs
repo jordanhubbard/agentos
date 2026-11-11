@@ -64,6 +64,7 @@ fn cleanup_removes_all_outputs_and_preserves_inputs_without_build_dependencies()
     for artifact in [
         "build/board/object.o",
         "target/debug/xtask",
+        ".sdk-extract-tmp/microkit-sdk/partial-download",
         "kernel/agentos-root-task/build/board/library.a",
         "kernel/loader/build/board/loader.elf",
         "libvmm.a",
@@ -78,6 +79,7 @@ fn cleanup_removes_all_outputs_and_preserves_inputs_without_build_dependencies()
     make(&root, "clean-legacy");
     assert!(!root.join("build").exists());
     assert!(!root.join("target").exists());
+    assert!(!root.join(".sdk-extract-tmp").exists());
     assert!(!root.join("kernel/agentos-root-task/build").exists());
     assert!(!root.join("kernel/loader/build").exists());
     assert!(!root.join("libvmm.a").exists());

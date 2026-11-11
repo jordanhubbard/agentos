@@ -676,7 +676,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let root = repo_root();
 
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = crate::build_paths::tempdir().expect("tempdir");
         let fake_key_path = tmp.path().join("not-the-dev-key.seed");
         std::fs::write(&fake_key_path, [9u8; 32]).unwrap();
         let fake_key_path_str = fake_key_path.to_str().unwrap();
@@ -855,7 +855,7 @@ mod tests {
         let dev_seed_abs = root.join(DEV_SIGNING_KEY_REL_PATH);
         let dev_seed_abs_str = dev_seed_abs.to_str().unwrap();
 
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = crate::build_paths::tempdir().expect("tempdir");
         let mok_key_path = tmp.path().join("mok.seed");
         std::fs::write(&mok_key_path, [3u8; 32]).unwrap();
         let mok_key_path_str = mok_key_path.to_str().unwrap();
@@ -913,7 +913,7 @@ mod tests {
         // Sanity: total size is header + 1 entry + signature.
         assert_eq!(blob.len(), HEADER_SIZE + ENTRY_SIZE + SIG_LEN);
 
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = crate::build_paths::tempdir().expect("tempdir");
         let blob_path = tmp.path().join("manifest.bin");
         std::fs::write(&blob_path, &blob).unwrap();
 
@@ -963,7 +963,7 @@ mod tests {
         let entry = ManifestEntry::new("controller", [0x11u8; 32]).unwrap();
         let blob = build_signed_manifest(&[entry], &signing_key).unwrap();
 
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = crate::build_paths::tempdir().expect("tempdir");
         let blob_path = tmp.path().join("manifest.bin");
         std::fs::write(&blob_path, &blob).unwrap();
 

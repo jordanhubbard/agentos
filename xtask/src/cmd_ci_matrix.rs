@@ -75,7 +75,7 @@ pub fn run(args: &CiMatrixArgs) -> anyhow::Result<()> {
         }
 
         // Spawn QEMU and check for success marker
-        let log_file = match tempfile::NamedTempFile::new() {
+        let log_file = match crate::build_paths::tempfile() {
             Ok(f) => f,
             Err(e) => {
                 println!(

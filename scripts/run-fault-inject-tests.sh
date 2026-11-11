@@ -42,7 +42,8 @@ TESTS=(
 )
 
 # ── QEMU launch ──────────────────────────────────────────────────────────────
-QEMU_LOG=$(mktemp /tmp/agentos_qemu_XXXXXX.log)
+mkdir -p _build/tmp
+QEMU_LOG=$(mktemp _build/tmp/agentos_qemu_XXXXXX.log)
 trap "rm -f $QEMU_LOG" EXIT
 
 echo "[fi] Starting QEMU (board=$BOARD, timeout=${QEMU_TIMEOUT}s)..."

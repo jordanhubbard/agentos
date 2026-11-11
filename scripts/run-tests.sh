@@ -14,7 +14,8 @@ SUCCESS_STRINGS=("agentOS v0.1.0" "[event_bus] READY" "[controller] *** agentOS 
 FAILURE_STRINGS=("Panic")
 
 BUILD_IMAGE="_build/${BOARD}/agentos.img"
-TMPLOG=$(mktemp /tmp/agentos-qemu.XXXXXX)
+mkdir -p _build/tmp
+TMPLOG=$(mktemp _build/tmp/agentos-qemu.XXXXXX)
 
 cleanup() {
     kill "$QEMU_PID" 2>/dev/null || true

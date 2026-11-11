@@ -169,7 +169,7 @@ priority = 160
 
     #[test]
     fn nonempty_board_override_replaces_base_descriptor() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let base = dir.path().join("base.toml");
         let board = dir.path().join("board.toml");
         std::fs::write(&base, "[[pd]]\nname = \"base\"\n").unwrap();

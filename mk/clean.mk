@@ -11,6 +11,7 @@ clean-all: clean
 # One-time cleanup for checkouts built before the _build layout.
 clean-legacy:
 	rm -rf -- "$(CLEAN_REPO_ROOT)/build" "$(CLEAN_REPO_ROOT)/target" \
+		"$(CLEAN_REPO_ROOT)/.sdk-extract-tmp" \
 		"$(CLEAN_REPO_ROOT)/kernel/build" \
 		"$(CLEAN_REPO_ROOT)/kernel/loader/build" \
 		"$(CLEAN_REPO_ROOT)/kernel/agentos-root-task/build" \

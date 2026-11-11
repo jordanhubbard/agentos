@@ -505,7 +505,8 @@ sdk:
 		test ! -e "$(SEL4_SDK)" || \
 			{ echo "ERROR: refusing to replace incomplete SDK at $(SEL4_SDK)"; exit 1; }; \
 		mkdir -p "$$(dirname "$(SEL4_SDK)")"; \
-		tmp="$$(mktemp -t agentos-microkit-sdk.XXXXXX)"; \
+		mkdir -p "$(BUILD_TMP_DIR)"; \
+		tmp="$$(mktemp "$(BUILD_TMP_DIR)/agentos-microkit-sdk.XXXXXX")"; \
 		trap 'rm -f "$$tmp"' EXIT INT TERM; \
 		curl -fsSL "$(MICROKIT_SDK_URL)" -o "$$tmp"; \
 		if [ "$(SEL4_SDK_VERSION)" = "$(SDK_CANDIDATE_VERSION)" ]; then \
