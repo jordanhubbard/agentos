@@ -11,7 +11,7 @@
 #   AGENTOS_IMAGE   path to agentos.img (default: auto-detected)
 #   AGENTOS_BIOS    path to opensbi firmware (default: auto-detected)
 #   AGENTOS_TIMEOUT boot timeout in seconds (default: 30)
-#   AGENTOS_LOG     path to save serial output (default: /tmp/agentos-ci.log)
+#   AGENTOS_LOG     path to save serial output (default: _build/tmp/agentos-ci-<arch>.log)
 
 set -euo pipefail
 
@@ -24,13 +24,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH="${AGENTOS_ARCH:-riscv64}"
 
 if [[ "${ARCH}" == "aarch64" ]]; then
-    IMAGE="${AGENTOS_IMAGE:-${ROOT_DIR}/kernel/agentos-root-task/build-aarch64/agentos.img}"
+    IMAGE="${AGENTOS_IMAGE:-${ROOT_DIR}/_build/qemu_virt_aarch64/agentos.img}"
     QEMU_BIN="qemu-system-aarch64"
     # virtualization=on → EL2 (required by seL4 hypervisor config in qemu_virt_aarch64 SDK)
     QEMU_ARGS="-machine virt,virtualization=on -cpu cortex-a57 -m 2G -nographic"
     BIOS=""  # AArch64 virt machine has built-in firmware
 else
-    IMAGE="${AGENTOS_IMAGE:-${ROOT_DIR}/kernel/agentos-root-task/build-riscv/agentos.img}"
+    IMAGE="${AGENTOS_IMAGE:-${ROOT_DIR}/_build/qemu_virt_riscv64/agentos.img}"
     QEMU_BIN="qemu-system-riscv64"
     # BIOS auto-detection for RISC-V
     if [[ -z "${AGENTOS_BIOS:-}" ]]; then
@@ -49,7 +49,8 @@ else
 fi
 
 TIMEOUT="${AGENTOS_TIMEOUT:-30}"
-LOG="${AGENTOS_LOG:-/tmp/agentos-ci-${ARCH}.log}"
+LOG="${AGENTOS_LOG:-${ROOT_DIR}/_build/tmp/agentos-ci-${ARCH}.log}"
+mkdir -p "$(dirname "${LOG}")"
 
 # ---------------------------------------------------------------------------
 # Preflight

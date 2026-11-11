@@ -2,6 +2,7 @@
 // The binary entry point (src/main.rs) re-uses everything from here.
 
 pub mod boot_manifest;
+mod build_paths;
 pub mod cmd_ci_matrix;
 pub mod cmd_extract_freebsd_file;
 pub mod cmd_fault_inject;

@@ -103,7 +103,7 @@ mod tests {
     use super::*;
     #[test]
     fn persistent_copy_retains_writes_without_modifying_base() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::build_paths::tempdir().unwrap();
         let base = root.path().join("base.raw");
         fs::write(&base, b"pristine base").unwrap();
         let work = tempfile::tempdir_in(root.path()).unwrap();
@@ -125,7 +125,7 @@ mod tests {
     }
     #[test]
     fn refuses_redirected_disk_and_existing_destination() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::build_paths::tempdir().unwrap();
         let base = root.path().join("base.raw");
         fs::write(&base, b"base").unwrap();
         let work = tempfile::tempdir_in(root.path()).unwrap();

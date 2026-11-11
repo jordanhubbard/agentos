@@ -344,7 +344,7 @@ mod tests {
     }
 
     fn local_session(command: &str, timeout: Duration) -> (tempfile::TempDir, Session) {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let transcript = directory.path().join("output");
         let output = File::create(&transcript).unwrap();
         let mut child = Command::new("sh")

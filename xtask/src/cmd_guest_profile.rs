@@ -2749,7 +2749,7 @@ mod tests {
             resolve(&root, Path::new("ubuntu-live.toml"), &mut Vec::new()).unwrap();
         let mut source: toml::Value = toml::from_str(&canonical).unwrap();
         source["target"]["boot_protocol"] = toml::Value::String("uefi".into());
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::build_paths::tempdir().unwrap();
         fs::write(
             temp.path().join("uefi.toml"),
             toml::to_string(&source).unwrap(),
@@ -2900,7 +2900,7 @@ mod tests {
 
     #[test]
     fn inheritance_cycles_fail_closed() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::build_paths::tempdir().unwrap();
         fs::write(root.path().join("a.toml"), "extends='b.toml'\n").unwrap();
         fs::write(root.path().join("b.toml"), "extends='a.toml'\n").unwrap();
         assert!(resolve(root.path(), Path::new("a.toml"), &mut Vec::new()).is_err());
@@ -2908,7 +2908,7 @@ mod tests {
 
     #[test]
     fn unknown_fields_fail_closed() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::build_paths::tempdir().unwrap();
         fs::write(
             root.path().join("bad.toml"),
             "schema=1\nid='bad'\nstatus='abstract'\nsurprise=true\n",
@@ -3251,7 +3251,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
         let (_, canonical) = resolve(&root, Path::new("omarchy.toml"), &mut Vec::new()).unwrap();
         let source: toml::Value = toml::from_str(&canonical).unwrap();
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::build_paths::tempdir().unwrap();
         let path = Path::new("planned.toml");
         for case in ["unpinned", "invalid", "empty", "executable", "sha512"] {
             let mut candidate = source.clone();

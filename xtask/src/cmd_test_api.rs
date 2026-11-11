@@ -31,13 +31,10 @@ pub fn run(args: &TestApiArgs) -> Result<()> {
     // Resolve C compiler: honour CC env var, fall back to `cc`.
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
 
-    // Build temporary output directory under the system temp dir.
-    let build_dir = {
-        let mut d = std::env::temp_dir();
-        d.push(format!("agentos-api-tests-{}", std::process::id()));
-        d
-    };
-    std::fs::create_dir_all(&build_dir).context("failed to create API test build directory")?;
+    // RAII cleanup also covers compiler/spawn errors on early return.
+    let temporary = crate::build_paths::tempdir()
+        .context("failed to create API test build directory under _build/tmp")?;
+    let build_dir = temporary.path();
 
     println!("[xtask:test-api] compiler: {}", cc);
     println!("[xtask:test-api] test dir: {}", tests_dir.display());
@@ -136,7 +133,7 @@ pub fn run(args: &TestApiArgs) -> Result<()> {
     }
 
     // ── Cleanup ───────────────────────────────────────────────────────────
-    let _ = std::fs::remove_dir_all(&build_dir);
+    drop(temporary);
 
     // ── Summary ───────────────────────────────────────────────────────────
     println!("═══════════════════════════════════════════════");

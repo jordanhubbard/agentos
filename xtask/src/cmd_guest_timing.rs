@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn comparison_writes_measurements_without_a_threshold() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let ubuntu_path = directory.path().join("ubuntu.json");
         let debian_path = directory.path().join("debian.json");
         let output_path = directory.path().join("comparison.json");
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn comparison_accepts_producer_profile_ids_and_preserves_receipt_hashes() {
         for debian_alias in ["debian", "debian-arm64-nocloud"] {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = crate::build_paths::tempdir().unwrap();
             let profile_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest-profiles");
             let ubuntu_id = host_profile_plan(
                 &profile_root,
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn comparison_rejects_different_revisions() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let ubuntu_path = directory.path().join("ubuntu.json");
         let debian_path = directory.path().join("debian.json");
         write_receipt(&ubuntu_path, receipt("ubuntu-live"));
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn comparison_rejects_different_host_platforms() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let ubuntu_path = directory.path().join("ubuntu.json");
         let debian_path = directory.path().join("debian.json");
         write_receipt(&ubuntu_path, receipt("ubuntu-live"));
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn comparison_rejects_dirty_source_or_different_qemu_configuration() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let ubuntu_path = directory.path().join("ubuntu.json");
         let debian_path = directory.path().join("debian.json");
         let mut ubuntu = receipt("ubuntu-live");
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn comparison_rejects_receipts_without_host_backed_virtio() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let ubuntu_path = directory.path().join("ubuntu.json");
         let debian_path = directory.path().join("debian.json");
         let mut ubuntu = receipt("ubuntu-live");
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn comparison_rejects_malformed_or_wrong_profile_receipts() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let ubuntu_path = directory.path().join("ubuntu.json");
         let debian_path = directory.path().join("debian.json");
         write_receipt(&ubuntu_path, json!({"schema": TIMING_SCHEMA}));
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn comparison_rejects_missing_wrong_profile_and_input_overwrite() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let ubuntu_path = directory.path().join("ubuntu.json");
         let debian_path = directory.path().join("debian.json");
         write_receipt(&ubuntu_path, receipt("ubuntu-live"));

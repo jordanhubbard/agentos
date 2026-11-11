@@ -48,7 +48,8 @@ TIMEOUT="${CC_TIMEOUT_TEST_SECS:-120}"
 WEDGE_WAIT="${CC_WEDGE_WAIT_SECS:-45}"
 
 CC_SOCK="${REPO_ROOT}/_build/cc_pd.sock"
-SERIAL_LOG="$(mktemp /tmp/agentos-cc-timeout.XXXXXX)"
+mkdir -p "${REPO_ROOT}/_build/tmp"
+SERIAL_LOG="$(mktemp "${REPO_ROOT}/_build/tmp/agentos-cc-timeout.XXXXXX")"
 BUILD_DIR="${REPO_ROOT}/_build/${BOARD}-test"
 
 QEMU_PID=""

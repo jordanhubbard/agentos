@@ -45,6 +45,8 @@ BRIDGE_PORT="${AGENTOS_BRIDGE_PORT:-8790}"
 TIMEOUT="${AGENTOS_TIMEOUT:-120}"
 CODEGEN_BACKEND="${AGENTOS_CODEGEN_BACKEND:-mock}"
 BRIDGE_BASE="http://localhost:${BRIDGE_PORT}"
+BRIDGE_LOG="$(cd "$(dirname "$0")/.." && pwd)/_build/tmp/agentos-bridge-test.log"
+mkdir -p "$(dirname "${BRIDGE_LOG}")"
 
 BRIDGE_PID=""
 TESTS_PASSED=0
@@ -136,7 +138,7 @@ if [ "${BRIDGE_ALREADY_RUNNING}" -eq 0 ]; then
             --bin agentos-console 2>&1 &
     else
         cargo run --manifest-path "${REPO_ROOT}/Cargo.toml" \
-            --bin agentos-console >/tmp/agentos-bridge-test.log 2>&1 &
+            --bin agentos-console >"${BRIDGE_LOG}" 2>&1 &
     fi
     BRIDGE_PID=$!
     info "Bridge PID: ${BRIDGE_PID}"
@@ -152,9 +154,9 @@ if [ "${BRIDGE_ALREADY_RUNNING}" -eq 0 ]; then
         # Check if the process already died
         if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
             fail "Bridge process exited unexpectedly (PID ${BRIDGE_PID})"
-            if [ -f /tmp/agentos-bridge-test.log ]; then
+            if [ -f "${BRIDGE_LOG}" ]; then
                 printf "Bridge log:\n"
-                tail -20 /tmp/agentos-bridge-test.log
+                tail -20 "${BRIDGE_LOG}"
             fi
             exit 2
         fi
@@ -164,9 +166,9 @@ if [ "${BRIDGE_ALREADY_RUNNING}" -eq 0 ]; then
 
     if [ "${READY}" -eq 0 ]; then
         fail "Bridge did not become ready within 30 s"
-        if [ -f /tmp/agentos-bridge-test.log ]; then
+        if [ -f "${BRIDGE_LOG}" ]; then
             printf "Bridge log:\n"
-            tail -20 /tmp/agentos-bridge-test.log
+            tail -20 "${BRIDGE_LOG}"
         fi
         exit 2
     fi

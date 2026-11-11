@@ -10454,7 +10454,7 @@ mod tests {
     #[test]
     fn second_intel_media_requires_independent_regular_disks() {
         use std::os::unix::fs::symlink;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let primary = dir.path().join("primary.raw");
         let secondary = dir.path().join("secondary.raw");
         let hardlink = dir.path().join("hardlink.raw");
@@ -10494,7 +10494,7 @@ mod tests {
             (17, CC_ERR_BAD_HANDLE, CC_ERR_BAD_HANDLE, true, false),
             (17, CC_ERR_RELAY_FAULT, CC_OK, false, false),
         ] {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = crate::build_paths::tempdir().unwrap();
             let socket = directory.path().join("cc.sock");
             let listener = UnixListener::bind(&socket).unwrap();
             let server = std::thread::spawn(move || {
@@ -10529,7 +10529,7 @@ mod tests {
     #[test]
     fn ordinary_boot_console_still_rejects_relay_fault() {
         use std::os::unix::net::UnixListener;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let socket = directory.path().join("cc.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = std::thread::spawn(move || {
@@ -10550,7 +10550,7 @@ mod tests {
     #[test]
     fn managed_cc_create_preserves_architecture_and_console_rejects_bad_lengths() {
         use std::os::unix::net::UnixListener;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let socket = directory.path().join("cc.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = std::thread::spawn(move || {
@@ -10607,7 +10607,7 @@ mod tests {
             (0, [CC_ERR_BAD_HANDLE, 0, 0], 0, false),
             (0, [CC_ERR_RELAY_FAULT, 0, 0], 1, false),
         ] {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = crate::build_paths::tempdir().unwrap();
             let socket = directory.path().join("cc.sock");
             let listener = UnixListener::bind(&socket).unwrap();
             let server = std::thread::spawn(move || {
@@ -10647,7 +10647,7 @@ mod tests {
 
     #[test]
     fn persistence_witness_requires_fresh_write_and_read_only_verification() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let root = directory.path().join("guest-state");
         let run = |second| {
             let script = super::persistence_script("cold-boot-test", second)
@@ -10677,7 +10677,7 @@ mod tests {
 
     #[test]
     fn seeded_cold_boot_rejects_changed_profile_image_and_reinitialization() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::build_paths::tempdir().unwrap();
         let image = directory.path().join("current.img");
         std::fs::write(&image, b"boot image").unwrap();
         super::seeded_boot_guard(directory.path(), "resolved profile", &image, false).unwrap();
@@ -10704,7 +10704,7 @@ mod tests {
     #[cfg(unix)]
     fn scenario_ssh_receipts_preserve_bytes_and_reject_wrong_output_or_exit() {
         use std::os::unix::process::ExitStatusExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         for (attempt, code, bytes, expected) in [
             (1, 0, b"Linux\n".as_slice(), true),
             (2, 0, b"FreeBSD\n".as_slice(), false),
@@ -10847,7 +10847,7 @@ mod tests {
     }
     #[test]
     fn retained_host_key_binds_the_original_loopback_endpoint() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::build_paths::tempdir().unwrap();
         let file = dir.path().join("known_hosts");
         std::fs::write(&file, "[127.0.0.1]:12224 ssh-ed25519 AAAA\n").unwrap();
         assert_eq!(
@@ -10911,7 +10911,7 @@ mod tests {
             (b"general protection fault\nagentos-debian login: ".as_slice(), false),
             (b"Oops: kernel fault\nagentos-debian login: ".as_slice(), false),
         ] {
-            let temp = tempfile::tempdir().unwrap();
+            let temp = crate::build_paths::tempdir().unwrap();
             let socket = temp.path().join("console.sock");
             let log = temp.path().join("qemu.log");
             std::fs::write(&log, "").unwrap();
@@ -10935,7 +10935,7 @@ mod tests {
     fn intel_console_logs_in_before_accepting_the_profile_shell() {
         let mut profile = test_profile("arch-amd64-installer");
         profile.provision.clear();
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::build_paths::tempdir().unwrap();
         let socket = temporary.path().join("console.sock");
         let log = temporary.path().join("qemu.log");
         std::fs::write(&log, "").unwrap();
@@ -10975,7 +10975,7 @@ mod tests {
 
     #[test]
     fn intel_recreated_console_keeps_original_target_log() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::build_paths::tempdir().unwrap();
         let target = temp.path().join("qemu.log");
         let recreated = temp.path().join("qemu.recreated.log");
         std::fs::write(&target, "target running\n").unwrap();
@@ -11071,7 +11071,7 @@ mod tests {
     fn frame_readiness_probes_exact_pixels_and_releases_failed_reads() {
         use std::os::unix::net::UnixListener;
         for mode in 0..6 {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = crate::build_paths::tempdir().unwrap();
             let socket = directory.path().join("cc.sock");
             let listener = UnixListener::bind(&socket).unwrap();
             let server = std::thread::spawn(move || {
@@ -11217,7 +11217,7 @@ mod tests {
 
     #[test]
     fn x86_console_provisioning_templates_only_a_bounded_ed25519_key() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::build_paths::tempdir().unwrap();
         let key = temporary.path().join("identity");
         std::fs::write(
             key.with_extension("pub"),
@@ -11254,7 +11254,7 @@ mod tests {
 
     #[test]
     fn arch_install_disk_preserves_iso_and_refuses_existing_media() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::build_paths::tempdir().unwrap();
         let iso = temporary.path().join("live.iso");
         let disk = temporary.path().join("root.raw");
         std::fs::write(&iso, b"pinned-live-image").unwrap();
@@ -11490,7 +11490,7 @@ mod tests {
 
     #[test]
     fn cc_client_never_replays_after_lost_reply() {
-        let dir = tempfile::tempdir().expect("temporary CC socket directory");
+        let dir = crate::build_paths::tempdir().expect("temporary CC socket directory");
         let socket = dir.path().join("cc.sock");
         let listener = UnixListener::bind(&socket).expect("bind CC test socket");
         let server = std::thread::spawn(move || {

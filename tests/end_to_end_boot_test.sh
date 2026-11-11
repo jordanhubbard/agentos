@@ -76,7 +76,9 @@ else
 fi
 
 # Temporary serial socket (matches the path used by the main Makefile).
-SERIAL_SOCK="/tmp/agentos-e2e-boot-test-$$.sock"
+TMP_ROOT="${AGENTOS_TMP_DIR:-${REPO_ROOT}/_build/tmp}"
+mkdir -p "${TMP_ROOT}"
+SERIAL_SOCK="${TMP_ROOT}/agentos-e2e-boot-test-$$.sock"
 
 # ── Boot-completion markers ───────────────────────────────────────────────────
 #
@@ -103,7 +105,7 @@ REQUIRED_MARKERS=(
 
 QEMU_PID=""
 NC_PID=""
-SERIAL_LOG="/tmp/agentos-e2e-serial-$$.log"
+SERIAL_LOG="${TMP_ROOT}/agentos-e2e-serial-$$.log"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 

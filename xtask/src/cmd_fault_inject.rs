@@ -27,7 +27,7 @@ pub fn run(args: &FaultInjectArgs) -> Result<()> {
     )
     .context("fault-inject build failed")?;
 
-    let log_file = tempfile::NamedTempFile::new().context("failed to create temp log file")?;
+    let log_file = crate::build_paths::tempfile().context("failed to create temp log file")?;
     let log_path = log_file.path().to_path_buf();
     let cc_sock = log_path.with_extension("cc_pd.sock");
 

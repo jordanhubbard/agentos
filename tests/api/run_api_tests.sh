@@ -19,7 +19,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TESTS_DIR="${REPO_ROOT}/tests/api"
-BUILD_DIR="${TMPDIR:-/tmp}/agentos-api-tests-$$"
+BUILD_DIR="${REPO_ROOT}/_build/tmp/agentos-api-tests-$$"
 
 CC="${CC:-cc}"
 CFLAGS="-DAGENTOS_TEST_HOST -I${TESTS_DIR} -I${REPO_ROOT}/kernel/agentos-root-task/include -std=c11 -Wall -Wextra -Wpedantic"

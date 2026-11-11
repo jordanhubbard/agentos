@@ -442,7 +442,6 @@ mod tests {
     use crate::boot_manifest::test_support::{with_anchor_env, ENV_LOCK};
     use crate::boot_manifest::{DEV_SIGNING_KEY_REL_PATH, VENDOR_SIGNING_KEY_ENV};
     use std::io::Read;
-    use tempfile::NamedTempFile;
 
     fn fake_elf() -> Vec<u8> {
         let mut v = vec![0x7f, b'E', b'L', b'F'];
@@ -476,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_gen_pd_bundle_magic_and_layout() {
-        let pd_dir = tempfile::tempdir().unwrap();
+        let pd_dir = crate::build_paths::tempdir().unwrap();
         std::fs::write(pd_dir.path().join("controller.elf"), fake_elf()).unwrap();
         std::fs::write(pd_dir.path().join("serial_pd.elf"), fake_elf()).unwrap();
 
@@ -489,12 +488,12 @@ priority = 2
 name = "serial_pd"
 priority = 1
 "#;
-        let toml_file = NamedTempFile::new().unwrap();
+        let toml_file = crate::build_paths::tempfile().unwrap();
         std::fs::write(toml_file.path(), toml_str).unwrap();
-        let out_file = NamedTempFile::new().unwrap();
+        let out_file = crate::build_paths::tempfile().unwrap();
 
-        let manifest_out = tempfile::NamedTempFile::new().unwrap();
-        let pubkey_header_out = tempfile::NamedTempFile::new().unwrap();
+        let manifest_out = crate::build_paths::tempfile().unwrap();
+        let pubkey_header_out = crate::build_paths::tempfile().unwrap();
         let args = GenPdBundleArgs {
             system: toml_file.path().to_path_buf(),
             pd_dir: pd_dir.path().to_path_buf(),
@@ -544,14 +543,14 @@ priority = 1
     /// in `run()`.
     #[test]
     fn test_pd_name_exceeding_bundle_limit_is_rejected() {
-        let pd_dir = tempfile::tempdir().unwrap();
+        let pd_dir = crate::build_paths::tempdir().unwrap();
         let long_name = "x".repeat(48);
         std::fs::write(pd_dir.path().join(format!("{long_name}.elf")), fake_elf()).unwrap();
 
         let toml_str = format!("[[pd]]\nname = \"{long_name}\"\npriority = 1\n");
-        let toml_file = NamedTempFile::new().unwrap();
+        let toml_file = crate::build_paths::tempfile().unwrap();
         std::fs::write(toml_file.path(), toml_str).unwrap();
-        let out_file = NamedTempFile::new().unwrap();
+        let out_file = crate::build_paths::tempfile().unwrap();
 
         let args = GenPdBundleArgs {
             system: toml_file.path().to_path_buf(),
